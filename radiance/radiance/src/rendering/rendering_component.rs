@@ -20,6 +20,8 @@ pub struct RenderingComponent {
     vulkan_objects: Vec<std::rc::Rc<super::vulkan::VulkanRenderObject>>,
     #[cfg(vitagl)]
     vitagl_objects: Vec<std::rc::Rc<super::vitagl::VitaGLRenderObject>>,
+    #[cfg(switchgl)]
+    switchgl_objects: Vec<std::rc::Rc<super::switchgl::SwitchGLRenderObject>>,
 }
 
 impl RenderingComponent {
@@ -30,6 +32,8 @@ impl RenderingComponent {
             vulkan_objects: vec![],
             #[cfg(vitagl)]
             vitagl_objects: vec![],
+            #[cfg(switchgl)]
+            switchgl_objects: vec![],
         }
     }
 
@@ -41,6 +45,10 @@ impl RenderingComponent {
         #[cfg(vitagl)]
         if let Some(v) = handle.as_vitagl() {
             self.vitagl_objects.push(v.clone());
+        }
+        #[cfg(switchgl)]
+        if let Some(v) = handle.as_switchgl() {
+            self.switchgl_objects.push(v.clone());
         }
         self.objects.push(handle);
     }
@@ -63,5 +71,11 @@ impl RenderingComponent {
     #[cfg(vitagl)]
     pub fn vitagl_render_objects(&self) -> &[std::rc::Rc<super::vitagl::VitaGLRenderObject>] {
         &self.vitagl_objects
+    }
+
+    /// SwitchGL counterpart to [`Self::vulkan_render_objects`].
+    #[cfg(switchgl)]
+    pub fn switchgl_render_objects(&self) -> &[std::rc::Rc<super::switchgl::SwitchGLRenderObject>] {
+        &self.switchgl_objects
     }
 }

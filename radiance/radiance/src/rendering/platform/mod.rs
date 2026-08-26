@@ -1,4 +1,4 @@
-#[cfg(vita)]
+#[cfg(any(vita, switch))]
 mod dummy;
 #[cfg(windows)]
 mod windows;
@@ -8,5 +8,5 @@ pub use ::winit::window::Window;
 #[cfg(windows)]
 pub use windows::Window;
 
-#[cfg(vita)]
+#[cfg(any(vita, switch))]
 pub use dummy::Window;

@@ -81,6 +81,8 @@ pub struct RenderObjectHandle {
     vulkan: Option<Rc<super::vulkan::VulkanRenderObject>>,
     #[cfg(vitagl)]
     vitagl: Option<Rc<super::vitagl::VitaGLRenderObject>>,
+    #[cfg(switchgl)]
+    switchgl: Option<Rc<super::switchgl::SwitchGLRenderObject>>,
 }
 
 impl RenderObjectHandle {
@@ -95,6 +97,8 @@ impl RenderObjectHandle {
             vulkan: None,
             #[cfg(vitagl)]
             vitagl: None,
+            #[cfg(switchgl)]
+            switchgl: None,
         }
     }
 
@@ -109,6 +113,8 @@ impl RenderObjectHandle {
             vulkan: Some(obj),
             #[cfg(vitagl)]
             vitagl: None,
+            #[cfg(switchgl)]
+            switchgl: None,
         }
     }
 
@@ -122,6 +128,21 @@ impl RenderObjectHandle {
             #[cfg(vulkan)]
             vulkan: None,
             vitagl: Some(obj),
+            #[cfg(switchgl)]
+            switchgl: None,
+        }
+    }
+
+    /// SwitchGL counterpart to [`Self::from_vulkan`].
+    #[cfg(switchgl)]
+    pub fn from_switchgl(obj: Rc<super::switchgl::SwitchGLRenderObject>) -> Self {
+        Self {
+            dyn_view: obj.clone(),
+            #[cfg(vulkan)]
+            vulkan: None,
+            #[cfg(vitagl)]
+            vitagl: None,
+            switchgl: Some(obj),
         }
     }
 
@@ -144,5 +165,11 @@ impl RenderObjectHandle {
     #[cfg(vitagl)]
     pub fn as_vitagl(&self) -> Option<&Rc<super::vitagl::VitaGLRenderObject>> {
         self.vitagl.as_ref()
+    }
+
+    /// SwitchGL counterpart to [`Self::as_vulkan`].
+    #[cfg(switchgl)]
+    pub fn as_switchgl(&self) -> Option<&Rc<super::switchgl::SwitchGLRenderObject>> {
+        self.switchgl.as_ref()
     }
 }

@@ -18,6 +18,9 @@ mod vulkan;
 #[cfg(vitagl)]
 mod vitagl;
 
+#[cfg(switchgl)]
+mod switchgl;
+
 pub use engine::{CapturedFrame, RenderingEngine};
 pub use factory::ComponentFactory;
 pub use material::{
@@ -39,6 +42,9 @@ pub use video_player::VideoPlayer;
 
 #[cfg(vitagl)]
 pub use vitagl::VitaGLRenderingEngine;
+
+#[cfg(switchgl)]
+pub use switchgl::SwitchGLRenderingEngine;
 #[cfg(vulkan)]
 pub use vulkan::VulkanRenderingEngine;
 
