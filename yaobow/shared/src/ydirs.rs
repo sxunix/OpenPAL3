@@ -21,6 +21,11 @@ pub fn save_dir() -> PathBuf {
     {
         PathBuf::from("ux0:yaobow")
     }
+
+    #[cfg(switch)]
+    {
+        PathBuf::from("sdmc:/switch/yaobow")
+    }
 }
 
 pub fn config_dir() -> PathBuf {
@@ -37,5 +42,10 @@ pub fn config_dir() -> PathBuf {
     #[cfg(vita)]
     {
         PathBuf::from("ux0:yaobow")
+    }
+
+    #[cfg(switch)]
+    {
+        PathBuf::from("sdmc:/switch/yaobow")
     }
 }

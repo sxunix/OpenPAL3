@@ -17,6 +17,10 @@ pub mod openpal4;
 pub mod openpal5;
 pub mod openswd5;
 pub mod scripting;
+#[cfg(switch)]
+mod switch_libc;
+#[cfg(switch)]
+mod switch_random;
 pub mod theme_runtime;
 /// Auto-generated script bridges from `[protosept(scriptable)]` IDLs.
 pub mod script_bridges {
