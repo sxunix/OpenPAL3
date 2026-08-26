@@ -32,7 +32,7 @@ resolver = "3"
 
 [workspace.dependencies]
 imgui = { version = "0.12", features = ["docking", "tables-api"] }
-mini-fs = { path = "radiance/3rdparty/mini-fs" }
+mini-fs = { path = "radiance/3rdparty/mini-fs", default-features = false, features = ["zip"] }
 
 [patch.crates-io]
 filetime = { git = "https://github.com/dontpanic92/filetime", branch = "yaobow" }

@@ -154,7 +154,7 @@ fn mount_packages_recursive(
     vfs
 }
 
-#[cfg(vita)]
+#[cfg(any(vita, switch))]
 fn create_reader<P: AsRef<Path>>(path: P) -> anyhow::Result<Box<dyn SeekRead>> {
     let file = std::fs::File::open(path.as_ref())?;
     Ok(Box::new(file))

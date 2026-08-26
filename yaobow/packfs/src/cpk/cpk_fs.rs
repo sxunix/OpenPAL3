@@ -18,7 +18,7 @@ impl CpkFs {
         #[cfg(any(windows, linux, macos))]
         let entry = Some(cpk_archive.borrow_mut().build_directory()?);
 
-        #[cfg(any(android, vita))]
+        #[cfg(any(android, vita, switch))]
         let entry = None;
 
         Ok(CpkFs { cpk_archive, entry })

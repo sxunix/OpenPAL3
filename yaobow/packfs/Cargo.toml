@@ -38,7 +38,7 @@ xtea = { git = "https://github.com/Brekcel/xtea" }
 xxtea = "0.2.0"
 ypk = { path = "../../radiance/ypk" }
 
-[target.'cfg(not(target_os = "vita"))'.dependencies]
+[target.'cfg(not(any(target_os = "vita", target_os = "horizon")))'.dependencies]
 memmap = "0.7.0"
 
 [build-dependencies]
