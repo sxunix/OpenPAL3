@@ -21,7 +21,14 @@ pub fn main() {
         run_openpal4();
     }
 
-    #[cfg(not(vita))]
+    #[cfg(switch)]
+    {
+        init_logger(None);
+        register_opengb_video_decoders();
+        run_title_selection();
+    }
+
+    #[cfg(not(any(vita, switch)))]
     {
         let args = std::env::args().collect::<Vec<String>>();
         let agent_opts: Option<Pal4AgentBootOptions> = if args.len() > 2
@@ -198,6 +205,21 @@ fn init_logger(agent_sink: Option<AgentLogSink>) {
 
         simplelog::CombinedLogger::init(vec![logger]).unwrap();
     }
+
+    #[cfg(switch)]
+    {
+        let _ = agent_sink;
+        // sdmc: is the SD card as mounted by libnx. Failing to open the log
+        // must not abort boot -- on a fresh card the directory may not exist.
+        if let Ok(file) = std::fs::File::create("sdmc:/switch/yaobow/yaobow.log") {
+            let logger = simplelog::WriteLogger::new(
+                simplelog::LevelFilter::Error,
+                simplelog::Config::default(),
+                file,
+            );
+            let _ = simplelog::CombinedLogger::init(vec![logger]);
+        }
+    }
 }
 
 /// Two-way fan-out logger used when the agent server is enabled. Each
@@ -205,11 +227,13 @@ fn init_logger(agent_sink: Option<AgentLogSink>) {
 /// by `/v1/log/tail`) **and** into `SimpleLogger` (which formats and
 /// prints to stdout). `enabled`/`flush` short-circuit through both
 /// backends so existing level filters keep working.
+#[cfg(not(any(vita, switch)))]
 struct TeeLogger {
     agent: &'static AgentLogSink,
     console: simple_logger::SimpleLogger,
 }
 
+#[cfg(not(any(vita, switch)))]
 impl Log for TeeLogger {
     fn enabled(&self, metadata: &Metadata<'_>) -> bool {
         self.agent.enabled(metadata) || self.console.enabled(metadata)
@@ -231,7 +255,7 @@ impl Log for TeeLogger {
     }
 }
 
-#[cfg(not(vita))]
+#[cfg(not(any(vita, switch)))]
 #[allow(dead_code)]
 fn _force_level_imports() {
     // Silences `unused_imports` when only one of the two cfg branches
