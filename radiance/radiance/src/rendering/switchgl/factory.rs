@@ -8,8 +8,8 @@ use crate::rendering::{
 };
 
 use super::{
-    material::SwitchGLMaterial, render_object::SwitchGLRenderObject, shader::SwitchGLShader,
-    texture::SwitchGLTexture,
+    material::SwitchGLMaterial, render_object::SwitchGLRenderObject,
+    render_target::SwitchGLRenderTarget, shader::SwitchGLShader, texture::SwitchGLTexture,
 };
 
 pub struct SwitchGLComponentFactory {
@@ -74,10 +74,10 @@ impl ComponentFactory for SwitchGLComponentFactory {
 
     fn create_render_target(
         &self,
-        _width: u32,
-        _height: u32,
+        width: u32,
+        height: u32,
     ) -> Box<dyn crate::rendering::RenderTarget> {
-        unimplemented!("switchgl backend does not support offscreen render targets");
+        Box::new(SwitchGLRenderTarget::new(width, height))
     }
 }
 

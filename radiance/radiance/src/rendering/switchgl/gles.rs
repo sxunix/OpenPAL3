@@ -62,6 +62,13 @@ pub const GL_STATIC_DRAW: GLenum = 0x88E4;
 pub const GL_DYNAMIC_DRAW: GLenum = 0x88E8;
 pub const GL_STREAM_DRAW: GLenum = 0x88E0;
 
+pub const GL_FRAMEBUFFER: GLenum = 0x8D40;
+pub const GL_RENDERBUFFER: GLenum = 0x8D41;
+pub const GL_COLOR_ATTACHMENT0: GLenum = 0x8CE0;
+pub const GL_DEPTH_ATTACHMENT: GLenum = 0x8D00;
+pub const GL_DEPTH_COMPONENT16: GLenum = 0x81A5;
+pub const GL_FRAMEBUFFER_COMPLETE: GLenum = 0x8CD5;
+
 pub const GL_FRAGMENT_SHADER: GLenum = 0x8B30;
 pub const GL_VERTEX_SHADER: GLenum = 0x8B31;
 pub const GL_COMPILE_STATUS: GLenum = 0x8B81;
@@ -100,6 +107,33 @@ unsafe extern "C" {
         ty: GLenum,
         pixels: *const c_void,
     );
+
+    pub fn glGenFramebuffers(n: GLsizei, framebuffers: *mut GLuint);
+    pub fn glDeleteFramebuffers(n: GLsizei, framebuffers: *const GLuint);
+    pub fn glBindFramebuffer(target: GLenum, framebuffer: GLuint);
+    pub fn glFramebufferTexture2D(
+        target: GLenum,
+        attachment: GLenum,
+        textarget: GLenum,
+        texture: GLuint,
+        level: GLint,
+    );
+    pub fn glGenRenderbuffers(n: GLsizei, renderbuffers: *mut GLuint);
+    pub fn glDeleteRenderbuffers(n: GLsizei, renderbuffers: *const GLuint);
+    pub fn glBindRenderbuffer(target: GLenum, renderbuffer: GLuint);
+    pub fn glRenderbufferStorage(
+        target: GLenum,
+        internalformat: GLenum,
+        width: GLsizei,
+        height: GLsizei,
+    );
+    pub fn glFramebufferRenderbuffer(
+        target: GLenum,
+        attachment: GLenum,
+        renderbuffertarget: GLenum,
+        renderbuffer: GLuint,
+    );
+    pub fn glCheckFramebufferStatus(target: GLenum) -> GLenum;
 
     pub fn glGenBuffers(n: GLsizei, buffers: *mut GLuint);
     pub fn glDeleteBuffers(n: GLsizei, buffers: *const GLuint);

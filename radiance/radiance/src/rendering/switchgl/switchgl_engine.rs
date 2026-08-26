@@ -77,6 +77,71 @@ impl RenderingEngine for SwitchGLRenderingEngine {
         }
 
         if let Some(scene) = scene {
+            self.draw_scene(&scene);
+        }
+
+        self.imgui.render(ui_frame, self.extent.0, self.extent.1);
+
+        unsafe {
+            eglSwapBuffers(self.display, self.surface);
+        }
+    }
+
+    fn view_extent(&self) -> (u32, u32) {
+        self.extent
+    }
+
+    fn component_factory(&self) -> Rc<dyn ComponentFactory> {
+        self.factory.clone()
+    }
+
+    fn begin_frame(&mut self) {}
+
+    fn end_frame(&mut self) {}
+
+    fn notify_resized(&mut self, logical_size: (u32, u32)) {
+        self.extent = logical_size;
+        unsafe {
+            glViewport(0, 0, logical_size.0 as i32, logical_size.1 as i32);
+        }
+    }
+
+    fn update_imgui_font_atlas(&mut self, _context: &crate::imgui::ImguiContext) {
+        // Only reached when core_engine saw the atlas dirty flag; the atlas
+        // itself lives in the (current) imgui context, so no args needed.
+        self.imgui.rebuild_font_atlas();
+    }
+
+    fn render_scene_to_target(
+        &mut self,
+        scene: ComRc<IScene>,
+        target: &mut dyn crate::rendering::RenderTarget,
+    ) {
+        let Some(target) = target.as_switchgl_mut() else {
+            return;
+        };
+        let (tw, th) = crate::rendering::RenderTarget::extent(target);
+        unsafe {
+            glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer());
+            glViewport(0, 0, tw as i32, th as i32);
+            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glEnable(GL_DEPTH_TEST);
+            glDepthFunc(GL_LESS);
+        }
+        self.draw_scene(&scene);
+        unsafe {
+            glBindFramebuffer(GL_FRAMEBUFFER, 0);
+            glViewport(0, 0, self.extent.0 as i32, self.extent.1 as i32);
+        }
+    }
+}
+
+impl SwitchGLRenderingEngine {
+    /// Scene pass shared by the swapchain path and offscreen targets. The
+    /// camera's projection is used as-is, so a target whose aspect differs
+    /// from the main view renders with the main view's aspect.
+    fn draw_scene(&mut self, scene: &ComRc<IScene>) {
+        {
             let (view, proj) = {
                 let camera = scene.camera();
                 let view = Mat44::inversed(camera.transform().matrix());
@@ -147,45 +212,6 @@ impl RenderingEngine for SwitchGLRenderingEngine {
                 }
             }
         }
-
-        self.imgui.render(ui_frame, self.extent.0, self.extent.1);
-
-        unsafe {
-            eglSwapBuffers(self.display, self.surface);
-        }
-    }
-
-    fn view_extent(&self) -> (u32, u32) {
-        self.extent
-    }
-
-    fn component_factory(&self) -> Rc<dyn ComponentFactory> {
-        self.factory.clone()
-    }
-
-    fn begin_frame(&mut self) {}
-
-    fn end_frame(&mut self) {}
-
-    fn notify_resized(&mut self, logical_size: (u32, u32)) {
-        self.extent = logical_size;
-        unsafe {
-            glViewport(0, 0, logical_size.0 as i32, logical_size.1 as i32);
-        }
-    }
-
-    fn update_imgui_font_atlas(&mut self, _context: &crate::imgui::ImguiContext) {
-        // Only reached when core_engine saw the atlas dirty flag; the atlas
-        // itself lives in the (current) imgui context, so no args needed.
-        self.imgui.rebuild_font_atlas();
-    }
-
-    fn render_scene_to_target(
-        &mut self,
-        _scene: ComRc<IScene>,
-        _target: &mut dyn crate::rendering::RenderTarget,
-    ) {
-        unimplemented!("switchgl backend does not support offscreen render targets");
     }
 }
 

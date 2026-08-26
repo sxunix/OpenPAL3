@@ -10,10 +10,12 @@ mod gles;
 mod imgui_renderer;
 mod material;
 mod render_object;
+mod render_target;
 mod shader;
 mod switchgl_engine;
 mod texture;
 
 pub(super) use render_object::SwitchGLRenderObject;
 
+pub use render_target::SwitchGLRenderTarget;
 pub use switchgl_engine::SwitchGLRenderingEngine;

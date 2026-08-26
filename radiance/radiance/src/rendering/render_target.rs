@@ -42,4 +42,10 @@ pub trait RenderTarget {
     fn as_vulkan_mut(&mut self) -> Option<&mut super::vulkan::VulkanRenderTarget> {
         None
     }
+
+    /// SwitchGL counterpart to [`as_vulkan_mut`](Self::as_vulkan_mut).
+    #[cfg(switchgl)]
+    fn as_switchgl_mut(&mut self) -> Option<&mut super::switchgl::SwitchGLRenderTarget> {
+        None
+    }
 }
