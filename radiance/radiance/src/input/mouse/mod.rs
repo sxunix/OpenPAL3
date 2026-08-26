@@ -1,4 +1,4 @@
-#[cfg(vita)]
+#[cfg(any(vita, switch))]
 mod nop;
 #[cfg(windows)]
 mod windows;
@@ -7,7 +7,7 @@ mod winit;
 
 #[cfg(any(linux, macos, android))]
 pub use self::winit::MouseInput;
-#[cfg(vita)]
+#[cfg(any(vita, switch))]
 pub use nop::MouseInput;
 #[cfg(windows)]
 pub use windows::MouseInput;

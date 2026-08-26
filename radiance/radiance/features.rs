@@ -8,9 +8,11 @@ pub fn enable_features() {
         macos: { target_os = "macos" },
         android: { target_os = "android" },
         vita: { target_os= "vita" },
+        switch: { all(target_os = "horizon", target_arch = "aarch64") },
 
         // Graphic Backends
         vulkan: { any(windows, linux, macos, android) },
-        vitagl: { vita }
+        vitagl: { vita },
+        switchgl: { switch }
     }
 }

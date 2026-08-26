@@ -53,7 +53,12 @@ pub fn create_radiance_engine(
     #[cfg(vitagl)]
     let rendering_engine = Rc::new(RefCell::new(crate::rendering::VitaGLRenderingEngine::new()));
 
-    #[cfg(vitagl)]
+    #[cfg(switchgl)]
+    let rendering_engine = Rc::new(RefCell::new(
+        crate::rendering::SwitchGLRenderingEngine::new()?,
+    ));
+
+    #[cfg(any(vitagl, switchgl))]
     let _ = options;
 
     #[cfg(target_os = "android")]

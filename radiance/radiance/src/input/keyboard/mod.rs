@@ -1,4 +1,4 @@
-#[cfg(vita)]
+#[cfg(any(vita, switch))]
 mod nop;
 #[cfg(windows)]
 mod windows;
@@ -7,7 +7,7 @@ mod winit;
 
 #[cfg(any(linux, macos, android))]
 pub use self::winit::KeyboardInput;
-#[cfg(vita)]
+#[cfg(any(vita, switch))]
 pub use nop::KeyboardInput;
 #[cfg(windows)]
 pub use windows::KeyboardInput;

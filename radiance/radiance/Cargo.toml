@@ -31,7 +31,7 @@ toml = "0.7"
 ttf-parser = "0.25"
 uuid = "0.8"
 
-[target.'cfg(not(target_os = "vita"))'.dependencies]
+[target.'cfg(not(any(target_os = "vita", target_os = "horizon")))'.dependencies]
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 ash-window = "0.13"
 imgui-rs-vulkan-renderer = { version = "1.16", features = ["vk-mem"] }
@@ -46,11 +46,11 @@ imgui-rs-vitagl-renderer = { git = "https://github.com/dontpanic92/imgui-rs-vita
 vitagl-sys = { git = "https://github.com/dontpanic92/vitagl-sys" }
 vitasdk-sys = { git = "https://github.com/dontpanic92/vitasdk-sys", branch = "yaobow"}
 
-[target.'cfg(not(any(target_os = "android", target_os = "vita")))'.dependencies]
+[target.'cfg(not(any(target_os = "android", target_os = "vita", target_os = "horizon")))'.dependencies]
 arboard = "3.4.0"
 alto = { git = "https://github.com/dontpanic92/alto", features = ["dynamic"] }
 
-[target.'cfg(any(target_os = "android", target_os = "vita"))'.dependencies]
+[target.'cfg(any(target_os = "android", target_os = "vita", target_os = "horizon"))'.dependencies]
 alto = { git = "https://github.com/dontpanic92/alto", default-features = false }
 
 [target.'cfg(windows)'.dependencies]

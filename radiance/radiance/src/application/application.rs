@@ -183,6 +183,21 @@ impl IApplicationImpl for Application {
             self.platform.borrow().run_event_loop(tick);
         }
 
+        #[cfg(switch)]
+        {
+            // Like Win32, the Switch has no first-resumed concept — the
+            // default nwindow exists from process start. Without this arm
+            // `run()` falls straight through to `shutdown()` and the process
+            // exits silently before creating an engine.
+            Self::bootstrap_engine(
+                &self.platform,
+                &self.radiance_engine,
+                &self.engine_ready,
+                self.engine_options,
+            );
+            self.platform.borrow().run_event_loop(tick);
+        }
+
         // On platforms where the event loop returns cleanly (Vita,
         // Windows native), give the application a chance to fire
         // `on_unloading` on its loaded components before Drop tears

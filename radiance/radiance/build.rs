@@ -6,6 +6,7 @@ mod features;
 fn main() {
     features::enable_features();
     generate_comdef("radiance.idl", "radiance_comdef.rs");
+    link_switch_gles();
 
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").unwrap();
     match target_os.as_str() {
@@ -34,6 +35,25 @@ fn main() {
         }
         _ => {}
     }
+}
+
+/// Switch: link Mesa's GLES2/EGL stack from devkitPro's portlibs. These are
+/// static archives, so they must be named explicitly and in dependency order --
+/// ld makes a single pass over each.
+fn link_switch_gles() {
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("horizon")
+        || std::env::var("CARGO_CFG_TARGET_ARCH").as_deref() != Ok("aarch64")
+    {
+        return;
+    }
+
+    let devkitpro = std::env::var("DEVKITPRO").unwrap_or_else(|_| "/opt/devkitpro".to_string());
+    println!("cargo:rustc-link-search=native={}/portlibs/switch/lib", devkitpro);
+    println!("cargo:rustc-link-search=native={}/libnx/lib", devkitpro);
+    for lib in ["EGL", "GLESv2", "glapi", "drm_nouveau"] {
+        println!("cargo:rustc-link-lib=static={}", lib);
+    }
+    println!("cargo:rerun-if-env-changed=DEVKITPRO");
 }
 
 fn generate_comdef(idl_file: &str, out_file: &str) {
