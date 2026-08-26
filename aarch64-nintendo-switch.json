@@ -1,0 +1,61 @@
+{
+  "arch": "aarch64",
+  "crt-objects-fallback": "false",
+  "data-layout": "e-m:e-p270:32:32-p271:32:32-p272:64:64-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128-Fn32",
+  "dynamic-linking": true,
+  "features": "+v8a,+neon,+crypto,+crc",
+  "linker": "aarch64-none-elf-gcc",
+  "linker-flavor": "gnu-cc",
+  "llvm-target": "aarch64-unknown-none",
+  "max-atomic-width": 128,
+  "metadata": {
+    "description": "ARM64 Nintendo Switch, Horizon",
+    "host_tools": false,
+    "std": false,
+    "tier": 3
+  },
+  "os": "horizon",
+  "panic-strategy": "abort",
+  "position-independent-executables": true,
+  "relro-level": "off",
+  "stack-probes": {
+    "kind": "inline"
+  },
+  "target-pointer-width": 64,
+  "vendor": "nintendo",
+  "env": "newlib",
+  "target-family": [
+    "unix"
+  ],
+  "pre-link-args": {
+    "gnu-cc": [
+      "-specs=/Users/tao/Documents/crewplus.ai.dev/rust-switch-probe/switch-rust.specs",
+      "-march=armv8-a+crc+crypto",
+      "-mtune=cortex-a57",
+      "-mtp=soft",
+      "-fPIE",
+      "-Wl,--whole-archive",
+      "-L/opt/devkitpro/libnx/lib",
+      "-lnx",
+      "-Wl,--no-whole-archive"
+    ]
+  },
+  "no-default-libraries": false,
+  "has-thread-local": false,
+  "exe-suffix": ".elf",
+  "late-link-args": {
+    "gnu-cc": [
+      "-L/Users/tao/Documents/crewplus.ai.dev/rust-switch-probe/portlibs-local/install/opt/devkitpro/portlibs/switch/lib",
+      "-L/opt/devkitpro/portlibs/switch/lib",
+      "-lopenal",
+      "-lSDL2",
+      "-lEGL",
+      "-lGLESv2",
+      "-lglapi",
+      "-ldrm_nouveau",
+      "-lstdc++",
+      "-lpthread",
+      "-lm"
+    ]
+  }
+}

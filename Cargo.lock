@@ -4369,6 +4369,8 @@ dependencies = [
  "encoding",
  "ffmpeg",
  "fileformats",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
  "gltf",
  "gltf-json",
  "image 0.23.14",
