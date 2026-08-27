@@ -448,6 +448,14 @@ impl Pal3Service {
 
 impl IPal3ServiceImpl for Pal3Service {
     fn create_director(&self, asset_path: &str, game_ordinal: i32) -> ComRc<IDirector> {
+        // The title script silently routes to the settings page when the
+        // configured asset path is empty, so a launch that "does nothing" and
+        // a launch that got this far looked identical in the log.
+        log::info!(
+            "PAL3: launching game {} from asset path {:?}",
+            game_ordinal,
+            asset_path
+        );
         *self.last_asset_path.borrow_mut() = Some(asset_path.to_string());
         let game = game_from_ordinal(game_ordinal);
         self.last_game.set(game);

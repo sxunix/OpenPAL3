@@ -57,6 +57,24 @@ pub fn init_virtual_fs_with_catalog<P: AsRef<Path>>(
         &mut catalog,
     );
 
+    // Summary at info level: the per-package lines above are debug, which the
+    // Switch build does not write to its log file, so a failed mount was
+    // indistinguishable from a mount that never ran. Both are fatal for the
+    // game and neither said anything.
+    let mounted = catalog.mounts().len();
+    if mounted == 0 {
+        log::error!(
+            "no packages mounted from {:?} -- the game will find no assets",
+            local_asset_path.as_ref()
+        );
+    } else {
+        log::info!(
+            "mounted {} package(s) from {:?}",
+            mounted,
+            local_asset_path.as_ref()
+        );
+    }
+
     (vfs, catalog)
 }
 
