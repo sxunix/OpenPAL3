@@ -64,6 +64,14 @@ getrandom02 = { package = "getrandom", version = "0.2", features = ["custom"] }
 [target.'cfg(target_os = "android")'.dependencies]
 ndk-glue = "0.5.0"
 
+[target.'cfg(target_os = "horizon")'.dependencies.ffmpeg]
+git = "https://github.com/dontpanic92/rust-ffmpeg"
+branch = "yaobow2"
+# The prebuilt (FFMPEG_DIR) Switch ffmpeg is bink-only: no avdevice/avfilter,
+# so the wrapper's default features must stay off.
+default-features = false
+features = ["static", "codec", "format", "resampling", "software-scaling"]
+
 [target.'cfg(any(target_os = "vita", target_os = "windows"))'.dependencies.ffmpeg]
 git = "https://github.com/dontpanic92/rust-ffmpeg"
 branch = "yaobow2"
