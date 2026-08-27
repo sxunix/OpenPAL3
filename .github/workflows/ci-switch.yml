@@ -1,0 +1,45 @@
+name: Switch CI Build
+
+on:
+  push:
+    branches: [master, switch-port]
+  pull_request:
+    branches: [master]
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  switch-build:
+    runs-on: ubuntu-22.04
+    container: devkitpro/devkita64:latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install Rust nightly + rust-src
+        run: |
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
+            | sh -s -- -y --default-toolchain nightly --profile minimal \
+                       --component rust-src
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+
+      # openal-soft + bink-only ffmpeg cross-builds (~10 min cold); keyed on
+      # the recipe so they only rebuild when the recipe changes.
+      - name: Cache native deps
+        uses: actions/cache@v4
+        with:
+          path: switch/portlibs-local
+          key: switch-native-${{ hashFiles('switch/build-native-deps.sh') }}
+
+      - name: Build native deps
+        run: ./switch/build-native-deps.sh
+
+      - name: Build yaobow.nro
+        run: ./switch/build.sh --bin yaobow
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: yaobow-nro
+          path: switch/out/yaobow.nro
