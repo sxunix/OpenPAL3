@@ -2,14 +2,26 @@
 # Build OpenPAL3 crates for Switch homebrew. See README.md for what this proved.
 set -e
 
-# Self-heal: cargo/rustup cache refreshes silently drop the three out-of-repo
+export PATH="$HOME/.cargo/bin:$PATH:/opt/devkitpro/devkitA64/bin"
+export DEVKITPRO=/opt/devkitpro
+
+# The out-of-repo patches are applied to crate sources in cargo's registry,
+# so those sources have to exist before the patch pass runs. On a fresh
+# machine (or every CI run) cargo only downloads them during the build --
+# after setup-switch-toolchain.sh has already looked and found nothing to
+# patch -- and the first build then fails on `AT_FDCWD`. Fetch first.
+SWITCHDIR="$(cd "$(dirname "$0")" && pwd)"
+(cd "$SWITCHDIR/.." && cargo +nightly fetch) || {
+  echo "cargo fetch failed" >&2
+  exit 1
+}
+
+# Self-heal: cargo/rustup cache refreshes silently drop the out-of-repo
 # patches this build needs; re-applying is idempotent and near-free.
-"$(dirname "$0")/setup-switch-toolchain.sh" >/dev/null || {
+"$SWITCHDIR/setup-switch-toolchain.sh" >/dev/null || {
   echo "setup-switch-toolchain.sh failed -- run it directly to see why" >&2
   exit 1
 }
-export PATH="$HOME/.cargo/bin:$PATH:/opt/devkitpro/devkitA64/bin"
-export DEVKITPRO=/opt/devkitpro
 
 # cc-rs keys native-C cross settings off the triple with dashes -> underscores.
 export CC_aarch64_nintendo_switch=/opt/devkitpro/devkitA64/bin/aarch64-none-elf-gcc
@@ -35,7 +47,6 @@ export RUSTUP_UPDATE_ROOT=https://mirrors.ustc.edu.cn/rust-static/rustup
 
 # Materialize the target spec from its template — the JSON needs absolute
 # paths (rustc does not expand variables in specs), which are machine-local.
-SWITCHDIR="$(cd "$(dirname "$0")" && pwd)"
 sed -e "s|@PROBE@|$SWITCHDIR|g" -e "s|@DEVKITPRO@|${DEVKITPRO:-/opt/devkitpro}|g" \
   "$SWITCHDIR/aarch64-nintendo-switch.json.in" > "$SWITCHDIR/../aarch64-nintendo-switch.json"
 
