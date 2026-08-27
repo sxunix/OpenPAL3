@@ -11,7 +11,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::{cell::RefCell, rc::Rc};
 
-use imgui::{BackendFlags, ConfigFlags, Context, Key};
+use imgui::{BackendFlags, ConfigFlags, Context, Key, MouseButton};
 
 use crate::application::Platform;
 
@@ -56,14 +56,45 @@ struct PadState {
     gc_triggers: [u32; 2],
 }
 
+/// Mirror of libnx `HidTouchState` (hid.h) — 40 bytes.
+#[repr(C)]
+#[derive(Clone, Copy, Default)]
+struct HidTouchState {
+    delta_time: u64,
+    attributes: u32,
+    finger_id: u32,
+    x: u32,
+    y: u32,
+    diameter_x: u32,
+    diameter_y: u32,
+    rotation_angle: u32,
+    reserved: u32,
+}
+
+/// Mirror of libnx `HidTouchScreenState` (hid.h) — 656 bytes.
+#[repr(C)]
+struct HidTouchScreenState {
+    sampling_number: u64,
+    count: i32,
+    reserved: u32,
+    touches: [HidTouchState; 16],
+}
+
 unsafe extern "C" {
     fn padInitializeWithMask(pad: *mut PadState, mask: u64);
     fn padUpdate(pad: *mut PadState);
+    fn hidInitializeTouchScreen();
+    fn hidGetTouchScreenStates(states: *mut HidTouchScreenState, count: usize) -> usize;
 }
+
+/// Touch panel coordinate space (fixed, independent of dock state).
+const TOUCH_W: f32 = 1280.0;
+const TOUCH_H: f32 = 720.0;
 
 pub struct ImguiPlatform {
     context: Rc<RefCell<Context>>,
     pad: Box<PadState>,
+    touch_down: bool,
 }
 
 impl ImguiPlatform {
@@ -91,9 +122,16 @@ impl ImguiPlatform {
             sticks: [HidAnalogStickState::default(); 2],
             gc_triggers: [0; 2],
         });
-        unsafe { padInitializeWithMask(pad.as_mut(), PAD_ANY_ID_MASK) };
+        unsafe {
+            padInitializeWithMask(pad.as_mut(), PAD_ANY_ID_MASK);
+            hidInitializeTouchScreen();
+        }
 
-        Rc::new(RefCell::new(Self { context, pad }))
+        Rc::new(RefCell::new(Self {
+            context,
+            pad,
+            touch_down: false,
+        }))
     }
 
     /// Called by `ImguiContext::draw_ui` before `Context::frame()` — the
@@ -144,6 +182,32 @@ impl ImguiPlatform {
         // libnx +Y is up; imgui's LStickUp expects "stick pushed up".
         io.add_key_analog_event(Key::GamepadLStickUp, ly > STICK_DEADZONE, dz(ly.max(0.0)));
         io.add_key_analog_event(Key::GamepadLStickDown, ly < -STICK_DEADZONE, dz(ly.min(0.0)));
+
+        // Touch screen -> imgui mouse. The panel reports in its fixed
+        // 1280x720 space; scale to the imgui display. First finger only —
+        // imgui is a pointer UI, multitouch has no meaning to it. (Ryujinx
+        // forwards host mouse clicks as touch, so this also gives the
+        // emulator a pointer.)
+        let mut ts = HidTouchScreenState {
+            sampling_number: 0,
+            count: 0,
+            reserved: 0,
+            touches: [HidTouchState::default(); 16],
+        };
+        let got = unsafe { hidGetTouchScreenStates(&mut ts, 1) };
+        let down = got > 0 && ts.count > 0;
+        if down {
+            let t = &ts.touches[0];
+            let [dw, dh] = io.display_size;
+            io.add_mouse_pos_event([
+                t.x as f32 * (dw / TOUCH_W),
+                t.y as f32 * (dh / TOUCH_H),
+            ]);
+        }
+        if down != self.touch_down {
+            io.add_mouse_button_event(MouseButton::Left, down);
+            self.touch_down = down;
+        }
     }
 
     pub fn prepare_render(&self, _ui: &imgui::Ui) {}
