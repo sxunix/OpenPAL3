@@ -1258,7 +1258,29 @@ impl IUiHostImpl for ImguiUiHost {
     fn any_key_or_mouse_down(&self) -> bool {
         with_frame("any_key_or_mouse_down", |f| {
             let io = f.ui.io();
-            io.keys_down.iter().any(|&k| k) || io.mouse_down.iter().any(|&k| k)
+            // The legacy KeysDown array only sees keyboard input fed through
+            // the legacy path; gamepad keys submitted via AddKeyEvent live in
+            // KeysData alone. Check both, or a gamepad-only platform (Switch)
+            // can never get past a "press any key" prompt.
+            const GAMEPAD_KEYS: [imgui::Key; 14] = [
+                imgui::Key::GamepadFaceUp,
+                imgui::Key::GamepadFaceDown,
+                imgui::Key::GamepadFaceLeft,
+                imgui::Key::GamepadFaceRight,
+                imgui::Key::GamepadDpadUp,
+                imgui::Key::GamepadDpadDown,
+                imgui::Key::GamepadDpadLeft,
+                imgui::Key::GamepadDpadRight,
+                imgui::Key::GamepadL1,
+                imgui::Key::GamepadR1,
+                imgui::Key::GamepadL2,
+                imgui::Key::GamepadR2,
+                imgui::Key::GamepadStart,
+                imgui::Key::GamepadBack,
+            ];
+            io.keys_down.iter().any(|&k| k)
+                || io.mouse_down.iter().any(|&k| k)
+                || GAMEPAD_KEYS.iter().any(|&k| f.ui.is_key_down(k))
         })
         .unwrap_or(false)
     }

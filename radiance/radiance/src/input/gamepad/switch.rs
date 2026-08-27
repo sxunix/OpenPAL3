@@ -20,9 +20,11 @@ const NPAD_DOWN: u64 = 1 << 15;
 /// `PAD_ANY_ID_MASK` from pad.h — accept every controller input source.
 const PAD_ANY_ID_MASK: u64 = 0x1_0001_00FF;
 
-/// `HidNpadStyleSet` — accept every controller layout so the same build works
-/// docked with Joy-Cons detached and handheld.
-const STYLE_SET_ALL: u32 = 0xFFFF_FFFF;
+/// `HidNpadStyleSet_NpadStandard` — FullKey | Handheld | JoyDual | JoyLeft |
+/// JoyRight. All-ones is NOT valid here: bits 29/30 are system-reserved
+/// styles and undefined bits can make the HID service reject the whole
+/// configuration, leaving input dead.
+const STYLE_SET_STANDARD: u32 = 0x1F;
 
 #[repr(C)]
 #[derive(Clone, Copy, Default)]
@@ -79,7 +81,7 @@ impl SwitchGamepadInput {
             gc_triggers: [0; 2],
         });
         unsafe {
-            padConfigureInput(1, STYLE_SET_ALL);
+            padConfigureInput(1, STYLE_SET_STANDARD);
             padInitializeWithMask(pad.as_mut(), PAD_ANY_ID_MASK);
         }
         Self { pad }
