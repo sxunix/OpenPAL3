@@ -213,7 +213,7 @@ fn init_logger(agent_sink: Option<AgentLogSink>) {
         // must not abort boot -- on a fresh card the directory may not exist.
         if let Ok(file) = std::fs::File::create("sdmc:/switch/yaobow/yaobow.log") {
             let logger = simplelog::WriteLogger::new(
-                simplelog::LevelFilter::Error,
+                simplelog::LevelFilter::Info,
                 simplelog::Config::default(),
                 file,
             );

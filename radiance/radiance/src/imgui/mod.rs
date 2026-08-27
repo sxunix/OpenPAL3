@@ -237,6 +237,27 @@ impl ImguiContext {
 
         draw(&ui);
 
+        // Temporary input diagnostic for the Switch bring-up: raw pad bits
+        // straight from HID vs what imgui's key state recorded. One glance
+        // separates "the emulator/host delivers no input" from "our feed or
+        // the key query is broken". Remove once input is confirmed on device.
+        #[cfg(switch)]
+        {
+            let raw = platform::LAST_PAD_BUTTONS.load(std::sync::atomic::Ordering::Relaxed);
+            let a = ui.is_key_down(imgui::Key::GamepadFaceDown);
+            let b = ui.is_key_down(imgui::Key::GamepadFaceRight);
+            let du = ui.is_key_down(imgui::Key::GamepadDpadUp);
+            ui.window("input_diag")
+                .position([8.0, 8.0], imgui::Condition::Always)
+                .no_decoration()
+                .always_auto_resize(true)
+                .bg_alpha(0.6)
+                .build(|| {
+                    ui.text(format!("pad raw: {raw:016x}"));
+                    ui.text(format!("imgui A:{a} B:{b} Up:{du}"));
+                });
+        }
+
         ImguiFrame { frame_begun: true }
     }
 

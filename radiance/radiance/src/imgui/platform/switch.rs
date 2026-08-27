@@ -8,11 +8,16 @@
 //! keeps a separate one). The struct mirror and the export-vs-inline situation
 //! are the same as in `input/gamepad/switch.rs`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::{cell::RefCell, rc::Rc};
 
 use imgui::{BackendFlags, ConfigFlags, Context, Key};
 
 use crate::application::Platform;
+
+/// Raw `buttons_cur` of the most recent frame, for the on-screen input
+/// diagnostic overlay (single-threaded writer; relaxed is fine).
+pub static LAST_PAD_BUTTONS: AtomicU64 = AtomicU64::new(0);
 
 const NPAD_A: u64 = 1 << 0;
 const NPAD_B: u64 = 1 << 1;
@@ -96,6 +101,12 @@ impl ImguiPlatform {
     pub fn new_frame(&mut self) {
         unsafe { padUpdate(self.pad.as_mut()) };
         let cur = self.pad.buttons_cur;
+        LAST_PAD_BUTTONS.store(cur, Ordering::Relaxed);
+        // Bring-up diagnostic: log raw pad transitions so input delivery can
+        // be verified from the log file alone (no screen access needed).
+        if cur != self.pad.buttons_old {
+            log::info!("pad buttons: {:#018x}", cur);
+        }
         let old = self.pad.buttons_old;
         let sticks = self.pad.sticks;
 
