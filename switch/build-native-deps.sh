@@ -16,8 +16,32 @@ export DEVKITPRO="$DKP"
 JOBS="${JOBS:-8}"
 
 fetch() { # url out
-  [ -f "$2" ] && return 0
-  curl -sL --retry 3 --max-time 900 -o "$2" "$1"
+  # A previously-truncated file must not count as cached: codeload serves the
+  # source tarballs chunked (no Content-Length), so a dropped connection
+  # leaves a short file behind that curl cannot detect as incomplete and the
+  # old `[ -f ] && return` then treated as done -- the build failed on every
+  # re-run with an unfixable `tar: unexpected end of file`.
+  if [ -f "$2" ]; then
+    verify_download "$2" && return 0
+    echo "  ${2##*/}: 缓存损坏,重新下载"
+    rm -f "$2"
+  fi
+  # -C - resumes a partial file; --retry-all-errors also retries the
+  # connection resets that produced the truncation in the first place.
+  curl -L --fail --retry 8 --retry-all-errors --retry-delay 3 \
+       --connect-timeout 30 -C - -o "$2" "$1" 2>/dev/null || {
+    rm -f "$2"; echo "下载失败: $1" >&2; return 1
+  }
+  verify_download "$2" || { rm -f "$2"; echo "下载校验失败: $1" >&2; return 1; }
+}
+
+# Integrity check by container type; anything else is accepted as-is.
+verify_download() {
+  case "$1" in
+    *.tar.gz|*.tgz) gzip -t "$1" 2>/dev/null ;;
+    *.tar.xz)       xz -t "$1" 2>/dev/null ;;
+    *)              [ -s "$1" ] ;;
+  esac
 }
 
 # --- openal-soft --------------------------------------------------------------
