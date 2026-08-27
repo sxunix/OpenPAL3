@@ -25,7 +25,11 @@ pub fn main() {
     {
         init_logger(None);
         register_opengb_video_decoders();
-        run_title_selection();
+        // Boot straight into PAL3, the way the Vita arm boots straight into
+        // PAL4. The title selector is a scripted imgui page whose only job
+        // here would be to pick the one game this build is used for, and it
+        // sits in front of everything that actually needs testing.
+        run_openpal3();
     }
 
     #[cfg(not(any(vita, switch)))]

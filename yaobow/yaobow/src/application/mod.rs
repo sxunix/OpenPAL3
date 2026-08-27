@@ -593,12 +593,29 @@ pub fn resolve_asset_path(game: GameType) -> Option<String> {
             _ => None,
         };
     }
+    #[cfg(switch)]
+    {
+        // Same source as desktop -- sdmc:/switch/yaobow/yaobow.toml -- so the
+        // install instructions in switch/README.md keep working. The fallback
+        // is the layout that README tells people to create, which makes the
+        // common case work with no config file at all.
+        let configured = YaobowConfig::load().asset_path_for(game).to_string();
+        if !configured.is_empty() {
+            return Some(configured);
+        }
+        return match game {
+            GameType::PAL3 => Some("sdmc:/switch/yaobow/PAL3".to_string()),
+            GameType::PAL4 => Some("sdmc:/switch/yaobow/PAL4".to_string()),
+            _ => None,
+        };
+    }
     #[cfg(not(any(
         target_os = "windows",
         target_os = "linux",
         target_os = "macos",
         target_os = "android",
-        vita
+        vita,
+        switch
     )))]
     {
         let _ = game;
