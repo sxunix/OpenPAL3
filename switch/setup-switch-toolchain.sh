@@ -54,6 +54,38 @@ except Exception as e:
 PY
 done
 
+# --- 1b. libc: struct stat layout for aarch64 horizon -------------------------
+# libc's newlib types were sized for the 3DS (32-bit ARM). devkitA64's newlib
+# uses 16-bit dev_t/ino_t and 64-bit blkcnt_t/blksize_t, so every field of
+# `struct stat` after st_dev sits at the wrong offset on aarch64 -- measured
+# against devkitA64's own sys/stat.h, st_mode is at 4 (libc said 8) and
+# st_size at 16 (libc said 32, which lands inside st_atim).
+#
+# The visible damage: reading a 52-byte yaobow.toml reserved a buffer from a
+# 1.7 GB "size" and failed with ErrorKind::OutOfMemory, and st_mode being
+# wrong makes is_file/is_dir report nonsense -- which is what the recursive
+# .cpk mount walks on.
+#
+# Fixing the four type aliases fixes the layout; the struct itself is left
+# alone. Gated on aarch64 so the 3DS arm is untouched. The build additionally
+# static-asserts the resulting offsets (shared/src/switch_libc.rs), so if a
+# future libc moves them the build fails instead of silently reading garbage.
+# Upstreaming candidate, like the AT_* constants.
+for L in "$HOME"/.cargo/registry/src/*/libc-*/ \
+         "$HOME"/.rustup/toolchains/*/lib/rustlib/src/rust/library/vendor/libc-*/; do
+  F="$L/src/unix/newlib/mod.rs"
+  [ -f "$F" ] || continue
+  if grep -q 'switch probe: aarch64 horizon stat layout' "$F"; then
+    note "stat  已打: $L"
+  else
+    python3 "$(dirname "$0")/patch-libc-stat.py" "$F" || exit 1
+    note "stat  打上: $L"
+    rm -rf "$(dirname "$0")/../target/aarch64-nintendo-switch/release/build/libc"
+  fi
+  CS="$L/.cargo-checksum.json"
+  [ -f "$CS" ] && python3 "$(dirname "$0")/patch-libc-stat.py" --checksum "$L"
+done
+
 # --- 2. libffi-sys: config.sub host remap ------------------------------------
 # libffi's autotools configure rejects --host=aarch64-nintendo-switch. The
 # build script already remaps a handful of triples; add ours -> aarch64-none-elf

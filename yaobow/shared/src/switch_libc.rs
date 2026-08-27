@@ -66,3 +66,29 @@ unsafe extern "C" fn pclose(_stream: *mut c_void) -> c_int {
 // `-mtp=soft` / `__aarch64_read_tp` exists for, and LLVM has no equivalent of).
 // std therefore falls back to POSIX keys, which devkitPro's libsysbase already
 // implements on top of libnx TLS slots -- nothing to provide here.
+
+// The layout `libc::stat` must have on this target, measured against
+// devkitA64's own `sys/stat.h` -- not guessed, and not the layout libc ships
+// by default (its newlib types are sized for the 32-bit 3DS, which puts
+// st_mode at 8 and st_size at 32, the latter landing inside st_atim).
+//
+// setup-switch-toolchain.sh corrects the four type aliases that cause this.
+// These assertions exist so that a libc version whose layout moves again
+// fails the build loudly instead of silently handing std a garbage file size
+// -- which is how it first showed up: a 52-byte config read reserving 1.7 GB
+// and dying with ErrorKind::OutOfMemory.
+const _: () = {
+    use std::mem::{offset_of, size_of};
+    assert!(size_of::<libc::stat>() == 104);
+    assert!(offset_of!(libc::stat, st_dev) == 0);
+    assert!(offset_of!(libc::stat, st_ino) == 2);
+    assert!(offset_of!(libc::stat, st_mode) == 4);
+    assert!(offset_of!(libc::stat, st_nlink) == 8);
+    assert!(offset_of!(libc::stat, st_uid) == 10);
+    assert!(offset_of!(libc::stat, st_gid) == 12);
+    assert!(offset_of!(libc::stat, st_rdev) == 14);
+    assert!(offset_of!(libc::stat, st_size) == 16);
+    assert!(offset_of!(libc::stat, st_atim) == 24);
+    assert!(offset_of!(libc::stat, st_blksize) == 72);
+    assert!(offset_of!(libc::stat, st_blocks) == 80);
+};

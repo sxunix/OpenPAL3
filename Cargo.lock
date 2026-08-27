@@ -4378,6 +4378,7 @@ dependencies = [
  "interprocess",
  "itertools 0.15.0",
  "lazy_static",
+ "libc",
  "log",
  "lua50-32-sys",
  "md5",
