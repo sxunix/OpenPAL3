@@ -488,6 +488,7 @@ project had been carrying — "gamepad input is not reaching the title prompt"
 | `setup-switch-toolchain.sh` runs before cargo has downloaded the crates it patches, so a fresh machine builds unpatched libc and dies on `AT_FDCWD`. **Every CI run on the branch failed this way.** A plain `cargo fetch` was not enough: build-std's libc (0.2.189) is a different version from the workspace's (0.2.186) and comes from rust-src's own `library/Cargo.lock`, so it was still downloaded mid-build, pristine | `cargo fetch` for the workspace **and** for `$(rustc --print sysroot)/lib/rustlib/src/rust/library` before patching |
 | stale build-std artifacts outlive a re-patch | `rm -rf target/aarch64-nintendo-switch` (documented in README) |
 | cargo treats registry sources as immutable: an edited crate keeps its fingerprint and the **stale rlib is relinked** — the first rand rebuild still had `bl <pthread_atfork>` in it | patch steps purge `target/.../build/<crate>` |
+| ffmpeg-sys's bindgen fails on the first newlib header with `'stddef.h' file not found` when libclang cannot locate its resource directory (the CI container's cannot; macOS's can) | `-isystem <devkitA64 GCC builtin include dir>` in `BINDGEN_EXTRA_CLANG_ARGS` |
 
 `pkg.devkitpro.org` returns a Cloudflare 403 from Shanghai Telecom, Azure
 Tokyo and AWS San Jose alike — it blocks cloud egress ranges, not a country.
@@ -569,4 +570,11 @@ undefined symbols, 63 switchgl / 167 OpenAL / 15 bink symbols.
 - Any 3D scene, any game-font atlas rebuild, any in-game UI.
 - Audio *output* (init only), movie playback, save/load.
 - Real hardware. Everything above is Ryujinx.
-- CI green: the fetch-ordering fix is pushed; result pending at time of writing.
+
+## CI
+
+Green as of `75d0e90` — the first passing run on the branch. Three clean-
+machine failures in a row got it there: the patch pass ran before cargo had
+unpacked anything; then before it had unpacked *std's* libc; then bindgen
+could not find `stddef.h`. The artifact is a valid `NRO0` built on
+x86_64 Linux from the same commit that builds here on macOS.
