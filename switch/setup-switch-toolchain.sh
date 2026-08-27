@@ -12,6 +12,12 @@ set -eu
 
 note() { printf '%s\n' "$*"; }
 
+# Where the patch targets are expected. Printed up front so a run that
+# patches nothing shows why (typically: the registry has not been unpacked
+# yet on this machine).
+note "registry src: $(ls -d "$HOME"/.cargo/registry/src/*/ 2>/dev/null | tr '\n' ' ')"
+note "libc copies:  $(ls -d "$HOME"/.cargo/registry/src/*/libc-*/ "$HOME"/.rustup/toolchains/*/lib/rustlib/src/rust/library/vendor/libc-*/ 2>/dev/null | wc -l | tr -d ' ')"
+
 # --- 1. libc: AT_* constants for the newlib `horizon` module -----------------
 # std/src/sys/fs/unix.rs needs AT_FDCWD; libc's horizon module (written for
 # the 3DS) lacks the whole AT_* family. Values from devkitA64's

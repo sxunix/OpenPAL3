@@ -15,11 +15,23 @@ SWITCHDIR="$(cd "$(dirname "$0")" && pwd)"
   echo "cargo fetch failed" >&2
   exit 1
 }
+# That only covers the workspace lockfile. -Z build-std resolves std's own
+# dependencies from rust-src's library/Cargo.lock, and its libc is a
+# different version from the workspace's (0.2.189 vs 0.2.186 at the time of
+# writing) -- so it is a second registry copy, downloaded mid-build, after
+# the patch pass. Fetch std's graph too so that copy exists to be patched.
+STD_SRC="$(rustc +nightly --print sysroot)/lib/rustlib/src/rust/library"
+cargo +nightly fetch --manifest-path "$STD_SRC/Cargo.toml" || {
+  echo "cargo fetch of the std workspace failed (is rust-src installed?)" >&2
+  exit 1
+}
 
 # Self-heal: cargo/rustup cache refreshes silently drop the out-of-repo
 # patches this build needs; re-applying is idempotent and near-free.
-"$SWITCHDIR/setup-switch-toolchain.sh" >/dev/null || {
-  echo "setup-switch-toolchain.sh failed -- run it directly to see why" >&2
+# Output is kept: which copies got patched is the first thing to look at
+# when a build fails on AT_FDCWD, and CI logs are the only view into that.
+"$SWITCHDIR/setup-switch-toolchain.sh" || {
+  echo "setup-switch-toolchain.sh failed, see above" >&2
   exit 1
 }
 
