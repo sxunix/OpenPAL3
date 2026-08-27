@@ -154,7 +154,62 @@ PY
   note "filetime 打上: $D"
 done
 
-# --- 4. sanity: the pieces the build script expects --------------------------
+# --- 4. rand: no fork handler on horizon --------------------------------------
+# rand's ReseedingRng registers a pthread_atfork handler on every `unix` target
+# and panics if the call returns non-zero. Our target spec sets
+# target-family = ["unix"], but Horizon has no fork at all and devkitPro's
+# libsysbase pthread_atfork returns ENOSYS (88) -- so `thread_rng()` panicked
+# the moment anything touched it (first hit: the title page, via the scripted
+# RandomService and via dlv-list's VecList::new).
+#
+# rand already ships a no-op `fork` module for platforms without fork; this
+# just widens its cfg to select it here. Overriding pthread_atfork instead is
+# not possible: libsysbase defines it in the same object as pthread_create and
+# the whole pthread API, so a second definition is a duplicate symbol.
+#
+# Upstreaming candidate alongside the libc AT_* constants.
+for L in "$HOME"/.cargo/registry/src/*/rand-0.8.*/; do
+  F="$L/src/rngs/adapter/reseeding.rs"
+  [ -f "$F" ] || continue
+  if grep -q 'target_os = "horizon"' "$F"; then
+    note "rand  已打: $L"
+  else
+    python3 - "$F" <<'PY_RAND'
+import sys
+p = sys.argv[1]; s = open(p).read()
+before = s
+s = s.replace(
+    '#[cfg(all(unix, not(target_os = "emscripten")))]\nmod fork {',
+    '#[cfg(all(unix, not(target_os = "emscripten"), not(target_os = "horizon")))]\nmod fork {')
+s = s.replace(
+    '#[cfg(not(all(unix, not(target_os = "emscripten"))))]\nmod fork {',
+    '#[cfg(not(all(unix, not(target_os = "emscripten"), not(target_os = "horizon"))))]\nmod fork {')
+if s == before:
+    sys.exit("rand reseeding.rs: cfg 行未按预期匹配")
+open(p, 'w').write(s)
+PY_RAND
+    note "rand  打上: $L"
+    # cargo treats registry sources as immutable, so editing one does not
+    # invalidate its fingerprint -- the stale rlib is relinked and the patch
+    # never reaches the binary. Purge rand's build directory so it recompiles.
+    rm -rf "$(dirname "$0")/../target/aarch64-nintendo-switch/release/build/rand"
+  fi
+  CS="$L/.cargo-checksum.json"
+  [ -f "$CS" ] && python3 - "$L" <<'PY_CS'
+import hashlib, json, sys, os
+v = sys.argv[1]; cs = os.path.join(v, '.cargo-checksum.json')
+try:
+    d = json.load(open(cs)); rel = 'src/rngs/adapter/reseeding.rs'
+    if d.get('files'):
+        d['files'][rel] = hashlib.sha256(
+            open(os.path.join(v, rel), 'rb').read()).hexdigest()
+        json.dump(d, open(cs, 'w'))
+except Exception as e:
+    print('  checksum skip:', e)
+PY_CS
+done
+
+# --- 5. sanity: the pieces the build script expects --------------------------
 fail=0
 for f in "$(dirname "$0")/switch-rust.specs" \
          "$(dirname "$0")/aarch64-nintendo-switch.json.in" \

@@ -159,11 +159,46 @@ impl YaobowConfig {
         Self::default()
     }
 
+    /// Reads a config file without trusting the file's reported size.
+    ///
+    /// `fs::read_to_string` (and `Read::read_to_end` on a `File`) pre-reserve
+    /// a buffer from the file metadata's `len()`. On Switch that came back
+    /// wrong and the reservation failed, so loading a 52-byte `yaobow.toml`
+    /// died with `ErrorKind::OutOfMemory` and the game fell back to an empty
+    /// config -- no asset path, no game data. Going through `Take` opts out of
+    /// that specialization and grows the buffer as bytes actually arrive; the
+    /// cap is generous for a config file and bounds the damage if the size is
+    /// ever bogus in the other direction.
+    fn read_config_file(path: &std::path::Path) -> std::io::Result<String> {
+        use std::io::Read;
+
+        const MAX_CONFIG_BYTES: u64 = 1 << 20;
+
+        let file = std::fs::File::open(path)?;
+        // Bring-up diagnostic: what the platform claims the size is, versus
+        // what we actually managed to read.
+        let claimed = file.metadata().map(|m| m.len());
+        let mut buf = Vec::new();
+        file.take(MAX_CONFIG_BYTES).read_to_end(&mut buf)?;
+        match claimed {
+            Ok(n) if n != buf.len() as u64 => log::warn!(
+                "{}: metadata len {} but read {} bytes",
+                path.display(),
+                n,
+                buf.len()
+            ),
+            Err(ref e) => log::warn!("{}: metadata unavailable: {}", path.display(), e),
+            _ => {}
+        }
+        String::from_utf8(buf)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+    }
+
     fn try_load_from(path: &std::path::Path) -> Option<Self> {
         if !path.exists() {
             return None;
         }
-        match std::fs::read_to_string(path) {
+        match Self::read_config_file(path) {
             Ok(text) => match toml::from_str::<YaobowConfig>(&text) {
                 Ok(cfg) => Some(cfg),
                 Err(e) => {
