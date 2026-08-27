@@ -456,3 +456,117 @@ Current nro: `60aac84f…`, 42.6 MB.
 ## Remaining (from the standing list)
 ffmpeg cross-compile (movies), upstreaming prep/PR, ci-switch.yml,
 touch-screen → pointer, and everything hardware-gated.
+
+---
+
+# Stage 12 — movies, touch, CI (2026-08-27, from the commit log)
+
+Stage 11's "remaining" list was worked through before this log caught up;
+recorded here from the commits so the log stays complete:
+
+- `4e68a27` Bink movie playback via a bink-only ffmpeg cross-build
+  (`build-native-deps.sh`, `--enable-decoder=binkvideo,binkaudio_*`).
+- `e567f85` Touch screen → imgui pointer (Ryujinx forwards host mouse clicks
+  as touch, so this doubles as an emulator pointer).
+- `6c39f71` Build tooling moved into `switch/`, `ci-switch.yml` added.
+
+---
+
+# Stage 13 — first runs (2026-08-27/28)
+
+Reproduced the build on a second, clean machine, then ran it. The theory the
+project had been carrying — "gamepad input is not reaching the title prompt"
+— was wrong, and the first log said so in two lines.
+
+## The clean-machine build: six things that only break away from the author
+
+| what | fix |
+|---|---|
+| `switch/portlibs-local` was a committed absolute symlink into the author's home; `mkdir -p` fails on the dangling link | removed; `.gitignore` pattern had a trailing slash that skips symlinks |
+| `switch/out/` is gitignored and never created; `elf2nro` fails *after* the full build with a bare "Failed to open output file!" | `mkdir -p` |
+| ffmpeg source download died 144 KB short; `fetch()` then treated the short file as cached on every re-run | integrity check by container type before trusting and after downloading; `-C -` + `--retry-all-errors` |
+| `setup-switch-toolchain.sh` runs before cargo has downloaded the crates it patches, so a fresh machine builds unpatched libc and dies on `AT_FDCWD`. **Every CI run on the branch failed this way.** A plain `cargo fetch` was not enough: build-std's libc (0.2.189) is a different version from the workspace's (0.2.186) and comes from rust-src's own `library/Cargo.lock`, so it was still downloaded mid-build, pristine | `cargo fetch` for the workspace **and** for `$(rustc --print sysroot)/lib/rustlib/src/rust/library` before patching |
+| stale build-std artifacts outlive a re-patch | `rm -rf target/aarch64-nintendo-switch` (documented in README) |
+| cargo treats registry sources as immutable: an edited crate keeps its fingerprint and the **stale rlib is relinked** — the first rand rebuild still had `bl <pthread_atfork>` in it | patch steps purge `target/.../build/<crate>` |
+
+`pkg.devkitpro.org` returns a Cloudflare 403 from Shanghai Telecom, Azure
+Tokyo and AWS San Jose alike — it blocks cloud egress ranges, not a country.
+No CN mirror carries devkitPro (checked TUNA's full list and eight mirrors'
+`/devkitpro/`). A tarball of `/opt/devkitpro` from a machine that can reach
+it was the way through.
+
+## Run 1: the crash behind the "input" theory
+
+    pad buttons: 0x0000000000000001     <- A pressed. Input works.
+    pad buttons: 0x0000000000000000
+    Radiance panicked at rand-0.8.6/src/rngs/adapter/reseeding.rs:319:17:
+    libc::pthread_atfork failed with code 88
+
+A was reaching HID → our FFI → the edge detector → imgui. The prompt then
+advanced, the title script called `RandomService`, rand's `ReseedingRng`
+registered a fork handler because the target spec says `target-family =
+["unix"]`, devkitPro's libsysbase returned ENOSYS (88), and rand
+`panic!`ed. The frozen frame looked like "no reaction to A". The diagnostic
+overlay was blank for the same reason — the render loop was dead.
+
+Fix: widen rand's `cfg` so its existing no-op `fork` module is selected on
+horizon. Overriding `pthread_atfork` is not an option — libsysbase defines
+it in the same object as `pthread_create` and the whole pthread API.
+Verified by disassembly, not strings: 0 `bl <pthread_atfork>`, no
+`register_fork_handler` symbol. (Also reached from `dlv-list`'s
+`VecList::new`, so avoiding it in our own code would not have sufficed.)
+
+Same run, one line earlier:
+
+    failed to read sdmc:/switch/yaobow/yaobow.toml: out of memory
+
+## Run 2: the file-size that was 1.7 GB
+
+With the config read routed through `Take` (opts out of the
+metadata-len reservation) and a diagnostic added:
+
+    yaobow.toml: metadata len 1787820992 but read 52 bytes
+
+libc's `newlib` types are sized for the 3DS (32-bit ARM). devkitA64's newlib
+uses 16-bit `dev_t`/`ino_t` and 64-bit `blkcnt_t`/`blksize_t`. Measured
+with `_Static_assert` against devkitA64's own `sys/stat.h`:
+
+| field | real | libc assumed |
+|---|---|---|
+| st_mode | 4 | 8 |
+| st_size | 16 | 32 (inside `st_atim`) |
+| sizeof | 104 | — |
+
+`st_mode` matters more than `st_size`: `is_dir()` is the first line of
+`mount_packages_recursive`. Fixed by correcting the four type aliases
+(gated on aarch64), and the offsets are now `const`-asserted in
+`switch_libc.rs` — broken one on purpose to confirm the build stops (E0080).
+
+Run 2 also showed a full menu-navigation trace (A, D-pad ×10, B) with no
+crash, and the Ryujinx side clean apart from 19,038 copies of one benign
+`GetThreadName` warning.
+
+## Run 3 (not yet done)
+
+The current binary boots straight into PAL3 (`resolve_asset_path` gained a
+switch arm reading the same `yaobow.toml`; default
+`sdmc:/switch/yaobow/PAL3`) and logs the package count at info level. The
+host probe (`cargo run -p packfs --example pal3_probe`) mounts this exact
+data set fine — 45 CPKs, `init.sce`/`Q01.scn`/`PI01.mp3` read back with the
+right magic — so a mount failure on the console would be platform, not data.
+
+## Verified (in Ryujinx, symbol- or log-level)
+
+Boot; imgui title page with CJK atlas; gamepad A/B/D-pad and touch reach
+imgui; title prompt advances; config file loads with the correct size;
+no panic through menu navigation; audio renderer registers; `.nro` has 0
+undefined symbols, 63 switchgl / 167 OpenAL / 15 bink symbols.
+
+## Not verified
+
+- The direct-boot build has not been run.
+- Package mounting on the console; any `.cpk` read on the console.
+- Any 3D scene, any game-font atlas rebuild, any in-game UI.
+- Audio *output* (init only), movie playback, save/load.
+- Real hardware. Everything above is Ryujinx.
+- CI green: the fetch-ordering fix is pushed; result pending at time of writing.
