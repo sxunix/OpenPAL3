@@ -48,6 +48,9 @@ cargo +nightly build --release \
 E="$(dirname "$0")/../target/aarch64-nintendo-switch/release/yaobow.elf"
 OUT="$(dirname "$0")/out"
 if [ -f "$E" ]; then
+  # out/ is gitignored build output, so it does not exist in a fresh clone and
+  # elf2nro fails with a bare "Failed to open output file!" after a full build.
+  mkdir -p "$OUT"
   /opt/devkitpro/tools/bin/elf2nro "$E" "$OUT/yaobow.nro" \
     --nacp="$SWITCHDIR/yaobow.nacp" --icon="$SWITCHDIR/yaobow-icon.jpg" >/dev/null
   echo "nro: $OUT/yaobow.nro"
