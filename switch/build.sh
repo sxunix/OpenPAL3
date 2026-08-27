@@ -46,8 +46,13 @@ export CXXFLAGS_aarch64_nintendo_switch="$SWITCH_CFLAGS"
 # Prebuilt bink-only ffmpeg for the horizon target (see portlibs-local/ffmpeg).
 export FFMPEG_DIR="$(cd "$(dirname "$0")" && pwd)/portlibs-local/ffmpeg-install"
 # ffmpeg-sys runs bindgen over the ffmpeg headers; point clang at the cross
-# sysroot or it parses host headers (or nothing).
-export BINDGEN_EXTRA_CLANG_ARGS="--target=aarch64-none-elf -D__SWITCH__ -I$FFMPEG_DIR/include -I/opt/devkitpro/devkitA64/aarch64-none-elf/include -I/opt/devkitpro/libnx/include"
+# sysroot or it parses host headers (or nothing). stddef.h/stdarg.h are
+# compiler-provided, not newlib's: a libclang that cannot locate its own
+# resource directory (the CI container's) fails on the first newlib header
+# with "'stddef.h' file not found", so hand it devkitA64 GCC's builtin
+# include directory explicitly -- the same headers the real cross-compile uses.
+GCC_INC="$(ls -d "$DEVKITPRO"/devkitA64/lib/gcc/aarch64-none-elf/*/include | head -1)"
+export BINDGEN_EXTRA_CLANG_ARGS="--target=aarch64-none-elf -D__SWITCH__ -I$FFMPEG_DIR/include -I/opt/devkitpro/devkitA64/aarch64-none-elf/include -I/opt/devkitpro/libnx/include -isystem $GCC_INC"
 
 # getrandom ships no backend for this target; the custom one needs a
 # __getrandom_v03_custom symbol at final link (libnx randomGet would supply it).
