@@ -578,3 +578,59 @@ machine failures in a row got it there: the patch pass ran before cargo had
 unpacked anything; then before it had unpacked *std's* libc; then bindgen
 could not find `stddef.h`. The artifact is a valid `NRO0` built on
 x86_64 Linux from the same commit that builds here on macOS.
+
+---
+
+# Stage 14 — PAL3 reaches its first playable scene (2026-08-28)
+
+Booting straight into PAL3 (`auto_new_game`) with movies gated off, the
+game reached its opening scene on the Switch target for the first time.
+From `sdmc:/switch/yaobow/yaobow.log`:
+
+    mounted 45 package(s) from "sdmc:/switch/yaobow/PAL3"
+    sce: LoadScene { name: "q01", sub_name: "yn09a" }
+    PAL3: loading scene q01/yn09a (/scene/q01/yn09a.scn)
+    PAL3 .lgt loaded from /scene/q01/yn09/1/yn09.lgt: 7 lights, ambient [0.1,0.1,0.1]
+    loading shader TexturedLightmap / Pal3Prop / Pal3Geom / TexturedNoLight / Pal3Actor
+    switchgl: first scene frame with 76 objects (21 visible entities, frame 1)
+    sce: SceCommandDlg text: "景天：\n什么声音？……有贼？！"
+    switchgl: frame 3600, 76 objects, 21 visible entities   (steady, no crash)
+
+So on the console target, first time for all of it: CPK mounting, .scn
+scene load, the .lgt lighting, the five GLES2 shader programs compiling
+and linking on-device, the switchgl draw loop, the SCE script VM running
+the opening script, and the dialog system rendering the first line.
+
+Verified this run: everything above, plus input (A / D-pad / B reach imgui
+and the game), config loading, 45 CPKs mounted, steady 30 fps-ish frame
+cadence held for thousands of frames with no panic.
+
+## The one thing that does not work: movies
+
+The intro `pal3op.bik` crashes the run. The bink demuxer and decoders are
+present and correct (verified with ffprobe on the exact bytes the VFS
+serves), the container opens, both streams are identified, all decoder
+objects build -- then, as the three ffmpeg player threads come up, the
+**main thread** faults:
+
+    Unhandled exception: Ryujinx.Memory.InvalidMemoryRegionException
+      at ARMeilleure.Instructions.NativeInterface.ReadUInt64
+
+The player threads are created, given priority 0x3B and a 3-core affinity
+mask, and started (confirmed in Ryujinx's svc trace); the fault is a guest
+read of an unmapped address on the main thread around the same moment.
+This is an unsolved std::thread + ffmpeg interaction on horizon, not a
+codec or data problem. Gated off via `enable_movies = false` for now
+(decoder simply not registered → script skips the movie); `init()` is also
+bounded by a 10 s first-frame timeout so a movie can never wedge the game
+even with decoders on. Cutscenes were already on the known-missing list.
+
+## Still not verified
+
+- **Actual pixels.** Everything here is log- and svc-trace-level. The run
+  was headless on a locked desktop; no frame has been looked at, so
+  rendering *correctness* (geometry, textures, lighting, the CJK dialog
+  font) is unconfirmed even though the draw loop runs.
+- Audio output (sounds are triggered in the log; not heard).
+- Movement, battles, save/load, scene transitions beyond the opener.
+- Real hardware. Still Ryujinx throughout.
