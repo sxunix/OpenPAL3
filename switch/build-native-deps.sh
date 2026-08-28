@@ -96,7 +96,7 @@ else
     --disable-encoders --disable-muxers --disable-parsers --disable-bsfs \
     --disable-protocols --enable-protocol=file \
     --disable-demuxers --enable-demuxer=bink \
-    --disable-decoders --enable-decoder='binkvideo,binkaudio_dct,binkaudio_rdft' \
+    --disable-decoders --enable-decoder='bink,binkaudio_dct,binkaudio_rdft' \
     --enable-swscale --enable-swresample \
     --disable-zlib --disable-bzlib --disable-iconv
   make -j"$JOBS"
