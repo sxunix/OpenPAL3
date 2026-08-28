@@ -41,6 +41,12 @@ pub struct SwitchGLRenderingEngine {
     surface: EGLSurface,
     context: EGLContext,
     extent: (u32, u32),
+    /// Bring-up telemetry: scene frames rendered and whether the first
+    /// non-empty one has been reported. The log file is the only view into
+    /// a run on a console (or an emulator on a locked desktop), and "did
+    /// anything reach the draw loop" is the first question it has to answer.
+    scene_frames: u64,
+    first_draw_logged: bool,
 }
 
 impl SwitchGLRenderingEngine {
@@ -64,6 +70,8 @@ impl SwitchGLRenderingEngine {
             surface,
             context,
             extent: (DEFAULT_WIDTH, DEFAULT_HEIGHT),
+            scene_frames: 0,
+            first_draw_logged: false,
         })
     }
 }
@@ -205,6 +213,24 @@ impl SwitchGLRenderingEngine {
                         .collect::<Vec<_>>()
                 })
                 .collect();
+
+            self.scene_frames += 1;
+            if !objects.is_empty() && !self.first_draw_logged {
+                self.first_draw_logged = true;
+                log::info!(
+                    "switchgl: first scene frame with {} objects ({} visible entities, frame {})",
+                    objects.len(),
+                    scene.visible_entities().len(),
+                    self.scene_frames
+                );
+            } else if self.scene_frames % 600 == 0 {
+                log::info!(
+                    "switchgl: frame {}, {} objects, {} visible entities",
+                    self.scene_frames,
+                    objects.len(),
+                    scene.visible_entities().len()
+                );
+            }
 
             for obj in &objects {
                 unsafe {

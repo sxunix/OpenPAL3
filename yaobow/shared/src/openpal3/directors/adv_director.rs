@@ -60,6 +60,7 @@ impl AdventureDirector {
             status_renderer,
         );
         sce_vm.call_proc(51);
+        log::info!("AdventureDirector: init.sce loaded, proc 51 queued");
 
         Self {
             props: RefCell::new(AdventureDirectorProps {
@@ -224,7 +225,7 @@ impl AdventureDirector {
 
 impl IDirectorImpl for AdventureDirector {
     fn activate(&self) {
-        debug!("AdventureDirector activated");
+        log::info!("AdventureDirector activated");
     }
 
     fn update(&self, delta_sec: f32) -> Option<ComRc<IDirector>> {

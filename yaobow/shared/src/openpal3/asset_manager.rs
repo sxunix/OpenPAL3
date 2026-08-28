@@ -81,6 +81,7 @@ impl AssetManager {
 
     pub fn load_scn(self: &Rc<Self>, cpk_name: &str, scn_name: &str) -> ComRc<IScene> {
         let scene_path = self.scn_path(cpk_name, scn_name);
+        log::info!("PAL3: loading scene {}/{} ({})", cpk_name, scn_name, scene_path.display());
 
         let scn_file = scn_load_from_file(&self.vfs, scene_path, self.game);
         let nav_file = self.load_nav(&scn_file.cpk_name, &scn_file.scn_base_name);
@@ -89,6 +90,7 @@ impl AssetManager {
         scene.set_lighting(self.load_lgt(cpk_name, &scn_file.scn_base_name, scn_file.is_night));
         let component = ScnScene::new(scene.clone(), &self, cpk_name, scn_name, scn_file, nav_file);
         scene.add_component(IScnSceneComponent::uuid(), ComRc::from_object(component));
+        log::info!("PAL3: scene {}/{} loaded", cpk_name, scn_name);
         scene
     }
 
