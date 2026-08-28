@@ -12,6 +12,12 @@ const ENV_OVERRIDE: &str = "YAOBOW_CONFIG";
 pub struct GameConfig {
     #[serde(default)]
     pub asset_path: String,
+    /// Bring-up aid: skip the scripted start menu and go straight into a
+    /// new game. Lets a build be driven to its first 3D scene on a target
+    /// where no input is available yet (a console with no controller
+    /// mapped, an emulator on a locked desktop). Off by default.
+    #[serde(default)]
+    pub auto_new_game: bool,
 }
 
 /// Per-app UI preferences. Currently just the imgui theme name.
@@ -222,6 +228,13 @@ impl YaobowConfig {
         let text = toml::to_string_pretty(self)?;
         std::fs::write(&path, text)?;
         Ok(())
+    }
+
+    pub fn auto_new_game_for(&self, game: GameType) -> bool {
+        self.game
+            .get(game.config_key())
+            .map(|g| g.auto_new_game)
+            .unwrap_or(false)
     }
 
     pub fn asset_path_for(&self, game: GameType) -> &str {

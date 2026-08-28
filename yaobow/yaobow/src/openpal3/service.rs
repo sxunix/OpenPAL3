@@ -486,6 +486,11 @@ impl IPal3ServiceImpl for Pal3Service {
              Pal3Service::set_script_factory after installing the script root.",
         );
 
+        if shared::config::YaobowConfig::load().auto_new_game_for(game) {
+            log::info!("PAL3: auto_new_game set, skipping the start menu");
+            return self.create_adventure_director(asset_path);
+        }
+
         let menu = factory.make_pal3_start_menu(asset_path);
         match menu.query_interface::<IDirector>() {
             Some(director) => director,
