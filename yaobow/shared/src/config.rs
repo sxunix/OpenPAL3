@@ -8,16 +8,36 @@ use crate::GameType;
 const CONFIG_FILE_NAME: &str = "yaobow.toml";
 const ENV_OVERRIDE: &str = "YAOBOW_CONFIG";
 
-#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+fn default_true() -> bool { true }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GameConfig {
     #[serde(default)]
     pub asset_path: String,
+    /// Play the intro/cutscene movies. On by default. The Switch build
+    /// forces this off for now: bink playback spins up ffmpeg's multi-
+    /// threaded decoder and the run dies in an InvalidMemoryRegion on the
+    /// main thread before the first frame -- an unsolved std::thread/ffmpeg
+    /// interaction on horizon. Skipping movies lets the rest of the game run
+    /// while that is worked on separately.
+    #[serde(default = "default_true")]
+    pub enable_movies: bool,
     /// Bring-up aid: skip the scripted start menu and go straight into a
     /// new game. Lets a build be driven to its first 3D scene on a target
     /// where no input is available yet (a console with no controller
     /// mapped, an emulator on a locked desktop). Off by default.
     #[serde(default)]
     pub auto_new_game: bool,
+}
+
+impl Default for GameConfig {
+    fn default() -> Self {
+        Self {
+            asset_path: String::new(),
+            enable_movies: true,
+            auto_new_game: false,
+        }
+    }
 }
 
 /// Per-app UI preferences. Currently just the imgui theme name.
@@ -228,6 +248,13 @@ impl YaobowConfig {
         let text = toml::to_string_pretty(self)?;
         std::fs::write(&path, text)?;
         Ok(())
+    }
+
+    pub fn enable_movies_for(&self, game: GameType) -> bool {
+        self.game
+            .get(game.config_key())
+            .map(|g| g.enable_movies)
+            .unwrap_or(true)
     }
 
     pub fn auto_new_game_for(&self, game: GameType) -> bool {

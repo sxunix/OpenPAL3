@@ -24,7 +24,15 @@ pub fn main() {
     #[cfg(switch)]
     {
         init_logger(None);
-        register_opengb_video_decoders();
+        // Movies are gated by config on Switch (default off): bink playback
+        // crashes the main thread in an InvalidMemoryRegion before the first
+        // frame. Registering no decoder makes play_movie return None, which
+        // the script treats as "skip this movie" -- the clean, existing path.
+        if shared::config::YaobowConfig::load().enable_movies_for(shared::GameType::PAL3) {
+            register_opengb_video_decoders();
+        } else {
+            log::info!("movies disabled by config; intro/cutscenes will be skipped");
+        }
         // Boot straight into PAL3, the way the Vita arm boots straight into
         // PAL4. The title selector is a scripted imgui page whose only job
         // here would be to pick the one game this build is used for, and it
@@ -271,3 +279,4 @@ fn _force_level_imports() {
 #[used]
 #[unsafe(export_name = "_newlib_heap_size_user")]
 pub static _NEWLIB_HEAP_SIZE_USER: u32 = 216 * 1024 * 1024;
+

@@ -254,7 +254,15 @@ impl VideoStream for VideoStreamFFmpeg {
         self.set_looping(looping);
 
         let reader = self.reader.take().unwrap();
-        let result = self.init(reader);
+        let result = match self.init(reader) {
+            Some(r) => r,
+            None => {
+                // SceCommandMovie polls get_state() and finishes the command
+                // on Stopped, so the script carries on past the movie.
+                self.state = VideoStreamState::Stopped;
+                return (1, 1);
+            }
+        };
 
         if let Some(time) = self.time.as_ref() {
             let mut time = time.write().unwrap();
@@ -468,15 +476,33 @@ impl VideoStreamFFmpeg {
         Box::new(Self::new(factory, audio_engine))
     }
 
-    pub fn init(&mut self, io: impl io::Read + io::Seek + 'static) -> InitResult {
+    pub fn init(&mut self, io: impl io::Read + io::Seek + 'static) -> Option<InitResult> {
         let time = Arc::new(RwLock::new(TimeData::new()));
         let input = ffmpeg::format::io::input(io).unwrap();
+        log::info!(
+            "video: container opened ({}), {} stream(s)",
+            input.format().name(),
+            input.streams().count()
+        );
+        let best_video = input.streams().best(Type::Video).unwrap_or_else(|| {
+            let kinds: Vec<String> = input
+                .streams()
+                .map(|s| format!("{:?}/{:?}", s.parameters().medium(), s.parameters().id()))
+                .collect();
+            panic!("video: no decodable video stream; streams present: {kinds:?}")
+        });
+        log::info!(
+            "video: stream {} codec {:?}",
+            best_video.index(),
+            best_video.parameters().id()
+        );
         let video = Arc::new(Mutex::new(VideoStreamData::new(StreamData::new(
             &input,
-            &input.streams().best(Type::Video).unwrap(),
+            &best_video,
             Decoder::new_video,
             Arc::clone(&time),
         ))));
+        log::info!("video: video decoder ready");
         let rx = {
             let (tx, rx) = channel();
             let mut video = video.lock().unwrap();
@@ -491,7 +517,9 @@ impl VideoStreamFFmpeg {
         // Now create the audio stream data.
         let resampled_frames = Arc::new(Mutex::new(VecDeque::new()));
         let mut audio_source = self.audio_engine.create_custom_decoder_source();
+        log::info!("video: audio source created");
         audio_source.set_decoder(Box::new(AudioFFmpegDecoder::new(resampled_frames.clone())));
+        log::info!("video: audio decoder attached");
         let audio_output_stream = Arc::new(OutputAudioStream {
             stream_source: Mutex::new(audio_source),
             resampled_frames,
@@ -507,6 +535,7 @@ impl VideoStreamFFmpeg {
             audio_output_stream,
         )));
         let weak_audio = Arc::downgrade(&audio);
+        log::info!("video: audio stream data ready");
         // Create the state.
         let state = Arc::new(Mutex::new(VideoState {
             loop_count: 0,
@@ -524,23 +553,57 @@ impl VideoStreamFFmpeg {
             time.duration_pts = duration_pts;
         }
         self.time.replace(time);
+        log::info!("video: state assembled");
+
+        // Bring-up: a thread spawned right here, right now, with nothing to
+        // do but report back. Separates "threads cannot be spawned from this
+        // point of the frame" from "the player threads never reach their
+        // loop" -- both looked the same in the log.
+        {
+            let (ptx, prx) = std::sync::mpsc::channel::<()>();
+            let _ = thread::spawn(move || {
+                log::info!("video: in-init probe thread ran");
+                let _ = ptx.send(());
+            });
+            log::info!(
+                "video: in-init probe: {:?}",
+                prx.recv_timeout(Duration::from_secs(2))
+            );
+        }
 
         self.threads.push(thread::spawn(|| {
+            log::info!("video: 'queue' closure entered");
             run_player_thread(weak_state, "queue".into(), enqueue_next_packet)
         }));
         self.threads.push(thread::spawn(move || {
+            log::info!("video: 'video player' closure entered");
             run_player_thread(weak_video, "video player".into(), play_video)
         }));
         self.threads.push(thread::spawn(|| {
+            log::info!("video: 'audio player' closure entered");
             run_player_thread(weak_audio, "audio player".into(), play_audio)
         }));
 
-        // Wait until the first frame has been decoded and we know the video size.
-        let size = rx.recv().unwrap();
+        // Wait until the first frame has been decoded and we know the video
+        // size. Bounded: on the Switch bring-up the player threads never
+        // delivered a frame and this wait hung the game forever inside the
+        // intro movie. A movie that cannot start is skipped, not fatal.
+        log::info!("video: player threads started, waiting for the first decoded frame");
+        let size = match rx.recv_timeout(Duration::from_secs(10)) {
+            Ok(size) => size,
+            Err(e) => {
+                log::error!("video: no first frame within 10 s ({e}); skipping this movie");
+                // Detach rather than join: a thread that never ran cannot be
+                // joined without hanging here instead.
+                self.threads.clear();
+                return None;
+            }
+        };
+        log::info!("video: first frame {}x{}", size.0, size.1);
 
         self.video_state.replace(state);
 
-        InitResult { duration, size }
+        Some(InitResult { duration, size })
     }
 
     fn _stop_threads(&mut self) {
@@ -924,8 +987,8 @@ fn run_player_thread<F, T>(state: Weak<Mutex<T>>, description: String, f: F)
 where
     F: Fn(&mut T) -> LoopState,
 {
-    debug!(
-        "thread '{}' ({:?}) starting",
+    log::info!(
+        "video: thread '{}' ({:?}) starting",
         description,
         thread::current().id()
     );
@@ -943,8 +1006,8 @@ where
             LoopState::Running => (),
         }
     }
-    debug!(
-        "thread '{}' ({:?}) exiting",
+    log::info!(
+        "video: thread '{}' ({:?}) exiting",
         description,
         thread::current().id()
     );
