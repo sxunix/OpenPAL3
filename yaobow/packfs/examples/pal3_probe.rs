@@ -15,12 +15,46 @@ use mini_fs::StoreExt;
 use packfs::init_virtual_fs_with_catalog;
 
 fn main() {
-    let root = std::env::args()
-        .nth(1)
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let root = args
+        .first()
         .map(PathBuf::from)
-        .expect("usage: pal3_probe <PAL3 dir>");
+        .expect("usage: pal3_probe <PAL3 dir> [--dump <vfs path> <out file>]");
 
     let (vfs, catalog) = init_virtual_fs_with_catalog(&root, None);
+
+    // `--ls <vfs dir>`: list a directory as the game's VFS sees it.
+    if args.get(1).map(String::as_str) == Some("--ls") {
+        let dir = &args[2];
+        match vfs.entries(dir) {
+            Ok(entries) => {
+                let mut names: Vec<String> = entries
+                    .filter_map(|e| e.ok())
+                    .map(|e| e.name.to_string_lossy().into_owned())
+                    .collect();
+                names.sort();
+                println!("{dir}: {} entries", names.len());
+                for n in names {
+                    println!("  {n}");
+                }
+            }
+            Err(e) => println!("entries({dir}) failed: {e}"),
+        }
+        return;
+    }
+
+    // `--dump <vfs path> <out file>`: copy one file out of the VFS so host
+    // tools (ffprobe, hexdump, ...) can look at exactly the bytes the game
+    // would read.
+    if args.get(1).map(String::as_str) == Some("--dump") {
+        let (src, dst) = (&args[2], &args[3]);
+        let mut f = vfs.open(src).unwrap_or_else(|e| panic!("open {src}: {e}"));
+        let mut buf = Vec::new();
+        f.read_to_end(&mut buf).unwrap_or_else(|e| panic!("read {src}: {e}"));
+        std::fs::write(dst, &buf).unwrap_or_else(|e| panic!("write {dst}: {e}"));
+        println!("dumped {src} -> {dst} ({} bytes)", buf.len());
+        return;
+    }
 
     let mut by_type = std::collections::BTreeMap::new();
     for m in catalog.mounts() {
