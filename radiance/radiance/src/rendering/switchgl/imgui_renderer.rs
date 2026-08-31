@@ -89,6 +89,16 @@ impl SwitchGLImguiRenderer {
             glBindTexture(GL_TEXTURE_2D, tex);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR as i32);
             glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR as i32);
+            // One plain glTexImage2D with the data. Two hard-won findings
+            // from the bring-up, verified with a size ladder of checkerboard
+            // textures drawn on screen:
+            //   * an allocate-with-NULL + glTexSubImage2D band upload comes
+            //     out garbled on the Ryujinx GL stack, at any size;
+            //   * ANY upload made during renderer init is lost/corrupted --
+            //     the same 2048x4096 single-shot upload is pixel-perfect
+            //     when done a few frames in.
+            // Hence: single-shot here, and render() re-runs this whole
+            // rebuild once on its third frame.
             glTexImage2D(
                 GL_TEXTURE_2D,
                 0,
@@ -100,10 +110,33 @@ impl SwitchGLImguiRenderer {
                 GL_UNSIGNED_BYTE,
                 pixels as *const _,
             );
+            let err = glGetError();
+            if err != 0 {
+                log::error!("imgui font atlas upload: glGetError() = {err:#x}");
+            }
             glBindTexture(GL_TEXTURE_2D, 0);
             self.font_texture = tex;
 
+            // Bring-up: prove whether the CPU-side atlas actually contains
+            // glyph coverage before blaming the GPU path. RGBA32, so byte 3
+            // of every texel is alpha; a healthy atlas has a large nonzero
+            // count, an empty one (font failed to load/build) reports ~0.
+            let n = (w as usize) * (h as usize);
+            let mut nonzero_alpha = 0usize;
+            let px = std::slice::from_raw_parts(pixels, n * 4);
+            for i in 0..n {
+                if px[i * 4 + 3] != 0 {
+                    nonzero_alpha += 1;
+                }
+            }
+            log::info!(
+                "imgui font atlas: {}x{} tex={} nonzero_alpha_texels={} ({}%)",
+                w, h, tex, nonzero_alpha,
+                if n > 0 { nonzero_alpha * 100 / n } else { 0 }
+            );
+
             sys::ImFontAtlas_SetTexID(fonts, tex as usize as sys::ImTextureID);
+
         }
     }
 
@@ -114,6 +147,7 @@ impl SwitchGLImguiRenderer {
         if !frame.frame_begun {
             return;
         }
+
 
         let draw_data: &DrawData = unsafe {
             sys::igRender();
@@ -305,3 +339,4 @@ unsafe fn build_program() -> anyhow::Result<(u32, i32)> {
         Ok((program, uniform_proj))
     }
 }
+
