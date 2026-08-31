@@ -82,6 +82,7 @@ impl SceVm {
             loop {
                 match self.state.get_next_cmd() {
                     Some(mut cmd) => {
+                        log::info!("sce: {}", cmd.debug());
                         cmd.initialize(self.scene_manager.clone(), &mut self.state);
                         if !cmd.update(self.scene_manager.clone(), ui, &mut self.state, delta_sec) {
                             self.active_commands.push(cmd);
