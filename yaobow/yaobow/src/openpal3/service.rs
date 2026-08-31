@@ -510,7 +510,10 @@ impl IPal3ServiceImpl for Pal3Service {
         let cfg = shared::config::YaobowConfig::load();
         if cfg.auto_new_game_for(game) {
             let slot = cfg.auto_load_slot_for(game);
-            if slot > 0 {
+            // slot_exists first: PersistentState::load unwraps on a missing
+            // file, and the first boot after enabling auto_load_slot has no
+            // save yet -- that unwrap took the whole game down at startup.
+            if slot > 0 && shared::openpal3::states::persistent_state::PersistentState::slot_exists(PAL3_APP_NAME, slot) {
                 if let Some(d) = self.load_adventure_director(asset_path, slot) {
                     log::info!("PAL3: resumed from save slot {}", slot);
                     return d;

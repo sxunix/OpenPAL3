@@ -31,6 +31,16 @@ impl PersistentState {
         ydirs::save_dir().join(app_name)
     }
 
+    /// Whether a save exists in `slot`. `load` panics on a missing or
+    /// unreadable file, so callers that offer "resume if present" must
+    /// check here first.
+    pub fn slot_exists(app_name: &str, slot: i32) -> bool {
+        Self::get_data_dir(app_name)
+            .join("Save")
+            .join(format!("{}.json", slot))
+            .is_file()
+    }
+
     pub fn load(app_name: &str, slot: i32) -> Self {
         let path = Self::get_data_dir(app_name)
             .join("Save")
