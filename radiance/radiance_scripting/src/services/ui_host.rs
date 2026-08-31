@@ -1098,10 +1098,12 @@ impl IUiHostImpl for ImguiUiHost {
 
     fn game_font_size(&self) -> f32 {
         with_frame("game_font_size", |f| {
-            let Some(font) = radiance::imgui::game_font(radiance::imgui::GameFontSize::LARGE)
-            else {
-                return 0.0;
-            };
+            // Fall back to the bundled default face like `text_at` does:
+            // PAL3 does not ship a font file (it used the Windows system
+            // font), so a bare install has no game font registered, and a
+            // 0.0 here makes the dialog script skip drawing text entirely.
+            let font = radiance::imgui::game_font(radiance::imgui::GameFontSize::LARGE)
+                .unwrap_or_else(|| f.ui.fonts().fonts()[0]);
             let size =
                 f.ui.fonts()
                     .get_font(font)
@@ -1134,10 +1136,13 @@ impl IUiHostImpl for ImguiUiHost {
 
     fn game_font_size_small(&self) -> f32 {
         with_frame("game_font_size_small", |f| {
-            let Some(font) = radiance::imgui::game_font(radiance::imgui::GameFontSize::SMALL)
-            else {
-                return 0.0;
-            };
+            // Same fallback as `game_font_size`; index 1 is the bundled
+            // small (18px) face, with the large face as a last resort.
+            let font = radiance::imgui::game_font(radiance::imgui::GameFontSize::SMALL)
+                .unwrap_or_else(|| {
+                    let fonts = f.ui.fonts().fonts();
+                    fonts.get(1).copied().unwrap_or(fonts[0])
+                });
             let size =
                 f.ui.fonts()
                     .get_font(font)
