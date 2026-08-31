@@ -23,6 +23,25 @@ fn main() {
 
     let (vfs, catalog) = init_virtual_fs_with_catalog(&root, None);
 
+    // `--cpk-find <cpk file> <substr>`: list entries inside one .cpk whose
+    // full path contains the substring (case-insensitive). Complements --ls,
+    // which can only enumerate where the mount exposes directory listings.
+    if args.get(1).map(String::as_str) == Some("--cpk-find") {
+        let (cpk, pat) = (&args[2], args[3].to_lowercase());
+        let f = std::fs::File::open(cpk).unwrap_or_else(|e| panic!("open {cpk}: {e}"));
+        let mut ar = packfs::cpk::CpkArchive::load(Box::new(std::io::BufReader::new(f)))
+            .unwrap_or_else(|e| panic!("load {cpk}: {e}"));
+        let mut n = 0;
+        for p in ar.full_paths().unwrap() {
+            if p.to_lowercase().contains(&pat) {
+                println!("{p}");
+                n += 1;
+            }
+        }
+        println!("({n} matches)");
+        return;
+    }
+
     // `--ls <vfs dir>`: list a directory as the game's VFS sees it.
     if args.get(1).map(String::as_str) == Some("--ls") {
         let dir = &args[2];
