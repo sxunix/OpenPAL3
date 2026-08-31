@@ -634,3 +634,73 @@ even with decoders on. Cutscenes were already on the known-missing list.
 - Audio output (sounds are triggered in the log; not heard).
 - Movement, battles, save/load, scene transitions beyond the opener.
 - Real hardware. Still Ryujinx throughout.
+
+---
+
+# Stage 15 — invisible text: three bugs in a trench coat (2026-08-31)
+
+Dialog text was invisible while the dialog frame, game sprites and the 3D
+scene all drew. Every plausible single cause was eliminated in turn — and
+the answer was three independent bugs stacked:
+
+1. **The native window was 1280x720 while everything assumed 1920x1080.**
+   libnx's default NWindow picks its own buffer size. The imgui renderer
+   flips scissor rects against the assumed 1080-high framebuffer, so a
+   window at y=9..87 was scissored to y=993 — outside the real 720-line
+   buffer. Every window-clipped draw (all text) was culled; full-screen
+   clipped draws (sprites, images) survived. It also made every frame
+   render 1.5x too large with the right/bottom cropped, visible in every
+   screenshot as a consistent stretch. `nwindowSetDimensions(1920,1080)`
+   before surface creation fixed text *positions*; glyphs then rendered.
+
+2. **The font atlas was 4096x16384 — 256 MB, exactly at
+   GL_MAX_TEXTURE_SIZE.** Full-CJK ranges at two sizes with imgui's
+   default 3x horizontal oversampling. Sampling it returned black. On
+   Switch the CJK faces now use common-simplified ranges, no
+   oversampling: 2048x4096, verified legible by rendering the atlas
+   itself on screen at 1:1.
+
+3. **PAL3 ships no font file** (the original used the Windows system
+   font), and the dialog script guards its text pass with
+   `if game_font_size_small() <= 0 { return }` — no game font, no text,
+   silently. The size queries now fall back to the bundled faces, and on
+   Switch the bundled CJK face registers through the real game-font path
+   so the dialog keeps its tuned metrics.
+
+False leads worth remembering: the "garbled atlas" was a correct glyph
+sheet downscaled 8x (checked by drawing it at 1:1 — crisp glyphs); the
+"init-time uploads are lost" theory died when a texture-size ladder
+(512^2..2048x4096 checkerboards) rendered pixel-perfect at every size;
+a chunked glTexSubImage2D upload path really is garbled on this stack
+and was reverted to single-shot.
+
+## The rendering reference
+
+The desktop build (same tree, Vulkan) now runs on the same machine
+against the same install: brew MoltenVK + vulkan-loader + ffmpeg@7 +
+shaderc, `VK_ICD_FILENAMES` set. It renders the opening correctly —
+characters, lamp-lit room — which is what turned "the Switch picture is
+wrong" from an opinion into a diff. Found and fixed along the way:
+registering the bundled font on desktop pushed its atlas to 4096x32768
+(base faces already fill 16384 there), so the fallback is Switch-only.
+
+Also landed, mirroring the Vulkan pipeline: per-material blend
+(premultiplied ONE/1-SRC_ALPHA), DepthMode, CullMode, a depth-mask
+restore before clear, and the 16-light table (was capped at 4 — the
+opening room's .lgt has 7, and the lamp was among the dropped).
+
+## Verified / still open
+
+Verified on screen (self-captured via `screencapture -l <window>` — the
+agent can now see both windows without user relay): dialog text with
+correct size and padding, dialog frame, avatar art, cutscene script
+progression, 60 FPS.
+
+Open: the Switch scene image still does not match the desktop reference
+(perspective looks over-wide/warped, characters not identified on
+screen, overall darker). Actor meshes are confirmed *in* the draw list
+(per-shader draw telemetry: Pal3Actor x1 from frame 1, x2 the moment the
+script spawns the second). A/B captures at matched cutscene moments are
+the next step; note the two runs' dialog sequences genuinely diverge
+(input-less runs take different branches), so matching is by stable
+end-state, not by line.
