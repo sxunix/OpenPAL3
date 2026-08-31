@@ -704,3 +704,28 @@ script spawns the second). A/B captures at matched cutscene moments are
 the next step; note the two runs' dialog sequences genuinely diverge
 (input-less runs take different branches), so matching is by stable
 end-state, not by line.
+
+---
+
+# Stage 16 — the scene was transposed (2026-08-31)
+
+With camera commands proven byte-identical in both runs' sce logs and
+the desktop build rendering them correctly, the fault had to be in the
+switchgl vertex path. It was the matrices: radiance's Mat44 stores
+column-vector matrices row-major; GLES2 forbids transpose=TRUE; the raw
+upload therefore fed the shaders transposes, and `P*V*M*v` computed
+(M*V*P)^T v. Stage 5's note arguing this away assumed a row-vector
+convention the engine does not use.
+
+The first fix -- transpose on the CPU -- changed nothing on screen,
+which turned out to be the second bug: **Mat44::transposed swapped
+every off-diagonal pair twice and was a no-op**. Dormant upstream, as
+nothing on the Vulkan path calls it.
+
+With both fixed, the Switch build renders the opening correctly:
+both characters, the room, the lamp glow, the proper cutscene camera,
+60 FPS -- verified by self-captured screenshots against the desktop
+reference. Remaining visible deltas: somewhat darker than the desktop
+image (the documented lighting approximations), dialogs self-advance
+without input on Switch (desktop waits for a key -- an input-edge bug
+to chase), and movies stay disabled.
