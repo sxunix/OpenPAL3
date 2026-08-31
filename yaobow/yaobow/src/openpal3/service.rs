@@ -477,11 +477,20 @@ impl IPal3ServiceImpl for Pal3Service {
             // sizes, and without this the text fell back to the small base
             // face and rendered cramped. A user-supplied simsun.ttc in the
             // asset directory still wins via the branch above.
-            log::info!("PAL3: no game font in the install; using the bundled CJK face");
-            self.app.engine().borrow().ui_manager().add_game_font(
-                radiance::imgui::bundled_cjk_font(),
-                shared::GameType::PAL3.ui_font_scale(),
-            );
+            //
+            // Switch only: there the glyph ranges are already narrowed, so
+            // the two extra faces fit the atlas. On desktop the base faces
+            // alone fill a 4096x16384 atlas (full CJK, 3x oversampling) --
+            // adding game faces pushes past every GPU's texture limit and
+            // MoltenVK aborts. Desktop keeps the upstream behavior.
+            #[cfg(target_os = "horizon")]
+            {
+                log::info!("PAL3: no game font in the install; using the bundled CJK face");
+                self.app.engine().borrow().ui_manager().add_game_font(
+                    radiance::imgui::bundled_cjk_font(),
+                    shared::GameType::PAL3.ui_font_scale(),
+                );
+            }
         }
 
         // Warm the AssetManager up front so the menu + adventure
