@@ -28,6 +28,10 @@ pub struct GameConfig {
     /// mapped, an emulator on a locked desktop). Off by default.
     #[serde(default)]
     pub auto_new_game: bool,
+    /// With `auto_new_game`, resume from this save slot instead of starting
+    /// fresh when the slot exists (quick-saved with Y on Switch). 0 = off.
+    #[serde(default)]
+    pub auto_load_slot: i32,
 }
 
 impl Default for GameConfig {
@@ -36,6 +40,7 @@ impl Default for GameConfig {
             asset_path: String::new(),
             enable_movies: true,
             auto_new_game: false,
+            auto_load_slot: 0,
         }
     }
 }
@@ -255,6 +260,13 @@ impl YaobowConfig {
             .get(game.config_key())
             .map(|g| g.enable_movies)
             .unwrap_or(true)
+    }
+
+    pub fn auto_load_slot_for(&self, game: GameType) -> i32 {
+        self.game
+            .get(game.config_key())
+            .map(|g| g.auto_load_slot)
+            .unwrap_or(0)
     }
 
     pub fn auto_new_game_for(&self, game: GameType) -> bool {

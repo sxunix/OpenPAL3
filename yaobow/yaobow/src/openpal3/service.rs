@@ -507,7 +507,16 @@ impl IPal3ServiceImpl for Pal3Service {
              Pal3Service::set_script_factory after installing the script root.",
         );
 
-        if shared::config::YaobowConfig::load().auto_new_game_for(game) {
+        let cfg = shared::config::YaobowConfig::load();
+        if cfg.auto_new_game_for(game) {
+            let slot = cfg.auto_load_slot_for(game);
+            if slot > 0 {
+                if let Some(d) = self.load_adventure_director(asset_path, slot) {
+                    log::info!("PAL3: resumed from save slot {}", slot);
+                    return d;
+                }
+                log::info!("PAL3: save slot {} missing, starting a new game", slot);
+            }
             log::info!("PAL3: auto_new_game set, skipping the start menu");
             return self.create_adventure_director(asset_path);
         }

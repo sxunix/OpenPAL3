@@ -280,6 +280,16 @@ impl AdventureDirectorProps {
             -1
         };
 
+        // Switch has no keyboard, so the Num1-4 debug saves are unreachable
+        // there. West (Y) is unused in the adventure layer; make it the
+        // quick-save until a real save menu is wired up.
+        #[cfg(target_os = "horizon")]
+        let save_slot = if input.get_key_state(Key::GamePadWest).pressed() {
+            1
+        } else {
+            save_slot
+        };
+
         self.sce_vm
             .global_state()
             .persistent_state()
