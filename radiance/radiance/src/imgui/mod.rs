@@ -367,16 +367,31 @@ fn ideograph_span_ratio(data: &[u8]) -> Option<f32> {
 /// which is the regular font we want (SimSun / MingLiU / Kai).
 #[cfg(not(vita))]
 fn add_game_font_face(context: &mut Context, data: &[u8], size_pixels: f32) -> imgui::FontId {
+    // Same atlas-size gating as the base faces: full CJK at game sizes blows
+    // the atlas past the Switch driver's texture limit (see
+    // add_font_with_lucide).
+    #[cfg(switch)]
+    let (ranges, oversample_h) = (FontGlyphRanges::chinese_simplified_common(), 1);
+    #[cfg(not(switch))]
+    let (ranges, oversample_h) = (FontGlyphRanges::chinese_full(), 3);
     context.fonts().add_font(&[FontSource::TtfData {
         data,
         size_pixels,
         config: Some(FontConfig {
             rasterizer_multiply: 1.75,
-            glyph_ranges: FontGlyphRanges::chinese_full(),
+            glyph_ranges: ranges,
+            oversample_h,
             glyph_offset: [0.0, -size_pixels * 0.06],
             ..FontConfig::default()
         }),
     }])
+}
+
+/// The bundled CJK face (Source Han Serif). Exposed so a game whose install
+/// ships no font file (PAL3 used the Windows system font) can register it
+/// through the normal game-font path and keep the tuned dialog metrics.
+pub fn bundled_cjk_font() -> &'static [u8] {
+    radiance_assets::FONT_SOURCE_HAN_SERIF
 }
 
 pub struct ImguiFrame {

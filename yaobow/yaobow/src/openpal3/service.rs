@@ -470,6 +470,18 @@ impl IPal3ServiceImpl for Pal3Service {
                 .borrow()
                 .ui_manager()
                 .add_game_font(&bytes, shared::GameType::PAL3.ui_font_scale());
+        } else {
+            // PAL3 shipped no font file (it used the Windows system font), so
+            // a bare install registers the bundled CJK face through the same
+            // path -- the dialog metrics are tuned against the game-font
+            // sizes, and without this the text fell back to the small base
+            // face and rendered cramped. A user-supplied simsun.ttc in the
+            // asset directory still wins via the branch above.
+            log::info!("PAL3: no game font in the install; using the bundled CJK face");
+            self.app.engine().borrow().ui_manager().add_game_font(
+                radiance::imgui::bundled_cjk_font(),
+                shared::GameType::PAL3.ui_font_scale(),
+            );
         }
 
         // Warm the AssetManager up front so the menu + adventure
