@@ -369,23 +369,37 @@ unsafe fn draw_object(obj: &SwitchGLRenderObject, view: &Mat44, proj: &Mat44, en
         1,
         [params.alpha_ref, params.intensity, 0.0, 0.0].as_ptr(),
     );
+    // radiance's Mat44 is row-major storage of COLUMN-vector matrices
+    // (Transform puts translation in [r][3]; the projection puts -1 in
+    // [3][2]). GLES2 requires transpose=GL_FALSE, so the raw floats reach
+    // the shader as the TRANSPOSE, and `P*V*M*v` there computed
+    // (M*V*P)^T * v -- a recognizably-wrong scene: coherent surfaces at
+    // warped angles, the camera seemingly inside geometry, while the same
+    // camera values rendered correctly on the desktop reference. Transpose
+    // on the CPU so the shader's column math sees the real matrices.
+    // (Stage-5's claim that "untransposed upload is the transpose, which
+    // makes the row-vector math work out" had it backwards: the engine's
+    // convention is column vectors, not row vectors.)
+    let view_t = Mat44::transposed(view);
+    let proj_t = Mat44::transposed(proj);
+    let model_t = Mat44::transposed(&obj.model_matrix());
     glUniformMatrix4fv(
         shader.uniform_view_matrix(),
         1,
         GL_FALSE,
-        view.floats().as_ptr() as *const _,
+        view_t.floats().as_ptr() as *const _,
     );
     glUniformMatrix4fv(
         shader.uniform_projection_matrix(),
         1,
         GL_FALSE,
-        proj.floats().as_ptr() as *const _,
+        proj_t.floats().as_ptr() as *const _,
     );
     glUniformMatrix4fv(
         shader.uniform_model_matrix(),
         1,
         GL_FALSE,
-        obj.model_matrix().floats().as_ptr() as *const _,
+        model_t.floats().as_ptr() as *const _,
     );
 
     let textures = material.textures();
