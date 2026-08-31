@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use image::RgbaImage;
 
-use crate::rendering::{MaterialDef, MaterialParams};
+use crate::rendering::{BlendMode, CullMode, DepthMode, MaterialDef, MaterialParams};
 
 use super::{shader::SwitchGLShader, texture::SwitchGLTexture};
 
@@ -11,6 +11,9 @@ pub struct SwitchGLMaterial {
     shader: Rc<SwitchGLShader>,
     textures: Vec<Rc<SwitchGLTexture>>,
     params: MaterialParams,
+    blend: BlendMode,
+    depth: DepthMode,
+    cull: CullMode,
 }
 
 impl std::fmt::Debug for SwitchGLMaterial {
@@ -37,6 +40,9 @@ impl SwitchGLMaterial {
             shader,
             textures,
             params: *def.params(),
+            blend: def.blend(),
+            depth: def.depth(),
+            cull: def.cull(),
         }
     }
 
@@ -54,6 +60,18 @@ impl SwitchGLMaterial {
 
     pub fn params(&self) -> &MaterialParams {
         &self.params
+    }
+
+    pub fn blend(&self) -> BlendMode {
+        self.blend
+    }
+
+    pub fn depth(&self) -> DepthMode {
+        self.depth
+    }
+
+    pub fn cull(&self) -> CullMode {
+        self.cull
     }
 }
 

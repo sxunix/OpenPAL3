@@ -7,16 +7,17 @@
 //    because radiance's row-major Mat44 read untransposed by GL *is* the
 //    transpose;
 //  * no Vulkan clip matrix (GL NDC wants the projection as-is);
-//  * the light table is capped at 4 uploaded lights (the original uploads 16
-//    and picks 2 in-shader; the engine uploads the first 4 and we pick 2);
+//  * the light table matches the Vulkan original: 16 uploaded lights, the
+//    2 nearest picked per vertex (was capped at 4 during bring-up, which
+//    dropped the key lamps in scenes with more lights and left them dark);
 //  * GLSL ES 100 has no array constructors, so the 2-nearest pick is unrolled.
 // `ambientFloor` distinguishes actors (0.55) from scenery (0.0).
 uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec4 ambientLight;    // rgb = ambient, w = light count
-uniform vec4 lightPos[4];     // xyz = world pos, w = outer range
-uniform vec4 lightColor[4];   // rgb = color, w = inner range
+uniform vec4 lightPos[16];     // xyz = world pos, w = outer range
+uniform vec4 lightColor[16];   // rgb = color, w = inner range
 uniform float ambientFloor;
 uniform vec4 uvXform;         // xy = scale, zw = offset
 
@@ -56,7 +57,7 @@ void main() {
     int count = int(ambientLight.w);
     int best0 = -1; int best1 = -1;
     float d0 = 1.0e30; float d1 = 1.0e30;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 16; i++) {
         if (i >= count) { break; }
         float dist = distance(lightPos[i].xyz, worldPos);
         if (dist < d0) { d1 = d0; best1 = best0; d0 = dist; best0 = i; }
@@ -64,7 +65,7 @@ void main() {
     }
 
     vec3 lit = ambient;
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < 16; i++) {
         if (i == best0 || i == best1) { lit += lightContrib(i, worldPos, N); }
     }
 

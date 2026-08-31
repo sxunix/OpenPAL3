@@ -26,8 +26,8 @@ const DEFAULT_HEIGHT: u32 = 1080;
 /// locations are -1 on programs that lack them, making the uploads no-ops.
 struct FrameEnv {
     ambient: [f32; 4],           // rgb + light count
-    light_pos: [f32; 16],        // 4x vec4: xyz + outer range
-    light_color: [f32; 16],      // 4x vec4: rgb + inner range
+    light_pos: [f32; 64],        // 4x vec4: xyz + outer range
+    light_color: [f32; 64],      // 4x vec4: rgb + inner range
     fog_color: [f32; 4],
     fog_params: [f32; 4],        // enabled, start, end, 0
     time_sec: f32,
@@ -47,6 +47,7 @@ pub struct SwitchGLRenderingEngine {
     /// anything reach the draw loop" is the first question it has to answer.
     scene_frames: u64,
     first_draw_logged: bool,
+    last_object_count: usize,
 }
 
 impl SwitchGLRenderingEngine {
@@ -90,6 +91,7 @@ impl SwitchGLRenderingEngine {
             extent: (DEFAULT_WIDTH, DEFAULT_HEIGHT),
             scene_frames: 0,
             first_draw_logged: false,
+            last_object_count: 0,
         })
     }
 }
@@ -97,6 +99,10 @@ impl SwitchGLRenderingEngine {
 impl RenderingEngine for SwitchGLRenderingEngine {
     fn render(&mut self, scene: Option<ComRc<IScene>>, _viewport: Viewport, ui_frame: ImguiFrame) {
         unsafe {
+            // A material with DepthMode::TestOnly leaves the depth mask off,
+            // and glClear honors the mask -- restore it or the depth buffer
+            // stops clearing after the first translucent draw.
+            glDepthMask(GL_TRUE);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
             glEnable(GL_DEPTH_TEST);
             glDepthFunc(GL_LESS);
@@ -196,15 +202,15 @@ impl SwitchGLRenderingEngine {
                         lighting.ambient[0],
                         lighting.ambient[1],
                         lighting.ambient[2],
-                        lighting.lights.len().min(4) as f32,
+                        lighting.lights.len().min(16) as f32,
                     ],
-                    light_pos: [0.0; 16],
-                    light_color: [0.0; 16],
+                    light_pos: [0.0; 64],
+                    light_color: [0.0; 64],
                     fog_color: [0.0; 4],
                     fog_params: [0.0; 4],
                     time_sec: self.start_time.elapsed().as_secs_f32(),
                 };
-                for (i, l) in lighting.lights.iter().take(4).enumerate() {
+                for (i, l) in lighting.lights.iter().take(16).enumerate() {
                     env.light_pos[i * 4..i * 4 + 4].copy_from_slice(&[
                         l.position.x,
                         l.position.y,
@@ -246,20 +252,33 @@ impl SwitchGLRenderingEngine {
             self.scene_frames += 1;
             if !objects.is_empty() && !self.first_draw_logged {
                 self.first_draw_logged = true;
+                let mut by_shader: std::collections::BTreeMap<&str, usize> =
+                    std::collections::BTreeMap::new();
+                for o in &objects {
+                    *by_shader.entry(o.material().shader().program_name()).or_insert(0) += 1;
+                }
                 log::info!(
-                    "switchgl: first scene frame with {} objects ({} visible entities, frame {})",
+                    "switchgl: first scene frame with {} objects ({} visible entities, frame {}) {:?}",
                     objects.len(),
                     scene.visible_entities().len(),
-                    self.scene_frames
-                );
-            } else if self.scene_frames % 600 == 0 {
-                log::info!(
-                    "switchgl: frame {}, {} objects, {} visible entities",
                     self.scene_frames,
+                    by_shader
+                );
+            } else if objects.len() != self.last_object_count {
+                let mut by_shader: std::collections::BTreeMap<&str, usize> =
+                    std::collections::BTreeMap::new();
+                for o in &objects {
+                    *by_shader.entry(o.material().shader().program_name()).or_insert(0) += 1;
+                }
+                log::info!(
+                    "switchgl: frame {}, objects {} -> {} ({:?})",
+                    self.scene_frames,
+                    self.last_object_count,
                     objects.len(),
-                    scene.visible_entities().len()
+                    by_shader
                 );
             }
+            self.last_object_count = objects.len();
 
             for obj in &objects {
                 unsafe {
@@ -288,11 +307,57 @@ unsafe fn draw_object(obj: &SwitchGLRenderObject, view: &Mat44, proj: &Mat44, en
 
     glUseProgram(shader.program());
 
+    // Per-material blend / depth / cull, mirroring the Vulkan pipeline
+    // exactly (pipeline.rs): sources are premultiplied by TextureStore, so
+    // AlphaTest and AlphaBlend both use ONE / ONE_MINUS_SRC_ALPHA; the
+    // fragment shaders keep their cutout discard. Missing all of this was a
+    // wall of opaque black wherever the scene expected translucency.
+    match material.blend() {
+        crate::rendering::BlendMode::Opaque => glDisable(GL_BLEND),
+        crate::rendering::BlendMode::AlphaTest | crate::rendering::BlendMode::AlphaBlend => {
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_ONE, GL_ONE_MINUS_SRC_ALPHA, GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+        }
+        crate::rendering::BlendMode::Additive => {
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_ONE, GL_ONE, GL_ZERO, GL_ONE);
+        }
+        crate::rendering::BlendMode::Multiply => {
+            glEnable(GL_BLEND);
+            glBlendFuncSeparate(GL_DST_COLOR, GL_ZERO, GL_ZERO, GL_ONE);
+        }
+    }
+    match material.depth() {
+        crate::rendering::DepthMode::TestWrite => {
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(GL_TRUE);
+        }
+        crate::rendering::DepthMode::TestOnly => {
+            glEnable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+        }
+        crate::rendering::DepthMode::Disabled => {
+            glDisable(GL_DEPTH_TEST);
+            glDepthMask(GL_FALSE);
+        }
+    }
+    match material.cull() {
+        crate::rendering::CullMode::Back => {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_BACK);
+        }
+        crate::rendering::CullMode::Front => {
+            glEnable(GL_CULL_FACE);
+            glCullFace(GL_FRONT);
+        }
+        crate::rendering::CullMode::None => glDisable(GL_CULL_FACE),
+    }
+
     // Frame environment + material params. Locations are -1 (defined no-op)
     // on programs without the uniform, so no per-program branching.
     glUniform4fv(shader.uniform_ambient_light(), 1, env.ambient.as_ptr());
-    glUniform4fv(shader.uniform_light_pos(), 4, env.light_pos.as_ptr());
-    glUniform4fv(shader.uniform_light_color(), 4, env.light_color.as_ptr());
+    glUniform4fv(shader.uniform_light_pos(), 16, env.light_pos.as_ptr());
+    glUniform4fv(shader.uniform_light_color(), 16, env.light_color.as_ptr());
     glUniform4fv(shader.uniform_fog_color(), 1, env.fog_color.as_ptr());
     glUniform4fv(shader.uniform_fog_params(), 1, env.fog_params.as_ptr());
     glUniform1f(shader.uniform_time_sec(), env.time_sec);

@@ -34,6 +34,13 @@ impl Shader for SwitchGLShader {
 }
 
 impl SwitchGLShader {
+    /// Inherent accessor for the program name (the trait `name` shares the
+    /// trait's visibility and is not importable at call sites that only
+    /// have the concrete type).
+    pub fn program_name(&self) -> &str {
+        &self.name
+    }
+
     pub fn new(shader: ShaderProgram) -> anyhow::Result<Self> {
         let data = get_shader_program_data(shader);
         log::info!("loading shader {}", data.name);

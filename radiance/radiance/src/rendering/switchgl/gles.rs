@@ -43,6 +43,10 @@ pub const GL_BLEND: GLenum = 0x0BE2;
 pub const GL_CULL_FACE: GLenum = 0x0B44;
 pub const GL_SRC_ALPHA: GLenum = 0x0302;
 pub const GL_ONE_MINUS_SRC_ALPHA: GLenum = 0x0303;
+pub const GL_ZERO: GLenum = 0;
+pub const GL_DST_COLOR: GLenum = 0x0306;
+pub const GL_FRONT: GLenum = 0x0404;
+pub const GL_BACK: GLenum = 0x0405;
 
 pub const GL_UNSIGNED_BYTE: GLenum = 0x1401;
 pub const GL_UNSIGNED_SHORT: GLenum = 0x1403;
@@ -84,6 +88,8 @@ unsafe extern "C" {
     pub fn glGetError() -> GLenum;
     pub fn glGetString(name: GLenum) -> *const u8;
     pub fn glGetIntegerv(pname: GLenum, data: *mut GLint);
+    pub fn glDepthMask(flag: GLboolean);
+    pub fn glCullFace(mode: GLenum);
     pub fn glTexSubImage2D(target: GLenum, level: GLint, xoffset: GLint, yoffset: GLint, width: GLsizei, height: GLsizei, format: GLenum, type_: GLenum, pixels: *const core::ffi::c_void);
     pub fn glClearColor(red: GLfloat, green: GLfloat, blue: GLfloat, alpha: GLfloat);
     pub fn glClear(mask: GLbitfield);
