@@ -26,6 +26,11 @@ pub type GLintptr = isize;
 pub const GL_FALSE: GLboolean = 0;
 pub const GL_TRUE: GLboolean = 1;
 
+pub const GL_VENDOR: GLenum = 0x1F00;
+pub const GL_RENDERER: GLenum = 0x1F01;
+pub const GL_VERSION: GLenum = 0x1F02;
+pub const GL_MAX_TEXTURE_SIZE: GLenum = 0x0D33;
+
 pub const GL_DEPTH_BUFFER_BIT: GLbitfield = 0x0000_0100;
 pub const GL_COLOR_BUFFER_BIT: GLbitfield = 0x0000_4000;
 
@@ -76,6 +81,10 @@ pub const GL_LINK_STATUS: GLenum = 0x8B82;
 pub const GL_INFO_LOG_LENGTH: GLenum = 0x8B84;
 
 unsafe extern "C" {
+    pub fn glGetError() -> GLenum;
+    pub fn glGetString(name: GLenum) -> *const u8;
+    pub fn glGetIntegerv(pname: GLenum, data: *mut GLint);
+    pub fn glTexSubImage2D(target: GLenum, level: GLint, xoffset: GLint, yoffset: GLint, width: GLsizei, height: GLsizei, format: GLenum, type_: GLenum, pixels: *const core::ffi::c_void);
     pub fn glClearColor(red: GLfloat, green: GLfloat, blue: GLfloat, alpha: GLfloat);
     pub fn glClear(mask: GLbitfield);
     pub fn glEnable(cap: GLenum);
@@ -217,6 +226,8 @@ pub type EGLint = i32;
 pub type EGLBoolean = u32;
 pub type EGLenum = u32;
 
+pub const EGL_WIDTH: EGLint = 0x3057;
+pub const EGL_HEIGHT: EGLint = 0x3056;
 pub const EGL_DEFAULT_DISPLAY: *mut c_void = std::ptr::null_mut();
 pub const EGL_NO_DISPLAY: EGLDisplay = std::ptr::null_mut();
 pub const EGL_NO_SURFACE: EGLSurface = std::ptr::null_mut();
@@ -274,6 +285,7 @@ unsafe extern "C" {
     pub fn eglSwapBuffers(dpy: EGLDisplay, surface: EGLSurface) -> EGLBoolean;
     pub fn eglSwapInterval(dpy: EGLDisplay, interval: EGLint) -> EGLBoolean;
     pub fn eglGetError() -> EGLint;
+    pub fn eglQuerySurface(display: EGLDisplay, surface: EGLSurface, attribute: EGLint, value: *mut EGLint) -> EGLBoolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -283,4 +295,5 @@ unsafe extern "C" {
 unsafe extern "C" {
     /// The console's default framebuffer window, used as the EGL native window.
     pub fn nwindowGetDefault() -> *mut c_void;
+    pub fn nwindowSetDimensions(nw: *mut c_void, width: u32, height: u32) -> u32;
 }

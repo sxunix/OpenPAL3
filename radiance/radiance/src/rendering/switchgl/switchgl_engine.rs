@@ -56,6 +56,24 @@ impl SwitchGLRenderingEngine {
         unsafe {
             glClearColor(0., 0., 0., 1.);
             glViewport(0, 0, DEFAULT_WIDTH as i32, DEFAULT_HEIGHT as i32);
+
+            let gl_str = |name: u32| -> String {
+                let p = glGetString(name);
+                if p.is_null() {
+                    "<null>".into()
+                } else {
+                    std::ffi::CStr::from_ptr(p as *const _).to_string_lossy().into_owned()
+                }
+            };
+            let mut max_tex = 0i32;
+            glGetIntegerv(GL_MAX_TEXTURE_SIZE, &mut max_tex);
+            log::info!(
+                "switchgl: vendor={} renderer={} version={} max_texture_size={}",
+                gl_str(GL_VENDOR),
+                gl_str(GL_RENDERER),
+                gl_str(GL_VERSION),
+                max_tex
+            );
         }
 
         // The imgui context is already created and current: UiManager is
@@ -91,7 +109,18 @@ impl RenderingEngine for SwitchGLRenderingEngine {
         self.imgui.render(ui_frame, self.extent.0, self.extent.1);
 
         unsafe {
-            eglSwapBuffers(self.display, self.surface);
+            // Throttled GL error probe: one line per 600 frames when anything
+            // in the frame errored, silent otherwise.
+            if self.scene_frames % 600 == 1 {
+                let err = glGetError();
+                if err != 0 {
+                    log::error!("switchgl: glGetError() = {err:#x} (frame {})", self.scene_frames);
+                }
+            }
+            let ok = eglSwapBuffers(self.display, self.surface);
+            if ok == 0 && self.scene_frames % 600 == 1 {
+                log::error!("switchgl: eglSwapBuffers failed: {:#x}", eglGetError());
+            }
         }
     }
 
@@ -416,16 +445,29 @@ unsafe fn init_egl() -> anyhow::Result<(EGLDisplay, EGLSurface, EGLContext)> {
     }
 
     // libnx hands us the console's default window; EGL treats it as the
-    // native window handle.
+    // native window handle. Left alone, the NWindow picks its own buffer
+    // size (1280x720), while everything here assumes 1920x1080 -- the
+    // viewport then overhangs the buffer and the whole frame renders 1.5x
+    // too large with the right/bottom cut off (found on the Ryujinx
+    // bring-up as a consistent 1.5x stretch in every screenshot).
+    let nw = nwindowGetDefault();
+    let rc = nwindowSetDimensions(nw, DEFAULT_WIDTH, DEFAULT_HEIGHT);
+    if rc != 0 {
+        log::warn!("nwindowSetDimensions({DEFAULT_WIDTH}x{DEFAULT_HEIGHT}) failed: {rc:#x}");
+    }
     let surface = eglCreateWindowSurface(
         display,
         config,
-        nwindowGetDefault() as EGLNativeWindowType,
+        nw as EGLNativeWindowType,
         std::ptr::null(),
     );
     if surface == EGL_NO_SURFACE {
         anyhow::bail!("eglCreateWindowSurface failed: 0x{:x}", eglGetError());
     }
+    let (mut sw, mut sh): (EGLint, EGLint) = (0, 0);
+    eglQuerySurface(display, surface, EGL_WIDTH, &mut sw);
+    eglQuerySurface(display, surface, EGL_HEIGHT, &mut sh);
+    log::info!("egl surface: {}x{}", sw, sh);
 
     let context_attrs = [EGL_CONTEXT_CLIENT_VERSION, 2, EGL_NONE];
     let context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attrs.as_ptr());
