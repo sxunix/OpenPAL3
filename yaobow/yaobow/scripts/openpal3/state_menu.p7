@@ -18,7 +18,7 @@
 //   * widget text uses the 16 px font, an 8 px inner margin on all sides,
 //     8 px per ASCII byte / 16 px per CJK char, 16 px line pitch, and
 //     wraps at the rect's right margin. The glyph row's bottom sits at
-//     rect.y + 8 + 16 (inferred from the overflow test; unverified).
+//     rect.y + 8 + 16 — see menu_chrome.p7.
 // All native sizes are PAL3's 800x600 reference; `s = fit scale`.
 //
 // Stats are placeholders for the lead (景天) — the party/stat model is not

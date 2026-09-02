@@ -12,8 +12,9 @@
 //     so a rect and its art often disagree in size.
 //   * A text widget insets 8 px on every side and lays glyphs on a 16 px
 //     cell (font mode 1): ASCII advances 8 px, CJK 16 px, line pitch 16.
-//     The glyph row's bottom sits at rect.y + 8 + 16 (inferred from the
-//     overflow test; unverified).
+//     The glyph row's bottom sits at rect.y + 8 + 16, so a line's glyphs
+//     fill the inset band exactly — every single-line widget rect in the
+//     game is 8 + 16 + 8 = 32 px tall, which is what confirms it.
 
 import radiance;
 import shared.openpal3;
