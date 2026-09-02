@@ -159,6 +159,37 @@ pub struct PersistentState {
     /// fought, so it stays empty until combat exists.
     #[serde(default)]
     seen_monsters: BTreeSet<u32>,
+    /// Which menu pages the story has unlocked. The original keeps these
+    /// as three bytes next to each other — `DAT_00de5f92` 魔剑养成 (opcode
+    /// 109), `DAT_00de5f93` 降妖谱 (110), `DAT_00de625a` 魔剑技 (138) — all
+    /// three cleared on a new game and written to the save file.
+    #[serde(default)]
+    features: BTreeSet<Feature>,
+    /// 龙葵 blue (0) or red (1) — opcode 42. Saved by the original as part
+    /// of the actor's model name; kept here because reloading a scene
+    /// rebuilds ROLE_2 from the default table.
+    #[serde(default)]
+    longkui_mode: i32,
+    /// 花盈's behaviour — opcode 88: 0 隐藏, 1 跟随雪见, 2 单飞. The original
+    /// keeps it in `DAT_00c10ccc` and writes it to the save file.
+    #[serde(default)]
+    huaying_mode: i32,
+    /// 合成术 recipes the party has learnt — opcode 111.
+    #[serde(default)]
+    compose_recipes: BTreeSet<u32>,
+}
+
+/// A menu page the story unlocks part-way through.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
+pub enum Feature {
+    /// 魔剑养成 — `DAT_00de5f92`.
+    SwordPurifying,
+    /// 降妖谱 — `DAT_00de5f93`.
+    JusticeBook,
+    /// 魔剑技 — `DAT_00de625a`.
+    SwordSkill,
 }
 
 impl PersistentState {
@@ -177,7 +208,47 @@ impl PersistentState {
             play_time: 0.,
             lineup: HashMap::new(),
             seen_monsters: BTreeSet::new(),
+            features: BTreeSet::new(),
+            longkui_mode: 0,
+            huaying_mode: 0,
+            compose_recipes: BTreeSet::new(),
         }
+    }
+
+    pub fn feature_enabled(&self, feature: Feature) -> bool {
+        self.features.contains(&feature)
+    }
+
+    pub fn set_feature(&mut self, feature: Feature, enabled: bool) {
+        if enabled {
+            self.features.insert(feature);
+        } else {
+            self.features.remove(&feature);
+        }
+    }
+
+    pub fn longkui_mode(&self) -> i32 {
+        self.longkui_mode
+    }
+
+    pub fn set_longkui_mode(&mut self, mode: i32) {
+        self.longkui_mode = mode;
+    }
+
+    pub fn huaying_mode(&self) -> i32 {
+        self.huaying_mode
+    }
+
+    pub fn set_huaying_mode(&mut self, mode: i32) {
+        self.huaying_mode = mode;
+    }
+
+    pub fn learn_compose(&mut self, recipe_id: u32) -> bool {
+        self.compose_recipes.insert(recipe_id)
+    }
+
+    pub fn compose_recipes(&self) -> &BTreeSet<u32> {
+        &self.compose_recipes
     }
 
     /// Fill in the party from the game database if it hasn't been set up

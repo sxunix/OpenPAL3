@@ -90,6 +90,10 @@ pub struct RoleController {
     patrol_forward: RefCell<bool>,
     patrol_mode: RefCell<u32>,
     patrol_speed: RefCell<f32>,
+    // 205 RoleOverlap (`LAB_00437ae0`) stores its argument at role+0x5b0
+    // and does nothing else. Kept here so the collision code can read it
+    // once role-vs-role blocking exists.
+    overlap: RefCell<i32>,
 }
 
 ComObject_RoleController!(super::RoleController);
@@ -158,6 +162,7 @@ impl RoleController {
             patrol_forward: RefCell::new(true),
             patrol_mode: RefCell::new(0),
             patrol_speed: RefCell::new(0.),
+            overlap: RefCell::new(0),
         }
     }
 
@@ -182,6 +187,16 @@ impl RoleController {
         }
 
         self.entity.set_visible(active);
+    }
+
+    /// 205 RoleOverlap's argument. Nothing reads it yet — role-vs-role
+    /// blocking does not exist — but the script's intent is recorded.
+    pub fn overlap(&self) -> i32 {
+        *self.overlap.borrow()
+    }
+
+    pub fn set_overlap(&self, overlap: i32) {
+        *self.overlap.borrow_mut() = overlap;
     }
 
     pub fn proc_id(&self) -> i32 {

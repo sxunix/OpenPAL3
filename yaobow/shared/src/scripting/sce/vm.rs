@@ -489,8 +489,8 @@ impl SceProcContext {
                 command!(self, SceCommandSetRoleAtt, actor_id: i32, attribute: i32, value: i32)
             }
             42 => {
-                // LK_Ghost
-                nop_command!(self, LK_Ghost, i32)
+                // LK_Ghost — 龙葵形象
+                command!(self, SceCommandLongKuiMode, mode: i32)
             }
             43 => {
                 // FavorAdd
@@ -630,8 +630,8 @@ impl SceProcContext {
                 nop_command!(self, OpenDoor, i32)
             }
             88 => {
-                // HY_Mode
-                nop_command!(self, HY_Mode, i32)
+                // HY_Mode — 花盈行为模式
+                command!(self, SceCommandHuaYingMode, mode: i32)
             }
             89 => {
                 // HY_FLY
@@ -688,16 +688,18 @@ impl SceProcContext {
                 command!(self, SceCommandGetAppr, var: i16)
             }
             109 => {
-                // Enable_Sword
-                nop_command!(self, Enable_Sword, i32)
+                // Enable_Sword — 魔剑养成
+                let enable = data_read::i32(self);
+                Some(Box::new(SceCommandEnableFeature::sword_purifying(enable)))
             }
             110 => {
-                // Enable_JusticeBook
-                nop_command!(self, Enable_JusticeBook, i32)
+                // Enable_JusticeBook — 降妖谱
+                let enable = data_read::i32(self);
+                Some(Box::new(SceCommandEnableFeature::justice_book(enable)))
             }
             111 => {
-                // Specify_Compos
-                nop_command!(self, Specify_Compos, i32)
+                // Specify_Compos — 学会合成术
+                command!(self, SceCommandLearnCompose, recipe_id: i32)
             }
             112 => {
                 // MiniGame: 山洞初体验
@@ -769,8 +771,8 @@ impl SceProcContext {
                 nop_command!(self, RotateInv, i32, i32, i32)
             }
             130 => {
-                // Dist
-                nop_command!(self, Dist, i16, i16)
+                // Dist — 变量相减取绝对值
+                command!(self, SceCommandVarDistract, lhs: i16, rhs: i16)
             }
             131 => {
                 // CombatNotGameOver
@@ -801,8 +803,9 @@ impl SceProcContext {
                 command!(self, SceCommandIfInTeam, role_id: i32)
             }
             138 => {
-                // Enable_SwordSkill
-                nop_command!(self, Enable_SwordSkill, i32)
+                // Enable_SwordSkill — 魔剑技
+                let enable = data_read::i32(self);
+                Some(Box::new(SceCommandEnableFeature::sword_skill(enable)))
             }
             140 => {
                 // Snow
@@ -825,8 +828,8 @@ impl SceProcContext {
                 nop_command!(self, CEft, i32)
             }
             145 => {
-                // AverageLv
-                nop_command!(self, AverageLv, i32, i32)
+                // AverageLv — 等级取队伍平均值加增量
+                command!(self, SceCommandAverageLevel, actor_id: i32, delta: i32)
             }
             146 => {
                 // 冶炼菜单
@@ -841,12 +844,12 @@ impl SceProcContext {
                 nop_command!(self, CEft_Load, i32)
             }
             149 => {
-                // GiveCloth
-                nop_command!(self, GiveCloth, i16)
+                // GiveCloth — 把背包里的服装给龙葵
+                command!(self, SceCommandGiveCloth, var: i16)
             }
             150 => {
-                // LoadAct
-                nop_command!(self, LoadAct, i32, string)
+                // LoadAct — 预加载角色动作
+                command!(self, SceCommandLoadAction, role_id: i32, action: string)
             }
             152 => {
                 // WaterMagic
@@ -905,11 +908,11 @@ impl SceProcContext {
             }
             205 => {
                 // RoleOverlap
-                nop_command!(self, RoleOverlap, i32, i32)
+                command!(self, SceCommandRoleOverlap, role_id: i32, value: i32)
             }
             206 => {
                 // RoleScale
-                nop_command!(self, RoleScale, i32, f32)
+                command!(self, SceCommandRoleScale, role_id: i32, scale: f32)
             }
             207 => {
                 // RoleActAutoStand

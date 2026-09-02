@@ -60,6 +60,7 @@ mod set_bigmap_element;
 mod show_chat_rest;
 mod start_hidefight;
 mod stop_music;
+mod story_flags;
 mod testgoto;
 pub mod vars;
 
@@ -140,6 +141,11 @@ pub use set_bigmap_element::SceCommandSetBigMapElement;
 pub use show_chat_rest::SceCommandShowChatRest;
 pub use start_hidefight::SceCommandStartHideFight;
 pub use stop_music::SceCommandStopMusic;
+pub use story_flags::{
+    SceCommandAverageLevel, SceCommandEnableFeature, SceCommandGiveCloth, SceCommandHuaYingMode,
+    SceCommandLearnCompose, SceCommandLoadAction, SceCommandLongKuiMode, SceCommandRoleOverlap,
+    SceCommandRoleScale, SceCommandVarDistract,
+};
 pub use testgoto::SceCommandTestGoto;
 
 use radiance::math::Vec3;
