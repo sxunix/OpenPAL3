@@ -900,8 +900,12 @@ impl SceProcContext {
                 nop_command!(self, CameraFree, i32)
             }
             251 => {
-                // ObjectMove
-                nop_command!(self, ObjectMove, i32, f32, f32, f32, f32)
+                // CameraFocusOnSceneObject — one object id, not the five
+                // parameters this arm used to read. The dispatch table at
+                // 0xd8d414 gives handler 0x435350 a single int argument,
+                // and reading four extra dwords desynced the instruction
+                // stream for the rest of the proc.
+                nop_command!(self, CameraFocusOnSceneObject, i32)
             }
             default => {
                 error!("Unsupported command: {}", default);
