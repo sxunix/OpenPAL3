@@ -23,6 +23,8 @@ import yaobow.openpal3.state_menu as state_menu;
 import yaobow.openpal3.system_menu as system_menu;
 // 道具 page, opened from the same toolbar.
 import yaobow.openpal3.item_menu as item_menu;
+// 装备 page, likewise.
+import yaobow.openpal3.equip_menu as equip_menu;
 
 // Panel size as a fraction of framebuffer height. bk.tga is 128x128; the
 // whole HUD is scaled uniformly so its on-screen height = lh * this.
@@ -72,6 +74,8 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     pub sys_mode: int = -1,
     // 道具 page state (-1 closed; otherwise item_menu's packed state).
     pub prop_state: int = -1,
+    // 装备 page state (-1 closed; otherwise equip_menu's packed state).
+    pub equip_state: int = -1,
 ) {
     pub fn render_status(self: refmut<Self>, ui: box<radiance.IUiHost>, dt: float) -> int {
         let lw = ui.display_size_x() as float;
@@ -132,7 +136,25 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
         // System button switches to it.
         let sys_was_open = self.sys_mode >= 0;
         let prop_was_open = self.prop_state >= 0;
-        if sys_was_open {
+        let equip_was_open = self.equip_state >= 0;
+        if equip_was_open {
+            let r = equip_menu.paint_equip_menu(
+                ui, self.atlas, self.pal3, pmx, pmy, down, click, self.equip_state);
+            if r == equip_menu.TO_STATE {
+                self.equip_state = -1;
+                self.menu_open = true;
+            } else if r == equip_menu.TO_PROP {
+                self.equip_state = -1;
+                self.prop_state = 0;
+            } else if r == equip_menu.TO_SYSTEM {
+                self.equip_state = -1;
+                self.sys_mode = 0;
+            } else if r == equip_menu.CLOSE {
+                self.equip_state = -1;
+            } else {
+                self.equip_state = r;
+            }
+        } else if sys_was_open {
             self.sys_mode = system_menu.paint_system_menu(
                 ui, self.atlas, self.pal3, pmx, pmy, down, click, self.sys_mode);
         } else if prop_was_open {
@@ -141,6 +163,9 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
             if r == item_menu.TO_STATE {
                 self.prop_state = -1;
                 self.menu_open = true;
+            } else if r == item_menu.TO_EQUIP {
+                self.prop_state = -1;
+                self.equip_state = 0;
             } else if r == item_menu.TO_SYSTEM {
                 self.prop_state = -1;
                 self.sys_mode = 0;
@@ -158,6 +183,9 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
             } else if r == 3 {
                 self.menu_open = false;
                 self.prop_state = 0;
+            } else if r == 4 {
+                self.menu_open = false;
+                self.equip_state = 0;
             } else {
                 self.menu_open = r == 1;
             }
@@ -165,7 +193,9 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
 
         // Avatar click opens the menu (only when it wasn't already open, so
         // the menu's own outside-click dismissal isn't instantly undone).
-        if !was_open && !sys_was_open && !prop_was_open && over && click { self.menu_open = true; }
+        if !was_open && !sys_was_open && !prop_was_open && !equip_was_open && over && click {
+            self.menu_open = true;
+        }
         self.prev_down = down;
         0
     }
@@ -180,7 +210,8 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     // Whether the character-status menu is open. The adventure director
     // polls this each frame to freeze the game world while it's up.
     pub fn is_menu_open(self: refmut<Self>) -> bool {
-        return self.menu_open || self.sys_mode >= 0 || self.prop_state >= 0;
+        return self.menu_open || self.sys_mode >= 0 || self.prop_state >= 0
+            || self.equip_state >= 0;
     }
 }
 

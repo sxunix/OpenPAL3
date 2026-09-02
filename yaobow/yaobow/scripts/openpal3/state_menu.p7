@@ -129,7 +129,7 @@ let SPR_BAR: string     = "ui/GameMainUI/Communal/Bar.tga";
 // Compose the menu over the live scene + HUD. `mx`/`my` are the cursor,
 // `click` is the left-button rising edge this frame.
 // Returns 1 to stay open, 0 to close, 2 to switch to the system menu,
-// 3 to switch to the 道具 page.
+// 3 to the 道具 page, 4 to the 装备 page.
 pub fn paint_state_menu(
     ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
     pal3: box<openpal3.IPal3Service>,
@@ -269,6 +269,7 @@ pub fn paint_state_menu(
     if hit == chrome.TOOLBAR_EXIT { return 0; }
     if hit == chrome.PAGE_SYSTEM { return 2; }
     if hit == chrome.PAGE_PROP { return 3; }
+    if hit == chrome.PAGE_EQUIP { return 4; }
     return 1;
 }
 

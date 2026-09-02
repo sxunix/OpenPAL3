@@ -89,6 +89,7 @@ let INK_R: float = 0.05; let INK_G: float = 0.12; let INK_B: float = 0.0;
 pub let CLOSE: int = -1;
 pub let TO_STATE: int = -2;
 pub let TO_SYSTEM: int = -3;
+pub let TO_EQUIP: int = -4;
 
 // The page's whole state packed into one int, because the script bridge
 // hands screens a single value: tab * 10000 + scroll * 100 + selection.
@@ -253,6 +254,7 @@ pub fn paint_item_menu(
         chrome.PAGE_PROP);
     if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
     if hit == chrome.PAGE_STATE { return TO_STATE; }
+    if hit == chrome.PAGE_EQUIP { return TO_EQUIP; }
     if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
 
     return pack(tab, scroll, sel);
