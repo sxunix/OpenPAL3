@@ -55,6 +55,10 @@ let DLG_DECORATION_BOTTOM_OVER_DIALOG: float = 6.0;
 // Vertical inset of the first text row below the dialog's top edge, as a
 // fraction of framebuffer height (original ~0.026H, ~25px at H=960).
 let DLG_TEXT_TOP_PAD_FACTOR: float        = 0.026;
+// Horizontal inset of the text from the dialog's left frame line, applied
+// whenever no left avatar reserves that space -- without it the first
+// column sits on the border sprite.
+let DLG_TEXT_LEFT_PAD_FACTOR: float       = 0.026;
 
 pub struct[openpal3.IPal3DialogRenderer] Pal3DialogRendererImpl(
     pub sprites: box<scripting_services.ISpriteService>,
@@ -171,6 +175,11 @@ pub struct[openpal3.IPal3DialogRenderer] Pal3DialogRendererImpl(
             if !avatar_at_right {
                 text_x = dialog_x + avatar_width;
             }
+        }
+        if !has_avatar || avatar_at_right {
+            let left_pad = lh * DLG_TEXT_LEFT_PAD_FACTOR;
+            text_x = text_x + left_pad;
+            text_width = text_width - left_pad;
         }
 
         // Declare the whole dialog box as a widget tree: the 9-slice
