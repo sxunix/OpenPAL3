@@ -25,6 +25,8 @@ import yaobow.openpal3.system_menu as system_menu;
 import yaobow.openpal3.item_menu as item_menu;
 // 装备 page, likewise.
 import yaobow.openpal3.equip_menu as equip_menu;
+// 仙术 page, likewise.
+import yaobow.openpal3.magic_menu as magic_menu;
 
 // Panel size as a fraction of framebuffer height. bk.tga is 128x128; the
 // whole HUD is scaled uniformly so its on-screen height = lh * this.
@@ -76,6 +78,8 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     pub prop_state: int = -1,
     // 装备 page state (-1 closed; otherwise equip_menu's packed state).
     pub equip_state: int = -1,
+    // 仙术 page state (-1 closed; otherwise magic_menu's packed state).
+    pub magic_state: int = -1,
 ) {
     pub fn render_status(self: refmut<Self>, ui: box<radiance.IUiHost>, dt: float) -> int {
         let lw = ui.display_size_x() as float;
@@ -137,7 +141,28 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
         let sys_was_open = self.sys_mode >= 0;
         let prop_was_open = self.prop_state >= 0;
         let equip_was_open = self.equip_state >= 0;
-        if equip_was_open {
+        let magic_was_open = self.magic_state >= 0;
+        if magic_was_open {
+            let r = magic_menu.paint_magic_menu(
+                ui, self.atlas, self.pal3, pmx, pmy, down, click, self.magic_state);
+            if r == magic_menu.TO_STATE {
+                self.magic_state = -1;
+                self.menu_open = true;
+            } else if r == magic_menu.TO_PROP {
+                self.magic_state = -1;
+                self.prop_state = 0;
+            } else if r == magic_menu.TO_EQUIP {
+                self.magic_state = -1;
+                self.equip_state = 0;
+            } else if r == magic_menu.TO_SYSTEM {
+                self.magic_state = -1;
+                self.sys_mode = 0;
+            } else if r == magic_menu.CLOSE {
+                self.magic_state = -1;
+            } else {
+                self.magic_state = r;
+            }
+        } else if equip_was_open {
             let r = equip_menu.paint_equip_menu(
                 ui, self.atlas, self.pal3, pmx, pmy, down, click, self.equip_state);
             if r == equip_menu.TO_STATE {
@@ -146,6 +171,9 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
             } else if r == equip_menu.TO_PROP {
                 self.equip_state = -1;
                 self.prop_state = 0;
+            } else if r == equip_menu.TO_MAGIC {
+                self.equip_state = -1;
+                self.magic_state = 0;
             } else if r == equip_menu.TO_SYSTEM {
                 self.equip_state = -1;
                 self.sys_mode = 0;
@@ -166,6 +194,9 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
             } else if r == item_menu.TO_EQUIP {
                 self.prop_state = -1;
                 self.equip_state = 0;
+            } else if r == item_menu.TO_MAGIC {
+                self.prop_state = -1;
+                self.magic_state = 0;
             } else if r == item_menu.TO_SYSTEM {
                 self.prop_state = -1;
                 self.sys_mode = 0;
@@ -186,6 +217,9 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
             } else if r == 4 {
                 self.menu_open = false;
                 self.equip_state = 0;
+            } else if r == 5 {
+                self.menu_open = false;
+                self.magic_state = 0;
             } else {
                 self.menu_open = r == 1;
             }
@@ -193,7 +227,8 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
 
         // Avatar click opens the menu (only when it wasn't already open, so
         // the menu's own outside-click dismissal isn't instantly undone).
-        if !was_open && !sys_was_open && !prop_was_open && !equip_was_open && over && click {
+        if !was_open && !sys_was_open && !prop_was_open && !equip_was_open && !magic_was_open
+            && over && click {
             self.menu_open = true;
         }
         self.prev_down = down;
@@ -211,7 +246,7 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     // polls this each frame to freeze the game world while it's up.
     pub fn is_menu_open(self: refmut<Self>) -> bool {
         return self.menu_open || self.sys_mode >= 0 || self.prop_state >= 0
-            || self.equip_state >= 0;
+            || self.equip_state >= 0 || self.magic_state >= 0;
     }
 }
 

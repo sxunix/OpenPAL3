@@ -1,0 +1,338 @@
+// PAL3 in-game 仙术 (magic) page — standalone overlay, reached from any
+// of the other full-screen pages' toolbars.
+//
+// Geometry from the original PAL3.exe (v1.4): page init `FUN_0048d5d0`,
+// grids + headers `FUN_0048a390`, list refill `FUN_0048b8f0`, the cast
+// action `FUN_0048c610`, arrange `FUN_0048a010`. Write-up in
+// switch/re/notes/magic_page_layout.md.
+//
+// This page is laid out differently from 道具 / 装备: a wider list frame,
+// nine rows of 29 px instead of twelve of 23, NO scrollbar, eight tabs,
+// and a column set that changes per tab.
+//
+// How the tabs filter: the original does not filter live — it pre-sorts
+// each character's skills into eight buckets and a tab just picks one.
+// The code that fills those buckets was not located, so the predicate
+// below is reconstructed from the database, where it partitions all 187
+// skills exactly: no element -> 技, exactly one -> that element's tab,
+// two or more -> 双. [推断, but the partition is exact: 84 + 70 + 33.]
+//
+// Not reproduced: the 合击 tab (combo skills live in their own database
+// table and are not "learned", so nothing is wired to it yet), the 3D
+// preview in the Info panel, and casting a skill outside combat.
+
+import radiance;
+import shared.openpal3;
+import radiance_scripting.ui as gui;
+import yaobow.openpal3.menu_chrome as chrome;
+
+// --- Sprites -------------------------------------------------------------
+let SPR_FRAME: string     = "ui/GameMainUI/Magic/Frame.tga";
+let SPR_INFO: string      = "ui/GameMainUI/Magic/Info.tga";
+let SPR_XS: string        = "ui/GameMainUI/Magic/xs.tga";
+let SPR_LISTFRAME: string = "ui/GameMainUI/Magic/ListFrame.tga";
+let SPR_SELECTED: string  = "ui/assistant/Communal/ListBoxSelPic.tga";
+let SPR_TAB: string       = "ui/GameMainUI/Magic/";
+// Grid art per tab: 技 uses Skill_Grid, the element/双 tabs Magic_Grid,
+// 合 Com_Grid.
+let SPR_GRID_SKILL: string = "ui/GameMainUI/Magic/Skill_Grid.tga";
+let SPR_GRID_MAGIC: string = "ui/GameMainUI/Magic/Magic_Grid.tga";
+let SPR_GRID_COMBO: string = "ui/GameMainUI/Magic/Com_Grid.tga";
+
+// --- Layout (native 800x600) ---------------------------------------------
+let INFO_X: float = 10.0;  let INFO_Y: float = 125.0;
+let XS_X: float = 18.0;    let XS_Y: float = 128.0;
+let LF_X: float = 213.0;   let LF_Y: float = 125.0;
+
+// Eight tabs, 42x50, y 124..174 — one pixel lower than the other pages.
+let TAB_Y0: float = 124.0;
+let TAB_W: float = 42.0;   let TAB_H: float = 50.0;
+let TAB_X: array<float> = [229.0, 272.0, 315.0, 358.0, 401.0, 444.0, 487.0, 529.0];
+let TAB_BASE: array<string> = ["Skill", "Shui", "Huo", "Lei", "Feng", "Tu", "Suang", "Combo"];
+// Which element (index into the database's 水火风雷土 array) each tab
+// wants; -1 for the tabs that do not select by a single element. Note the
+// on-screen order is 水火雷风土, not the database's 水火风雷土.
+let TAB_ELEMENT: array<int> = [-1, 0, 1, 3, 2, 4, -1, -1];
+let TAB_SKILL: int = 0;
+let TAB_DUAL: int = 6;
+let TAB_COMBO: int = 7;
+
+// Nine rows at (232, 207+29k, 565, 236+29k); the list rect is
+// (232,207,566,485) and the row height the widget reports is 30.
+let ROWS: int = 9;
+let GRID_X: float = 232.0;
+let GRID_Y0: float = 207.0;
+let ROW_PITCH: float = 29.0;
+let ROW_H: float = 30.0;
+let GRID_W: float = 333.0;
+// A row is 30 px tall against a 16 px cell, so centre the text. [推断]
+let ROW_TEXT_DY: float = 7.0;
+
+// Column widths per tab: 技 = Name 276 + Att 92; element/双 = Name 150 +
+// Att 72 + Lv 38 + UseTimes 72; 合 = three 98s + 36.
+let COL_SKILL_NAME: float = 276.0;
+let COL_MAGIC_NAME: float = 150.0;
+let COL_MAGIC_ATT: float = 72.0;
+let COL_MAGIC_LV: float = 38.0;
+
+// Header row (231,177,607,209) — 32 tall, one line.
+let HEAD_X: float = 231.0; let HEAD_Y: float = 177.0;
+
+// Info panel text.
+let NAME_X: float = 56.0;  let NAME_Y: float = 130.0;
+let DESC_X: float = 22.0;  let DESC_Y: float = 386.0;
+let DESC_WRAP: float = 156.0;
+
+let INK_R: float = 0.05; let INK_G: float = 0.12; let INK_B: float = 0.0;
+// The selected skill's name is drawn in the original's light yellow.
+let NAME_R: float = 1.0; let NAME_G: float = 0.96; let NAME_B: float = 0.56;
+
+// `IPal3Service::skill_info` selectors.
+let SK_TYPE: int = 0;
+let SK_LEVEL: int = 1;
+let SK_SP: int = 2;
+let SK_MP: int = 3;
+let SK_ELEMENTS: int = 5;
+let SK_USE_TIMES: int = 11;
+
+pub let CLOSE: int = -1;
+pub let TO_STATE: int = -2;
+pub let TO_SYSTEM: int = -3;
+pub let TO_PROP: int = -4;
+pub let TO_EQUIP: int = -5;
+
+// Packed state: member * 10000 + tab * 100 + selection. There is no
+// scrollbar on this page, so there is no scroll offset to carry.
+pub fn pack(member: int, tab: int, sel: int) -> int {
+    return member * 10000 + tab * 100 + sel;
+}
+pub fn member_of(state: int) -> int { return state / 10000; }
+pub fn tab_of(state: int) -> int { return (state - member_of(state) * 10000) / 100; }
+pub fn sel_of(state: int) -> int {
+    return state - member_of(state) * 10000 - tab_of(state) * 100;
+}
+
+pub fn paint_magic_menu(
+    ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+    pal3: box<openpal3.IPal3Service>,
+    mx: float, my: float, down: bool, click: bool, state: int,
+) -> int {
+    let lw = ui.display_size_x() as float;
+    let lh = ui.display_size_y() as float;
+    if lw <= 0.0 || lh <= 0.0 { return state; }
+
+    let viewport = gui.Rect(0.0, 0.0, lw, lh);
+    let native = gui.Size(chrome.REF_W, chrome.REF_H);
+    let canvas = viewport.fit(native);
+    let s = viewport.fit_scale(native);
+    let cw = canvas.w;
+    let ch = canvas.h;
+    let ox = canvas.x;
+    let oy = canvas.y;
+
+    ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
+
+    let party = pal3.party_size();
+    let mut member = member_of(state);
+    if member < 0 || member >= party { member = 0; }
+    let mut actor = pal3.party_actor_id(member);
+    if actor < 0 { actor = 0; }
+    let mut tab = tab_of(state);
+    if tab < 0 || tab > 7 { tab = 0; }
+    let mut sel = sel_of(state);
+
+    // ---- Panels ----------------------------------------------------------
+    chrome.sprite(ui, atlas, SPR_INFO, ox + INFO_X * s, oy + INFO_Y * s, s);
+    chrome.sprite(ui, atlas, SPR_XS, ox + XS_X * s, oy + XS_Y * s, s);
+    chrome.sprite(ui, atlas, SPR_LISTFRAME, ox + LF_X * s, oy + LF_Y * s, s);
+    chrome.paint_frame(ui, atlas, pal3, SPR_FRAME, ox, oy, s);
+
+    // The party column doubles as the character selector, same as 装备.
+    let picked = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, click, true);
+    if picked >= 0 && picked != member {
+        member = picked;
+        actor = pal3.party_actor_id(member);
+        if actor < 0 { actor = 0; }
+        sel = 0;
+    }
+
+    // ---- Tabs ------------------------------------------------------------
+    let mut new_tab = tab;
+    for i in Range(0, 8) {
+        let tx0 = ox + TAB_X[i] * s;
+        let ty0 = oy + TAB_Y0 * s;
+        let hover = mx >= tx0 && mx <= tx0 + TAB_W * s
+            && my >= ty0 && my <= ty0 + TAB_H * s;
+        let mut variant = "0";
+        if i == tab { variant = "1"; }
+        else { if hover { variant = "2"; } }
+        chrome.sprite(ui, atlas, SPR_TAB + TAB_BASE[i] + variant + ".tga", tx0, ty0, s);
+        if hover && click { new_tab = i; }
+    }
+    if new_tab != tab {
+        tab = new_tab;
+        sel = 0;
+    }
+
+    // ---- The tab's skills ------------------------------------------------
+    // The character's learned skills, narrowed to this tab's bucket. The
+    // list is short (a character never learns more than a few dozen), so
+    // it is rescanned per row rather than materialised.
+    let count = count_in_tab(pal3, actor, tab);
+    if sel >= count { sel = count - 1; }
+    if sel < 0 { sel = 0; }
+
+    // ---- Rows ------------------------------------------------------------
+    let grid_x0 = ox + GRID_X * s;
+    for k in Range(0, ROWS) {
+        let ry0 = oy + (GRID_Y0 + (k as float) * ROW_PITCH) * s;
+        chrome.sprite(ui, atlas, grid_sprite(tab), grid_x0, ry0, s);
+
+        if k < count {
+            let id = nth_in_tab(pal3, actor, tab, k);
+            let hover = mx >= grid_x0 && mx <= grid_x0 + GRID_W * s
+                && my >= ry0 && my <= ry0 + ROW_H * s;
+            if k == sel {
+                chrome.sprite(ui, atlas, SPR_SELECTED, grid_x0, ry0, s);
+            }
+            if hover && click { sel = k; }
+
+            let ty = ry0 + ROW_TEXT_DY * s;
+            pal3.draw_skill_name(ui, id, grid_x0 + chrome.TXT_MARGIN * s, ty,
+                chrome.TXT * s, INK_R, INK_G, INK_B, 1.0);
+
+            // 技 shows name + one wide column; the element tabs also show
+            // the skill's level and how many more uses it needs.
+            // [We show the 气/神 cost in the `Att` column; what the
+            // original puts there is not yet identified.]
+            let sp = pal3.skill_info(id, SK_SP);
+            let mp = pal3.skill_info(id, SK_MP);
+            let mut cost = "";
+            if sp > 0 { cost = "气" + chrome.int_str(sp); }
+            if mp > 0 {
+                if cost != "" { cost = cost + " "; }
+                cost = cost + "神" + chrome.int_str(mp);
+            }
+
+            if tab == TAB_SKILL {
+                chrome.widget_text(ui, grid_x0 + COL_SKILL_NAME * s, ry0,
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B, cost);
+            } else {
+                chrome.widget_text(ui, grid_x0 + COL_MAGIC_NAME * s, ry0,
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B, cost);
+                chrome.widget_text(ui, grid_x0 + (COL_MAGIC_NAME + COL_MAGIC_ATT) * s, ry0,
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B,
+                    chrome.int_str(pal3.skill_info(id, SK_LEVEL)));
+                chrome.widget_text(ui,
+                    grid_x0 + (COL_MAGIC_NAME + COL_MAGIC_ATT + COL_MAGIC_LV) * s, ry0,
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B,
+                    chrome.int_str(pal3.skill_info(id, SK_USE_TIMES)));
+            }
+        }
+    }
+
+    // ---- Header ----------------------------------------------------------
+    chrome.widget_text(ui, ox + HEAD_X * s, oy + HEAD_Y * s, 0.0, s,
+        INK_R, INK_G, INK_B, header_for(tab));
+
+    // ---- The selected skill ----------------------------------------------
+    if count > 0 {
+        let id = nth_in_tab(pal3, actor, tab, sel);
+        pal3.draw_skill_name(ui,
+            id,
+            ox + (NAME_X + chrome.TXT_MARGIN) * s,
+            oy + (NAME_Y + chrome.TXT_MARGIN) * s,
+            chrome.TXT * s, NAME_R, NAME_G, NAME_B, 1.0);
+        pal3.draw_skill_description(ui,
+            id,
+            ox + (DESC_X + chrome.TXT_MARGIN) * s,
+            oy + (DESC_Y + chrome.TXT_MARGIN) * s,
+            chrome.TXT * s, DESC_WRAP * s, INK_R, INK_G, INK_B, 1.0);
+    }
+
+    // ---- Bottom action toolbar -------------------------------------------
+    let hit = chrome.paint_toolbar(ui, atlas, ox, oy, cw, ch, s, mx, my, down, click,
+        chrome.PAGE_MAGIC);
+    if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
+    if hit == chrome.PAGE_STATE { return TO_STATE; }
+    if hit == chrome.PAGE_PROP { return TO_PROP; }
+    if hit == chrome.PAGE_EQUIP { return TO_EQUIP; }
+    if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
+
+    return pack(member, tab, sel);
+}
+
+// How many of this character's skills fall under `tab`.
+fn count_in_tab(pal3: box<openpal3.IPal3Service>, actor: int, tab: int) -> int {
+    let learned = pal3.skill_count(actor);
+    let mut n = 0;
+    let mut i = 0;
+    while i < learned {
+        let id = pal3.skill_id(actor, i);
+        if id >= 0 && belongs_to_tab(pal3, id, tab) { n = n + 1; }
+        i = i + 1;
+    }
+    return n;
+}
+
+// The `index`-th of them, or -1.
+fn nth_in_tab(pal3: box<openpal3.IPal3Service>, actor: int, tab: int, index: int) -> int {
+    let learned = pal3.skill_count(actor);
+    let mut n = 0;
+    let mut i = 0;
+    while i < learned {
+        let id = pal3.skill_id(actor, i);
+        if id >= 0 && belongs_to_tab(pal3, id, tab) {
+            if n == index { return id; }
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Which tab a learned skill shows up under. See the header note for why
+// this is reconstructed rather than read out of the original.
+fn belongs_to_tab(pal3: box<openpal3.IPal3Service>, skill_id: int, tab: int) -> bool {
+    // Combo skills are a separate database table, not learned skills.
+    if tab == TAB_COMBO { return false; }
+
+    let mask = pal3.skill_info(skill_id, SK_ELEMENTS);
+    let n = bit_count(mask);
+    if tab == TAB_SKILL { return n == 0; }
+    if tab == TAB_DUAL { return n >= 2; }
+    if n != 1 { return false; }
+    return mask == pow2(TAB_ELEMENT[tab]);
+}
+
+fn pow2(n: int) -> int {
+    let mut v = 1;
+    let mut i = 0;
+    while i < n { v = v * 2; i = i + 1; }
+    return v;
+}
+
+fn bit_count(mask: int) -> int {
+    let mut n = 0;
+    let mut m = mask;
+    while m > 0 {
+        let half = m / 2;
+        if m - half * 2 == 1 { n = n + 1; }
+        m = half;
+    }
+    return n;
+}
+
+fn grid_sprite(tab: int) -> string {
+    if tab == TAB_SKILL { return SPR_GRID_SKILL; }
+    if tab == TAB_COMBO { return SPR_GRID_COMBO; }
+    return SPR_GRID_MAGIC;
+}
+
+// The original lays out four separate header widgets per tab; we draw one
+// padded line, the way the other pages' headers work.
+fn header_for(tab: int) -> string {
+    if tab == TAB_SKILL { return "名称                                    消耗"; }
+    if tab == TAB_COMBO { return "参与者"; }
+    return "名称                     消耗        等级    使用次数";
+}
