@@ -7,7 +7,6 @@ use imgui::Ui;
 use radiance::comdef::ISceneManager;
 use std::rc::Rc;
 
-
 #[derive(Debug, Clone)]
 pub struct SceCommandLoadScene {
     name: String,

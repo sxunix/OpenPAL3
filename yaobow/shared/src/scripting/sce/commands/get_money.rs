@@ -16,10 +16,11 @@ impl SceCommand for SceCommandGetMoney {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
+        let money = state.global_state().persistent_state().money();
         state
             .context_mut()
             .current_proc_context_mut()
-            .set_local(self.var, 99999);
+            .set_local(self.var, money);
         true
     }
 }

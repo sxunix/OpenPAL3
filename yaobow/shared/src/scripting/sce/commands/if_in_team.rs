@@ -3,7 +3,6 @@ use crosscom::ComRc;
 use imgui::Ui;
 use radiance::comdef::ISceneManager;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct SceCommandIfInTeam {
     role_id: i32,
@@ -17,7 +16,11 @@ impl SceCommand for SceCommandIfInTeam {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
-        state.global_state_mut().fop_state_mut().push_value(true);
+        let in_team = state
+            .global_state()
+            .persistent_state()
+            .is_in_team(self.role_id as u32);
+        state.global_state_mut().fop_state_mut().push_value(in_team);
         true
     }
 }

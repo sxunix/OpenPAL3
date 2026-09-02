@@ -486,19 +486,19 @@ impl SceProcContext {
             }
             43 => {
                 // FavorAdd
-                nop_command!(self, FavorAdd, i32, i32)
+                command!(self, SceCommandFavorAdd, actor_id: i32, delta: i32)
             }
             46 => {
                 // AddItem
-                nop_command!(self, AddItem, i32, i32)
+                command!(self, SceCommandAddItem, item_id: i32, count: i32)
             }
             47 => {
                 // RemoveItem
-                nop_command!(self, RemoveItem, i32)
+                command!(self, SceCommandRemoveItem, item_id: i32)
             }
             48 => {
                 // AddMoney
-                nop_command!(self, AddMoney, i32)
+                command!(self, SceCommandAddMoney, delta: i32)
             }
             49 => {
                 // GetMoney
@@ -506,19 +506,22 @@ impl SceProcContext {
             }
             50 => {
                 // GetFavor
-                nop_command!(self, GetFavor, i16, i32)
+                command!(self, SceCommandGetFavor, var: i16, actor_id: i32)
             }
             51 => {
                 // AddSkill
-                nop_command!(self, AddSkill, i32, i32)
+                command!(self, SceCommandAddSkill, actor_id: i32, skill_id: i32)
             }
-            52 => {
-                // GetFavorite
-                nop_command!(self, GetFavorite, i16)
+            52 | 53 => {
+                // 52 好感最高的角色, 53 好感最低的角色 -- same payload,
+                // so the opcode itself picks the direction.
+                let var = data_read::i16(self);
+                debug!("GetFavorite {:?} most={}", var, cmd == 52);
+                Some(Box::new(SceCommandGetFavorite::new(var, cmd == 52)))
             }
             54 => {
                 // FullRoleAtt
-                nop_command!(self, FullRoleAtt, i32, i32)
+                command!(self, SceCommandFullRoleAtt, actor_id: i32, attribute: i32)
             }
             62 => {
                 // Dlg
@@ -788,7 +791,7 @@ impl SceProcContext {
             }
             153 => {
                 // FullTeamAtt
-                nop_command!(self, FullTeamAtt)
+                command!(self, SceCommandFullTeamAtt)
             }
             155 => {
                 // CameraYaw
@@ -819,7 +822,7 @@ impl SceProcContext {
             }
             202 => {
                 // InTeam
-                nop_command!(self, InTeam, i32, i32)
+                command!(self, SceCommandInTeam, actor_id: i32, is_in: i32)
             }
             203 => {
                 // RoleSetLayer

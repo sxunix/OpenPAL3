@@ -26,11 +26,13 @@ mod have_item;
 mod hy_fly;
 mod idle;
 mod if_in_team;
+mod inventory;
 mod load_scene;
 mod movie;
 mod music;
 mod nop;
 mod object_active;
+mod party;
 mod play_sound;
 mod quake;
 mod rnd;
@@ -89,11 +91,16 @@ pub use have_item::SceCommandHaveItem;
 pub use hy_fly::SceCommandHyFly;
 pub use idle::SceCommandIdle;
 pub use if_in_team::SceCommandIfInTeam;
+pub use inventory::{SceCommandAddItem, SceCommandAddMoney, SceCommandRemoveItem};
 pub use load_scene::SceCommandLoadScene;
 pub use movie::SceCommandMovie;
 pub use music::SceCommandMusic;
 pub use nop::SceCommandNop;
 pub use object_active::SceCommandObjectActive;
+pub use party::{
+    SceCommandAddSkill, SceCommandFavorAdd, SceCommandFullRoleAtt, SceCommandFullTeamAtt,
+    SceCommandGetFavor, SceCommandGetFavorite, SceCommandInTeam,
+};
 pub use play_sound::SceCommandPlaySound;
 pub use quake::SceCommandQuake;
 pub use rnd::SceCommandRnd;
