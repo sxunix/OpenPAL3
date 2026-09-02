@@ -23,3 +23,6 @@
   工具栏顺序/间距、控件渲染模型（贴图原生尺寸贴左上角、16px 字体 + 8px 内边距）、
   进度条内边距、角色结构偏移、AssisLang 标签索引。
   已落实到 `yaobow/yaobow/scripts/openpal3/state_menu.p7`。
+- `notes/item_page_layout.md` —— 道具页（GameMainUI/Prop）全部矩形：六个分类页签
+  及其 → ItemType 过滤映射、12 行列表网格与滚动条、说明面板、三个排序按钮、
+  顶部队伍条；并指出状态页笔记里 TimeMoney 的 x 坐标应为 596 而非 579。
