@@ -9,18 +9,29 @@ use super::game_db::{BASE_FAVOR, FAVOR_ACTOR_IDS, GameDb, MAX_LEVEL, PLAYER_ACTO
 
 pub const PAL3_APP_NAME: &str = "OpenPAL3";
 
-/// 衣服 / 帽子 / 鞋子 / 饰品 / 武器.
-pub const EQUIPMENT_SLOTS: usize = 5;
+/// A character wears six pieces, not five — 饰品 has two slots. The order
+/// is the original role struct's (`role + 0x354`, 12 bytes per entry).
+pub const EQUIPMENT_SLOTS: usize = 6;
 
-/// The `ItemType` of the first equipment slot (衣服); the five equippable
-/// types are contiguous from there.
-const FIRST_EQUIPMENT_ITEM_TYPE: u8 = 7;
+pub const SLOT_HAT: usize = 0;
+pub const SLOT_CLOTH: usize = 1;
+pub const SLOT_SHOES: usize = 2;
+pub const SLOT_ADORN1: usize = 3;
+pub const SLOT_ADORN2: usize = 4;
+pub const SLOT_WEAPON: usize = 5;
 
-/// Which equipment slot an item type goes in, or `None` when the item is
-/// not equipment.
-pub fn equipment_slot_of_type(item_type: u8) -> Option<usize> {
-    let slot = item_type.checked_sub(FIRST_EQUIPMENT_ITEM_TYPE)? as usize;
-    (slot < EQUIPMENT_SLOTS).then_some(slot)
+/// Which slots an item type may go in, in preference order. Empty when the
+/// item is not equipment. 饰品 (`ItemType::Wearable`) is the only type with
+/// two slots.
+pub fn equipment_slots_for_type(item_type: u8) -> &'static [usize] {
+    match item_type {
+        7 => &[SLOT_CLOTH],
+        8 => &[SLOT_HAT],
+        9 => &[SLOT_SHOES],
+        10 => &[SLOT_ADORN1, SLOT_ADORN2],
+        11 => &[SLOT_WEAPON],
+        _ => &[],
+    }
 }
 
 /// One playable character's mutable state.
@@ -58,9 +69,9 @@ pub struct RoleState {
     /// Learned skill ids, in acquisition order.
     pub skills: Vec<u32>,
 
-    /// Item id per slot, 0 = empty. Slot order follows the database's
-    /// `ItemType`: 0 衣服 · 1 帽子 · 2 鞋子 · 3 饰品 · 4 武器, i.e.
-    /// `slot = item_type - 7` (see [`equipment_slot_of_type`]).
+    /// Item id per slot, 0 = empty:
+    /// 0 帽 · 1 衣 · 2 鞋 · 3 饰品一 · 4 饰品二 · 5 武器
+    /// (see [`equipment_slots_for_type`]).
     pub equipment: [u32; EQUIPMENT_SLOTS],
 }
 
@@ -259,16 +270,41 @@ impl PersistentState {
         self.team.retain(|id| *id != actor_id);
     }
 
-    /// Put `item_id` in the slot its type belongs to, returning whatever
-    /// was worn there (`None` when the slot was empty). Purely a slot
-    /// swap: the caller decides what happens to the two items in the
-    /// inventory.
+    /// Wear `item_id`, taking it out of the inventory and putting whatever
+    /// it displaces back in — which is what the original does
+    /// (`FUN_00469eb0`: inventory count −1 for the new piece, +1 for the
+    /// old one). Picks the first free slot the type allows, else swaps the
+    /// first. Returns the displaced item id, or `None` when nothing was
+    /// displaced. Fails (returns `None` without changing anything) when the
+    /// item is not equipment, the character is unknown, or none is held.
     pub fn equip(&mut self, actor_id: u32, item_id: u32, item_type: u8) -> Option<u32> {
-        let slot = equipment_slot_of_type(item_type)?;
+        let slots = equipment_slots_for_type(item_type);
+        if slots.is_empty() || self.item_count(item_id) == 0 || !self.roles.contains_key(&actor_id)
+        {
+            return None;
+        }
+
         let role = self.roles.get_mut(&actor_id)?;
+        let slot = slots
+            .iter()
+            .copied()
+            .find(|s| role.equipment[*s] == 0)
+            .unwrap_or(slots[0]);
         let previous = role.equipment[slot];
         role.equipment[slot] = item_id;
+
+        self.remove_item(item_id, 1);
+        if previous != 0 {
+            self.add_item(previous, 1);
+        }
         (previous != 0).then_some(previous)
+    }
+
+    /// Take a slot's piece off and put it back in the inventory.
+    pub fn unequip_to_inventory(&mut self, actor_id: u32, slot: usize) -> Option<u32> {
+        let item_id = self.unequip(actor_id, slot)?;
+        self.add_item(item_id, 1);
+        Some(item_id)
     }
 
     /// Empty one slot, returning what was in it.
@@ -280,6 +316,12 @@ impl PersistentState {
         let previous = role.equipment[slot];
         role.equipment[slot] = 0;
         (previous != 0).then_some(previous)
+    }
+
+    /// Which slot `item_id` is worn in, if any.
+    pub fn equipped_slot_of(&self, actor_id: u32, item_id: u32) -> Option<usize> {
+        let role = self.roles.get(&actor_id)?;
+        role.equipment.iter().position(|id| *id == item_id)
     }
 
     /// Item id worn in `slot`, or `None` when it is empty.
@@ -448,10 +490,15 @@ mod tests {
 
     #[test]
     fn equipment_slots_follow_item_type() {
-        assert_eq!(equipment_slot_of_type(7), Some(0), "衣服");
-        assert_eq!(equipment_slot_of_type(11), Some(4), "武器");
-        assert_eq!(equipment_slot_of_type(1), None, "治疗品不是装备");
-        assert_eq!(equipment_slot_of_type(12), None, "尸块不是装备");
+        assert_eq!(equipment_slots_for_type(7), &[SLOT_CLOTH]);
+        assert_eq!(equipment_slots_for_type(11), &[SLOT_WEAPON]);
+        assert_eq!(
+            equipment_slots_for_type(10),
+            &[SLOT_ADORN1, SLOT_ADORN2],
+            "饰品有两个位置"
+        );
+        assert!(equipment_slots_for_type(1).is_empty(), "治疗品不是装备");
+        assert!(equipment_slots_for_type(12).is_empty(), "尸块不是装备");
 
         let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
         state.roles.insert(
@@ -475,15 +522,31 @@ mod tests {
             },
         );
 
+        // Nothing happens without the item in hand.
+        assert_eq!(state.equip(0, 80009, 8), None);
+        assert_eq!(state.equipped(0, SLOT_HAT), None);
+
+        state.add_item(80009, 1);
         assert_eq!(state.equip(0, 80009, 8), None, "帽子槽本来是空的");
-        assert_eq!(state.equipped(0, 1), Some(80009));
-        assert_eq!(
-            state.equip(0, 80010, 8),
-            Some(80009),
-            "换下的帽子交还给调用方"
-        );
-        assert_eq!(state.unequip(0, 1), Some(80010));
-        assert_eq!(state.equipped(0, 1), None);
+        assert_eq!(state.equipped(0, SLOT_HAT), Some(80009));
+        assert_eq!(state.item_count(80009), 0, "戴上后离开背包");
+
+        state.add_item(80010, 1);
+        assert_eq!(state.equip(0, 80010, 8), Some(80009), "换下旧的那顶");
+        assert_eq!(state.item_count(80009), 1, "换下来的回到背包");
+        assert_eq!(state.equipped(0, SLOT_HAT), Some(80010));
+
+        // 饰品 fills its second slot before swapping the first.
+        state.add_item(80200, 1);
+        state.add_item(80201, 1);
+        assert_eq!(state.equip(0, 80200, 10), None);
+        assert_eq!(state.equipped(0, SLOT_ADORN1), Some(80200));
+        assert_eq!(state.equip(0, 80201, 10), None, "第二个饰品位还空着");
+        assert_eq!(state.equipped(0, SLOT_ADORN2), Some(80201));
+
+        assert_eq!(state.unequip_to_inventory(0, SLOT_HAT), Some(80010));
+        assert_eq!(state.equipped(0, SLOT_HAT), None);
+        assert_eq!(state.item_count(80010), 1);
     }
 
     #[test]
