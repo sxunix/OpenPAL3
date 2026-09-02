@@ -26,3 +26,7 @@
 - `notes/item_page_layout.md` —— 道具页（GameMainUI/Prop）全部矩形：六个分类页签
   及其 → ItemType 过滤映射、12 行列表网格与滚动条、说明面板、三个排序按钮、
   顶部队伍条；并指出状态页笔记里 TimeMoney 的 x 坐标应为 596 而非 579。
+- `notes/equip_page_layout.md` —— 装备页（GameMainUI/Equip）：六个装备槽（武器 +
+  帽衣鞋 + 饰品×2）与槽图标、五个分类页签 → 过滤类映射、属性比较区、
+  五名角色的面板与 SelRole 按钮，以及穿装备函数 `FUN_00469eb0` 的语义
+  （类型/可用角色校验、旧装备退回背包、角色结构 +0x354 的装备数组）。
