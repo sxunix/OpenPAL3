@@ -32,6 +32,7 @@ use radiance::input::{InputEngine, SyntheticInputBridge};
 use radiance::radiance::{UiLayerBand, UiLayerHandle};
 use radiance::video::Codec as VideoCodec;
 use radiance_scripting::comdef::services::IAudioSource;
+use radiance_scripting::comdef::services::ISprite;
 use radiance_scripting::comdef::services::ISpriteService;
 use radiance_scripting::comdef::services::IVideoHandle;
 use radiance_scripting::services::AudioSource;
@@ -78,6 +79,49 @@ const STAT_ATTACK: i32 = 14;
 const STAT_DEFENSE: i32 = 15;
 const STAT_SPEED: i32 = 16;
 const STAT_LUCK: i32 = 17;
+
+/// `IPal3Service::item_info` selectors.
+const ITEM_FIELD_TYPE: i32 = 0;
+const ITEM_FIELD_WEAPON_TYPE: i32 = 1;
+const ITEM_FIELD_PRICE: i32 = 2;
+const ITEM_FIELD_ANCIENT_VALUE: i32 = 3;
+const ITEM_FIELD_PLACE_OF_USE: i32 = 4;
+const ITEM_FIELD_TARGET_RANGE: i32 = 5;
+const ITEM_FIELD_SPECIAL_TYPE: i32 = 6;
+
+/// Where the item icons live in the UI atlas. The database stores only
+/// the numeric suffix (`"1"`, `"6"`, …).
+const ITEM_ICON_PREFIX: &str = "ui/GameMainUI/Prop/Icon/";
+
+/// Lay out `text` the way an original text widget does: a fixed cell of
+/// `cell` logical pixels, ASCII advancing half a cell and CJK a whole
+/// one, wrapping at `wrap_px`. `\n` breaks a line; so does the `$` the
+/// item descriptions use to separate flavour text from the stat line.
+fn wrap_widget_text(text: &str, cell: f32, wrap_px: f32) -> Vec<String> {
+    let half = cell / 2.;
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut width = 0.;
+
+    for ch in text.chars() {
+        if ch == '\n' || ch == '$' {
+            lines.push(std::mem::take(&mut line));
+            width = 0.;
+            continue;
+        }
+        let advance = if ch.is_ascii() { half } else { cell };
+        if wrap_px > 0. && width + advance > wrap_px && !line.is_empty() {
+            lines.push(std::mem::take(&mut line));
+            width = 0.;
+        }
+        line.push(ch);
+        width += advance;
+    }
+    if !line.is_empty() {
+        lines.push(line);
+    }
+    lines
+}
 
 /// Map a script/registry game ordinal to the PAL3-family `GameType`.
 /// PAL3 and PAL3A share `Pal3Service`; anything else defaults to PAL3.
@@ -555,6 +599,40 @@ impl Pal3Service {
         self.active_game_db.replace(db);
     }
 
+    /// Item stacks matching `type_mask` (bit N = `ItemType` N; -1 for
+    /// everything), ascending by item id. Items the database doesn't know
+    /// are dropped rather than shown as blanks.
+    fn matching_stacks(&self, type_mask: i32) -> Vec<u32> {
+        let db = self.active_game_db.borrow();
+        let Some(db) = db.as_ref() else {
+            return Vec::new();
+        };
+        self.with_persistent_state(Vec::new(), |s| {
+            s.inventory()
+                .keys()
+                .copied()
+                .filter(|id| {
+                    db.item(*id)
+                        .map(|item| type_mask & (1 << item.item_type as i32) != 0)
+                        .unwrap_or(false)
+                })
+                .collect()
+        })
+    }
+
+    /// Pull one text field off an item's database row.
+    fn item_text(
+        &self,
+        item_id: i32,
+        f: impl FnOnce(&fileformats::pal3::gdb::GameItemInfo) -> Option<String>,
+    ) -> Option<String> {
+        if item_id < 0 {
+            return None;
+        }
+        let db = self.active_game_db.borrow();
+        f(db.as_ref()?.item(item_id as u32)?)
+    }
+
     /// Run `f` against the active adventure's save state, or return
     /// `default` when no adventure is running. Uses `try_borrow` because
     /// this is called mid-paint and must never abort the frame.
@@ -784,6 +862,95 @@ impl IPal3ServiceImpl for Pal3Service {
         SAVE_SLOT_COUNT
     }
 
+    fn inventory_size(&self, type_mask: i32) -> i32 {
+        self.matching_stacks(type_mask).len() as i32
+    }
+
+    fn inventory_item_id(&self, type_mask: i32, index: i32) -> i32 {
+        if index < 0 {
+            return -1;
+        }
+        self.matching_stacks(type_mask)
+            .get(index as usize)
+            .map(|id| *id as i32)
+            .unwrap_or(-1)
+    }
+
+    fn item_count(&self, item_id: i32) -> i32 {
+        if item_id < 0 {
+            return 0;
+        }
+        self.with_persistent_state(0, |s| s.item_count(item_id as u32) as i32)
+    }
+
+    fn item_info(&self, item_id: i32, field: i32) -> i32 {
+        let db = self.active_game_db.borrow();
+        let Some(item) = db.as_ref().and_then(|db| db.item(item_id.max(0) as u32)) else {
+            return 0;
+        };
+        match field {
+            ITEM_FIELD_TYPE => item.item_type as i32,
+            ITEM_FIELD_WEAPON_TYPE => item.weapon_type as i32,
+            ITEM_FIELD_PRICE => item.price,
+            ITEM_FIELD_ANCIENT_VALUE => item.ancient_value,
+            ITEM_FIELD_PLACE_OF_USE => item.place_of_use_type as i32,
+            ITEM_FIELD_TARGET_RANGE => item.target_range_type as i32,
+            ITEM_FIELD_SPECIAL_TYPE => item.item_special_type as i32,
+            _ => 0,
+        }
+    }
+
+    fn draw_item_name(
+        &self,
+        ui: ComRc<IUiHost>,
+        item_id: i32,
+        x: f32,
+        y: f32,
+        size: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        let Some(name) = self.item_text(item_id, |item| item.name.as_str().ok()) else {
+            return;
+        };
+        ui.text_at_sized(x, y, size, r, g, b, a, &name);
+    }
+
+    fn draw_item_description(
+        &self,
+        ui: ComRc<IUiHost>,
+        item_id: i32,
+        x: f32,
+        y: f32,
+        size: f32,
+        wrap_px: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        let Some(desc) = self.item_text(item_id, |item| item.description.as_str().ok()) else {
+            return;
+        };
+        for (line_no, line) in wrap_widget_text(&desc, size, wrap_px).iter().enumerate() {
+            ui.text_at_sized(x, y + line_no as f32 * size, size, r, g, b, a, line);
+        }
+    }
+
+    fn item_icon(&self, atlas: ComRc<IPal3UiAtlas>, item_id: i32) -> Option<ComRc<ISprite>> {
+        let icon = self.item_text(item_id, |item| item.icon_name.as_str().ok())?;
+        if icon.is_empty() {
+            return None;
+        }
+        let name = format!("{}{}.tga", ITEM_ICON_PREFIX, icon);
+        if !atlas.has_sprite(&name) {
+            return None;
+        }
+        atlas.sprite(&name)
+    }
+
     fn party_size(&self) -> i32 {
         self.with_persistent_state(0, |s| s.team().len() as i32)
     }
@@ -959,5 +1126,26 @@ impl IPal3ServiceImpl for Pal3Service {
         )?;
         self.intro_played.set(true);
         Some(VideoHandle::create(cache, player, size.0, size.1))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_widget_text;
+
+    #[test]
+    fn wraps_on_cell_widths_and_separators() {
+        // 16px cell: a CJK char is 16px wide, ASCII 8px. A 64px area
+        // therefore fits four CJK characters per line.
+        let lines = wrap_widget_text("青竹加乌钢丝编成的斗笠", 16., 64.);
+        assert_eq!(lines, vec!["青竹加乌", "钢丝编成", "的斗笠"]);
+
+        // `$` separates flavour text from the stat line, `\n` ends it.
+        let lines = wrap_widget_text("耐用。$防+28 速-1\n", 16., 0.);
+        assert_eq!(lines, vec!["耐用。", "防+28 速-1"]);
+
+        // ASCII packs two per cell.
+        let lines = wrap_widget_text("abcdefgh", 16., 32.);
+        assert_eq!(lines, vec!["abcd", "efgh"]);
     }
 }
