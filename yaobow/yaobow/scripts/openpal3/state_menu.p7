@@ -2,24 +2,28 @@
 //
 // Opened from the top-right HUD avatar (status_ui.p7) or via the agent
 // server (`POST /v1/menu/status {"open":true}` -> IPal3StatusRenderer
-// .set_menu_open). Reference: generated/pal3_menu.png.
+// .set_menu_open).
 //
 // Composed entirely from PAL3's `UI_opt.tli` atlas (resolved by name
-// through `IPal3UiAtlas`). The real atlas paths live under
-// `ui/GameMainState/*` and `ui/GameMainCommunal/*` — NOT the
-// `ui/gamemainui/state/*` the first port guessed (those keys don't
-// exist, which is why the old menu rendered blank).
+// through `IPal3UiAtlas`).
 //
-// Layout is anchored, not letterboxed, so it tracks any window aspect:
-//   * left character panel  (Shade + Portrait + 五行 + exp) docked left
-//   * bottom action toolbar (StpBar + StpCtl buttons) full width
-//   * right 状态 dragon panel (Frame + money/time) docked right
-// All native sizes are PAL3's 800x600 reference; `s = height/600`.
+// Geometry comes from the original PAL3.exe (v1.4) state page code —
+// FUN_004a4220 (page), FUN_004a26d0 (toolbar), FUN_004a4c20 (arrange),
+// FUN_004a3730 (head plate), FUN_004a3360 (portrait panel); see
+// 仙剑奇侠传3/re/notes/state_page_layout.md. Two rules from that code shape
+// everything below:
+//   * a widget's rect is only a placement point + hit area: the sprite is
+//     drawn at its NATIVE size anchored at the rect's top-left, never
+//     stretched into the rect;
+//   * widget text uses the 16 px font, an 8 px inner margin on all sides,
+//     8 px per ASCII byte / 16 px per CJK char, 16 px line pitch, and
+//     wraps at the rect's right margin. The glyph row's bottom sits at
+//     rect.y + 8 + 16 (inferred from the overflow test; unverified).
+// All native sizes are PAL3's 800x600 reference; `s = fit scale`.
 //
-// Stats are placeholders for the lead (景天) matching the reference
-// screenshot — the party/stat model is not yet threaded into p7. Returns
-// whether the menu should stay open (false = the exit button or an
-// outside click dismissed it).
+// Stats are placeholders for the lead (景天) — the party/stat model is not
+// yet threaded into p7. Returns whether the menu should stay open
+// (false = the exit button dismissed it).
 
 import radiance;
 import shared.openpal3;
@@ -36,93 +40,119 @@ import radiance_scripting.ui as gui;
 let REF_W: float = 800.0;
 let REF_H: float = 600.0;
 
-// Left character panel (GameMainState/Shade.tga is 149x530). Native coords.
+// Widget text: 16 px font, 8 px inner margin, 16 px line pitch.
+let TXT: float = 16.0;
+let TXT_MARGIN: float = 8.0;
+
+// Left character panel base rect (0,0,148,530); Shade.tga is 149x530.
 let LP_X: float = 0.0;
 let LP_Y: float = 0.0;
-let LP_W: float = 150.0;
-let LP_H: float = 530.0;
+let LP_STEP: float = 148.0;       // next party member's panel.
+let SHADE_W: float = 149.0;
+let SHADE_H: float = 530.0;
 
-// Standing portrait (GameMainState/Portrait0.tga is 128x288).
-let POR_W: float = 128.0;
-let POR_H: float = 288.0;
-let POR_TOP: float = 24.0;
+// Standing portrait: x 10..138; y 30..318 for most roles (Portrait0 is
+// 128x288), role 2 (龙葵) 32..315 (130x283), role 4 (长卿) 16..317 (128x301).
+let POR_X: float = 10.0;
 
-// 五行 numbers sit just under each element glyph baked into Shade's
-// pentagram. Panel-local native coords (origin = panel top-left),
-// calibrated against the rendered Shade panel.
-let WX_SHUI_X: float = 72.0;  let WX_SHUI_Y: float = 344.0;
-let WX_TU_X: float   = 36.0;  let WX_TU_Y: float   = 380.0;
-let WX_HUO_X: float  = 112.0; let WX_HUO_Y: float  = 380.0;
-let WX_FENG_X: float = 48.0;  let WX_FENG_Y: float = 426.0;
-let WX_LEI_X: float  = 104.0; let WX_LEI_Y: float  = 426.0;
+// 五行 value text rects (150x32 each, panel-local). The exe hands the
+// widget rect's top-left; the glyph's top-left is +8,+8 from it.
+let WX_SHUI_X: float = 63.0;  let WX_SHUI_Y: float = 335.0;
+let WX_HUO_X: float  = 113.0; let WX_HUO_Y: float  = 370.0;
+let WX_FENG_X: float = 36.0;  let WX_FENG_Y: float = 420.0;
+let WX_LEI_X: float  = 95.0;  let WX_LEI_Y: float  = 420.0;
+let WX_TU_X: float   = 17.0;  let WX_TU_Y: float   = 370.0;
 
-// Left-panel text, panel-local native coords (origin = panel top-left).
-// 等级 (top-right) and the two experience lines (near the bottom).
-let LV_X: float       = 109.0; let LV_Y: float       = 6.0;
-let EXP_CUR_X: float  = 8.0;   let EXP_CUR_Y: float  = 500.0;
-let EXP_NEXT_X: float = 8.0;   let EXP_NEXT_Y: float = 516.0;
+// 等级 rect (106,3,138,141): 32 wide minus margins leaves one CJK char per
+// line, which is how the original gets vertical text.
+let LV_X: float = 106.0; let LV_Y: float = 3.0;
+// Experience rects (10,444,148,508) and (10,480,148,544): "%s\n  %d" —
+// label line, then the value indented by two spaces (16 px).
+let EXP_X: float = 10.0;
+let EXP1_Y: float = 444.0;
+let EXP2_Y: float = 480.0;
+let EXP_VAL_INDENT: float = 16.0;
 
-// Money + game-time text, plate-local native coords (origin = TimeMoney
-// plate top-left).
-let MONEY_X: float = 30.0; let MONEY_Y: float = 2.0;
-let TIME_X: float  = 78.0; let TIME_Y: float  = 24.0;
+// Money / time text widget rects (absolute): (618,-4,738,28), (668,16,748,48).
+let MONEY_X: float = 618.0; let MONEY_Y: float = -4.0;
+let TIME_X: float  = 668.0; let TIME_Y: float  = 16.0;
 
-// Bottom toolbar (StpBar* are 57 tall; StpCtl buttons 110x50). Native.
-let TB_H: float = 57.0;
-let TB_Y: float = 543.0;          // 600 - 57, docked to the canvas bottom.
-let TB_LEFT_W: float = 256.0;     // StpBarL native width.
-let TB_RIGHT_W: float = 32.0;     // StpBarR native width.
-let TB_BTN_W: float = 92.0;
+// Bottom toolbar: StpBarL (0,543)-(256,600), StpBarM to 768, StpBarR to 800;
+// Effect.tga (256x54) at (0,546) between the bar and the buttons; eight
+// 110x50 buttons at x0 = 38 + 88n, y 546; hit rects (x0+35,551)-(x1-36,591).
+let TB_Y: float = 543.0;
+let TB_LEFT_W: float = 256.0;
+let TB_RIGHT_W: float = 32.0;
+let TB_EFFECT_X: float = 0.0;
+let TB_EFFECT_Y: float = 546.0;
+let TB_BTN_W: float = 110.0;
 let TB_BTN_H: float = 50.0;
-let TB_FIRST_X: float = 78.0;
-let TB_GAP: float = 90.0;
+let TB_BTN_X0: float = 38.0;
+let TB_BTN_Y: float = 546.0;
+let TB_STEP: float = 88.0;
+let TB_HIT_DX: float = 35.0;      // hit rect inset from the button's left edge...
+let TB_HIT_W: float = 39.0;       // ...and its width; y 551..591.
+let TB_HIT_Y0: float = 551.0;
+let TB_HIT_Y1: float = 591.0;
 
-// Right 状态 dragon panel (GameMainState/Frame.tga is 195x526). Native.
-let FR_W: float = 195.0;
-let FR_H: float = 526.0;
-let FR_X: float = 590.0;          // 800 - 195, docked to the canvas right.
-let FR_Y: float = 20.0;
-// TimeMoney plate (GameMainCommunal/TimeMoney.tga is 204x64). Native.
-let TM_W: float = 204.0;
-let TM_H: float = 64.0;
-let TM_X: float = 596.0;          // 800 - 204.
-let TM_Y: float = 2.0;
+// Empty party-member slots: NoBodyFrame (146x176) rects start right after
+// the last present member's panel, (147,0) for a one-member party, then
+// x += 148 until four columns are filled.
+let NB_X0: float = 147.0;
+let NB_STEP: float = 148.0;
 
-// Right-edge vertical border bar (GameMainCommunal/Frame_Line.tga, 16x526).
-// The State `Frame.tga` art carries its own left + top border but not the
-// right edge; this thin cyan bar caps the panel's right side. Offsets are
-// native px relative to the Frame panel's top-RIGHT corner so it tracks
-// `FR_X`/`FR_W`/`FR_Y` when those are tuned.
-let FRL_W: float = 15.0;
-let FRL_H: float = 526.0;
-let FRL_DX: float = 0.0;          // shift left (+) from the panel right edge.
-let FRL_DY: float = 20.0;          // shift down (+) from the panel top edge.
+// Head plate base rect (686,62,796,157) for the first member; the next
+// member's plate is 122 lower. Plate-local offsets from FUN_004a3730:
+// HeadBk at (x,y) (115x100 art), RoleHead at (x+25,y+10) (65x86), the
+// vertical nameplate at (x2-27,y+36) (22x32).
+let HB_X: float = 686.0; let HB_Y: float = 62.0; let HB_X2: float = 796.0;
+let RH_DX: float = 25.0; let RH_DY: float = 10.0;
+let NM_DX2: float = -27.0; let NM_DY: float = 36.0;
+// 精/气/神 bars (Bar.tga 86x12 trough) at (x-72,y+21), (x-80,y+49),
+// (x-70,y+77); their "cur/max" text rects at (x-70, y+28k) 100x32.
+let BAR_J_DX: float = -72.0; let BAR_J_DY: float = 21.0;
+let BAR_Q_DX: float = -80.0; let BAR_Q_DY: float = 49.0;
+let BAR_S_DX: float = -70.0; let BAR_S_DY: float = 77.0;
+let BAR_TXT_DX: float = -70.0; let BAR_TXT_STEP: float = 28.0;
 
-// Exit button (GameMainCommunal/StpCtl/Exit*.tga is 37x48). Native.
+// Right 状态 dragon panel: Frame.tga (195x526) at (592,18); Frame_Line
+// (16x526) at (784,44); TimeMoney (204x64) at (579,0) over the frame top.
+let FR_X: float = 592.0; let FR_Y: float = 18.0;
+let FRL_X: float = 784.0; let FRL_Y: float = 44.0;
+let TM_X: float = 579.0; let TM_Y: float = 0.0;
+
+// Exit button (Exit*.tga 37x48) at (762,549).
 let EX_W: float = 37.0;
 let EX_H: float = 48.0;
-let EX_X: float = 763.0;          // 800 - 37 - 8.
+let EX_X: float = 762.0;
+let EX_Y: float = 549.0;
 
 // --- Atlas sprite names (case-insensitive; resolved through the TLI) -----
 let SPR_SHADE: string   = "ui/GameMainUI/State/Shade.tga";
 let SPR_FRAME: string   = "ui/GameMainUI/State/Frame.tga";
 let SPR_PORTRAIT: string = "ui/GameMainUI/State/Portrait";
+let SPR_NOBODY: string  = "ui/GameMainUI/State/NoBodyFrame.tga";
 let SPR_STPBARL: string = "ui/GameMainUI/Communal/StpCtl/StpBarL.tga";
 let SPR_STPBARM: string = "ui/GameMainUI/Communal/StpCtl/StpBarM.tga";
 let SPR_STPBARR: string = "ui/GameMainUI/Communal/StpCtl/StpBarR.tga";
+let SPR_EFFECT: string  = "ui/GameMainUI/Communal/StpCtl/Effect.tga";
 let SPR_TIMEMONEY: string = "ui/GameMainUI/Communal/TimeMoney.tga";
 let SPR_FRAME_LINE: string = "ui/GameMainUI/Communal/Frame_Line.tga";
+let SPR_HEADBK: string  = "ui/GameMainUI/Communal/HeadBk.tga";
+let SPR_ROLEHEAD: string = "ui/GameMainUI/Communal/RoleHead";
+let SPR_BAR: string     = "ui/GameMainUI/Communal/Bar.tga";
 let SPR_EXIT: string    = "ui/GameMainUI/Communal/StpCtl/Exit";
 
 // Compose the menu over the live scene + HUD. `mx`/`my` are the cursor,
 // `click` is the left-button rising edge this frame.
+// Returns 1 to stay open, 0 to close, 2 to switch to the system menu.
 pub fn paint_state_menu(
     ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
     mx: float, my: float, down: bool, click: bool,
-) -> bool {
+) -> int {
     let lw = ui.display_size_x() as float;
     let lh = ui.display_size_y() as float;
-    if lw <= 0.0 || lh <= 0.0 { return true; }
+    if lw <= 0.0 || lh <= 0.0 { return 1; }
 
     // Fit a 4:3 (800x600) canvas inside the window and centre it; the
     // leftover margins become black letterbox bars. `s` scales native px
@@ -142,59 +172,89 @@ pub fn paint_state_menu(
     ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
 
     // Lead character (景天 / role 0) — placeholder stats matching the
-    // reference until the party model is threaded through.
+    // original's level-1 opening values until live stats are threaded
+    // through from the engine.
     let role = 0;
     let level = 1;
     let exp_cur = 0;
     let exp_next = 19;
     let wx_shui = 3; let wx_tu = 2; let wx_huo = 3; let wx_feng = 6; let wx_lei = 1;
+    let jing_cur = 20; let jing_max = 88;
+    let qi_cur = 4;    let qi_max = 17;
+    let shen_cur = 7;  let shen_max = 29;
+    let present = 1;   // party members shown (only the lead for now).
 
     // ---- Left character panel --------------------------------------------
     let lp_x0 = ox + LP_X * s;
     let lp_y0 = oy + LP_Y * s;
-    let lp_x1 = lp_x0 + LP_W * s;
-    let lp_y1 = lp_y0 + LP_H * s;
-    blit(ui, atlas, SPR_SHADE, lp_x0, lp_y0, lp_x1, lp_y1);
+    sprite(ui, atlas, SPR_SHADE, lp_x0, lp_y0, s);
+    sprite(ui, atlas, SPR_PORTRAIT + int_str(role) + ".tga",
+        lp_x0 + POR_X * s, lp_y0 + portrait_top(role) * s, s);
 
-    // Standing portrait, horizontally centred in the panel.
-    let por_x0 = lp_x0 + (LP_W - POR_W) * 0.5 * s;
-    let por_y0 = lp_y0 + POR_TOP * s;
-    blit(ui, atlas, SPR_PORTRAIT + int_str(role) + ".tga",
-        por_x0, por_y0, por_x0 + POR_W * s, por_y0 + POR_H * s);
+    // Level: vertical Chinese numerals + 级, one character per line.
+    let lv_txt = cn_num(level) + "级";
+    let lv_n = lv_txt.len_chars();
+    let mut lv_i = 0;
+    while lv_i < lv_n {
+        let oc = lv_txt.char_at(lv_i);
+        if oc != null {
+            widget_text(ui, lp_x0 + LV_X * s, lp_y0 + LV_Y * s, (lv_i as float) * TXT, s,
+                0.1, 0.1, 0.1, oc!);
+        }
+        lv_i = lv_i + 1;
+    }
 
-    // Level (top-right of the panel).
-    ui.text_at_small(lp_x0 + LV_X * s, lp_y0 + LV_Y * s,
-        0.0, 0.0, 0.0, 1.0, int_str(level) + "级");
+    // 五行 values under the glyphs baked into Shade.
+    widget_text(ui, lp_x0 + WX_SHUI_X * s, lp_y0 + WX_SHUI_Y * s, 0.0, s, 0.1, 0.1, 0.1, int_str(wx_shui));
+    widget_text(ui, lp_x0 + WX_HUO_X * s,  lp_y0 + WX_HUO_Y * s,  0.0, s, 0.1, 0.1, 0.1, int_str(wx_huo));
+    widget_text(ui, lp_x0 + WX_FENG_X * s, lp_y0 + WX_FENG_Y * s, 0.0, s, 0.1, 0.1, 0.1, int_str(wx_feng));
+    widget_text(ui, lp_x0 + WX_LEI_X * s,  lp_y0 + WX_LEI_Y * s,  0.0, s, 0.1, 0.1, 0.1, int_str(wx_lei));
+    widget_text(ui, lp_x0 + WX_TU_X * s,   lp_y0 + WX_TU_Y * s,   0.0, s, 0.1, 0.1, 0.1, int_str(wx_tu));
 
-    // 五行 values, drawn under the glyphs baked into Shade.
-    let wc_r = 0.0; let wc_g = 0.0; let wc_b = 0.0;
-    ui.text_at_small(lp_x0 + WX_SHUI_X * s, lp_y0 + WX_SHUI_Y * s, wc_r, wc_g, wc_b, 1.0, int_str(wx_shui));
-    ui.text_at_small(lp_x0 + WX_TU_X * s,   lp_y0 + WX_TU_Y * s,   wc_r, wc_g, wc_b, 1.0, int_str(wx_tu));
-    ui.text_at_small(lp_x0 + WX_HUO_X * s,  lp_y0 + WX_HUO_Y * s,  wc_r, wc_g, wc_b, 1.0, int_str(wx_huo));
-    ui.text_at_small(lp_x0 + WX_FENG_X * s, lp_y0 + WX_FENG_Y * s, wc_r, wc_g, wc_b, 1.0, int_str(wx_feng));
-    ui.text_at_small(lp_x0 + WX_LEI_X * s,  lp_y0 + WX_LEI_Y * s,  wc_r, wc_g, wc_b, 1.0, int_str(wx_lei));
+    // Experience blocks: "%s\n  %d" — label, then the value on the next
+    // line indented by two spaces.
+    widget_text(ui, lp_x0 + EXP_X * s, lp_y0 + EXP1_Y * s, 0.0, s, 0.1, 0.1, 0.1, "经验值");
+    widget_text(ui, lp_x0 + (EXP_X + EXP_VAL_INDENT) * s, lp_y0 + EXP1_Y * s, TXT, s,
+        0.1, 0.1, 0.1, int_str(exp_cur));
+    widget_text(ui, lp_x0 + EXP_X * s, lp_y0 + EXP2_Y * s, 0.0, s, 0.1, 0.1, 0.1, "升级所需经验值");
+    widget_text(ui, lp_x0 + (EXP_X + EXP_VAL_INDENT) * s, lp_y0 + EXP2_Y * s, TXT, s,
+        0.1, 0.1, 0.1, int_str(exp_next));
 
-    // Experience (bottom of the panel).
-    ui.text_at_small(lp_x0 + EXP_CUR_X * s, lp_y0 + EXP_CUR_Y * s, 0.0, 0.0, 0.0, 1.0,
-        "经验值 " + int_str(exp_cur));
-    ui.text_at_small(lp_x0 + EXP_NEXT_X * s, lp_y0 + EXP_NEXT_Y * s, 0.0, 0.0, 0.0, 1.0,
-        "升级所需经验值 " + int_str(exp_next));
+    // ---- Empty party-member slots across the top ------------------------
+    // Columns continue after the present members' panels, up to four.
+    let mut col = present;
+    let mut nb_x = NB_X0 + ((present - 1) as float) * NB_STEP;
+    while col < 4 {
+        sprite(ui, atlas, SPR_NOBODY, ox + nb_x * s, oy, s);
+        nb_x = nb_x + NB_STEP;
+        col = col + 1;
+    }
 
     // ---- Right 状态 dragon panel + money/time ----------------------------
-    let fr_x0 = ox + FR_X * s;
-    let fr_y0 = oy + FR_Y * s;
-    blit(ui, atlas, SPR_FRAME, fr_x0, fr_y0, fr_x0 + FR_W * s, fr_y0 + FR_H * s);
+    sprite(ui, atlas, SPR_FRAME, ox + FR_X * s, oy + FR_Y * s, s);
+    sprite(ui, atlas, SPR_FRAME_LINE, ox + FRL_X * s, oy + FRL_Y * s, s);
 
-    // Right-edge vertical border bar, capping the panel's right side.
-    let frl_x0 = ox + (FR_X + FR_W - FRL_DX) * s;
-    let frl_y0 = oy + (FR_Y + FRL_DY) * s;
-    blit(ui, atlas, SPR_FRAME_LINE, frl_x0, frl_y0, frl_x0 + FRL_W * s, frl_y0 + FRL_H * s);
+    // Head plate for the lead: bars first (the plate's rim overlaps their
+    // right ends), then HeadBk, the role head, and the nameplate.
+    let hb_x = ox + HB_X * s;
+    let hb_y = oy + HB_Y * s;
+    draw_stat_bar(ui, atlas, "J", hb_x + BAR_J_DX * s, hb_y + BAR_J_DY * s, s, jing_cur, jing_max);
+    draw_stat_bar(ui, atlas, "Q", hb_x + BAR_Q_DX * s, hb_y + BAR_Q_DY * s, s, qi_cur, qi_max);
+    draw_stat_bar(ui, atlas, "S", hb_x + BAR_S_DX * s, hb_y + BAR_S_DY * s, s, shen_cur, shen_max);
+    widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y, 0.0, s, 0.15, 0.15, 0.15,
+        int_str(jing_cur) + "/" + int_str(jing_max));
+    widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y + BAR_TXT_STEP * s, 0.0, s, 0.15, 0.15, 0.15,
+        int_str(qi_cur) + "/" + int_str(qi_max));
+    widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y + BAR_TXT_STEP * 2.0 * s, 0.0, s, 0.15, 0.15, 0.15,
+        int_str(shen_cur) + "/" + int_str(shen_max));
+    sprite(ui, atlas, SPR_HEADBK, hb_x, hb_y, s);
+    sprite(ui, atlas, SPR_ROLEHEAD + int_str(role) + "0.tga", hb_x + RH_DX * s, hb_y + RH_DY * s, s);
+    sprite(ui, atlas, "ui/GameMainUI/Communal/" + name_tag(role) + "_name.tga",
+        ox + (HB_X2 + NM_DX2) * s, hb_y + NM_DY * s, s);
 
-    let tm_x0 = ox + TM_X * s;
-    let tm_y0 = oy + TM_Y * s;
-    blit(ui, atlas, SPR_TIMEMONEY, tm_x0, tm_y0, tm_x0 + TM_W * s, tm_y0 + TM_H * s);
-    ui.text_at_small(tm_x0 + MONEY_X * s, tm_y0 + MONEY_Y * s, 1.0, 0.95, 0.5, 1.0, "0");
-    ui.text_at_small(tm_x0 + TIME_X * s, tm_y0 + TIME_Y * s, 0.85, 1.0, 0.95, 1.0, "00:43:46");
+    sprite(ui, atlas, SPR_TIMEMONEY, ox + TM_X * s, oy + TM_Y * s, s);
+    widget_text(ui, ox + MONEY_X * s, oy + MONEY_Y * s, 0.0, s, 1.0, 0.95, 0.5, "0");
+    widget_text(ui, ox + TIME_X * s, oy + TIME_Y * s, 0.0, s, 0.85, 1.0, 0.95, "00:00:00");
 
     // ---- Bottom action toolbar -------------------------------------------
     let tb_y0 = oy + TB_Y * s;
@@ -204,34 +264,82 @@ pub fn paint_state_menu(
     blit(ui, atlas, SPR_STPBARL, ox, tb_y0, bl_x1, tb_y1);
     blit(ui, atlas, SPR_STPBARM, bl_x1, tb_y0, br_x0, tb_y1);
     blit(ui, atlas, SPR_STPBARR, br_x0, tb_y0, ox + cw, tb_y1);
+    sprite(ui, atlas, SPR_EFFECT, ox + TB_EFFECT_X * s, oy + TB_EFFECT_Y * s, s);
 
-    // Category buttons. `<base>1.tga` is the lit/selected art; the open
-    // screen (State) shows lit, the rest normal (`0`).
-    let btn_y0 = tb_y0 + (TB_H - TB_BTN_H) * 0.5 * s;
-    let bases: array<string> = [
-        "State", "Prop", "Magic", "Sword", "Equip", "JusticeBook", "Battle_Array", "System",
-    ];
-    for i in Range(0, 8) {
-        let bx0 = ox + (TB_FIRST_X + (i as float) * TB_GAP) * s;
-        let variant = if i == 0 { "1" } else { "0" };
-        blit(ui, atlas, "ui/GameMainUI/Communal/StpCtl/" + bases[i] + variant + ".tga",
-            bx0, btn_y0, bx0 + TB_BTN_W * s, btn_y0 + TB_BTN_H * s);
-    }
-
-    // Exit button, far right of the toolbar.
-    let ex_w = EX_W * s;
-    let ex_h = EX_H * s;
+    // Category buttons, `ui/GameMainUI/Communal/StpCtl/` art, in the
+    // original's order (toolbar init FUN_004a26d0). Variants: `<base>0`
+    // normal, `<base>1` lit (the open page), `<base>2` hover, `Un<base>`
+    // greyed-out. Only 状态 (this screen) and 系统 respond; the rest keep
+    // the normal art like the original but stay inert. The exit button is
+    // tested FIRST: the System medallion's art overlaps the X at the bar's
+    // right end and must not steal those clicks.
     let ex_x0 = ox + EX_X * s;
-    let ex_y0 = tb_y0 + (TB_H * s - ex_h) * 0.5;
-    let on_exit = mx >= ex_x0 && mx <= ex_x0 + ex_w && my >= ex_y0 && my <= ex_y0 + ex_h;
-    let ex_variant = if on_exit { "1" } else { "0" };
-    blit(ui, atlas, SPR_EXIT + ex_variant + ".tga", ex_x0, ex_y0, ex_x0 + ex_w, ex_y0 + ex_h);
+    let ex_y0 = oy + EX_Y * s;
+    let on_exit = mx >= ex_x0 && mx <= ex_x0 + EX_W * s && my >= ex_y0 && my <= ex_y0 + EX_H * s;
+
+    let btn_y0 = oy + TB_BTN_Y * s;
+    let hit_y0 = oy + TB_HIT_Y0 * s;
+    let hit_y1 = oy + TB_HIT_Y1 * s;
+    let bases: array<string> = [
+        "State", "Prop", "Equip", "Magic", "Battle_Array", "Sword", "JusticeBook", "System",
+    ];
+    // Pages with a working screen; the rest stay inert.
+    let implemented: array<bool> = [true, false, false, false, false, false, false, true];
+    let mut on_system = false;
+    for i in Range(0, 8) {
+        let bx0 = ox + (TB_BTN_X0 + (i as float) * TB_STEP) * s;
+        let hx0 = bx0 + TB_HIT_DX * s;
+        let hover = !on_exit
+            && mx >= hx0 && mx <= hx0 + TB_HIT_W * s
+            && my >= hit_y0 && my <= hit_y1;
+
+        let mut variant = "0";
+        if i == 0 { variant = "1"; }              // 状态 = the open page.
+        else { if hover && implemented[i] { variant = "2"; } }
+        let name = "ui/GameMainUI/Communal/StpCtl/" + bases[i] + variant + ".tga";
+        blit(ui, atlas, name, bx0, btn_y0, bx0 + TB_BTN_W * s, btn_y0 + TB_BTN_H * s);
+
+        if hover && i == 7 { on_system = true; }
+    }
+    if click && on_system { return 2; }
+
+    // Exit (关闭) button, far right of the toolbar.
+    let ex_variant = if on_exit { (if down { "2" } else { "1" }) } else { "0" };
+    blit(ui, atlas, SPR_EXIT + ex_variant + ".tga", ex_x0, ex_y0, ex_x0 + EX_W * s, ex_y0 + EX_H * s);
 
     // ---- Dismissal -------------------------------------------------------
     // The menu only closes via the exit button (no outside-click
     // dismissal) — clicks elsewhere are swallowed while it's open.
-    if click && on_exit { return false; }
-    return true;
+    if click && on_exit { return 0; }
+    return 1;
+}
+
+// Portrait rect top for a role (FUN_004a3360): 龙葵's art is 283 tall and
+// starts at 32, 长卿's is 301 tall and starts at 16, everyone else 288 at 30.
+fn portrait_top(role: int) -> float {
+    if role == 2 { return 32.0; }
+    if role == 4 { return 16.0; }
+    return 30.0;
+}
+
+// Nameplate sprite prefix per role (jt/xj/lk/zx/cq_name.tga).
+fn name_tag(role: int) -> string {
+    if role == 1 { return "xj"; }
+    if role == 2 { return "lk"; }
+    if role == 3 { return "zx"; }
+    if role == 4 { return "cq"; }
+    return "jt";
+}
+
+// Draw an atlas sprite at its native size with its top-left at (x, y) —
+// the original engine never stretches UI sprites into widget rects.
+fn sprite(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, name: string,
+          x: float, y: float, s: float) {
+    let osp = atlas.sprite(name);
+    if osp == null { return; }
+    let sp = osp!;
+    ui.image_rect(sp.com_id(), x, y, x + (sp.width() as float) * s, y + (sp.height() as float) * s,
+        sp.u0(), sp.v0(), sp.u1(), sp.v1());
 }
 
 // Blit an atlas sprite stretched into the screen rect (x0,y0)-(x1,y1).
@@ -241,6 +349,58 @@ fn blit(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, name: stri
     if osp == null { return; }
     let sp = osp!;
     ui.image_rect(sp.com_id(), x0, y0, x1, y1, sp.u0(), sp.v0(), sp.u1(), sp.v1());
+}
+
+// One line of widget text. (rx, ry) is the widget rect's top-left in
+// screen space; `line_dy` is the native y offset of this line within the
+// rect (0 for the first line, 16 for the second, ...). The glyph's
+// top-left lands at (rect.x + 8, rect.y + 8 + line_dy) — see the text
+// model at the top of the file.
+fn widget_text(ui: box<radiance.IUiHost>, rx: float, ry: float, line_dy: float, s: float,
+               r: float, g: float, b: float, text: string) {
+    ui.text_at_sized(rx + TXT_MARGIN * s, ry + (TXT_MARGIN + line_dy) * s, TXT * s,
+        r, g, b, 1.0, text);
+}
+
+// 精/气/神 bar (x, y = trough top-left): Bar.tga trough, then the
+// element's <L>_BarProgress fill from x+5, y+3, up to 80 px wide at full
+// value (progress-bar insets 4/1/-4/-3 in FUN_0043fca0 / 0x4401de).
+fn draw_stat_bar(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, kind: string,
+        x: float, y: float, s: float, cur: int, max: int) {
+    sprite(ui, atlas, SPR_BAR, x, y, s);
+    if max <= 0 { return; }
+    let mut ratio = (cur as float) / (max as float);
+    if ratio < 0.0 { ratio = 0.0; }
+    if ratio > 1.0 { ratio = 1.0; }
+    let osp = atlas.sprite("ui/GameMainUI/Communal/" + kind + "_BarProgress.tga");
+    if osp == null { return; }
+    let sp = osp!;
+    let fx0 = x + 5.0 * s;
+    let fy0 = y + 3.0 * s;
+    let u1 = sp.u0() + (sp.u1() - sp.u0()) * ratio;
+    ui.image_rect(sp.com_id(), fx0, fy0, fx0 + 80.0 * s * ratio, fy0 + (sp.height() as float) * s,
+        sp.u0(), sp.v0(), u1, sp.v1());
+}
+
+// Level number as Chinese numerals (1..99 — the original's cap).
+fn cn_num(n: int) -> string {
+    if n <= 0 { return "零"; }
+    if n < 10 { return cn_digit(n); }
+    let tens = n / 10;
+    let ones = n - tens * 10;
+    let mut out: string = "";
+    if tens > 1 { out = cn_digit(tens); }
+    out = out + "十";
+    if ones > 0 { out = out + cn_digit(ones); }
+    return out;
+}
+
+fn cn_digit(d: int) -> string {
+    if d == 1 { return "一"; } if d == 2 { return "二"; }
+    if d == 3 { return "三"; } if d == 4 { return "四"; }
+    if d == 5 { return "五"; } if d == 6 { return "六"; }
+    if d == 7 { return "七"; } if d == 8 { return "八"; }
+    return "九";
 }
 
 // stdlib-less integer -> decimal string.
