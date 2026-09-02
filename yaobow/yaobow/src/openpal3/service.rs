@@ -25,7 +25,7 @@ use agent_server::{AgentCommand, AgentError, AgentResponse};
 use crosscom::ComRc;
 use packfs::init_virtual_fs;
 use radiance::audio::Codec as AudioCodec;
-use radiance::comdef::{IApplication, IApplicationExt, IDirector, ISceneManager, IUiLayer};
+use radiance::comdef::{IApplication, IApplicationExt, IDirector, ISceneManager, IUiHost, IUiLayer};
 use radiance::input::{InputEngine, SyntheticInputBridge};
 use radiance::radiance::{UiLayerBand, UiLayerHandle};
 use radiance::video::Codec as VideoCodec;
@@ -53,10 +53,10 @@ use shared::ydirs;
 use crate::openpal3::debug_layer::OpenPal3DebugLayer;
 use crate::openpal3::sce_proc_hooks::SceRestHooks;
 
-/// Number of save slots surfaced by the load-menu overlay. Matches
-/// the rows accepted by `AdventureDirector::load` (`PersistentState`
-/// slot files `1.json`..`4.json`).
-const SAVE_SLOT_COUNT: i32 = 4;
+/// Number of save slots surfaced by the save/load overlays. The
+/// original PC release supports 36 saves (9 pages of 4 scroll rows in
+/// its System page); slot files are `1.json`..`36.json`.
+const SAVE_SLOT_COUNT: i32 = 36;
 
 /// Map a script/registry game ordinal to the PAL3-family `GameType`.
 /// PAL3 and PAL3A share `Pal3Service`; anything else defaults to PAL3.
@@ -104,6 +104,18 @@ pub struct Pal3Service {
     /// for the service lifetime so the layer stays registered; dropping
     /// it unregisters the overlay.
     debug_layer_handle: RefCell<Option<UiLayerHandle>>,
+    /// Deferred system-menu actions. The menu paints from inside the
+    /// AdventureDirector's update (its props RefCell mutably borrowed), so
+    /// saving/loading there re-borrows and aborts; the requests queue here
+    /// and `pump_pre_update` performs them outside the director borrow.
+    pending_save_slot: Cell<i32>,
+    pending_load_slot: Cell<i32>,
+    /// Lazily-parsed `datascript/SceneName.txt` — the original's own
+    /// scene-code → display-name table (per-cpk sections with a
+    /// `default` row). Keyed by (section, code), both lowercase.
+    /// Backs the save-slot labels in the system menu.
+    scene_name_table: RefCell<Option<HashMap<(String, String), String>>>,
+
     /// Once-per-process latch for the LOGO.bik intro. Set to true on
     /// the first successful `play_intro_movie` call; subsequent calls
     /// return `None` so re-entry into the start menu (e.g. exit-to-menu
@@ -128,6 +140,9 @@ impl Pal3Service {
             last_asset_path: RefCell::new(None),
             last_game: Cell::new(GameType::PAL3),
             pending_debug_install: Cell::new(false),
+            pending_save_slot: Cell::new(-1),
+            pending_load_slot: Cell::new(-1),
+            scene_name_table: RefCell::new(None),
             debug_layer_installed: Cell::new(false),
             debug_layer_handle: RefCell::new(None),
             intro_played: Cell::new(false),
@@ -218,6 +233,55 @@ impl Pal3Service {
 
     /// Returns the cached `AssetManager` for `asset_path`, mounting
     /// the vfs + building one on first use.
+    /// Resolve a save's (scene cpk, sub-scene) codes to the original's
+    /// Chinese display name via `datascript/SceneName.txt` (GBK,
+    /// per-cpk `BEGIN,<CPK>` sections of `code\t$name&` rows with a
+    /// `default` fallback — the same table the original save screen
+    /// draws its slot names from). Parsed once and cached; `None` when
+    /// no launch happened yet, the table is missing, or has no row.
+    fn scene_display_name(&self, scene: &str, sub: &str) -> Option<String> {
+        if self.scene_name_table.borrow().is_none() {
+            let asset_path = self.last_asset_path.borrow().clone()?;
+            let vfs = self.asset_manager_for(&asset_path).vfs_rc();
+            let text = common::store_ext::StoreExt2::read_to_end_from_gbk(
+                vfs.as_ref(),
+                "/basedata/basedata/datascript/SceneName.txt",
+            )
+            .ok()?;
+            let mut map: HashMap<(String, String), String> = HashMap::new();
+            let mut section = String::new();
+            for line in text.lines() {
+                let line = line.split(';').next().unwrap_or("").trim();
+                if line.is_empty() {
+                    continue;
+                }
+                if let Some(rest) = line.strip_prefix("BEGIN,") {
+                    section = rest.trim().to_lowercase();
+                    continue;
+                }
+                let (Some(dollar), Some(amp)) = (line.find('$'), line.rfind('&')) else {
+                    continue;
+                };
+                if dollar >= amp {
+                    continue;
+                }
+                let code = line[..dollar].trim().to_lowercase();
+                let name = line[dollar + 1..amp].trim().to_string();
+                if !section.is_empty() && !code.is_empty() && !name.is_empty() {
+                    map.insert((section.clone(), code), name);
+                }
+            }
+            *self.scene_name_table.borrow_mut() = Some(map);
+        }
+
+        let table = self.scene_name_table.borrow();
+        let map = table.as_ref()?;
+        let scene = scene.to_lowercase();
+        map.get(&(scene.clone(), sub.to_lowercase()))
+            .or_else(|| map.get(&(scene, "default".to_string())))
+            .cloned()
+    }
+
     fn asset_manager_for(&self, asset_path: &str) -> Rc<AssetManager> {
         if let Some(am) = self.asset_managers.borrow().get(asset_path) {
             return am.clone();
@@ -279,6 +343,29 @@ impl Pal3Service {
         if self.pending_debug_install.get() {
             self.pending_debug_install.set(false);
             self.install_debug_layer_once();
+        }
+
+        let save_slot = self.pending_save_slot.replace(-1);
+        if save_slot > 0 {
+            if let Some(adv) = self.active_adventure_director_owned() {
+                adv.inner::<AdventureDirector>()
+                    .sce_vm()
+                    .global_state()
+                    .persistent_state()
+                    .save(save_slot);
+            }
+        }
+
+        let load_slot = self.pending_load_slot.replace(-1);
+        if load_slot > 0 {
+            let asset_path = self.last_asset_path.borrow().clone();
+            if let Some(asset_path) = asset_path {
+                if let Some(director) = self.load_adventure_director(&asset_path, load_slot) {
+                    let sm = self.app.engine().borrow().scene_manager().clone();
+                    sm.set_director(director);
+                    log::info!("system menu: resumed from slot {load_slot}");
+                }
+            }
         }
     }
 
@@ -608,8 +695,68 @@ impl IPal3ServiceImpl for Pal3Service {
             .is_file()
     }
 
+    fn save_current(&self, slot: i32) -> bool {
+        // Deferred to `pump_pre_update`: this is called from a script painted
+        // inside the AdventureDirector's update, where touching the director
+        // would re-borrow its RefCell and abort.
+        if slot < 1 || slot > SAVE_SLOT_COUNT {
+            return false;
+        }
+        self.pending_save_slot.set(slot);
+        true
+    }
+
+    fn request_load_slot(&self, slot: i32) -> bool {
+        // Deferred like `save_current`; swapping the director mid-update
+        // would additionally pull the rug from under the running script.
+        if !self.save_slot_exists(slot) {
+            return false;
+        }
+        self.pending_load_slot.set(slot);
+        true
+    }
+
     fn save_slot_count(&self) -> i32 {
         SAVE_SLOT_COUNT
+    }
+
+    fn draw_slot_label(
+        &self,
+        ui: ComRc<IUiHost>,
+        slot: i32,
+        x: f32,
+        y: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        // Slot metadata is composed here (not returned) because the
+        // script bridge cannot marshal string returns. v1 shows the
+        // scene/sub-scene codes from the slot JSON; the original PC
+        // release shows a display name ("新仙界贰层") + play time +
+        // a 64x64 screenshot, which need data we don't record yet.
+        if !self.save_slot_exists(slot) {
+            return;
+        }
+        let path = ydirs::save_dir()
+            .join(PAL3_APP_NAME)
+            .join("Save")
+            .join(format!("{}.json", slot));
+        let Ok(content) = std::fs::read_to_string(&path) else {
+            return;
+        };
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&content) else {
+            return;
+        };
+        let scene = v.get("scene").and_then(|s| s.as_str()).unwrap_or("");
+        let sub = v.get("sub_scene").and_then(|s| s.as_str()).unwrap_or("");
+        let label = match self.scene_display_name(scene, sub) {
+            Some(name) => name,
+            None if scene.is_empty() => "已存档".to_string(),
+            None => format!("{} · {}", scene, sub),
+        };
+        ui.text_at_small(x, y, r, g, b, a, &label);
     }
 
     fn load_menu_bgm(&self, asset_path: &str) -> Option<ComRc<IAudioSource>> {

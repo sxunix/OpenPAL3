@@ -19,6 +19,8 @@ import shared.openpal3;
 import radiance_scripting.ui as gui;
 // Full-screen character-status (状态) overlay, popped on avatar click.
 import yaobow.openpal3.state_menu as state_menu;
+// System (系统) menu — save/load/exit, opened from the state menu toolbar.
+import yaobow.openpal3.system_menu as system_menu;
 
 // Panel size as a fraction of framebuffer height. bk.tga is 128x128; the
 // whole HUD is scaled uniformly so its on-screen height = lh * this.
@@ -51,6 +53,8 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     pub sprites: box<scripting_services.ISpriteService>,
     // In-game menu (state) atlas: resolves `ui/gamemainui/*` sprites.
     pub atlas: box<openpal3.IPal3UiAtlas>,
+    // PAL3 service, for the system menu's save/load/exit actions.
+    pub pal3: box<openpal3.IPal3Service>,
     pub bk: ?box<scripting_services.ISprite>,
     pub hp: ?box<scripting_services.ISprite>,
     pub mp: ?box<scripting_services.ISprite>,
@@ -62,6 +66,8 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     pub menu_open: bool = false,
     // Previous-frame left-button state, for click rising-edge detection.
     pub prev_down: bool = false,
+    // System-menu page (-1 closed; see system_menu.paint_system_menu).
+    pub sys_mode: int = -1,
 ) {
     pub fn render_status(self: refmut<Self>, ui: box<radiance.IUiHost>, dt: float) -> int {
         let lw = ui.display_size_x() as float;
@@ -117,15 +123,26 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
         let root = gui.Stack(items);
         gui.paint_root(root, ui, gui.make_ctx());
 
-        // The full-screen character-status menu, painted on top of the HUD.
-        if was_open {
-            let stay = state_menu.paint_state_menu(ui, self.atlas, pmx, pmy, down, click);
-            self.menu_open = stay;
+        // The full-screen menus, painted on top of the HUD. The system
+        // menu (save/load/exit) replaces the state menu when the toolbar's
+        // System button switches to it.
+        let sys_was_open = self.sys_mode >= 0;
+        if sys_was_open {
+            self.sys_mode = system_menu.paint_system_menu(
+                ui, self.atlas, self.pal3, pmx, pmy, down, click, self.sys_mode);
+        } else if was_open {
+            let r = state_menu.paint_state_menu(ui, self.atlas, pmx, pmy, down, click);
+            if r == 2 {
+                self.menu_open = false;
+                self.sys_mode = 0;
+            } else {
+                self.menu_open = r == 1;
+            }
         }
 
         // Avatar click opens the menu (only when it wasn't already open, so
         // the menu's own outside-click dismissal isn't instantly undone).
-        if !was_open && over && click { self.menu_open = true; }
+        if !was_open && !sys_was_open && over && click { self.menu_open = true; }
         self.prev_down = down;
         0
     }
@@ -140,7 +157,7 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     // Whether the character-status menu is open. The adventure director
     // polls this each frame to freeze the game world while it's up.
     pub fn is_menu_open(self: refmut<Self>) -> bool {
-        return self.menu_open;
+        return self.menu_open || self.sys_mode >= 0;
     }
 }
 
@@ -158,6 +175,7 @@ fn sprite_rect(
 pub fn make_pal3_status_renderer(
     sprites: box<scripting_services.ISpriteService>,
     atlas: box<openpal3.IPal3UiAtlas>,
+    pal3: box<openpal3.IPal3Service>,
 ) -> box<openpal3.IPal3StatusRenderer> {
     let face = "/basedata/basedata/ui/scene/face/";
     let bk = sprites.load_sprite(face + "bk.tga");
@@ -166,6 +184,6 @@ pub fn make_pal3_status_renderer(
     let face_n = sprites.load_sprite(face + "face0/face00.tga");
     let face_h = sprites.load_sprite(face + "face0/face01.tga");
     let face_c = sprites.load_sprite(face + "face0/face02.tga");
-    return box(Pal3StatusRendererImpl(sprites, atlas, bk, hp, mp, face_n, face_h, face_c,
-        false, false));
+    return box(Pal3StatusRendererImpl(sprites, atlas, pal3, bk, hp, mp, face_n, face_h, face_c,
+        false, false, -1));
 }

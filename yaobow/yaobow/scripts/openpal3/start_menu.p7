@@ -446,7 +446,11 @@ pub struct[radiance.IUiLayer, radiance.IDirector] Pal3StartMenuDirector(
         let title_x = origin_x + (LOAD_PANEL_X + 20.0) * scale;
         let title_y = origin_y + (LOAD_PANEL_Y + 8.0) * scale;
 
-        let slot_count = self.host.pal3().save_slot_count();
+        // The service now surfaces the original's 36 slots for the
+        // in-game System page; this flat title-screen list shows the
+        // first 8 until it grows the original's pager.
+        let mut slot_count = self.host.pal3().save_slot_count();
+        if slot_count > 8 { slot_count = 8; }
         let list_x = origin_x + (LOAD_PANEL_X + 30.0) * scale;
         let list_y = origin_y + (LOAD_PANEL_Y + LOAD_ROW_INSET_Y) * scale;
         let list_w = (LOAD_PANEL_W - 60.0) * scale;

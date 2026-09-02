@@ -73,9 +73,27 @@ interface IPal3Service: IUnknown {
     // overlay renders the slot as selectable.
     bool save_slot_exists(int slot);
 
-    // Number of save slots surfaced by the load-menu overlay. Fixed at
-    // 4 to mirror the original PAL3 quick-save layout.
+    // Number of save slots surfaced by the save/load overlays. 36,
+    // matching the original PC release ("仙3一次只支持36个存档" —
+    // 9 pages of 4 scroll rows in the System page).
     int save_slot_count();
+
+    // Paint the metadata line for save slot `slot` (scene + sub-scene
+    // codes from the slot's persistent-state JSON) at (x, y) on `ui`'s
+    // small game face. No-op when the slot is empty/corrupt. Lives on
+    // the service because the script bridge cannot return strings.
+    void draw_slot_label(IUiHost ui, int slot, float x, float y,
+        float r, float g, float b, float a);
+
+    // Save the ACTIVE adventure's persistent state into `slot` (1-based).
+    // False when no adventure director is active or the slot is out of
+    // range. Backs the in-game system menu's 存档 page.
+    bool save_current(int slot);
+
+    // Swap the active director for one resumed from `slot`, using the
+    // last-launched asset path. False when the slot is missing/corrupt or
+    // no PAL3 launch happened yet. Backs the system menu's 读取 page.
+    bool request_load_slot(int slot);
 
     // Load the start-menu BGM from this asset path's game vfs and return
     // it as a generic `IAudioSource` the p7 menu holds and drives
