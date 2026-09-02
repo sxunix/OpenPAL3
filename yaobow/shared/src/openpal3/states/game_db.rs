@@ -22,6 +22,16 @@ pub const PLAYER_ACTOR_IDS: [u32; 5] = [0, 1, 2, 3, 4];
 /// Highest level the original engine allows.
 pub const MAX_LEVEL: i32 = 99;
 
+/// The characters the favour (好感) system tracks. By the original's
+/// design only the female companions have favour: 雪见 1, 龙葵 2,
+/// 紫萱 3, 花楹 5 — 景天 and 长卿 are not scored.
+pub const FAVOR_ACTOR_IDS: [u32; 4] = [1, 2, 3, 5];
+
+/// Favour every tracked character starts with; scripts add and subtract
+/// from it. Taken from Pal3.Unity's favour system rather than read out of
+/// the executable, so treat the exact number as unverified.
+pub const BASE_FAVOR: i32 = 20;
+
 pub struct GameDb {
     gdb: GdbFile,
     combat_actors_by_id: HashMap<u32, usize>,

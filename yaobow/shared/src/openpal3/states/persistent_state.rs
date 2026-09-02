@@ -5,7 +5,7 @@ use std::path::PathBuf;
 
 use crate::ydirs;
 
-use super::game_db::{GameDb, MAX_LEVEL, PLAYER_ACTOR_IDS};
+use super::game_db::{BASE_FAVOR, FAVOR_ACTOR_IDS, GameDb, MAX_LEVEL, PLAYER_ACTOR_IDS};
 
 pub const PAL3_APP_NAME: &str = "OpenPAL3";
 
@@ -289,22 +289,49 @@ impl PersistentState {
         self.money = (self.money + delta).clamp(0, 999999);
     }
 
+    /// Favour towards `actor_id`, including the base every tracked
+    /// character starts with.
     pub fn favor(&self, actor_id: u32) -> i32 {
-        self.favor.get(&actor_id).copied().unwrap_or(0)
+        self.favor.get(&actor_id).copied().unwrap_or(0) + BASE_FAVOR
     }
 
+    /// Only the female companions are scored; a script aiming favour at
+    /// anyone else is a no-op (and worth knowing about).
     pub fn add_favor(&mut self, actor_id: u32, delta: i32) {
+        if !FAVOR_ACTOR_IDS.contains(&actor_id) {
+            log::warn!(
+                "FavorAdd: actor {} is not part of the favour system",
+                actor_id
+            );
+            return;
+        }
         *self.favor.entry(actor_id).or_insert(0) += delta;
     }
 
-    /// The playable character with the highest favour — the original's
+    /// The companion with the highest favour — the original's
     /// `GetFavorite`, used to pick endings and a few dialogue branches.
     pub fn favorite(&self) -> u32 {
-        PLAYER_ACTOR_IDS
-            .iter()
-            .copied()
-            .max_by_key(|id| self.favor(*id))
-            .unwrap_or(PLAYER_ACTOR_IDS[0])
+        self.favor_extreme(true)
+    }
+
+    /// The companion with the lowest favour.
+    pub fn least_favorite(&self) -> u32 {
+        self.favor_extreme(false)
+    }
+
+    fn favor_extreme(&self, most: bool) -> u32 {
+        let mut best = FAVOR_ACTOR_IDS[0];
+        for id in FAVOR_ACTOR_IDS {
+            let better = if most {
+                self.favor(id) > self.favor(best)
+            } else {
+                self.favor(id) < self.favor(best)
+            };
+            if better {
+                best = id;
+            }
+        }
+        best
     }
 
     pub fn play_time(&self) -> f32 {
@@ -355,6 +382,25 @@ mod tests {
         assert_eq!(state.money(), 0, "money never goes negative");
         state.add_money(2_000_000);
         assert_eq!(state.money(), 999999);
+    }
+
+    #[test]
+    fn favor_is_scored_for_companions_only() {
+        let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
+
+        // Everyone reads back the base value to begin with.
+        assert_eq!(state.favor(1), BASE_FAVOR);
+        assert_eq!(state.favorite(), FAVOR_ACTOR_IDS[0]);
+
+        state.add_favor(3, 15); // 紫萱
+        state.add_favor(1, 5); // 雪见
+        assert_eq!(state.favor(3), BASE_FAVOR + 15);
+        assert_eq!(state.favorite(), 3);
+        assert_eq!(state.least_favorite(), 2, "龙葵 is still untouched");
+
+        // 景天 is not part of the favour system.
+        state.add_favor(0, 100);
+        assert_eq!(state.favor(0), BASE_FAVOR);
     }
 
     #[test]

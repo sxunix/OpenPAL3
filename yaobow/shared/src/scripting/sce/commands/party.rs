@@ -5,7 +5,6 @@
 //! 54 设置主角某项属性为满值(角色ID, 属性类型) · 153 回满全队精气神 ·
 //! 202 设置主角是否在队伍中(主角ID, 1 出现 0 不出现).
 
-use crate::openpal3::states::game_db::PLAYER_ACTOR_IDS;
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use imgui::Ui;
@@ -109,11 +108,7 @@ impl SceCommand for SceCommandGetFavorite {
             if self.most {
                 p_state.favorite()
             } else {
-                PLAYER_ACTOR_IDS
-                    .iter()
-                    .copied()
-                    .min_by_key(|id| p_state.favor(*id))
-                    .unwrap_or(PLAYER_ACTOR_IDS[0])
+                p_state.least_favorite()
             }
         };
 
