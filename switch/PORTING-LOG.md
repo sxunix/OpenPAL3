@@ -729,3 +729,37 @@ reference. Remaining visible deltas: somewhat darker than the desktop
 image (the documented lighting approximations), dialogs self-advance
 without input on Switch (desktop waits for a key -- an input-edge bug
 to chase), and movies stay disabled.
+
+---
+
+# Stage 17 — combat is reachable from scripts (2026-09-02)
+
+The rules layer (`openpal3/combat/{state,actions,formulas,ai,settlement}`)
+had been transcribed from the binary but nothing called it. Now the
+SCE opcodes 73 `Combat`, 80 `CombatBoss`, 82 `CombatMaxRound`, 83
+`CombatMustFail`, 131 `CombatNotGameOver` are real commands and 132
+`GetCombat` returns the real result. `SceCommandCombat` builds the
+encounter the way `0x437280`/`0x4373d0` do (monster draw
+`FUN_018c59e0`, floor type from nav tile byte +5, `combatScn.txt`
+lookup, battle BGM from `music.txt [combat]`), drives a
+`CombatSession` per frame, and settles like `FUN_004055d0` case 3
+(HP/SP/MP write-back, experience, skill use counts, money, loot;
+`GetCombat = (result == 2)`, i.e. win, round-out or a successful
+escape).
+
+The fight itself is a placeholder overlay: imgui text, HP bars, a
+four-entry menu (攻击/仙术/防御/逃跑) on keyboard and gamepad. No
+battle scene, no animation. Losing without `CombatNotGameOver` shows
+"游戏结束" and exits the process — the original returns to the title
+via `SwitchMode(0xf)`, and the engine has no path back to the title
+yet. `fast_forward` auto-plays a whole battle so script tests need no
+input.
+
+While wiring this up, several notes in `re/notes/combat_flow.md` were
+corrected against the binary: `+0x48` is MustFail and `+0x50` is
+禁止逃跑 (not the other way round); `result` 2 = win, 3 = lose; the
+player's 逃跑 entry *does* roll (`FUN_00500d50`, formula in
+`FUN_004f98b0` case 3) — only the AI path is unconditional.
+
+`cargo test -p shared`: 266 lib tests pass. Not yet run on hardware;
+the overlay needs a visual check.

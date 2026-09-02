@@ -145,13 +145,36 @@ z08	$3&     //草
 | `+0x20` | `DAT_00c11720` | 战斗场景名（32 字节） |
 | `+0x40` | `DAT_00c11740` | 场景五灵属性 1..5 |
 | `+0x44` | `DAT_00c11744` | 偷袭模式 0/1/2 |
-| `+0x48` | `DAT_00c11748` | **战败不 GameOver** |
-| `+0x50` | `DAT_00c11750` | 禁止偷袭判定 `[推断：也可能是"必败"]` |
+| `+0x48` | `DAT_00c11748` | **必败**（`CombatMustFail`）：回合到顶也不算赢，见第 5 节 |
+| `+0x50` | `DAT_00c11750` | **禁止逃跑**（所有脚本战斗都置 1）；同时关掉偷袭判定 |
 | `+0x51` | `DAT_00c11751` | 不切战斗 BGM |
 | `+0x54` | `DAT_00c11754` | 第二个怪物对象指针（被一并消灭） |
 
-对应 SCE 指令 `[推断]`：`CombatMaxRound`(82) → `+0x1c`；
-`CombatNotGameOver`(131) → `+0x48`；`CombatMustFail`(83) → `+0x50`。
+对应的 SCE 指令处理函数（已逐条读过，不再是推断）：
+
+| 指令 | 处理函数 | 做的事 |
+|---|---|---|
+| 73 `Combat(count, m1, m2, m3)` | `0x437280` | `FUN_018c59e0` 抽怪填 `+0x00..`（见下）；`DAT_00c11750 = 1`；`FUN_00407320(&desc, 0, 0, muteBgm=0)`；挂 type-6 等待器直到战斗结束 |
+| 80 `CombatBoss(m1..m6)` | `0x4373d0` | 六个 ID 原样写入；`DAT_00c11750 = 1`；`muteBgm = 1`（保留当前 BGM） |
+| 82 `CombatMaxRound(n)` | — | `DAT_00c1171c = n` |
+| 83 `CombatMustFail` | — | `DAT_00c11748 = 1` |
+| 131 `CombatNotGameOver` | `0x438440` | `DAT_005833cc = 0`（全程唯一写 0 的地方） |
+| 132 `GetCombat(var)` | — | `var = DAT_005833d0` |
+
+三个一次性标志在战斗收尾时复位（`FUN_004055d0` case 3，0x405b1f–0x405b31）：
+`+0x48 = 0`、`+0x50 = 0`、`+0x1c = 0x7fffffff`、`DAT_005833cc = 1`。
+
+**抽怪 `FUN_018c59e0(count, m1, m2, m3, boss, out)`**：把 `m1..m3` 中非零的
+压紧成池子（保持顺序），然后 `count` 个格子**各自独立**抽 `pool[rand() % n]`
+——同一只怪可以占满所有格，也不保证每种都出现（Pal3.Unity 的"每种一只再洗牌"
+不是二进制的做法）。`boss != 0` 时 `count += 1`，boss 占 0 号格，抽签从 1 号格起。
+脚本 `Combat` 恒传 `boss = 0`。`rand()` 是 CRT 的 `FUN_005541f8`。
+原版写 `out[6] = count` 且不做上限；移植里把 count 夹到 6。
+
+**战斗曲**：`FUN_00407320` 在 `Prepare` 成功后、`!muteBgm` 时调
+`FUN_0053e680(scene)`（0x407320 尾部），曲名来自 `datascript\\music.txt` 的
+`BEGIN,combat` 节按城市名查表（`music\\%s.mp3`）；`CombatBoss` 传 `muteBgm = 1`
+所以 boss 战沿用场景 BGM。地砖类型那一步的坐标转换是 `__ftol`（截断，不是四舍五入）。
 
 ### 调用方
 
@@ -396,37 +419,51 @@ for (k = 0; k < 11; k++) {
 
 ## 5. 胜负与逃跑（`FUN_004f7910`，每帧）
 
+先查我方全灭，再查敌方全灭 / 回合到顶 —— 顺序是这样，之前这里写反了：
+
 ```c
-// 胜利
-if (FUN_004ed0a0(0) == 1 && cbSystem.phase == 2 && !FUN_004fca00(0xc)) {
-    cbSystem.phase = 7;                 // 胜利演出
+// 0x4f7940：败
+if (FUN_004ed0a0(0) == 1 && cbSystem.phase == 2 && !FUN_004fca00(0xc)) {   // 我方全灭
+    cbSystem.phase = 7;                 // 失败演出 → result = 3
     排镜头任务 0x19（LAB_00502300 / FUN_00501f30 / LAB_00502000 / LAB_005021c0）
     FUN_00505770(10);
     清每个参战单位的 stageRole +0x118 / +0x112
 }
 
-// 失败 / 回合耗尽
-if ((FUN_004ed100(0) == 1                                   // 我方全灭
-     || (roleStates.maxRound <= roleStates.round            // 回合到顶
-         && roleStates.notGameOver == 0))
+// 0x4f7a6a：胜
+if ((FUN_004ed100(0) == 1                                   // 敌方全灭
+     || (desc.maxRound (+0x1c) <= roleStates.round (+0x220)
+         && desc.mustFail (+0x48) == 0))                    // 回合到顶且未标"必败"
     && cbSystem.phase == 2 && !FUN_004fca00(0xc)) {
     FUN_004f8af0();
-    FUN_004fa930(1, -1);
+    FUN_004fa930(1, -1);                // 结算：经验 / 钱 / 掉落
     FUN_00505770(3);
-    每个参战单位排任务 0x18（LAB_004fe550 …）
+    每个参战单位排任务 0x18 → phase 5 → result = 2
 }
+// phase 4（逃跑任务 LAB_00515200 在 0x51571c 写入）也走同一结算 → phase 5 → result = 2
 ```
 
-主循环 `FUN_004055d0` case 3 在 `cbSystem.finished (+0x74)` 置位后收尾，
-把 `cbSystem.result (+0x7c) == 2` 写进 `DAT_005833d0`
-`[推断：2 = 战败，供剧情脚本查询]`。
+`cbSystem.result (+0x7c)` 的取值：**2 = 胜（含回合到顶、含逃跑成功）**，
+**3 = 败**。4 / phase 6 在二进制里没有写入者，当作不可达。
 
-**逃跑**：`FUN_005024d0` 是逃跑结果的**提示任务**，读
-`stage[...+0x39] == 1` 决定显示 `FleeSuccess` 还是 `FleeFail`
-（两个串都在 `CBStage.cpp` 区，`0x5db758` / `0x5db764`），
-然后把该单位的 stage 状态置 4（退场）。**掷骰子的地方没找到**，
-数据库里每只怪有 `escape_rate`（`CombatActorInfo` +0x2d4），
-公式未闭环 —— 见"未解决"。
+主循环 `FUN_004055d0` case 3（0x405ae1）收尾：
+
+```c
+DAT_005833d0 = (cbSystem.result == 2);            // GetCombat 读的就是它
+if (!DAT_005833d0 && DAT_005833cc != 0) {          // 败 且 未 CombatNotGameOver
+    FUN_0044f610(0xf);                            // SwitchMode → 标题
+    FUN_00432550();                               // 停掉所有脚本
+}
+desc.+0x48 = 0; desc.+0x50 = 0; desc.+0x1c = 0x7fffffff; DAT_005833cc = 1;
+```
+
+所以脚本眼里：`GetCombat` 得 1 = 打赢、回合耗尽、**逃跑成功**三者之一；
+得 0 = 全灭。逃跑成功不触发 game over，且已击杀的敌人照常结算。
+
+**逃跑**：玩家菜单的逃跑是掷骰子的（见 9.3，之前那节只读到了 AI 路径）。
+`FUN_005024d0` 是逃跑结果的**提示任务**，读 `stage[...+0x39] == 1` 决定显示
+`FleeSuccess` 还是 `FleeFail`（`0x5db758` / `0x5db764`），然后把该单位的
+stage 状态置 4（退场）。
 
 结算画面美术在 `ui\combat\result\`：`bigwin.tga` / `biglose.tga`
 （`FUN_00516940`）、`panel\levelup.tga`、`panel\getitem.tga`、
@@ -491,12 +528,12 @@ swap(this->+0x80..+0x88, this->+0x8c..+0x94);
 
 - 单位**自己**从蓄力段进入出手段（phase 0 → 1）的写入点。现有的
   phase→1 写入全都作用在挨打的目标身上，`FUN_004db730` 是死代码。
-- `CombatMustFail`(83) 到底写描述符的哪一位。第 9.3 节的证据表明
-  `+0x50` 的语义更接近**禁止逃跑**，那 83 号指令写的可能是别处。
+- 移植里战败 game over 的去处：原版 `SwitchMode(0xf)` 回标题，引擎目前没有
+  从冒险 director 回到标题的通路，暂以"游戏结束"覆盖层 + 退出进程代替。
+- 战后倒下的队员回到多少精：移植暂按 1 处理 `[推断]`，原版的下限没读。
 - 我方成员的**阵法阵位（0..4）如何映射到 Role0..Role4 这五个站位**。
   第 9.4 节确认战斗位 `+0x470` 存的是 1..5 的五灵阵位，但从阵法页的
   存档值到 `+0x470` 的写入路径没跟。
-- `cbSystem.result (+0x7c)` 各个取值的含义（只确认主循环比较 `== 2`）。
 - `FUN_004ed0a0` / `FUN_004ed100` 的确切语义。
 - 主调度任务 `LAB_00513840` 里分支 A/B（乱、封、狂、镜）之后的具体行为。
 - `flexcam.dat` / `flexeff.dat` / `efflinker.dat` 三个二进制表未解析。
@@ -590,36 +627,42 @@ level 1 → 退到 10063（几乎没损失），level 8 → 退到 0（全清）
 > 现有的 phase→1 写入全都作用在**挨打的目标**身上。
 > 所以「蓄力满 → 选行动 → 进入出手段」这一步的实现位置仍然缺一环。
 
-### 9.3 逃跑：**不是掷骰子**
+### 9.3 逃跑：玩家菜单**掷骰子**，AI 路径不掷
 
-行动派发器 `FUN_004f1fa0(param_1, param_2, kind)` 的 **`case 2` = 逃跑**：
+**玩家菜单**（`FUN_00500d50`，0x500e60–0x500f10）选"逃跑"时：
 
 ```c
-case 2:
-    if (desc->+0x50 == 0) {                  // 描述符 DAT_00c11750
-        roleStates->+0x225 = 1;              // 战斗收尾标志
-        排任务 LAB_00515200（动作码 0x10b）  // 逃跑成功，全队撤离
-        return 1;
-    }
-    // 否则：排一个提示任务，子类型 0 → 显示 FleeFail
-    iVar3 = FUN_004fc700(0x1a, …);
-    FUN_004fc7d0(iVar3, FUN_005024d0, 0,0,0, {0,0,0}, …);
-    break;
+enemy = FUN_004ee910(2);                         // 一个在场的敌人
+v = FUN_004f98b0(3, self, enemy);                // 逃跑百分比，见下
+if (v < 1) fail;
+else {
+    p = round(v * 10.24);                        // 百分比 → 10 位刻度
+    ok = (((seed = seed*0x343fd + 0x269ec3) >> 16) & 0x3ff) < p;
+}
+if (roleStates->+0x225 != 0) ok = 1;             // 战斗收尾标志：强制成功
+if (desc->+0x50 != 0) ok = 0;                    // 禁止逃跑：掷完再否决
 ```
 
-即**逃跑成不成功只取决于战斗描述符的 `+0x50`**：为 0 必定成功，非 0 必定失败。
-没有任何随机数参与。
+`FUN_004f98b0` 的 `case 3`：
 
-`FUN_005024d0` 只是显示 `FleeSuccess` / `FleeFail`，取的是任务用户数据的
-第 `0x39` 个 dword（同一个字段在 `FUN_004fdfc0` 里当作飘字类型用，
-`1` = `Witch`、`2` = 另一类），**不是逃跑判定本身**。
+```
+((自己的运_eff − 在场敌人中最小的运) × (自己的等级 − 在场敌人的平均等级) + 3) × 10
+```
+
+"在场"看 `+0x241`（在场）而不是 `+0x242`（活着）——死掉的敌人也算；等级取
+`+0x248`，运走 `FUN_004f38a0`；平均值是整数除法，除数是在场数，没有防零。
+注意两个差同为负时乘积为正，公式会给出几百个百分点。
+
+成功时 `roleStates->+0x225 = 1`，排 `LAB_00515200`（动作码 `0x10b`）全队撤离，
+该任务在 0x51571c 写 `cbSystem.phase = 4` → 走胜利结算 → `result = 2`。
+
+**AI / 强制路径** `FUN_004f1fa0(param_1, param_2, kind)` 的 `case 2` 才是之前
+记的"不掷骰子"：`+0x50 == 0` 直接置 `+0x225 = 1` 并排撤离任务，否则排
+`FleeFail` 提示。这是怪物或剧情驱动的逃跑，不是玩家菜单。
 
 > 数据库里 `CombatActorInfo.escape_rate`（+0x2d4）在 0x4d0000–0x520000
 > 全段**没有任何读取者**（唯一命中是 `FUN_004fa930` 里对**仙术**记录
 > +0x2d4 = `composite_skill_ids[0]` 的访问，属同偏移误撞）。
-> `[推断]` 该字段在战斗中是死数据，或供怪物逃跑用而本版未启用。
-
-由此也回头修正第 8 节：`+0x50` 更像是**禁止逃跑**（Boss 战）而不是「必败」。
 
 ### 9.4 合击技的触发条件（**已闭环**）
 
@@ -707,6 +750,24 @@ FUN_004fa210(角色, 等级)   FUN_004fa280   FUN_004fa330   FUN_004fa3a0   FUN_
 
 学新仙术的条件是 `skill->+0x2c9 <= 新等级`（= `required_actor_level`）。
 这正是长期挂着的「升级/成长公式」的入口，但不在本次范围内，未展开。
+
+## 10. 移植状态（2026-09-02）
+
+代码在 `yaobow/shared/src/openpal3/combat/` 与
+`yaobow/shared/src/scripting/sce/commands/combat.rs`：
+
+| 原版 | 移植 |
+|---|---|
+| 描述符 + 三个一次性标志 | `combat::encounter::{Encounter, PendingFlags}`；标志存在 `SceState::ext` 的 `pal3.combat.pending`，`Combat` 取走后即复位 |
+| `FUN_018c59e0` 抽怪 | `encounter::pick_monsters`，用同算法的 `CrtRand`（种子取自系统时钟，不是 `srand` 的复现） |
+| 73 / 80 / 82 / 83 / 131 / 132 | `SceCommandCombat{,MaxRound,MustFail,NotGameOver}`、`SceCommandGetCombat` 读 `pal3.combat.result` |
+| 战斗主循环 | `combat::session::CombatSession` 逐帧驱动 `Battle`；我方回合出菜单（攻击/仙术/防御/逃跑），敌方走 `ai::choose` |
+| 画面 | 只有 imgui 文字 + HP 条的占位覆盖层（键盘 + 手柄），战斗演出未做 |
+| 收尾（`FUN_004055d0` case 3） | `finish()`：写回 HP/SP/MP、经验、仙术使用次数、钱、掉落；`result==2` → `GetCombat = 1`；败且未 `NotGameOver` → "游戏结束"覆盖层后退出进程（原版是 `SwitchMode(0xf)` 回标题，引擎还没有这条路） |
+| 快进 | `fast_forward` 时 `auto_play + tick(0.1)` 跑完整场，脚本测试不需要输入 |
+
+没有 1:1 的地方都标在源码注释里：倒下队员战后 HP 取 1 `[推断]`、count 夹到 6、
+种子来源。
 
 ## 附：胜利结算（`FUN_004fa930`，param_1 == 0 分支）
 
