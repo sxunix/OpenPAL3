@@ -12,6 +12,7 @@ use super::persistent_state::PersistentState;
 use common::store_ext::StoreExt2;
 use radiance::{
     audio::{AudioEngine, AudioMemorySource, AudioSource, AudioSourceState, Codec as AudioCodec},
+    math::Vec3,
     rendering::VideoPlayer,
     video::Codec as VideoCodec,
 };
@@ -39,6 +40,11 @@ pub struct GlobalState {
 
     pass_through_wall: bool,
     divine_tree_flower_initialized: bool,
+    /// Where the next VFX would play — the original's `DAT_00d8e478/47c/
+    /// 480`, plain globals set by opcode 142 or 144 and consumed by 143.
+    /// Nothing renders it yet; it is kept so the position half of those
+    /// opcodes is right when a VFX system arrives.
+    effect_position: Vec3,
 }
 
 impl GlobalState {
@@ -75,6 +81,7 @@ impl GlobalState {
             game_db,
             pass_through_wall: false,
             divine_tree_flower_initialized: false,
+            effect_position: Vec3::new(0., 0., 0.),
         }
     }
 
@@ -236,6 +243,14 @@ impl GlobalState {
 
     pub fn set_divine_tree_flower_initialized(&mut self, done: bool) {
         self.divine_tree_flower_initialized = done;
+    }
+
+    pub fn effect_position(&self) -> Vec3 {
+        self.effect_position
+    }
+
+    pub fn set_effect_position(&mut self, position: Vec3) {
+        self.effect_position = position;
     }
 
     pub fn pass_through_wall(&self) -> bool {

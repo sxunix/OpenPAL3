@@ -104,11 +104,11 @@ pub use if_in_team::SceCommandIfInTeam;
 pub use inventory::{SceCommandAddItem, SceCommandAddMoney, SceCommandRemoveItem};
 pub use load_scene::SceCommandLoadScene;
 pub use minigames::{
-    SceCommandDealerMenu, SceCommandGetPawnshopAccrual, SceCommandGetPawnshopLevel,
-    SceCommandGetPawnshopManage, SceCommandGetPawnshopPeriod, SceCommandGetPawnshopUnHock,
-    SceCommandMiniGameCaveExperience, SceCommandMiniGamePawnshop, SceCommandMiniGamePawnshopNote,
-    SceCommandMiniGameSki, SceCommandMiniGameSwatAFly, SceCommandNavigationBeeFlyTo,
-    SceCommandSmeltingMenu,
+    SceCommandDealerMenu, SceCommandEffectAtRole, SceCommandEffectPosition,
+    SceCommandGetPawnshopAccrual, SceCommandGetPawnshopLevel, SceCommandGetPawnshopManage,
+    SceCommandGetPawnshopPeriod, SceCommandGetPawnshopUnHock, SceCommandMiniGameCaveExperience,
+    SceCommandMiniGamePawnshop, SceCommandMiniGamePawnshopNote, SceCommandMiniGameSki,
+    SceCommandMiniGameSwatAFly, SceCommandNavigationBeeFlyTo, SceCommandSmeltingMenu,
 };
 pub use movie::SceCommandMovie;
 pub use music::SceCommandMusic;

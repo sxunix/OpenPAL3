@@ -817,16 +817,16 @@ impl SceProcContext {
                 nop_command!(self, ScrEft, i32)
             }
             142 => {
-                // CEft_Pos
-                nop_command!(self, CEft_Pos, f32, f32, f32)
+                // CEft_Pos — 设置特效位置
+                command!(self, SceCommandEffectPosition, x: f32, y: f32, z: f32)
             }
             143 => {
                 // CEft
                 nop_command!(self, CEft, i32)
             }
             144 => {
-                // CEft_Role
-                nop_command!(self, CEft, i32)
+                // CEft_Role — 特效对准角色（只记位置）
+                command!(self, SceCommandEffectAtRole, role_id: i32)
             }
             145 => {
                 // AverageLv — 等级取队伍平均值加增量

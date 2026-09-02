@@ -25,8 +25,12 @@ use radiance::comdef::ISceneManager;
 /// type queries and for the shop's level.
 const PAWNSHOP_DEFAULT: i32 = 0;
 
+/// A skipped subsystem. `$note` is shown to the player through the same
+/// note widget opcode 68 uses, so a scene that silently does nothing is
+/// at least explained; Pal3.Unity does the same for its own mini-game
+/// stubs. Pass `""` to skip quietly.
 macro_rules! skipped {
-    ($name:ident, $doc:expr $(, $field:ident : $ty:ty)*) => {
+    ($name:ident, $doc:expr, $note:expr $(, $field:ident : $ty:ty)*) => {
         #[doc = $doc]
         #[derive(Debug, Clone)]
         pub struct $name {
@@ -44,10 +48,14 @@ macro_rules! skipped {
                 &mut self,
                 _scene_manager: ComRc<ISceneManager>,
                 _ui: &Ui,
-                _state: &mut SceState,
+                state: &mut SceState,
                 _delta_sec: f32,
             ) -> bool {
                 log::warn!(concat!(stringify!($name), ": 子系统未实现，跳过"));
+                if !$note.is_empty() {
+                    state.show_note($note.to_string());
+                }
+                let _ = state;
                 true
             }
         }
@@ -57,36 +65,44 @@ macro_rules! skipped {
 skipped!(
     SceCommandMiniGamePawnshop,
     "103 进入当铺经营游戏 — `LAB_00436c60`.",
+    "当铺经营游戏尚未实现，已跳过",
     flag: i32
 );
 skipped!(
     SceCommandMiniGameSwatAFly,
-    "105 进入打苍蝇游戏 — `LAB_004370e0`.（无参数）"
+    "105 进入打苍蝇游戏 — `LAB_004370e0`.（无参数）",
+    "打苍蝇游戏尚未实现，已跳过"
 );
 skipped!(
     SceCommandMiniGameCaveExperience,
-    "112 进入山洞初体验游戏 — `LAB_00437c20`.（无参数）"
+    "112 进入山洞初体验游戏 — `LAB_00437c20`.（无参数）",
+    "山洞初体验尚未实现，已跳过"
 );
 skipped!(
     SceCommandMiniGamePawnshopNote,
     "157 当铺经营游戏显示信息 — `LAB_00438f10`.",
+    ""
+    ,
     text: String
 );
 skipped!(
     SceCommandDealerMenu,
     "100 调用买卖系统 — `LAB_00436c00`，参数是商店的数据文件名。\
      买卖界面本身还没有；跳过等于该商人不卖东西。",
+    "买卖界面尚未实现",
     shop: String
 );
 skipped!(
     SceCommandSmeltingMenu,
     "146 打开冶炼菜单 — `LAB_00436a10`.",
+    "冶炼界面尚未实现",
     kind: i32
 );
 skipped!(
     SceCommandNavigationBeeFlyTo,
     "154 控制引路蜂飞向指定位置 — `LAB_00438ba0`，参数是 nav 层与 \
      tile 坐标。引路蜂是纯提示性的装饰，跳过不影响可玩性。",
+    "",
     nav_layer: i32,
     tile_x: i32,
     tile_y: i32
@@ -172,3 +188,75 @@ pawnshop_query!(SceCommandGetPawnshopManage, "Manage 类型");
 pawnshop_query!(SceCommandGetPawnshopPeriod, "Period 类型");
 pawnshop_query!(SceCommandGetPawnshopAccrual, "Accrual 类型");
 pawnshop_query!(SceCommandGetPawnshopUnHock, "UnHock 类型");
+
+/// 142 设置 VFX 特效位置 — `LAB_00438930`, three floats straight into
+/// `DAT_00d8e478/47c/480` (0x43894b–0x438961). GameBox coordinates.
+#[derive(Debug, Clone)]
+pub struct SceCommandEffectPosition {
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+impl SceCommand for SceCommandEffectPosition {
+    fn update(
+        &mut self,
+        _scene_manager: ComRc<ISceneManager>,
+        _ui: &Ui,
+        state: &mut SceState,
+        _delta_sec: f32,
+    ) -> bool {
+        state
+            .global_state_mut()
+            .set_effect_position(radiance::math::Vec3::new(self.x, self.y, self.z));
+        true
+    }
+}
+
+impl SceCommandEffectPosition {
+    pub fn new(x: f32, y: f32, z: f32) -> Self {
+        Self { x, y, z }
+    }
+}
+
+/// The Y the original adds when aiming a VFX at an actor — `fadd dword
+/// ptr [0x56aa5c]` at 0x438a0e, and that constant is 2.0.
+const EFFECT_ACTOR_Y_OFFSET: f32 = 2.0;
+
+/// 144 在角色位置播放特效 — `LAB_004389d0`.
+///
+/// Despite the name it plays nothing: it copies the actor's position
+/// (`+0xa0/a4/a8`) into the VFX position globals and raises Y by
+/// [`EFFECT_ACTOR_Y_OFFSET`]. A **snapshot** — Pal3.Unity instead
+/// parents the effect to the actor so it follows, and adds no offset.
+/// The binary is what is reproduced here.
+#[derive(Debug, Clone)]
+pub struct SceCommandEffectAtRole {
+    role_id: i32,
+}
+
+impl SceCommand for SceCommandEffectAtRole {
+    fn update(
+        &mut self,
+        scene_manager: ComRc<ISceneManager>,
+        _ui: &Ui,
+        state: &mut SceState,
+        _delta_sec: f32,
+    ) -> bool {
+        use crate::openpal3::directors::SceneManagerExtensions;
+        use radiance::comdef::IEntityExt;
+
+        if let Some(entity) = scene_manager.get_resolved_role(state, self.role_id) {
+            let mut position = entity.transform().borrow().position();
+            position.y += EFFECT_ACTOR_Y_OFFSET;
+            state.global_state_mut().set_effect_position(position);
+        }
+        true
+    }
+}
+
+impl SceCommandEffectAtRole {
+    pub fn new(role_id: i32) -> Self {
+        Self { role_id }
+    }
+}
