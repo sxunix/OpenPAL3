@@ -131,7 +131,8 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
             self.sys_mode = system_menu.paint_system_menu(
                 ui, self.atlas, self.pal3, pmx, pmy, down, click, self.sys_mode);
         } else if was_open {
-            let r = state_menu.paint_state_menu(ui, self.atlas, pmx, pmy, down, click);
+            let r = state_menu.paint_state_menu(
+                ui, self.atlas, self.pal3, pmx, pmy, down, click);
             if r == 2 {
                 self.menu_open = false;
                 self.sys_mode = 0;

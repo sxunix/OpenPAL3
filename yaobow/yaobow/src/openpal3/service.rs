@@ -25,7 +25,9 @@ use agent_server::{AgentCommand, AgentError, AgentResponse};
 use crosscom::ComRc;
 use packfs::init_virtual_fs;
 use radiance::audio::Codec as AudioCodec;
-use radiance::comdef::{IApplication, IApplicationExt, IDirector, ISceneManager, IUiHost, IUiLayer};
+use radiance::comdef::{
+    IApplication, IApplicationExt, IDirector, ISceneManager, IUiHost, IUiLayer,
+};
 use radiance::input::{InputEngine, SyntheticInputBridge};
 use radiance::radiance::{UiLayerBand, UiLayerHandle};
 use radiance::video::Codec as VideoCodec;
@@ -45,7 +47,8 @@ use shared::openpal3::comdef::{
     IPal3StatusRenderer, IPal3UiAtlas,
 };
 use shared::openpal3::directors::AdventureDirector;
-use shared::openpal3::states::persistent_state::PAL3_APP_NAME;
+use shared::openpal3::states::game_db::GameDb;
+use shared::openpal3::states::persistent_state::{PAL3_APP_NAME, PersistentState};
 use shared::openpal3::ui_atlas::{AtlasManifest, Pal3UiAtlas};
 use shared::scripting::sce::vm::SceExecutionOptions;
 use shared::ydirs;
@@ -57,6 +60,24 @@ use crate::openpal3::sce_proc_hooks::SceRestHooks;
 /// original PC release supports 36 saves (9 pages of 4 scroll rows in
 /// its System page); slot files are `1.json`..`36.json`.
 const SAVE_SLOT_COUNT: i32 = 36;
+
+/// `IPal3Service::role_stat` selectors, mirrored by the status scripts.
+const STAT_LEVEL: i32 = 0;
+const STAT_EXP: i32 = 1;
+const STAT_EXP_TO_NEXT: i32 = 2;
+const STAT_HP: i32 = 3;
+const STAT_MAX_HP: i32 = 4;
+const STAT_SP: i32 = 5;
+const STAT_MAX_SP: i32 = 6;
+const STAT_MP: i32 = 7;
+const STAT_MAX_MP: i32 = 8;
+/// 水火风雷土 occupy 9..=13, in the game database's element order.
+const STAT_WATER: i32 = 9;
+const STAT_EARTH: i32 = 13;
+const STAT_ATTACK: i32 = 14;
+const STAT_DEFENSE: i32 = 15;
+const STAT_SPEED: i32 = 16;
+const STAT_LUCK: i32 = 17;
 
 /// Map a script/registry game ordinal to the PAL3-family `GameType`.
 /// PAL3 and PAL3A share `Pal3Service`; anything else defaults to PAL3.
@@ -110,6 +131,13 @@ pub struct Pal3Service {
     /// and `pump_pre_update` performs them outside the director borrow.
     pending_save_slot: Cell<i32>,
     pending_load_slot: Cell<i32>,
+    /// The active adventure's save state. Held as its own handle (not
+    /// reached through the director) so the status screens can read party
+    /// stats while painting from inside the director's update.
+    active_persistent_state: RefCell<Option<Rc<RefCell<PersistentState>>>>,
+    /// The active adventure's static game data (experience curve, item
+    /// and skill tables). Captured alongside the save state.
+    active_game_db: RefCell<Option<Rc<GameDb>>>,
     /// Lazily-parsed `datascript/SceneName.txt` — the original's own
     /// scene-code → display-name table (per-cpk sections with a
     /// `default` row). Keyed by (section, code), both lowercase.
@@ -142,6 +170,8 @@ impl Pal3Service {
             pending_debug_install: Cell::new(false),
             pending_save_slot: Cell::new(-1),
             pending_load_slot: Cell::new(-1),
+            active_persistent_state: RefCell::new(None),
+            active_game_db: RefCell::new(None),
             scene_name_table: RefCell::new(None),
             debug_layer_installed: Cell::new(false),
             debug_layer_handle: RefCell::new(None),
@@ -512,6 +542,33 @@ impl Pal3Service {
         Self::active_adventure_director(&sm)
     }
 
+    /// Remember the new adventure's save state so the status screens can
+    /// read it without borrowing the director. Called while `adv` is
+    /// still a plain object, before it is wrapped as a `ComRc`.
+    fn track_persistent_state(&self, adv: &AdventureDirector) {
+        let (state, db) = {
+            let vm = adv.sce_vm();
+            let global = vm.global_state();
+            (global.persistent_state_rc(), global.game_db().cloned())
+        };
+        self.active_persistent_state.replace(Some(state));
+        self.active_game_db.replace(db);
+    }
+
+    /// Run `f` against the active adventure's save state, or return
+    /// `default` when no adventure is running. Uses `try_borrow` because
+    /// this is called mid-paint and must never abort the frame.
+    fn with_persistent_state<T>(&self, default: T, f: impl FnOnce(&PersistentState) -> T) -> T {
+        let handle = self.active_persistent_state.borrow();
+        let Some(state) = handle.as_ref() else {
+            return default;
+        };
+        match state.try_borrow() {
+            Ok(state) => f(&state),
+            Err(_) => default,
+        }
+    }
+
     /// Resolve the `Rc<RefCell<dyn InputEngine>>` we should hand to
     /// the next `AdventureDirector`: the agent's synthetic-input
     /// bridge when present (so `/v1/input/*` reaches the director),
@@ -600,7 +657,12 @@ impl IPal3ServiceImpl for Pal3Service {
             // slot_exists first: PersistentState::load unwraps on a missing
             // file, and the first boot after enabling auto_load_slot has no
             // save yet -- that unwrap took the whole game down at startup.
-            if slot > 0 && shared::openpal3::states::persistent_state::PersistentState::slot_exists(PAL3_APP_NAME, slot) {
+            if slot > 0
+                && shared::openpal3::states::persistent_state::PersistentState::slot_exists(
+                    PAL3_APP_NAME,
+                    slot,
+                )
+            {
                 if let Some(d) = self.load_adventure_director(asset_path, slot) {
                     log::info!("PAL3: resumed from save slot {}", slot);
                     return d;
@@ -651,6 +713,7 @@ impl IPal3ServiceImpl for Pal3Service {
         if let Some(bridge) = self.agent_bridge.borrow().as_ref() {
             adv.set_agent_bridge(bridge.clone());
         }
+        self.track_persistent_state(&adv);
         ComRc::<IDirector>::from_object(adv)
     }
 
@@ -681,6 +744,7 @@ impl IPal3ServiceImpl for Pal3Service {
         if let Some(bridge) = self.agent_bridge.borrow().as_ref() {
             adv.set_agent_bridge(bridge.clone());
         }
+        self.track_persistent_state(&adv);
         Some(ComRc::<IDirector>::from_object(adv))
     }
 
@@ -718,6 +782,65 @@ impl IPal3ServiceImpl for Pal3Service {
 
     fn save_slot_count(&self) -> i32 {
         SAVE_SLOT_COUNT
+    }
+
+    fn party_size(&self) -> i32 {
+        self.with_persistent_state(0, |s| s.team().len() as i32)
+    }
+
+    fn party_actor_id(&self, index: i32) -> i32 {
+        self.with_persistent_state(-1, |s| {
+            if index < 0 {
+                return -1;
+            }
+            s.team()
+                .get(index as usize)
+                .map(|id| *id as i32)
+                .unwrap_or(-1)
+        })
+    }
+
+    fn role_stat(&self, actor_id: i32, stat: i32) -> i32 {
+        if actor_id < 0 {
+            return 0;
+        }
+        self.with_persistent_state(0, |s| {
+            let Some(role) = s.role(actor_id as u32) else {
+                return 0;
+            };
+            match stat {
+                STAT_LEVEL => role.level,
+                STAT_EXP => role.exp,
+                // -1 at level 99, where the original prints a dash
+                // instead of a number.
+                STAT_EXP_TO_NEXT => self
+                    .active_game_db
+                    .borrow()
+                    .as_ref()
+                    .and_then(|db| db.exp_to_next_level(role.level, role.exp))
+                    .unwrap_or(-1),
+                STAT_HP => role.hp,
+                STAT_MAX_HP => role.max_hp,
+                STAT_SP => role.sp,
+                STAT_MAX_SP => role.max_sp,
+                STAT_MP => role.mp,
+                STAT_MAX_MP => role.max_mp,
+                STAT_WATER..=STAT_EARTH => role.elements[(stat - STAT_WATER) as usize],
+                STAT_ATTACK => role.attack,
+                STAT_DEFENSE => role.defense,
+                STAT_SPEED => role.speed,
+                STAT_LUCK => role.luck,
+                _ => 0,
+            }
+        })
+    }
+
+    fn money(&self) -> i32 {
+        self.with_persistent_state(0, |s| s.money())
+    }
+
+    fn play_time(&self) -> i32 {
+        self.with_persistent_state(0, |s| s.play_time() as i32)
     }
 
     fn draw_slot_label(

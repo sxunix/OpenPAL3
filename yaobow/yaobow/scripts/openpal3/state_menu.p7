@@ -106,6 +106,20 @@ let NB_STEP: float = 148.0;
 // HeadBk at (x,y) (115x100 art), RoleHead at (x+25,y+10) (65x86), the
 // vertical nameplate at (x2-27,y+36) (22x32).
 let HB_X: float = 686.0; let HB_Y: float = 62.0; let HB_X2: float = 796.0;
+// The arrange loop (FUN_004a4c20) tracks the plate cursor from y=60, so the
+// first plate sits at 62 and every later one is 122 lower than the previous:
+// 62, 182, 304, 426.
+let HB_Y1: float = 182.0; let HB_STEP: float = 122.0;
+
+// `IPal3Service::role_stat` selectors (see crosscom/idl/openpal3.idl).
+let ST_LEVEL: int = 0;
+let ST_EXP: int = 1;
+let ST_EXP_NEXT: int = 2;
+let ST_HP: int = 3;  let ST_MAX_HP: int = 4;
+let ST_SP: int = 5;  let ST_MAX_SP: int = 6;
+let ST_MP: int = 7;  let ST_MAX_MP: int = 8;
+let ST_WATER: int = 9; let ST_FIRE: int = 10; let ST_WIND: int = 11;
+let ST_THUNDER: int = 12; let ST_EARTH: int = 13;
 let RH_DX: float = 25.0; let RH_DY: float = 10.0;
 let NM_DX2: float = -27.0; let NM_DY: float = 36.0;
 // 精/气/神 bars (Bar.tga 86x12 trough) at (x-72,y+21), (x-80,y+49),
@@ -148,6 +162,7 @@ let SPR_EXIT: string    = "ui/GameMainUI/Communal/StpCtl/Exit";
 // Returns 1 to stay open, 0 to close, 2 to switch to the system menu.
 pub fn paint_state_menu(
     ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+    pal3: box<openpal3.IPal3Service>,
     mx: float, my: float, down: bool, click: bool,
 ) -> int {
     let lw = ui.display_size_x() as float;
@@ -171,54 +186,63 @@ pub fn paint_state_menu(
     // reads as paused/behind the menu without hard black bars.
     ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
 
-    // Lead character (景天 / role 0) — placeholder stats matching the
-    // original's level-1 opening values until live stats are threaded
-    // through from the engine.
-    let role = 0;
-    let level = 1;
-    let exp_cur = 0;
-    let exp_next = 19;
-    let wx_shui = 3; let wx_tu = 2; let wx_huo = 3; let wx_feng = 6; let wx_lei = 1;
-    let jing_cur = 20; let jing_max = 88;
-    let qi_cur = 4;    let qi_max = 17;
-    let shen_cur = 7;  let shen_max = 29;
-    let present = 1;   // party members shown (only the lead for now).
+    // Live party from the running adventure. Falls back to a lone 景天
+    // when there is none (the agent server can open this page from the
+    // title screen). The original arranges at most four columns.
+    let mut present = pal3.party_size();
+    if present < 1 { present = 1; }
+    if present > 4 { present = 4; }
 
-    // ---- Left character panel --------------------------------------------
-    let lp_x0 = ox + LP_X * s;
-    let lp_y0 = oy + LP_Y * s;
-    sprite(ui, atlas, SPR_SHADE, lp_x0, lp_y0, s);
-    sprite(ui, atlas, SPR_PORTRAIT + int_str(role) + ".tga",
-        lp_x0 + POR_X * s, lp_y0 + portrait_top(role) * s, s);
+    // ---- Left character panels, one per party member ---------------------
+    let mut m = 0;
+    while m < present {
+        let role = role_at(pal3, m);
+        let lp_x0 = ox + (LP_X + (m as float) * LP_STEP) * s;
+        let lp_y0 = oy + LP_Y * s;
+        sprite(ui, atlas, SPR_SHADE, lp_x0, lp_y0, s);
+        sprite(ui, atlas, SPR_PORTRAIT + int_str(role) + ".tga",
+            lp_x0 + POR_X * s, lp_y0 + portrait_top(role) * s, s);
 
-    // Level: vertical Chinese numerals + 级, one character per line.
-    let lv_txt = cn_num(level) + "级";
-    let lv_n = lv_txt.len_chars();
-    let mut lv_i = 0;
-    while lv_i < lv_n {
-        let oc = lv_txt.char_at(lv_i);
-        if oc != null {
-            widget_text(ui, lp_x0 + LV_X * s, lp_y0 + LV_Y * s, (lv_i as float) * TXT, s,
-                0.1, 0.1, 0.1, oc!);
+        // Level: vertical Chinese numerals + 级, one character per line.
+        let lv_txt = cn_num(pal3.role_stat(role, ST_LEVEL)) + "级";
+        let lv_n = lv_txt.len_chars();
+        let mut lv_i = 0;
+        while lv_i < lv_n {
+            let oc = lv_txt.char_at(lv_i);
+            if oc != null {
+                widget_text(ui, lp_x0 + LV_X * s, lp_y0 + LV_Y * s, (lv_i as float) * TXT, s,
+                    0.1, 0.1, 0.1, oc!);
+            }
+            lv_i = lv_i + 1;
         }
-        lv_i = lv_i + 1;
+
+        // 五行 values under the glyphs baked into Shade.
+        widget_text(ui, lp_x0 + WX_SHUI_X * s, lp_y0 + WX_SHUI_Y * s, 0.0, s, 0.1, 0.1, 0.1,
+            int_str(pal3.role_stat(role, ST_WATER)));
+        widget_text(ui, lp_x0 + WX_HUO_X * s,  lp_y0 + WX_HUO_Y * s,  0.0, s, 0.1, 0.1, 0.1,
+            int_str(pal3.role_stat(role, ST_FIRE)));
+        widget_text(ui, lp_x0 + WX_FENG_X * s, lp_y0 + WX_FENG_Y * s, 0.0, s, 0.1, 0.1, 0.1,
+            int_str(pal3.role_stat(role, ST_WIND)));
+        widget_text(ui, lp_x0 + WX_LEI_X * s,  lp_y0 + WX_LEI_Y * s,  0.0, s, 0.1, 0.1, 0.1,
+            int_str(pal3.role_stat(role, ST_THUNDER)));
+        widget_text(ui, lp_x0 + WX_TU_X * s,   lp_y0 + WX_TU_Y * s,   0.0, s, 0.1, 0.1, 0.1,
+            int_str(pal3.role_stat(role, ST_EARTH)));
+
+        // Experience blocks: "%s\n  %d" — label, then the value on the next
+        // line indented by two spaces. At level 99 the original swaps the
+        // number for a string; we show a dash until that label is identified.
+        let exp_next = pal3.role_stat(role, ST_EXP_NEXT);
+        let mut exp_next_txt = int_str(exp_next);
+        if exp_next < 0 { exp_next_txt = "-"; }
+        widget_text(ui, lp_x0 + EXP_X * s, lp_y0 + EXP1_Y * s, 0.0, s, 0.1, 0.1, 0.1, "经验值");
+        widget_text(ui, lp_x0 + (EXP_X + EXP_VAL_INDENT) * s, lp_y0 + EXP1_Y * s, TXT, s,
+            0.1, 0.1, 0.1, int_str(pal3.role_stat(role, ST_EXP)));
+        widget_text(ui, lp_x0 + EXP_X * s, lp_y0 + EXP2_Y * s, 0.0, s, 0.1, 0.1, 0.1, "升级所需经验值");
+        widget_text(ui, lp_x0 + (EXP_X + EXP_VAL_INDENT) * s, lp_y0 + EXP2_Y * s, TXT, s,
+            0.1, 0.1, 0.1, exp_next_txt);
+
+        m = m + 1;
     }
-
-    // 五行 values under the glyphs baked into Shade.
-    widget_text(ui, lp_x0 + WX_SHUI_X * s, lp_y0 + WX_SHUI_Y * s, 0.0, s, 0.1, 0.1, 0.1, int_str(wx_shui));
-    widget_text(ui, lp_x0 + WX_HUO_X * s,  lp_y0 + WX_HUO_Y * s,  0.0, s, 0.1, 0.1, 0.1, int_str(wx_huo));
-    widget_text(ui, lp_x0 + WX_FENG_X * s, lp_y0 + WX_FENG_Y * s, 0.0, s, 0.1, 0.1, 0.1, int_str(wx_feng));
-    widget_text(ui, lp_x0 + WX_LEI_X * s,  lp_y0 + WX_LEI_Y * s,  0.0, s, 0.1, 0.1, 0.1, int_str(wx_lei));
-    widget_text(ui, lp_x0 + WX_TU_X * s,   lp_y0 + WX_TU_Y * s,   0.0, s, 0.1, 0.1, 0.1, int_str(wx_tu));
-
-    // Experience blocks: "%s\n  %d" — label, then the value on the next
-    // line indented by two spaces.
-    widget_text(ui, lp_x0 + EXP_X * s, lp_y0 + EXP1_Y * s, 0.0, s, 0.1, 0.1, 0.1, "经验值");
-    widget_text(ui, lp_x0 + (EXP_X + EXP_VAL_INDENT) * s, lp_y0 + EXP1_Y * s, TXT, s,
-        0.1, 0.1, 0.1, int_str(exp_cur));
-    widget_text(ui, lp_x0 + EXP_X * s, lp_y0 + EXP2_Y * s, 0.0, s, 0.1, 0.1, 0.1, "升级所需经验值");
-    widget_text(ui, lp_x0 + (EXP_X + EXP_VAL_INDENT) * s, lp_y0 + EXP2_Y * s, TXT, s,
-        0.1, 0.1, 0.1, int_str(exp_next));
 
     // ---- Empty party-member slots across the top ------------------------
     // Columns continue after the present members' panels, up to four.
@@ -234,27 +258,43 @@ pub fn paint_state_menu(
     sprite(ui, atlas, SPR_FRAME, ox + FR_X * s, oy + FR_Y * s, s);
     sprite(ui, atlas, SPR_FRAME_LINE, ox + FRL_X * s, oy + FRL_Y * s, s);
 
-    // Head plate for the lead: bars first (the plate's rim overlaps their
-    // right ends), then HeadBk, the role head, and the nameplate.
-    let hb_x = ox + HB_X * s;
-    let hb_y = oy + HB_Y * s;
-    draw_stat_bar(ui, atlas, "J", hb_x + BAR_J_DX * s, hb_y + BAR_J_DY * s, s, jing_cur, jing_max);
-    draw_stat_bar(ui, atlas, "Q", hb_x + BAR_Q_DX * s, hb_y + BAR_Q_DY * s, s, qi_cur, qi_max);
-    draw_stat_bar(ui, atlas, "S", hb_x + BAR_S_DX * s, hb_y + BAR_S_DY * s, s, shen_cur, shen_max);
-    widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y, 0.0, s, 0.15, 0.15, 0.15,
-        int_str(jing_cur) + "/" + int_str(jing_max));
-    widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y + BAR_TXT_STEP * s, 0.0, s, 0.15, 0.15, 0.15,
-        int_str(qi_cur) + "/" + int_str(qi_max));
-    widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y + BAR_TXT_STEP * 2.0 * s, 0.0, s, 0.15, 0.15, 0.15,
-        int_str(shen_cur) + "/" + int_str(shen_max));
-    sprite(ui, atlas, SPR_HEADBK, hb_x, hb_y, s);
-    sprite(ui, atlas, SPR_ROLEHEAD + int_str(role) + "0.tga", hb_x + RH_DX * s, hb_y + RH_DY * s, s);
-    sprite(ui, atlas, "ui/GameMainUI/Communal/" + name_tag(role) + "_name.tga",
-        ox + (HB_X2 + NM_DX2) * s, hb_y + NM_DY * s, s);
+    // Head plate per party member: bars first (the plate's rim overlaps
+    // their right ends), then HeadBk, the role head, and the nameplate.
+    let mut h = 0;
+    while h < present {
+        let role = role_at(pal3, h);
+        let hb_x = ox + HB_X * s;
+        let hb_y = oy + head_row(h) * s;
+
+        let jing_cur = pal3.role_stat(role, ST_HP);
+        let jing_max = pal3.role_stat(role, ST_MAX_HP);
+        let qi_cur = pal3.role_stat(role, ST_SP);
+        let qi_max = pal3.role_stat(role, ST_MAX_SP);
+        let shen_cur = pal3.role_stat(role, ST_MP);
+        let shen_max = pal3.role_stat(role, ST_MAX_MP);
+
+        draw_stat_bar(ui, atlas, "J", hb_x + BAR_J_DX * s, hb_y + BAR_J_DY * s, s, jing_cur, jing_max);
+        draw_stat_bar(ui, atlas, "Q", hb_x + BAR_Q_DX * s, hb_y + BAR_Q_DY * s, s, qi_cur, qi_max);
+        draw_stat_bar(ui, atlas, "S", hb_x + BAR_S_DX * s, hb_y + BAR_S_DY * s, s, shen_cur, shen_max);
+        widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y, 0.0, s, 0.15, 0.15, 0.15,
+            int_str(jing_cur) + "/" + int_str(jing_max));
+        widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y + BAR_TXT_STEP * s, 0.0, s, 0.15, 0.15, 0.15,
+            int_str(qi_cur) + "/" + int_str(qi_max));
+        widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y + BAR_TXT_STEP * 2.0 * s, 0.0, s, 0.15, 0.15, 0.15,
+            int_str(shen_cur) + "/" + int_str(shen_max));
+        sprite(ui, atlas, SPR_HEADBK, hb_x, hb_y, s);
+        sprite(ui, atlas, SPR_ROLEHEAD + int_str(role) + "0.tga", hb_x + RH_DX * s, hb_y + RH_DY * s, s);
+        sprite(ui, atlas, "ui/GameMainUI/Communal/" + name_tag(role) + "_name.tga",
+            ox + (HB_X2 + NM_DX2) * s, hb_y + NM_DY * s, s);
+
+        h = h + 1;
+    }
 
     sprite(ui, atlas, SPR_TIMEMONEY, ox + TM_X * s, oy + TM_Y * s, s);
-    widget_text(ui, ox + MONEY_X * s, oy + MONEY_Y * s, 0.0, s, 1.0, 0.95, 0.5, "0");
-    widget_text(ui, ox + TIME_X * s, oy + TIME_Y * s, 0.0, s, 0.85, 1.0, 0.95, "00:00:00");
+    widget_text(ui, ox + MONEY_X * s, oy + MONEY_Y * s, 0.0, s, 1.0, 0.95, 0.5,
+        int_str(pal3.money()));
+    widget_text(ui, ox + TIME_X * s, oy + TIME_Y * s, 0.0, s, 0.85, 1.0, 0.95,
+        time_str(pal3.play_time()));
 
     // ---- Bottom action toolbar -------------------------------------------
     let tb_y0 = oy + TB_Y * s;
@@ -404,6 +444,36 @@ fn cn_digit(d: int) -> string {
 }
 
 // stdlib-less integer -> decimal string.
+// Actor id of the party member at `index`; 景天 (0) when the slot is empty
+// so the page still draws something without a running adventure.
+fn role_at(pal3: box<openpal3.IPal3Service>, index: int) -> int {
+    let r = pal3.party_actor_id(index);
+    if r < 0 { return 0; }
+    return r;
+}
+
+// Head-plate y for the n-th party member: 62, then 122 apart (the arrange
+// loop starts its cursor at 60, which is why the first gap is 120).
+fn head_row(n: int) -> float {
+    if n <= 0 { return HB_Y; }
+    return HB_Y1 + ((n - 1) as float) * HB_STEP;
+}
+
+fn pad2(v: int) -> string {
+    if v < 10 && v >= 0 { return "0" + int_str(v); }
+    return int_str(v);
+}
+
+// Play time as the original's "%02d:%02d:%02d" (hours widen past 99).
+fn time_str(secs: int) -> string {
+    let mut t = secs;
+    if t < 0 { t = 0; }
+    let hours = t / 3600;
+    let mins = (t - hours * 3600) / 60;
+    let rest = t - hours * 3600 - mins * 60;
+    return pad2(hours) + ":" + pad2(mins) + ":" + pad2(rest);
+}
+
 fn int_str(n: int) -> string {
     if n == 0 { return "0"; }
     let mut v = n; let mut neg = false;

@@ -107,6 +107,33 @@ interface IPal3Service: IUnknown {
     // reference itself.
     void exit_app();
 
+    // ---- Live party state, for the status screens ----
+    //
+    // These read the ACTIVE adventure's save state through a handle the
+    // service keeps, so they are safe to call while painting from inside
+    // the director's own update (unlike anything that touches the
+    // director itself). All return 0 when no adventure is running.
+
+    // Party members currently in the team, leader first.
+    int party_size();
+
+    // Actor id of the party member at `index` (0-based), or -1.
+    int party_actor_id(int index);
+
+    // One numeric stat of one character. `stat` selects the field:
+    // 0 级 · 1 经验值 · 2 升级所需经验值 (-1 at level 99) ·
+    // 3/4 精 cur/max · 5/6 气 cur/max · 7/8 神 cur/max ·
+    // 9 水 10 火 11 风 12 雷 13 土 · 14 武 15 防 16 速 17 运.
+    // Returns 0 for an unknown actor or selector.
+    int role_stat(int actor_id, int stat);
+
+    // 金钱.
+    int money();
+
+    // Elapsed play time in whole seconds — the status page's clock.
+    // Integer because the script language has no float→int cast.
+    int play_time();
+
     // Build a `IVideoHandle` playing `LOGO.bik` (loaded from the
     // per-launch vfs via `AssetManager::load_movie_data`). Returns
     // `null` after the first successful call per process — the
