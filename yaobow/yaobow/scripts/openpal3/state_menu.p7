@@ -102,7 +102,7 @@ let SPR_NOBODY: string  = "ui/GameMainUI/State/NoBodyFrame.tga";
 // Compose the menu over the live scene + HUD. `mx`/`my` are the cursor,
 // `click` is the left-button rising edge this frame.
 // Returns 1 to stay open, 0 to close, 2 to switch to the system menu,
-// 3 to the 道具 page, 4 to the 装备 page, 5 to the 仙术 page.
+// 3 道具, 4 装备, 5 仙术, 6 御剑.
 pub fn paint_state_menu(
     ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
     pal3: box<openpal3.IPal3Service>,
@@ -216,6 +216,7 @@ pub fn paint_state_menu(
     if hit == chrome.PAGE_PROP { return 3; }
     if hit == chrome.PAGE_EQUIP { return 4; }
     if hit == chrome.PAGE_MAGIC { return 5; }
+    if hit == chrome.PAGE_SWORD { return 6; }
     return 1;
 }
 

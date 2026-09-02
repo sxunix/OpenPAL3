@@ -163,7 +163,7 @@ pub fn paint_toolbar(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas
         "State", "Prop", "Equip", "Magic", "Battle_Array", "Sword", "JusticeBook", "System",
     ];
     // Pages with a working screen; the rest stay inert.
-    let implemented: array<bool> = [true, true, true, true, false, false, false, true];
+    let implemented: array<bool> = [true, true, true, true, false, true, false, true];
     let mut hit = TOOLBAR_NONE;
     for i in Range(0, 8) {
         let bx0 = ox + (TB_BTN_X0 + (i as float) * TB_STEP) * s;

@@ -1,0 +1,303 @@
+// PAL3 in-game 御剑 (magic sword / 炼化) page — standalone overlay,
+// reached from any other full-screen page's toolbar.
+//
+// Geometry from the original PAL3.exe (v1.4): page init `FUN_004ab6b0`,
+// lists `FUN_004a8770`, refill/filter `FUN_004a9870`, element icon swap
+// `FUN_004ac8b0`. Write-up in switch/re/notes/sword_page_layout.md.
+//
+// Two things set this page apart from the others:
+//   * it has NO party plate column — the right edge is taken by the 五灵
+//     control panel instead,
+//   * its list shows four columns (名称 / 数量 / 古董价值 / 半价), and the
+//     last two come straight off the item's database row.
+//
+// This page is DISPLAY-ONLY for now. The 炼化 action itself is not
+// implemented: the original runs it through two confirmation dialogs whose
+// callbacks are not in the init function, so what it consumes and what it
+// produces is still unknown, and the sword's per-element 阴/阳 state has
+// nowhere to live yet.
+//
+// One piece of geometry here is a reconstruction, not a reading: init
+// chains the ten 阴/阳 buttons vertically (x 694..737, each 51 tall, +22
+// within a pair and +23 between pairs), which would run 700 px down a
+// panel that is only 386 tall. The five `<element>_perfect` overlay rects
+// ARE concrete immediates and divide the panel into five 64 px bands, so
+// this page puts each element's pair side by side inside its own band.
+// Flagged so nobody mistakes it for the original's layout.
+
+import radiance;
+import shared.openpal3;
+import radiance_scripting.ui as gui;
+import yaobow.openpal3.menu_chrome as chrome;
+
+// --- Sprites -------------------------------------------------------------
+let SPR_SWORDFRAME: string = "ui/GameMainUI/Sword/SwordFrame.tga";
+let SPR_REMARK: string     = "ui/GameMainUI/Sword/SwordRemark.tga";
+let SPR_WULING: string     = "ui/GameMainUI/Sword/wulingControl.tga";
+let SPR_LONGJING: string   = "ui/GameMainUI/Sword/Longjingshi.tga";
+let SPR_GRID: string       = "ui/GameMainUI/Sword/List_Grid.tga";
+let SPR_SELECTED: string   = "ui/assistant/Communal/ListBoxSelPic.tga";
+let SPR_SCROLL: string     = "ui/GameMainUI/Communal/Scroll/scrollbar";
+let SPR_SORT: string       = "ui/GameMainUI/Sword/SortGu";
+let SPR_SWORD_EL: string   = "ui/GameMainUI/Sword/Sword_";
+let SPR_WL_BTN: string     = "ui/GameMainUI/Sword/WuLingBtn/";
+let SPR_MODE: string       = "ui/GameMainUI/Sword/";
+
+// --- Layout (native 800x600) ---------------------------------------------
+let SF_X: float = 260.0; let SF_Y: float = 2.0;
+let RM_X: float = 264.0; let RM_Y: float = 2.0;
+// Remark text, in the original's light yellow.
+let RMT_X: float = 280.0; let RMT_Y: float = 38.0;
+let RMT_WRAP: float = 180.0;
+// The selected element's sword icon and its name.
+let EL_ICON_X: float = 470.0; let EL_ICON_Y: float = 10.0;
+let EL_NAME_X: float = 342.0; let EL_NAME_Y: float = 16.0;
+
+let LJ_X: float = 672.0; let LJ_Y: float = 48.0;
+let LJ_TXT_X: float = 688.0; let LJ_TXT_Y: float = 48.0;
+
+let WL_X: float = 690.0; let WL_Y: float = 131.0;
+// The five `<element>_perfect` bands — concrete rects from init, used here
+// as the row anchors for each element's pair of buttons.
+let BAND_X: array<float> = [691.0, 691.0, 691.0, 690.0, 690.0];
+let BAND_Y: array<float> = [132.0, 206.0, 279.0, 353.0, 428.0];
+// Panel button order is 水 火 雷 风 土 (init's build order), which is NOT
+// the database's 水火风雷土.
+let EL_BASE: array<string> = ["shui", "huo", "lei", "feng", "tu"];
+let EL_LABEL: array<string> = ["水", "火", "雷", "风", "土"];
+let BTN_W: float = 43.0; let BTN_H: float = 51.0;
+let BTN_DX: float = 4.0;  let BTN_DY: float = 14.0;
+let BTN_GAP: float = 47.0;
+
+// 阴/阳 mode button, both variants share one rect.
+let MODE_X: float = 291.0; let MODE_Y: float = 466.0;
+let MODE_W: float = 200.0; let MODE_H: float = 60.0;
+
+// The list panel and its decorative rails.
+let PANEL_X: float = 52.0;  let PANEL_Y: float = 108.0;
+let RAIL1_X: float = 43.0;  let RAIL1_Y: float = 93.0;
+let RAIL2_X: float = 42.0;  let RAIL2_Y: float = 496.0;
+// The list grid sits inside the panel; rows are 23 apart as everywhere.
+let ROWS: int = 12;
+let GRID_X: float = 62.0;
+let GRID_Y0: float = 140.0;
+let ROW_H: float = 23.0;
+let ROW_TEXT_DY: float = 3.5;
+// Four columns: 名称 130 · 数量 38 · 古董 38 · 半价 50 (256 total, the
+// width of Sword\List_Grid.tga).
+let COL_NAME: float = 130.0;
+let COL_NUM: float = 38.0;
+let COL_GU: float = 38.0;
+let HEAD_X: float = 62.0; let HEAD_Y: float = 112.0;
+
+let SORT_X: float = 62.0; let SORT_Y: float = 505.0;
+let SORT_W: float = 94.0; let SORT_H: float = 20.0;
+
+// Five equipment tabs share the 装备 page's filter classes; this page has
+// no tab art of its own, so the element buttons pick the category.
+let TAB_MASK: array<int> = [2048, 128, 256, 512, 1024];
+let TAB_LABEL: array<string> = ["武器", "衣服", "帽子", "鞋子", "饰品"];
+
+let INK_R: float = 0.05; let INK_G: float = 0.12; let INK_B: float = 0.0;
+let YEL_R: float = 1.0; let YEL_G: float = 0.96; let YEL_B: float = 0.56;
+let GRN_R: float = 0.82; let GRN_G: float = 1.0; let GRN_B: float = 0.72;
+
+// `IPal3Service::item_info` selectors.
+let IT_PRICE: int = 2;
+let IT_ANCIENT: int = 3;
+
+pub let CLOSE: int = -1;
+pub let TO_STATE: int = -2;
+pub let TO_SYSTEM: int = -3;
+pub let TO_PROP: int = -4;
+pub let TO_EQUIP: int = -5;
+pub let TO_MAGIC: int = -6;
+
+// Packed state: element * 10000 + tab * 1000 + scroll * 100 + selection.
+pub fn pack(element: int, tab: int, scroll: int, sel: int) -> int {
+    return element * 10000 + tab * 1000 + scroll * 100 + sel;
+}
+pub fn element_of(state: int) -> int { return state / 10000; }
+pub fn tab_of(state: int) -> int { return (state - element_of(state) * 10000) / 1000; }
+pub fn scroll_of(state: int) -> int {
+    return (state - element_of(state) * 10000 - tab_of(state) * 1000) / 100;
+}
+pub fn sel_of(state: int) -> int {
+    return state - element_of(state) * 10000 - tab_of(state) * 1000 - scroll_of(state) * 100;
+}
+
+pub fn paint_sword_menu(
+    ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+    pal3: box<openpal3.IPal3Service>,
+    mx: float, my: float, down: bool, click: bool, state: int,
+) -> int {
+    let lw = ui.display_size_x() as float;
+    let lh = ui.display_size_y() as float;
+    if lw <= 0.0 || lh <= 0.0 { return state; }
+
+    let viewport = gui.Rect(0.0, 0.0, lw, lh);
+    let native = gui.Size(chrome.REF_W, chrome.REF_H);
+    let canvas = viewport.fit(native);
+    let s = viewport.fit_scale(native);
+    let cw = canvas.w;
+    let ch = canvas.h;
+    let ox = canvas.x;
+    let oy = canvas.y;
+
+    ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
+
+    let mut element = element_of(state);
+    if element < 0 || element > 4 { element = 0; }
+    let mut tab = tab_of(state);
+    if tab < 0 || tab > 4 { tab = 0; }
+    let mut scroll = scroll_of(state);
+    let mut sel = sel_of(state);
+
+    // ---- Frame and the sword panel --------------------------------------
+    // No party plates on this page — the right edge is the 五灵 panel.
+    chrome.sprite(ui, atlas, chrome.SPR_FRAME_LINE,
+        ox + chrome.FRL_X * s, oy + chrome.FRL_Y * s, s);
+    chrome.sprite(ui, atlas, chrome.SPR_TIMEMONEY, ox + chrome.TM_X * s, oy + chrome.TM_Y * s, s);
+    chrome.widget_text(ui, ox + chrome.MONEY_X * s, oy + chrome.MONEY_Y * s, 0.0, s,
+        1.0, 0.95, 0.5, chrome.int_str(pal3.money()));
+    chrome.widget_text(ui, ox + chrome.TIME_X * s, oy + chrome.TIME_Y * s, 0.0, s,
+        0.85, 1.0, 0.95, chrome.time_str(pal3.play_time()));
+
+    chrome.sprite(ui, atlas, SPR_SWORDFRAME, ox + SF_X * s, oy + SF_Y * s, s);
+    chrome.sprite(ui, atlas, SPR_REMARK, ox + RM_X * s, oy + RM_Y * s, s);
+    chrome.sprite(ui, atlas, SPR_SWORD_EL + capitalised(EL_BASE[element]) + ".tga",
+        ox + EL_ICON_X * s, oy + EL_ICON_Y * s, s);
+    chrome.widget_text(ui, ox + EL_NAME_X * s, oy + EL_NAME_Y * s, 0.0, s,
+        GRN_R, GRN_G, GRN_B, EL_LABEL[element] + "灵剑");
+
+    chrome.sprite(ui, atlas, SPR_LONGJING, ox + LJ_X * s, oy + LJ_Y * s, s);
+    chrome.widget_text(ui, ox + LJ_TXT_X * s, oy + LJ_TXT_Y * s, 0.0, s,
+        1.0, 0.98, 0.12, chrome.int_str(0));
+
+    // ---- 五灵 control panel ---------------------------------------------
+    chrome.sprite(ui, atlas, SPR_WULING, ox + WL_X * s, oy + WL_Y * s, s);
+    let mut new_element = element;
+    for i in Range(0, 5) {
+        let bx = ox + (BAND_X[i] + BTN_DX) * s;
+        let by = oy + (BAND_Y[i] + BTN_DY) * s;
+        // 阴 then 阳, side by side inside the band. [Reconstruction — see
+        // the header note.]
+        chrome.sprite(ui, atlas, SPR_WL_BTN + EL_BASE[i] + "_lunar0.tga", bx, by, s);
+        chrome.sprite(ui, atlas, SPR_WL_BTN + EL_BASE[i] + "_Positive0.tga",
+            bx + BTN_GAP * s, by, s);
+
+        let hover = mx >= bx && mx <= bx + (BTN_GAP + BTN_W) * s
+            && my >= by && my <= by + BTN_H * s;
+        if hover && click { new_element = i; }
+    }
+    if new_element != element {
+        element = new_element;
+        scroll = 0;
+        sel = 0;
+    }
+
+    // 阴/阳 mode button — both variants share the same rect; the original
+    // shows Lunar by default.
+    chrome.sprite(ui, atlas, SPR_MODE + "Lunar0.tga", ox + MODE_X * s, oy + MODE_Y * s, s);
+
+    // ---- Equipment list --------------------------------------------------
+    let mask = TAB_MASK[tab];
+    let count = pal3.inventory_size(mask);
+
+    let mut max_scroll = count - ROWS;
+    if max_scroll < 0 { max_scroll = 0; }
+    if scroll > max_scroll { scroll = max_scroll; }
+    if scroll < 0 { scroll = 0; }
+    if sel >= count { sel = count - 1; }
+    if sel < 0 { sel = 0; }
+
+    let wheel = ui.mouse_wheel();
+    if wheel > 0.0 { if scroll > 0 { scroll = scroll - 1; } }
+    if wheel < 0.0 { if scroll < max_scroll { scroll = scroll + 1; } }
+
+    // Category is picked by clicking the header, which cycles it — the
+    // original uses the 装备 page's tab art, which this page does not ship.
+    let head_x = ox + HEAD_X * s;
+    let head_y = oy + HEAD_Y * s;
+    if click && mx >= head_x && mx <= head_x + 256.0 * s
+        && my >= head_y && my <= head_y + 32.0 * s {
+        tab = tab + 1;
+        if tab > 4 { tab = 0; }
+        scroll = 0;
+        sel = 0;
+    }
+    chrome.widget_text(ui, head_x, head_y, 0.0, s, INK_R, INK_G, INK_B,
+        TAB_LABEL[tab] + "        数量  古董    价");
+
+    let grid_x0 = ox + GRID_X * s;
+    for k in Range(0, ROWS) {
+        let ry0 = oy + (GRID_Y0 + (k as float) * ROW_H) * s;
+        chrome.sprite(ui, atlas, SPR_GRID, grid_x0, ry0, s);
+
+        let index = scroll + k;
+        if index < count {
+            let item_id = pal3.inventory_item_id(mask, index);
+            if item_id >= 0 {
+                let hover = mx >= grid_x0 && mx <= grid_x0 + 256.0 * s
+                    && my >= ry0 && my <= ry0 + ROW_H * s;
+                if index == sel { chrome.sprite(ui, atlas, SPR_SELECTED, grid_x0, ry0, s); }
+                if hover && click { sel = index; }
+
+                pal3.draw_item_name(ui, item_id,
+                    grid_x0 + chrome.TXT_MARGIN * s, ry0 + ROW_TEXT_DY * s,
+                    chrome.TXT * s, INK_R, INK_G, INK_B, 1.0);
+                chrome.widget_text(ui, grid_x0 + COL_NAME * s, ry0,
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B,
+                    chrome.int_str(pal3.item_count(item_id)));
+                chrome.widget_text(ui, grid_x0 + (COL_NAME + COL_NUM) * s, ry0,
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B,
+                    chrome.int_str(pal3.item_info(item_id, IT_ANCIENT)));
+                // The original shows half the item's price in the last
+                // column (`itemInfo+0x260 / 2`).
+                chrome.widget_text(ui, grid_x0 + (COL_NAME + COL_NUM + COL_GU) * s, ry0,
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B,
+                    chrome.int_str(pal3.item_info(item_id, IT_PRICE) / 2));
+            }
+        }
+    }
+
+    // Sort button (drawn, inert): the original sorts by 古董价值.
+    let sx0 = ox + SORT_X * s;
+    let sy0 = oy + SORT_Y * s;
+    let sort_hover = mx >= sx0 && mx <= sx0 + SORT_W * s && my >= sy0 && my <= sy0 + SORT_H * s;
+    let sort_variant = if sort_hover { "2" } else { "0" };
+    chrome.sprite(ui, atlas, SPR_SORT + sort_variant + ".tga", sx0, sy0, s);
+
+    // ---- The selected piece's description --------------------------------
+    if count > 0 {
+        let item_id = pal3.inventory_item_id(mask, sel);
+        if item_id >= 0 {
+            pal3.draw_item_description(ui, item_id,
+                ox + (RMT_X + chrome.TXT_MARGIN) * s,
+                oy + (RMT_Y + chrome.TXT_MARGIN) * s,
+                chrome.TXT * s, RMT_WRAP * s, YEL_R, YEL_G, YEL_B, 1.0);
+        }
+    }
+
+    // ---- Bottom action toolbar -------------------------------------------
+    let hit = chrome.paint_toolbar(ui, atlas, ox, oy, cw, ch, s, mx, my, down, click,
+        chrome.PAGE_SWORD);
+    if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
+    if hit == chrome.PAGE_STATE { return TO_STATE; }
+    if hit == chrome.PAGE_PROP { return TO_PROP; }
+    if hit == chrome.PAGE_EQUIP { return TO_EQUIP; }
+    if hit == chrome.PAGE_MAGIC { return TO_MAGIC; }
+    if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
+
+    return pack(element, tab, scroll, sel);
+}
+
+// The element sword icons are `Sword_Shui.tga` etc — capitalised, unlike
+// the lower-case button art.
+fn capitalised(name: string) -> string {
+    if name == "shui" { return "Shui"; }
+    if name == "huo" { return "Huo"; }
+    if name == "lei" { return "Lei"; }
+    if name == "feng" { return "Feng"; }
+    return "Tu";
+}

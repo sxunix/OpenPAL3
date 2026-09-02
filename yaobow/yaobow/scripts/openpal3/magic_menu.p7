@@ -100,6 +100,7 @@ pub let TO_STATE: int = -2;
 pub let TO_SYSTEM: int = -3;
 pub let TO_PROP: int = -4;
 pub let TO_EQUIP: int = -5;
+pub let TO_SWORD: int = -6;
 
 // Packed state: member * 10000 + tab * 100 + selection. There is no
 // scrollbar on this page, so there is no scroll offset to carry.
@@ -257,6 +258,7 @@ pub fn paint_magic_menu(
     if hit == chrome.PAGE_STATE { return TO_STATE; }
     if hit == chrome.PAGE_PROP { return TO_PROP; }
     if hit == chrome.PAGE_EQUIP { return TO_EQUIP; }
+    if hit == chrome.PAGE_SWORD { return TO_SWORD; }
     if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
 
     return pack(member, tab, sel);
