@@ -1,0 +1,237 @@
+//! Runs a battle against the shipped game data and prints a blow-by-blow
+//! log, so the ported formulas can be eyeballed against the real game.
+//!
+//! Skipped (not failed) when the database fixture is absent, so CI without
+//! game data stays green. To produce it:
+//!
+//! ```text
+//! cargo run -p packfs --example pal3_probe -- <PAL3 dir> \
+//!     --dump /basedata/basedata/cbdata/pal3_softstar.gdb /tmp/pal3_softstar.gdb
+//! YAOBOW_PAL3_GDB=/tmp/pal3_softstar.gdb \
+//!     cargo test -p shared --test pal3_battle_log -- --nocapture
+//! ```
+
+use std::io::Cursor;
+
+use fileformats::pal3::gdb::GdbFile;
+use shared::openpal3::combat::actions::{ATTR_HP, ATTRIBUTE_SLOTS, SkillEffect};
+use shared::openpal3::combat::state::{Battle, Combatant, Outcome, SLOTS, Side};
+use shared::openpal3::states::game_db::combat_id_of_party_member;
+use shared::openpal3::states::growth;
+
+fn load_gdb() -> Option<GdbFile> {
+    let path =
+        std::env::var("YAOBOW_PAL3_GDB").unwrap_or_else(|_| "/tmp/pal3_softstar.gdb".to_string());
+    let raw = std::fs::read(&path).ok()?;
+    GdbFile::read(&mut Cursor::new(raw)).ok()
+}
+
+/// A playable character at `level`, built the way a new game builds one:
+/// attributes off the growth curves, 速/运 off the database row.
+fn player(gdb: &GdbFile, party_index: u32, level: i32) -> Combatant {
+    let combat_id = combat_id_of_party_member(party_index).expect("party index 0..4");
+    let row = gdb
+        .combat_actors
+        .iter()
+        .find(|a| a.id == combat_id)
+        .expect("playable character in the database");
+    let g = growth::at_level(party_index as usize, level);
+
+    let mut c = Combatant::new(combat_id, Side::Party);
+    c.level = level;
+    c.max_hp = g.max_hp;
+    c.hp = g.max_hp;
+    c.max_sp = g.max_sp;
+    c.sp = g.max_sp;
+    c.max_mp = g.max_mp;
+    c.mp = g.max_mp;
+    c.attack = g.attack;
+    c.defense = g.defense;
+    c.speed = row.attribute_values[5];
+    c.luck = row.attribute_values[6];
+    for (i, v) in row.element_attribute_values.iter().enumerate() {
+        c.elements[i + 1] = *v > 0;
+    }
+    c
+}
+
+/// A monster straight off its database row.
+fn monster(gdb: &GdbFile, actor: u32) -> Combatant {
+    let row = gdb
+        .combat_actors
+        .iter()
+        .find(|a| a.id == actor)
+        .expect("monster in the database");
+
+    let mut c = Combatant::new(actor, Side::Enemy);
+    c.level = row.level;
+    c.max_hp = row.attribute_values[0];
+    c.hp = c.max_hp;
+    c.max_sp = row.attribute_values[1];
+    c.sp = c.max_sp;
+    c.max_mp = row.attribute_values[2];
+    c.mp = c.max_mp;
+    c.attack = row.attribute_values[3];
+    c.defense = row.attribute_values[4];
+    c.speed = row.attribute_values[5];
+    c.luck = row.attribute_values[6];
+    for (i, v) in row.element_attribute_values.iter().enumerate() {
+        c.elements[i + 1] = *v > 0;
+    }
+    c
+}
+
+fn name(gdb: &GdbFile, actor: u32) -> String {
+    gdb.combat_actors
+        .iter()
+        .find(|a| a.id == actor)
+        .and_then(|a| a.name.as_str().ok())
+        .unwrap_or_else(|| format!("#{actor}"))
+}
+
+/// Turn a database skill row into the effect the combat code wants.
+fn skill_effect(gdb: &GdbFile, skill_id: u32) -> Option<SkillEffect> {
+    let s = gdb.skills.iter().find(|s| s.id == skill_id)?;
+    let mut impacts = [(0u8, 0i16); ATTRIBUTE_SLOTS];
+    for slot in 0..ATTRIBUTE_SLOTS {
+        impacts[slot] = (
+            s.attribute_impact_type[slot],
+            s.attribute_impact_value[slot],
+        );
+    }
+    let mut elements = s
+        .element_attributes
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| **v != 0)
+        .map(|(i, _)| i as u8 + 1);
+    Some(SkillEffect {
+        id: s.id,
+        level: s.level as i32,
+        success_rate_level: s.success_rate_level,
+        elements: (elements.next(), elements.next()),
+        impacts,
+        sp_cost: s.sp_consume_value,
+        mp_cost: s.mp_consume_value,
+    })
+}
+
+#[test]
+fn a_battle_against_the_shipped_data_plays_out() {
+    let Some(gdb) = load_gdb() else {
+        eprintln!("skipping: no pal3_softstar.gdb fixture (set YAOBOW_PAL3_GDB)");
+        return;
+    };
+
+    let mut battle = Battle::new(0x1234_5678);
+    // 景天 and 雪见 at level 5 against the first two monsters in the table.
+    battle.place(0, player(&gdb, 0, 5));
+    battle.place(1, player(&gdb, 1, 5));
+
+    let monsters: Vec<u32> = gdb
+        .combat_actors
+        .iter()
+        .filter(|a| a.actor_type != 0)
+        .take(2)
+        .map(|a| a.id)
+        .collect();
+    for (i, id) in monsters.iter().enumerate() {
+        battle.place(5 + i, monster(&gdb, *id));
+    }
+
+    // 景天's opening skill, if the database gives him one usable here.
+    let skill = skill_effect(&gdb, 4101);
+
+    println!("=== 出场 ===");
+    for slot in 0..SLOTS {
+        if let Some(c) = battle.get(slot) {
+            println!(
+                "  [{slot:2}] {:<12} Lv{:<3} 精{:>5}/{:<5} 武{:>4} 防{:>4} 速{:>3} 行动条速率{:>4}",
+                name(&gdb, c.actor_id),
+                c.level,
+                c.hp,
+                c.max_hp,
+                c.attack,
+                c.defense,
+                c.speed,
+                c.gauge_rate(),
+            );
+        }
+    }
+
+    println!("=== 开打 ===");
+    let mut elapsed = 0.0f32;
+    let mut turns = 0;
+    while battle.outcome() == Outcome::Ongoing && turns < 400 {
+        elapsed += 0.1;
+        let Some(slot) = battle.update(0.1) else {
+            continue;
+        };
+        turns += 1;
+
+        let actor = battle.get(slot).unwrap();
+        let side = actor.side;
+        let actor_id = actor.actor_id;
+        let target = (0..SLOTS).find(|s| {
+            battle
+                .get(*s)
+                .map(|c| c.side != side && c.in_play())
+                .unwrap_or(false)
+        });
+        let Some(target) = target else { break };
+        let target_id = battle.get(target).unwrap().actor_id;
+
+        // 景天 opens with a skill when he can afford it, otherwise
+        // everyone just swings.
+        let used_skill = match (&skill, side) {
+            (Some(s), Side::Party) if slot == 0 && battle.get(0).unwrap().mp >= s.mp_cost => {
+                let r = battle.cast_skill(slot, target, s);
+                Some(r)
+            }
+            _ => None,
+        };
+
+        let line = match used_skill {
+            Some(r) if r.hit => {
+                format!("仙术 → {} 精{:+}", name(&gdb, target_id), r.deltas[ATTR_HP])
+            }
+            Some(_) => format!("仙术 → {} 未命中", name(&gdb, target_id)),
+            None => {
+                let moved = battle.basic_attack(slot, target);
+                format!("普攻 → {} 精{:+}", name(&gdb, target_id), moved)
+            }
+        };
+
+        println!(
+            "  {:6.1}s 第{:>2}回合 [{slot:2}] {:<12} {}",
+            elapsed,
+            battle.round,
+            name(&gdb, actor_id),
+            line
+        );
+        battle.finish_turn(slot);
+    }
+
+    println!(
+        "=== 结束: {:?} (第 {} 回合) ===",
+        battle.outcome(),
+        battle.round
+    );
+    for slot in 0..SLOTS {
+        if let Some(c) = battle.get(slot) {
+            println!(
+                "  [{slot:2}] {:<12} 精{:>5}/{:<5} {}",
+                name(&gdb, c.actor_id),
+                c.hp,
+                c.max_hp,
+                if c.alive { "" } else { "倒下" }
+            );
+        }
+    }
+
+    assert_ne!(
+        battle.outcome(),
+        Outcome::Ongoing,
+        "战斗应在 400 次出手内分出胜负"
+    );
+}

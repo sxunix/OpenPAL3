@@ -4,8 +4,10 @@
 //! so every expression can be unit-tested against the numbers read out of
 //! the binary. [`state`] adds the battle itself: eleven slots, the action
 //! gauge, status timers and the win/lose test, still with nothing on
-//! screen. The reverse-engineering write-ups live in
+//! screen. [`actions`] is what a combatant can do on its turn. The
+//! reverse-engineering write-ups live in
 //! `switch/re/notes/combat_formulas.md` and `combat_flow.md`.
 
+pub mod actions;
 pub mod formulas;
 pub mod state;
