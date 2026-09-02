@@ -152,7 +152,10 @@ interface IPal3Service: IUnknown {
 
     // One numeric field of an item's database row. `field` selects:
     // 0 类型 · 1 武器类型 · 2 价格 · 3 古董价值 · 4 使用地点 ·
-    // 5 目标范围 · 6 特殊类型. 0 for an unknown item or field.
+    // 5 目标范围 · 6 特殊类型 ·
+    // 7 炼制所需矿石ID · 8 炼制产物ID · 9 炼制产物价格 ·
+    // 10 合成材料一 · 11 合成材料二 · 12 合成产物ID ·
+    // 13 连击次数. 0 for an unknown item or field.
     int item_info(int item_id, int field);
 
     // Draw an item's name / description. Like `draw_slot_label`, these
@@ -215,6 +218,37 @@ interface IPal3Service: IUnknown {
         float size, float r, float g, float b, float a);
     void draw_skill_description(IUiHost ui, int skill_id, float x, float y,
         float size, float wrap_px, float r, float g, float b, float a);
+
+    // ---- Combat actors, for the 侠义榜 ----
+    //
+    // The database's combat-actor table holds the playable characters
+    // first and then every monster.
+
+    // How many rows the table has.
+    int combat_actor_count();
+
+    // The `index`-th row's id, or -1.
+    int combat_actor_id_at(int index);
+
+    // One numeric field of a combat actor's row. `field` selects:
+    // 0 类型 (CombatActorType) · 1 等级 · 2 精 · 3 气 · 4 神 ·
+    // 5 武 · 6 防 · 7 速 · 8 运 · 9..13 五灵 水火风雷土 ·
+    // 14 经验 · 15 被击败时可得钱 · 16 普通战利品ID ·
+    // 17 普通战利品数量 · 18 可偷物品ID · 19 可偷钱数 ·
+    // 20 尸块ID. 0 for an unknown actor or field.
+    int combat_actor_info(int actor_id, int field);
+
+    void draw_combat_actor_name(IUiHost ui, int actor_id, float x, float y,
+        float size, float r, float g, float b, float a);
+    void draw_combat_actor_description(IUiHost ui, int actor_id, float x,
+        float y, float size, float wrap_px,
+        float r, float g, float b, float a);
+
+    // Whether this monster has been recorded in the 侠义榜, and the
+    // number recorded so far. Nothing marks monsters yet — that happens
+    // when combat exists — so today these report an empty book.
+    bool monster_seen(int actor_id);
+    int monsters_seen_count();
 
 
     // Build a `IVideoHandle` playing `LOGO.bik` (loaded from the

@@ -135,6 +135,11 @@ impl GameDb {
         self.items_by_id.get(&id).map(|i| &self.gdb.items[*i])
     }
 
+    /// Every combat-actor row, playable characters first then monsters.
+    pub fn combat_actors(&self) -> &[CombatActorInfo] {
+        &self.gdb.combat_actors
+    }
+
     pub fn combo_skills(&self) -> &[ComboSkillInfo] {
         &self.gdb.combo_skills
     }

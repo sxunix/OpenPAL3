@@ -101,6 +101,30 @@ const ITEM_FIELD_ANCIENT_VALUE: i32 = 3;
 const ITEM_FIELD_PLACE_OF_USE: i32 = 4;
 const ITEM_FIELD_TARGET_RANGE: i32 = 5;
 const ITEM_FIELD_SPECIAL_TYPE: i32 = 6;
+const ITEM_FIELD_ORE_ID: i32 = 7;
+const ITEM_FIELD_PRODUCT_ID: i32 = 8;
+const ITEM_FIELD_PRODUCT_PRICE: i32 = 9;
+const ITEM_FIELD_SYNTH_MATERIAL_1: i32 = 10;
+const ITEM_FIELD_SYNTH_MATERIAL_2: i32 = 11;
+const ITEM_FIELD_SYNTH_PRODUCT: i32 = 12;
+const ITEM_FIELD_COMBO_COUNT: i32 = 13;
+
+/// `IPal3Service::combat_actor_info` selectors.
+const ACTOR_FIELD_TYPE: i32 = 0;
+const ACTOR_FIELD_LEVEL: i32 = 1;
+/// 精气神武防速运 occupy 2..=8, in the database's attribute order.
+const ACTOR_FIELD_HP: i32 = 2;
+const ACTOR_FIELD_LUCK: i32 = 8;
+/// 五灵 水火风雷土 occupy 9..=13.
+const ACTOR_FIELD_WATER: i32 = 9;
+const ACTOR_FIELD_EARTH: i32 = 13;
+const ACTOR_FIELD_EXP: i32 = 14;
+const ACTOR_FIELD_MONEY_WHEN_KILLED: i32 = 15;
+const ACTOR_FIELD_LOOT_ID: i32 = 16;
+const ACTOR_FIELD_LOOT_COUNT: i32 = 17;
+const ACTOR_FIELD_STEALABLE_ITEM: i32 = 18;
+const ACTOR_FIELD_STEALABLE_MONEY: i32 = 19;
+const ACTOR_FIELD_CORPSE_ID: i32 = 20;
 
 /// Lay out `text` the way an original text widget does: a fixed cell of
 /// `cell` logical pixels, ASCII advancing half a cell and CJK a whole
@@ -655,6 +679,19 @@ impl Pal3Service {
         f(db.as_ref()?.skill(skill_id as u32)?)
     }
 
+    /// Pull one text field off a combat actor's database row.
+    fn actor_text(
+        &self,
+        actor_id: i32,
+        f: impl FnOnce(&fileformats::pal3::gdb::CombatActorInfo) -> Option<String>,
+    ) -> Option<String> {
+        if actor_id < 0 {
+            return None;
+        }
+        let db = self.active_game_db.borrow();
+        f(db.as_ref()?.combat_actor(actor_id as u32)?)
+    }
+
     /// Run `f` against the active adventure's save state, or return
     /// `default` when no adventure is running. Uses `try_borrow` because
     /// this is called mid-paint and must never abort the frame.
@@ -918,6 +955,13 @@ impl IPal3ServiceImpl for Pal3Service {
             ITEM_FIELD_PLACE_OF_USE => item.place_of_use_type as i32,
             ITEM_FIELD_TARGET_RANGE => item.target_range_type as i32,
             ITEM_FIELD_SPECIAL_TYPE => item.item_special_type as i32,
+            ITEM_FIELD_ORE_ID => item.ore_id as i32,
+            ITEM_FIELD_PRODUCT_ID => item.product_id as i32,
+            ITEM_FIELD_PRODUCT_PRICE => item.product_price,
+            ITEM_FIELD_SYNTH_MATERIAL_1 => item.synthesis_material_ids[0] as i32,
+            ITEM_FIELD_SYNTH_MATERIAL_2 => item.synthesis_material_ids[1] as i32,
+            ITEM_FIELD_SYNTH_PRODUCT => item.synthesis_product_id as i32,
+            ITEM_FIELD_COMBO_COUNT => item.combo_count,
             _ => 0,
         }
     }
@@ -1139,6 +1183,102 @@ impl IPal3ServiceImpl for Pal3Service {
         for (line_no, line) in wrap_widget_text(&desc, size, wrap_px).iter().enumerate() {
             ui.text_at_sized(x, y + line_no as f32 * size, size, r, g, b, a, line);
         }
+    }
+
+    fn combat_actor_count(&self) -> i32 {
+        let db = self.active_game_db.borrow();
+        db.as_ref()
+            .map(|db| db.combat_actors().len() as i32)
+            .unwrap_or(0)
+    }
+
+    fn combat_actor_id_at(&self, index: i32) -> i32 {
+        if index < 0 {
+            return -1;
+        }
+        let db = self.active_game_db.borrow();
+        db.as_ref()
+            .and_then(|db| db.combat_actors().get(index as usize))
+            .map(|a| a.id as i32)
+            .unwrap_or(-1)
+    }
+
+    fn combat_actor_info(&self, actor_id: i32, field: i32) -> i32 {
+        if actor_id < 0 {
+            return 0;
+        }
+        let db = self.active_game_db.borrow();
+        let Some(a) = db.as_ref().and_then(|db| db.combat_actor(actor_id as u32)) else {
+            return 0;
+        };
+        match field {
+            ACTOR_FIELD_TYPE => a.actor_type as i32,
+            ACTOR_FIELD_LEVEL => a.level,
+            ACTOR_FIELD_HP..=ACTOR_FIELD_LUCK => {
+                a.attribute_values[(field - ACTOR_FIELD_HP) as usize]
+            }
+            ACTOR_FIELD_WATER..=ACTOR_FIELD_EARTH => {
+                a.element_attribute_values[(field - ACTOR_FIELD_WATER) as usize]
+            }
+            ACTOR_FIELD_EXP => a.experience,
+            ACTOR_FIELD_MONEY_WHEN_KILLED => a.money_when_killed as i32,
+            ACTOR_FIELD_LOOT_ID => a.normal_loot as i32,
+            ACTOR_FIELD_LOOT_COUNT => a.normal_loot_count as i32,
+            ACTOR_FIELD_STEALABLE_ITEM => a.stealable_item_id as i32,
+            ACTOR_FIELD_STEALABLE_MONEY => a.stealable_money_amount as i32,
+            ACTOR_FIELD_CORPSE_ID => a.corpse_id as i32,
+            _ => 0,
+        }
+    }
+
+    fn draw_combat_actor_name(
+        &self,
+        ui: ComRc<IUiHost>,
+        actor_id: i32,
+        x: f32,
+        y: f32,
+        size: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        let Some(name) = self.actor_text(actor_id, |a| a.name.as_str().ok()) else {
+            return;
+        };
+        ui.text_at_sized(x, y, size, r, g, b, a, &name);
+    }
+
+    fn draw_combat_actor_description(
+        &self,
+        ui: ComRc<IUiHost>,
+        actor_id: i32,
+        x: f32,
+        y: f32,
+        size: f32,
+        wrap_px: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        let Some(desc) = self.actor_text(actor_id, |a| a.description.as_str().ok()) else {
+            return;
+        };
+        for (line_no, line) in wrap_widget_text(&desc, size, wrap_px).iter().enumerate() {
+            ui.text_at_sized(x, y + line_no as f32 * size, size, r, g, b, a, line);
+        }
+    }
+
+    fn monster_seen(&self, actor_id: i32) -> bool {
+        if actor_id < 0 {
+            return false;
+        }
+        self.with_persistent_state(false, |s| s.monster_seen(actor_id as u32))
+    }
+
+    fn monsters_seen_count(&self) -> i32 {
+        self.with_persistent_state(0, |s| s.monsters_seen_count() as i32)
     }
 
     fn party_size(&self) -> i32 {

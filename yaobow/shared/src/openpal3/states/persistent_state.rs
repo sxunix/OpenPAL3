@@ -1,6 +1,6 @@
 use radiance::math::Vec3;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
 use crate::ydirs;
@@ -127,6 +127,10 @@ pub struct PersistentState {
     /// Elapsed play time in seconds; shown on the status page.
     #[serde(default)]
     play_time: f32,
+    /// Combat actors recorded in the 侠义榜. Populated when a monster is
+    /// fought, so it stays empty until combat exists.
+    #[serde(default)]
+    seen_monsters: BTreeSet<u32>,
 }
 
 impl PersistentState {
@@ -143,6 +147,7 @@ impl PersistentState {
             money: 0,
             favor: HashMap::new(),
             play_time: 0.,
+            seen_monsters: BTreeSet::new(),
         }
     }
 
@@ -417,6 +422,20 @@ impl PersistentState {
             }
         }
         best
+    }
+
+    // ---- 侠义榜 ----
+
+    pub fn monster_seen(&self, actor_id: u32) -> bool {
+        self.seen_monsters.contains(&actor_id)
+    }
+
+    pub fn mark_monster_seen(&mut self, actor_id: u32) {
+        self.seen_monsters.insert(actor_id);
+    }
+
+    pub fn monsters_seen_count(&self) -> usize {
+        self.seen_monsters.len()
     }
 
     pub fn play_time(&self) -> f32 {
