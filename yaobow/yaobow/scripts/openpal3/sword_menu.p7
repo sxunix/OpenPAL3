@@ -112,6 +112,8 @@ pub let TO_SYSTEM: int = -3;
 pub let TO_PROP: int = -4;
 pub let TO_EQUIP: int = -5;
 pub let TO_MAGIC: int = -6;
+pub let TO_ARRAY: int = -7;
+pub let TO_BOOK: int = -8;
 
 // Packed state: element * 10000 + tab * 1000 + scroll * 100 + selection.
 pub fn pack(element: int, tab: int, scroll: int, sel: int) -> int {
@@ -287,6 +289,8 @@ pub fn paint_sword_menu(
     if hit == chrome.PAGE_PROP { return TO_PROP; }
     if hit == chrome.PAGE_EQUIP { return TO_EQUIP; }
     if hit == chrome.PAGE_MAGIC { return TO_MAGIC; }
+    if hit == chrome.PAGE_ARRAY { return TO_ARRAY; }
+    if hit == chrome.PAGE_BOOK { return TO_BOOK; }
     if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
 
     return pack(element, tab, scroll, sel);

@@ -1,0 +1,187 @@
+// PAL3 in-game 阵法 (五灵阵法 / formation) page — standalone overlay,
+// reached from any other full-screen page's toolbar.
+//
+// Geometry from the original PAL3.exe (v1.4): page init `FUN_00483650`,
+// per-character panel `FUN_004841b0(角色, X, Y)`, arrange `FUN_00484660`,
+// placement state `FUN_004844a0`. Write-up in
+// switch/re/notes/lineup_page_layout.md.
+//
+// This page is laid out unlike any other:
+//   * no party plate column — its `Frame.tga` is narrower (153 px at
+//     x=631, against 195/197 at x=592 elsewhere) to make room,
+//   * a `RoleFrame` strip across the top with five portrait slots,
+//   * one panel per party member down the right side, each carrying six
+//     阵位 buttons in 2 columns x 3 rows.
+//
+// The 五灵 formation itself is 3D in the original (`wl.pol` plus five
+// `pointer.cvd` markers at hard-coded world positions), so the ring in
+// the middle of the screen is not reproduced here.
+//
+// Which 阵位 index corresponds to which 五灵 is not in the code — the
+// original addresses them by index only — so this page numbers them and
+// stores a character's chosen position as 0..4. The sixth button of each
+// panel is the original's master switch (state byte 5), not a position,
+// and is drawn but inert.
+
+import radiance;
+import shared.openpal3;
+import radiance_scripting.ui as gui;
+import yaobow.openpal3.menu_chrome as chrome;
+
+// --- Sprites -------------------------------------------------------------
+let SPR_FRAME: string    = "ui/GameMainUI/Lineup/Frame.tga";
+let SPR_ROLEFRAME: string = "ui/GameMainUI/Lineup/RoleFrame.tga";
+let SPR_ZHENLIE: string  = "ui/GameMainUI/Lineup/zhenlie.tga";
+let SPR_NOBODY: string   = "ui/GameMainUI/Lineup/NoBody.tga";
+let SPR_HEAD: string     = "ui/GameMainUI/Lineup/Head";
+let SPR_PLANK_UP: string = "ui/GameMainUI/Lineup/PlankUP.tga";
+let SPR_PLANK_DW: string = "ui/GameMainUI/Lineup/PlankDW.tga";
+let SPR_SLOT: string     = "ui/GameMainUI/Lineup/Lineup";
+
+// --- Layout (native 800x600) ---------------------------------------------
+// This page's frame is its own; the rest of the header is shared chrome.
+let FR_X: float = 631.0; let FR_Y: float = 18.0;
+let RF_X: float = 0.0;   let RF_Y: float = 0.0;
+let ZL_X: float = 100.0; let ZL_Y: float = 95.0;
+
+// Five portrait slots across the top strip, 55x57 at y 24..81. Slot 4's
+// rect is identical to slot 3's in the original — recorded as-is rather
+// than "corrected", since it is what the executable writes.
+let TOP_SLOT_X: array<float> = [50.0, 136.0, 216.0, 296.0, 296.0];
+let TOP_SLOT_Y: float = 24.0;
+let TOP_SLOT_W: float = 55.0; let TOP_SLOT_H: float = 57.0;
+
+// Per-character panel: base (638, 42), each further member 124 lower.
+let PANEL_X: float = 638.0;
+let PANEL_Y0: float = 42.0;
+let PANEL_STEP: float = 124.0;
+let PLANK_UP_DX: float = 40.0; let PLANK_UP_DY: float = 0.0;
+let PLANK_DW_DX: float = 44.0; let PLANK_DW_DY: float = 118.0;
+let NAME_DX: float = 50.0; let NAME_DY: float = 18.0;
+// The six 阵位 buttons, 74x26 each, 2 columns x 3 rows. The array index
+// is scrambled against the screen position: left column is 0,1,4 and
+// right column 3,2,5 top to bottom.
+let BTN_W: float = 74.0; let BTN_H: float = 26.0;
+let BTN_COL_DX: float = 73.0;
+let BTN_DY0: float = 42.0;
+let BTN_ROW_STEP: float = 26.0;
+let BTN_INDEX: array<int> = [0, 3, 1, 2, 4, 5];
+
+// The character names the original pulls from its string table.
+let ROLE_NAME: array<string> = ["景天", "雪见", "龙葵", "紫萱", "长卿"];
+
+let INK_R: float = 0.05; let INK_G: float = 0.12; let INK_B: float = 0.0;
+let NAME_R: float = 1.0; let NAME_G: float = 0.98; let NAME_B: float = 0.12;
+
+pub let CLOSE: int = -1;
+pub let TO_STATE: int = -2;
+pub let TO_SYSTEM: int = -3;
+pub let TO_PROP: int = -4;
+pub let TO_EQUIP: int = -5;
+pub let TO_MAGIC: int = -6;
+pub let TO_SWORD: int = -7;
+pub let TO_BOOK: int = -8;
+
+pub fn paint_lineup_menu(
+    ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+    pal3: box<openpal3.IPal3Service>,
+    mx: float, my: float, down: bool, click: bool, state: int,
+) -> int {
+    let lw = ui.display_size_x() as float;
+    let lh = ui.display_size_y() as float;
+    if lw <= 0.0 || lh <= 0.0 { return state; }
+
+    let viewport = gui.Rect(0.0, 0.0, lw, lh);
+    let native = gui.Size(chrome.REF_W, chrome.REF_H);
+    let canvas = viewport.fit(native);
+    let s = viewport.fit_scale(native);
+    let cw = canvas.w;
+    let ch = canvas.h;
+    let ox = canvas.x;
+    let oy = canvas.y;
+
+    ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
+
+    // ---- Frame and header ------------------------------------------------
+    chrome.sprite(ui, atlas, SPR_FRAME, ox + FR_X * s, oy + FR_Y * s, s);
+    chrome.sprite(ui, atlas, chrome.SPR_FRAME_LINE,
+        ox + chrome.FRL_X * s, oy + chrome.FRL_Y * s, s);
+    chrome.sprite(ui, atlas, chrome.SPR_TIMEMONEY, ox + chrome.TM_X * s, oy + chrome.TM_Y * s, s);
+    chrome.widget_text(ui, ox + chrome.MONEY_X * s, oy + chrome.MONEY_Y * s, 0.0, s,
+        1.0, 0.95, 0.5, chrome.int_str(pal3.money()));
+    chrome.widget_text(ui, ox + chrome.TIME_X * s, oy + chrome.TIME_Y * s, 0.0, s,
+        0.85, 1.0, 0.95, chrome.time_str(pal3.play_time()));
+
+    chrome.sprite(ui, atlas, SPR_ROLEFRAME, ox + RF_X * s, oy + RF_Y * s, s);
+    chrome.sprite(ui, atlas, SPR_ZHENLIE, ox + ZL_X * s, oy + ZL_Y * s, s);
+
+    // ---- Top strip: the party's portraits ---------------------------------
+    let party = pal3.party_size();
+    for i in Range(0, 5) {
+        let sx = ox + TOP_SLOT_X[i] * s;
+        let sy = oy + TOP_SLOT_Y * s;
+        if i < party {
+            let role = chrome.role_at(pal3, i);
+            chrome.sprite(ui, atlas, SPR_HEAD + chrome.int_str(role) + "0.tga", sx, sy, s);
+        } else {
+            chrome.sprite(ui, atlas, SPR_NOBODY, sx, sy, s);
+        }
+    }
+
+    // ---- One panel per party member --------------------------------------
+    let mut m = 0;
+    while m < party {
+        let role = chrome.role_at(pal3, m);
+        let px = PANEL_X;
+        let py = PANEL_Y0 + (m as float) * PANEL_STEP;
+
+        chrome.sprite(ui, atlas, SPR_PLANK_UP,
+            ox + (px + PLANK_UP_DX) * s, oy + (py + PLANK_UP_DY) * s, s);
+        chrome.sprite(ui, atlas, SPR_PLANK_DW,
+            ox + (px + PLANK_DW_DX) * s, oy + (py + PLANK_DW_DY) * s, s);
+        chrome.widget_text(ui, ox + (px + NAME_DX) * s, oy + (py + NAME_DY) * s, 0.0, s,
+            NAME_R, NAME_G, NAME_B, name_of(role));
+
+        let here = pal3.lineup_position(role);
+        for b in Range(0, 6) {
+            let col = b - (b / 2) * 2;
+            let row = b / 2;
+            let bx = ox + (px + (col as float) * BTN_COL_DX) * s;
+            let by = oy + (py + BTN_DY0 + (row as float) * BTN_ROW_STEP) * s;
+            let n = BTN_INDEX[b];
+
+            // `Lineup<n>1.tga` is the selected art, `<n>0` the normal one.
+            let mut variant = "0";
+            if n < 5 && n == here { variant = "1"; }
+            chrome.sprite(ui, atlas, SPR_SLOT + chrome.int_str(n) + variant + ".tga", bx, by, s);
+
+            // Button 5 is the original's master switch, not a position.
+            if n < 5 && click
+                && mx >= bx && mx <= bx + BTN_W * s
+                && my >= by && my <= by + BTN_H * s {
+                let _ = pal3.set_lineup_position(role, n);
+            }
+        }
+
+        m = m + 1;
+    }
+
+    // ---- Bottom action toolbar -------------------------------------------
+    let hit = chrome.paint_toolbar(ui, atlas, ox, oy, cw, ch, s, mx, my, down, click,
+        chrome.PAGE_ARRAY);
+    if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
+    if hit == chrome.PAGE_STATE { return TO_STATE; }
+    if hit == chrome.PAGE_PROP { return TO_PROP; }
+    if hit == chrome.PAGE_EQUIP { return TO_EQUIP; }
+    if hit == chrome.PAGE_MAGIC { return TO_MAGIC; }
+    if hit == chrome.PAGE_SWORD { return TO_SWORD; }
+    if hit == chrome.PAGE_BOOK { return TO_BOOK; }
+    if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
+
+    return 0;
+}
+
+fn name_of(role: int) -> string {
+    if role >= 0 && role < 5 { return ROLE_NAME[role]; }
+    return "";
+}

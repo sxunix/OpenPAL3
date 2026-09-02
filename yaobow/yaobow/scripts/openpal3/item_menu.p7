@@ -91,6 +91,8 @@ pub let TO_SYSTEM: int = -3;
 pub let TO_EQUIP: int = -4;
 pub let TO_MAGIC: int = -5;
 pub let TO_SWORD: int = -6;
+pub let TO_ARRAY: int = -7;
+pub let TO_BOOK: int = -8;
 
 // The page's whole state packed into one int, because the script bridge
 // hands screens a single value: tab * 10000 + scroll * 100 + selection.
@@ -262,6 +264,8 @@ pub fn paint_item_menu(
     if hit == chrome.PAGE_EQUIP { return TO_EQUIP; }
     if hit == chrome.PAGE_MAGIC { return TO_MAGIC; }
     if hit == chrome.PAGE_SWORD { return TO_SWORD; }
+    if hit == chrome.PAGE_ARRAY { return TO_ARRAY; }
+    if hit == chrome.PAGE_BOOK { return TO_BOOK; }
     if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
 
     return pack(tab, scroll, sel);

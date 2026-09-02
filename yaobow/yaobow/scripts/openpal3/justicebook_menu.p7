@@ -1,0 +1,261 @@
+// PAL3 in-game 侠义榜 (monster compendium) page — standalone overlay,
+// reached from any other full-screen page's toolbar.
+//
+// Geometry from the original PAL3.exe (v1.4): page init `FUN_0047ecb0`,
+// category tab move `FUN_0047fd90`, category bucketing `FUN_0047f450`,
+// field fill `FUN_00482140`, paging `FUN_00480600`. Write-up in
+// switch/re/notes/justicebook_page_layout.md.
+//
+// The original has no 2D background for this page: the book is a 3D CVD
+// node (`close.CVD`) sitting on a single frame, the monster is a second 3D
+// node, and turning a page swaps the node's model to `pgup.CVD`/`pgdw.CVD`
+// and plays it. None of that is reproduced here, so this page draws its
+// text and tabs against the plain dimmed backdrop.
+//
+// One monster per page. Only monsters recorded in the book appear, and
+// nothing records them yet — that happens when a monster is fought, so
+// until combat exists this page is empty by design.
+
+import radiance;
+import shared.openpal3;
+import radiance_scripting.ui as gui;
+import yaobow.openpal3.menu_chrome as chrome;
+
+// --- Sprites -------------------------------------------------------------
+let SPR_TAB: string  = "ui/GameMainUI/JusticeBook/";
+let SPR_PGUP: string = "ui/GameMainUI/JusticeBook/Pgup";
+let SPR_PGDW: string = "ui/GameMainUI/JusticeBook/Pgdw";
+let SPR_UNUP: string = "ui/GameMainUI/JusticeBook/UnUp.tga";
+let SPR_UNDW: string = "ui/GameMainUI/JusticeBook/UnDw.tga";
+
+// --- Layout (native 800x600) ---------------------------------------------
+// Six edge tabs down the right side, 82x25, y stepping 50. A category you
+// have already paged past moves to the mirrored left-hand column, the way
+// a physical book's tabs do; x1 is negative there, so its art is clipped
+// at the screen edge — that is the original's own geometry.
+let TAB_RIGHT_X: float = 706.0;
+let TAB_LEFT_X: float = -2.0;
+let TAB_Y0: float = 86.0;
+let TAB_STEP: float = 50.0;
+let TAB_W: float = 82.0; let TAB_H: float = 25.0;
+let TAB_BASE: array<string> = ["Gods", "Immortal", "Ghost", "Demon", "Human", "Magic"];
+let TAB_LABEL: array<string> = ["神", "仙", "鬼", "妖", "人", "魔"];
+// Tab -> CombatActorType, read off FUN_0047f450's switch.
+let TAB_TYPE: array<int> = [4, 3, 5, 2, 1, 6];
+
+let PGUP_X: float = 68.0;  let PGUP_Y: float = 368.0;
+let PGDW_X: float = 690.0; let PGDW_Y: float = 368.0;
+let PG_W: float = 22.0;    let PG_H: float = 36.0;
+
+// The 19 text controls the original fills. Only the ones whose binding is
+// solid are used here: the attribute column at x=426, the skill column at
+// x=542, and the description block.
+let NAME_X: float = 118.0; let NAME_Y: float = 404.0;
+let LEVEL_X: float = 118.0; let LEVEL_Y: float = 434.0;
+let ATTR_X: float = 426.0; let ATTR_Y0: float = 102.0; let ATTR_STEP: float = 28.0;
+let SKILL_X: float = 542.0; let SKILL_Y0: float = 128.0; let SKILL_STEP: float = 28.0;
+let DESC_X: float = 420.0; let DESC_Y: float = 255.0; let DESC_WRAP: float = 240.0;
+
+// The five 五灵 rows are shown in 水火雷风土 order, matching the 仙术 page's
+// tabs rather than the database's 水火风雷土.
+let EL_LABEL: array<string> = ["水", "火", "雷", "风", "土"];
+let EL_FIELD: array<int> = [9, 10, 12, 11, 13];
+
+// `IPal3Service::combat_actor_info` selectors.
+let AC_TYPE: int = 0;
+let AC_LEVEL: int = 1;
+let AC_HP: int = 2;
+let AC_MP: int = 4;
+let AC_ATTACK: int = 5;
+let AC_DEFENSE: int = 6;
+let AC_SPEED: int = 7;
+let AC_LUCK: int = 8;
+let AC_EXP: int = 14;
+
+let INK_R: float = 0.05; let INK_G: float = 0.12; let INK_B: float = 0.0;
+let PAPER_R: float = 0.92; let PAPER_G: float = 0.88; let PAPER_B: float = 0.74;
+
+pub let CLOSE: int = -1;
+pub let TO_STATE: int = -2;
+pub let TO_SYSTEM: int = -3;
+pub let TO_PROP: int = -4;
+pub let TO_EQUIP: int = -5;
+pub let TO_MAGIC: int = -6;
+pub let TO_SWORD: int = -7;
+pub let TO_ARRAY: int = -8;
+
+// Packed state: category * 1000 + page index within it.
+pub fn pack(category: int, page: int) -> int { return category * 1000 + page; }
+pub fn category_of(state: int) -> int { return state / 1000; }
+pub fn page_of(state: int) -> int { return state - category_of(state) * 1000; }
+
+pub fn paint_justicebook_menu(
+    ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+    pal3: box<openpal3.IPal3Service>,
+    mx: float, my: float, down: bool, click: bool, state: int,
+) -> int {
+    let lw = ui.display_size_x() as float;
+    let lh = ui.display_size_y() as float;
+    if lw <= 0.0 || lh <= 0.0 { return state; }
+
+    let viewport = gui.Rect(0.0, 0.0, lw, lh);
+    let native = gui.Size(chrome.REF_W, chrome.REF_H);
+    let canvas = viewport.fit(native);
+    let s = viewport.fit_scale(native);
+    let cw = canvas.w;
+    let ch = canvas.h;
+    let ox = canvas.x;
+    let oy = canvas.y;
+
+    ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
+
+    let mut category = category_of(state);
+    if category < 0 || category > 5 { category = 0; }
+    let mut page = page_of(state);
+
+    // Shared header only — this page has no dragon frame of its own.
+    chrome.sprite(ui, atlas, chrome.SPR_TIMEMONEY, ox + chrome.TM_X * s, oy + chrome.TM_Y * s, s);
+    chrome.widget_text(ui, ox + chrome.MONEY_X * s, oy + chrome.MONEY_Y * s, 0.0, s,
+        1.0, 0.95, 0.5, chrome.int_str(pal3.money()));
+    chrome.widget_text(ui, ox + chrome.TIME_X * s, oy + chrome.TIME_Y * s, 0.0, s,
+        0.85, 1.0, 0.95, chrome.time_str(pal3.play_time()));
+
+    // ---- Category tabs ---------------------------------------------------
+    let mut new_category = category;
+    for i in Range(0, 6) {
+        // Categories before the open one sit on the left stack.
+        let past = i < category;
+        let tx = if past { TAB_LEFT_X } else { TAB_RIGHT_X };
+        let bx = ox + tx * s;
+        let by = oy + (TAB_Y0 + (i as float) * TAB_STEP) * s;
+        let hover = mx >= bx && mx <= bx + TAB_W * s && my >= by && my <= by + TAB_H * s;
+
+        let mut name = SPR_TAB + TAB_BASE[i] + "0.tga";
+        if past { name = SPR_TAB + "Pass" + TAB_BASE[i] + "0.tga"; }
+        else { if i == category { name = SPR_TAB + TAB_BASE[i] + "1.tga"; }
+               else { if hover { name = SPR_TAB + TAB_BASE[i] + "2.tga"; } } }
+        chrome.sprite(ui, atlas, name, bx, by, s);
+
+        if hover && click { new_category = i; }
+    }
+    if new_category != category {
+        category = new_category;
+        page = 0;
+    }
+
+    // ---- Which monsters are in this category ------------------------------
+    let count = recorded_in_category(pal3, TAB_TYPE[category]);
+    if page >= count { page = count - 1; }
+    if page < 0 { page = 0; }
+
+    // ---- Page turn buttons ------------------------------------------------
+    let up_x = ox + PGUP_X * s;
+    let up_y = oy + PGUP_Y * s;
+    let on_up = mx >= up_x && mx <= up_x + PG_W * s && my >= up_y && my <= up_y + PG_H * s;
+    if page > 0 {
+        let v = if on_up { (if down { "2" } else { "1" }) } else { "0" };
+        chrome.sprite(ui, atlas, SPR_PGUP + v + ".tga", up_x, up_y, s);
+        if on_up && click { page = page - 1; }
+    } else {
+        chrome.sprite(ui, atlas, SPR_UNUP, up_x, up_y, s);
+    }
+
+    let dn_x = ox + PGDW_X * s;
+    let dn_y = oy + PGDW_Y * s;
+    let on_dn = mx >= dn_x && mx <= dn_x + PG_W * s && my >= dn_y && my <= dn_y + PG_H * s;
+    if page + 1 < count {
+        let v = if on_dn { (if down { "2" } else { "1" }) } else { "0" };
+        chrome.sprite(ui, atlas, SPR_PGDW + v + ".tga", dn_x, dn_y, s);
+        if on_dn && click { page = page + 1; }
+    } else {
+        chrome.sprite(ui, atlas, SPR_UNDW, dn_x, dn_y, s);
+    }
+
+    // ---- The open entry ---------------------------------------------------
+    if count <= 0 {
+        chrome.widget_text(ui, ox + NAME_X * s, oy + NAME_Y * s, 0.0, s,
+            PAPER_R, PAPER_G, PAPER_B, TAB_LABEL[category] + "之属，尚无记录");
+    } else {
+        let id = nth_recorded(pal3, TAB_TYPE[category], page);
+        if id >= 0 {
+            pal3.draw_combat_actor_name(ui, id,
+                ox + (NAME_X + chrome.TXT_MARGIN) * s,
+                oy + (NAME_Y + chrome.TXT_MARGIN) * s,
+                chrome.TXT * s, PAPER_R, PAPER_G, PAPER_B, 1.0);
+            chrome.widget_text(ui, ox + LEVEL_X * s, oy + LEVEL_Y * s, 0.0, s,
+                PAPER_R, PAPER_G, PAPER_B,
+                "等级 " + chrome.int_str(pal3.combat_actor_info(id, AC_LEVEL)));
+
+            // Attribute column: 精/神, then 武防速运.
+            let labels: array<string> = ["精", "神", "武", "防", "速"];
+            let fields: array<int> = [AC_HP, AC_MP, AC_ATTACK, AC_DEFENSE, AC_SPEED];
+            for k in Range(0, 5) {
+                chrome.widget_text(ui, ox + ATTR_X * s,
+                    oy + (ATTR_Y0 + (k as float) * ATTR_STEP) * s, 0.0, s,
+                    PAPER_R, PAPER_G, PAPER_B,
+                    labels[k] + ": " + chrome.int_str(pal3.combat_actor_info(id, fields[k])));
+            }
+
+            // 五灵 and 运 continue in the skill column's space until the
+            // per-control binding is nailed down.
+            for k in Range(0, 5) {
+                chrome.widget_text(ui, ox + SKILL_X * s,
+                    oy + (SKILL_Y0 + (k as float) * SKILL_STEP) * s, 0.0, s,
+                    PAPER_R, PAPER_G, PAPER_B,
+                    EL_LABEL[k] + ": "
+                        + chrome.int_str(pal3.combat_actor_info(id, EL_FIELD[k])));
+            }
+
+            pal3.draw_combat_actor_description(ui, id,
+                ox + (DESC_X + chrome.TXT_MARGIN) * s,
+                oy + (DESC_Y + chrome.TXT_MARGIN) * s,
+                chrome.TXT * s, DESC_WRAP * s, PAPER_R, PAPER_G, PAPER_B, 1.0);
+        }
+    }
+
+    // ---- Bottom action toolbar -------------------------------------------
+    let hit = chrome.paint_toolbar(ui, atlas, ox, oy, cw, ch, s, mx, my, down, click,
+        chrome.PAGE_BOOK);
+    if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
+    if hit == chrome.PAGE_STATE { return TO_STATE; }
+    if hit == chrome.PAGE_PROP { return TO_PROP; }
+    if hit == chrome.PAGE_EQUIP { return TO_EQUIP; }
+    if hit == chrome.PAGE_MAGIC { return TO_MAGIC; }
+    if hit == chrome.PAGE_SWORD { return TO_SWORD; }
+    if hit == chrome.PAGE_ARRAY { return TO_ARRAY; }
+    if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
+
+    return pack(category, page);
+}
+
+// How many recorded monsters have this `CombatActorType`.
+fn recorded_in_category(pal3: box<openpal3.IPal3Service>, actor_type: int) -> int {
+    let total = pal3.combat_actor_count();
+    let mut n = 0;
+    let mut i = 0;
+    while i < total {
+        let id = pal3.combat_actor_id_at(i);
+        if id >= 0 && pal3.monster_seen(id)
+            && pal3.combat_actor_info(id, AC_TYPE) == actor_type {
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return n;
+}
+
+fn nth_recorded(pal3: box<openpal3.IPal3Service>, actor_type: int, index: int) -> int {
+    let total = pal3.combat_actor_count();
+    let mut n = 0;
+    let mut i = 0;
+    while i < total {
+        let id = pal3.combat_actor_id_at(i);
+        if id >= 0 && pal3.monster_seen(id)
+            && pal3.combat_actor_info(id, AC_TYPE) == actor_type {
+            if n == index { return id; }
+            n = n + 1;
+        }
+        i = i + 1;
+    }
+    return -1;
+}
