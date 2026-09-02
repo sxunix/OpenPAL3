@@ -6,6 +6,7 @@ mod camera_move;
 mod camera_rotate;
 mod camera_set;
 mod cmp;
+mod combat;
 mod dlg;
 mod dlg_face;
 mod dlg_sel;
@@ -70,6 +71,10 @@ pub use camera_set::SceCommandCameraSet;
 pub use cmp::{
     SceCommandEq, SceCommandGeq, SceCommandGeq2, SceCommandGt, SceCommandLeq, SceCommandLs,
     SceCommandNeq,
+};
+pub use combat::{
+    SceCommandCombat, SceCommandCombatMaxRound, SceCommandCombatMustFail,
+    SceCommandCombatNotGameOver,
 };
 pub use dlg::SceCommandDlg;
 pub use dlg_face::SceCommandDlgFace;

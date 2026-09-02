@@ -8,6 +8,10 @@
 //! the first that the count has reached, so a burst of use can carry a
 //! skill up more than one level at once.
 
+use fileformats::pal3::gdb::SkillInfo;
+
+use crate::openpal3::combat::actions::{ATTRIBUTE_SLOTS, SkillEffect};
+
 /// The original caps a skill at level 3 (`*(byte *)(… + level) < 3`
 /// guards the whole block).
 pub const MAX_SKILL_LEVEL: u8 = 3;
@@ -54,6 +58,32 @@ pub fn levelled_up_to(current_level: u8, uses: u8, times_before_level_up: &[u8; 
         }
     }
     None
+}
+
+/// The slice of a database skill row the combat maths reads.
+pub fn effect_of(s: &SkillInfo) -> SkillEffect {
+    let mut impacts = [(0u8, 0i16); ATTRIBUTE_SLOTS];
+    for slot in 0..ATTRIBUTE_SLOTS {
+        impacts[slot] = (
+            s.attribute_impact_type[slot],
+            s.attribute_impact_value[slot],
+        );
+    }
+    let mut elements = s
+        .element_attributes
+        .iter()
+        .enumerate()
+        .filter(|(_, v)| **v != 0)
+        .map(|(i, _)| i as u8 + 1);
+    SkillEffect {
+        id: s.id,
+        level: s.level as i32,
+        success_rate_level: s.success_rate_level,
+        elements: (elements.next(), elements.next()),
+        impacts,
+        sp_cost: s.sp_consume_value,
+        mp_cost: s.mp_consume_value,
+    }
 }
 
 #[cfg(test)]

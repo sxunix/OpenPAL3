@@ -563,6 +563,10 @@ impl SceProcContext {
                 // RoleEmote
                 nop_command!(self, RoleEmote, i32, i32)
             }
+            73 => {
+                // Combat
+                command!(self, SceCommandCombat, count: i32, m1: i32, m2: i32, m3: i32)
+            }
             74 => {
                 // Climb
                 nop_command!(self, Climb, i32, i32)
@@ -584,19 +588,26 @@ impl SceProcContext {
             }
             80 => {
                 // CombatBoss
-                nop_command!(self, CombatBoss, i32, i32, i32, i32, i32, i32)
+                let m1 = data_read::i32(self);
+                let m2 = data_read::i32(self);
+                let m3 = data_read::i32(self);
+                let m4 = data_read::i32(self);
+                let m5 = data_read::i32(self);
+                let m6 = data_read::i32(self);
+                debug!("SceCommandCombat(boss) {m1} {m2} {m3} {m4} {m5} {m6}");
+                Some(Box::new(SceCommandCombat::new_boss(m1, m2, m3, m4, m5, m6)))
             }
             81 => {
                 // FadeOutWhite
                 command!(self, SceCommandFadeOutWhite)
             }
             82 => {
-                // CombatBoss
-                nop_command!(self, CombatMaxRound, i32)
+                // CombatMaxRound
+                command!(self, SceCommandCombatMaxRound, max_round: i32)
             }
             83 => {
                 // CombatMustFail
-                nop_command!(self, CombatMustFail)
+                command!(self, SceCommandCombatMustFail)
             }
             85 => {
                 // ObjectActive
@@ -714,8 +725,8 @@ impl SceProcContext {
                 nop_command!(self, Dist, i16, i16)
             }
             131 => {
-                // GetSwitch
-                nop_command!(self, CombatNotGameOver)
+                // CombatNotGameOver
+                command!(self, SceCommandCombatNotGameOver)
             }
             132 => {
                 // GetCombat
