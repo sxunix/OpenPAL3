@@ -763,3 +763,44 @@ player's 逃跑 entry *does* roll (`FUN_00500d50`, formula in
 
 `cargo test -p shared`: 266 lib tests pass. Not yet run on hardware;
 the overlay needs a visual check.
+
+---
+
+# Stage 18 — every shipped SCE opcode now decodes (2026-09-03)
+
+The vm panics on an opcode it has no arm for, so the question worth
+answering first was which opcodes the shipped scripts actually use.
+Reading the dispatch table out of the exe (0xd8c464, 16 bytes an entry:
+a dword, the handler, then up to eight parameter type bytes) gives every
+opcode's signature; walking all 2810 procs in a real install with it
+found **fifteen opcodes that occur in scripts and had no arm at all** —
+each a crash waiting on a particular scene — and one arm whose arity was
+wrong (251 read five parameters where the table has one, desyncing the
+rest of the proc). That walk is now `pal3_sce_opcode_census`, and it
+fails if a script uses anything the vm cannot decode.
+
+Twenty-eight stubs became real commands: the script-variable and
+story-flag family (14, 41, 130, 145, 149, 109/110/111/138, 42, 88, 205,
+206, 150), the scene-object state store behind 126/158/159, notes and
+full-screen captions (68, 86), and the VFX position pair (142, 144). The
+subsystems that genuinely are not here — the shop and smelting menus,
+the pawnshop game and its five queries, swat-a-fly, the cave, the guide
+bee — consume their parameters, say so through the note widget, and where
+a script would branch on the answer, return a defined one. 107 skips the
+ski game but still runs its end-of-game script, which is what the
+original does on the way out of ski mode.
+
+Reverse-engineering notes went to `re/notes/sce_opcodes.md`, including
+four things worth knowing before touching the camera: parameters are
+stored last-first; opcode 33 is orbit and 35 is rotate, and yaobow has
+the rotate implementation attached to 33; opcode 36's (x, y, z) is the
+**look-at point** and its third scalar the **distance**, not a camera
+position and an unknown; and 117/128 behave opposite to their names —
+128 rotates the world into the given angles and leaves it there, 117
+snaps to them and eases back to identity.
+
+Not yet started: the camera family (30/31/32/35/38/39/155/250/251), which
+needs the original's polar camera state (yaw, pitch, roll, distance,
+look-at, plus a state stack) since radiance's Transform has no notion of
+a distance or a look-at point; the party-follow commands; and anything
+needing CVD animation, per-role alpha, world rotation or a VFX system.
