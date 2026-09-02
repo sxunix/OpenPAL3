@@ -15,11 +15,11 @@ impl SceCommand for SceCommandEntryRow {
     fn update(
         &mut self,
         scene_manager: ComRc<ISceneManager>,
-        ui: &Ui,
+        _ui: &Ui,
         state: &mut SceState,
-        delta_sec: f32,
+        _delta_sec: f32,
     ) -> bool {
-        let mut scene_loader = SceCommandLoadScene::new(
+        let scene_loader = SceCommandLoadScene::new(
             match self.id {
                 0 => "m04",
                 1 => "m05",
@@ -29,7 +29,10 @@ impl SceCommand for SceCommandEntryRow {
             "1".to_string(),
         );
 
-        scene_loader.update(scene_manager, ui, state, delta_sec);
+        // Load synchronously — the door-transition fade inside
+        // `SceCommandLoadScene::update` spans frames, but this command
+        // must hand control to `proc_id` with the scene already in.
+        scene_loader.load(scene_manager, state);
         state.call_proc(self.proc_id as u32);
         true
     }

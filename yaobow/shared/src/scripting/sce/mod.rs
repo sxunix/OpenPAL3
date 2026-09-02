@@ -61,6 +61,10 @@ pub struct SceState {
     context: SceExecutionContext,
     run_mode: i32,
     curtain: f32,
+    /// Engine-side door-transition state: `SceCommandLoadScene` snaps the
+    /// curtain to black on an unscripted scene swap and sets this; the VM
+    /// then eases the curtain back to 0. Scripted fades clear it.
+    auto_fade_in: bool,
     /// Agent-server fast-forward flag, refreshed once per frame from
     /// [`AgentBridge::fast_forward`](crate::agent_common::AgentBridge)
     /// by `AdventureDirector` before each `SceVm::update`. SCE commands
@@ -111,6 +115,7 @@ impl SceState {
             context: SceExecutionContext::new(sce, sce_name, options),
             run_mode: 1,
             curtain: 1.,
+            auto_fade_in: false,
             fast_forward: false,
             ext,
             input_engine,
@@ -163,6 +168,14 @@ impl SceState {
     /// Set by `AdventureDirector` once per frame from the agent bridge.
     pub fn set_fast_forward(&mut self, fast_forward: bool) {
         self.fast_forward = fast_forward;
+    }
+
+    pub fn auto_fade_in(&self) -> bool {
+        self.auto_fade_in
+    }
+
+    pub fn set_auto_fade_in(&mut self, v: bool) {
+        self.auto_fade_in = v;
     }
 
     pub fn curtain(&self) -> f32 {

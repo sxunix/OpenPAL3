@@ -75,6 +75,20 @@ impl SceVm {
 
     pub fn update(&mut self, delta_sec: f32) -> Option<ComRc<IDirector>> {
         self.state.global_state_mut().update(delta_sec);
+
+        // Engine-side door-transition fade-in (armed by an unscripted
+        // SceCommandLoadScene). Scripted Fade commands clear the flag.
+        if self.state.auto_fade_in() {
+            const TRANSITION_FADE_SEC: f32 = 0.4;
+            let c = self.state.curtain() - delta_sec / TRANSITION_FADE_SEC;
+            if c <= 0. {
+                self.state.set_curtain(0.);
+                self.state.set_auto_fade_in(false);
+            } else {
+                self.state.set_curtain(c);
+            }
+        }
+
         self.draw_curtain();
 
         let ui = self.ui.ui();

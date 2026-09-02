@@ -7,6 +7,7 @@ use imgui::Ui;
 use radiance::comdef::ISceneManager;
 use std::rc::Rc;
 
+
 #[derive(Debug, Clone)]
 pub struct SceCommandLoadScene {
     name: String,
@@ -21,6 +22,25 @@ impl SceCommand for SceCommandLoadScene {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
+        // Must stay single-frame: with ScriptRunMode 2 the VM keeps
+        // pulling the proc's following commands (RoleSetPos,
+        // CameraDefault, ...) while a multi-frame command is pending, so
+        // a phased load would let them run against the OLD scene and
+        // leave the camera stale over the new one.
+        self.load(scene_manager, state);
+        true
+    }
+}
+
+impl SceCommandLoadScene {
+    pub fn new(name: String, sub_name: String) -> Self {
+        Self { name, sub_name }
+    }
+
+    /// Perform the actual scene swap immediately (no transition).
+    /// Also used by `SceCommandEntryRow`, which needs the load done
+    /// within its single update call.
+    pub(crate) fn load(&self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
         let last_scene = scene_manager.scn_scene();
         let cpk_changed = last_scene
             .and_then(|s| Some(s.inner::<crate::openpal3::scene::ScnScene>().name() != &self.name))
@@ -47,12 +67,14 @@ impl SceCommand for SceCommandLoadScene {
 
         state.try_call_proc_by_name(&format!("_{}_{}", self.name, self.sub_name));
 
-        true
-    }
-}
-
-impl SceCommandLoadScene {
-    pub fn new(name: String, sub_name: String) -> Self {
-        Self { name, sub_name }
+        // The original engine fades around every scene load itself — the
+        // door procs carry no Fade commands (verified in Q01). When the
+        // script hasn't faded the screen out, snap to black now and let
+        // the VM ease back in; a script-managed curtain (already at 1)
+        // is left alone.
+        if state.curtain() < 1. {
+            state.set_curtain(1.);
+            state.set_auto_fade_in(true);
+        }
     }
 }

@@ -18,6 +18,7 @@ impl SceCommand for SceCommandFadeIn {
         state: &mut SceState,
         delta_sec: f32,
     ) -> bool {
+        state.set_auto_fade_in(false);
         let opacity = 1. - self.spent / SCE_COMMAND_FADE_IN_TIMEOUT;
 
         state.set_curtain(opacity);
