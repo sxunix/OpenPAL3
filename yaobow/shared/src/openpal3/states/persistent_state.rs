@@ -9,8 +9,19 @@ use super::game_db::{BASE_FAVOR, FAVOR_ACTOR_IDS, GameDb, MAX_LEVEL, PLAYER_ACTO
 
 pub const PAL3_APP_NAME: &str = "OpenPAL3";
 
-/// Equipment slots, in the order the original status page lists them.
+/// 衣服 / 帽子 / 鞋子 / 饰品 / 武器.
 pub const EQUIPMENT_SLOTS: usize = 5;
+
+/// The `ItemType` of the first equipment slot (衣服); the five equippable
+/// types are contiguous from there.
+const FIRST_EQUIPMENT_ITEM_TYPE: u8 = 7;
+
+/// Which equipment slot an item type goes in, or `None` when the item is
+/// not equipment.
+pub fn equipment_slot_of_type(item_type: u8) -> Option<usize> {
+    let slot = item_type.checked_sub(FIRST_EQUIPMENT_ITEM_TYPE)? as usize;
+    (slot < EQUIPMENT_SLOTS).then_some(slot)
+}
 
 /// One playable character's mutable state.
 ///
@@ -47,7 +58,9 @@ pub struct RoleState {
     /// Learned skill ids, in acquisition order.
     pub skills: Vec<u32>,
 
-    /// Item id per slot (0 = empty): 武器/衣服/帽子/鞋子/饰品.
+    /// Item id per slot, 0 = empty. Slot order follows the database's
+    /// `ItemType`: 0 衣服 · 1 帽子 · 2 鞋子 · 3 饰品 · 4 武器, i.e.
+    /// `slot = item_type - 7` (see [`equipment_slot_of_type`]).
     pub equipment: [u32; EQUIPMENT_SLOTS],
 }
 
@@ -246,6 +259,36 @@ impl PersistentState {
         self.team.retain(|id| *id != actor_id);
     }
 
+    /// Put `item_id` in the slot its type belongs to, returning whatever
+    /// was worn there (`None` when the slot was empty). Purely a slot
+    /// swap: the caller decides what happens to the two items in the
+    /// inventory.
+    pub fn equip(&mut self, actor_id: u32, item_id: u32, item_type: u8) -> Option<u32> {
+        let slot = equipment_slot_of_type(item_type)?;
+        let role = self.roles.get_mut(&actor_id)?;
+        let previous = role.equipment[slot];
+        role.equipment[slot] = item_id;
+        (previous != 0).then_some(previous)
+    }
+
+    /// Empty one slot, returning what was in it.
+    pub fn unequip(&mut self, actor_id: u32, slot: usize) -> Option<u32> {
+        if slot >= EQUIPMENT_SLOTS {
+            return None;
+        }
+        let role = self.roles.get_mut(&actor_id)?;
+        let previous = role.equipment[slot];
+        role.equipment[slot] = 0;
+        (previous != 0).then_some(previous)
+    }
+
+    /// Item id worn in `slot`, or `None` when it is empty.
+    pub fn equipped(&self, actor_id: u32, slot: usize) -> Option<u32> {
+        let role = self.roles.get(&actor_id)?;
+        let id = *role.equipment.get(slot)?;
+        (id != 0).then_some(id)
+    }
+
     // ---- inventory ----
 
     /// Item id → count, ascending by id.
@@ -401,6 +444,46 @@ mod tests {
         // 景天 is not part of the favour system.
         state.add_favor(0, 100);
         assert_eq!(state.favor(0), BASE_FAVOR);
+    }
+
+    #[test]
+    fn equipment_slots_follow_item_type() {
+        assert_eq!(equipment_slot_of_type(7), Some(0), "衣服");
+        assert_eq!(equipment_slot_of_type(11), Some(4), "武器");
+        assert_eq!(equipment_slot_of_type(1), None, "治疗品不是装备");
+        assert_eq!(equipment_slot_of_type(12), None, "尸块不是装备");
+
+        let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
+        state.roles.insert(
+            0,
+            RoleState {
+                level: 1,
+                exp: 0,
+                hp: 80,
+                max_hp: 80,
+                sp: 8,
+                max_sp: 8,
+                mp: 25,
+                max_mp: 25,
+                attack: 26,
+                defense: 14,
+                speed: 3,
+                luck: 2,
+                elements: [3, 3, 6, 1, 2],
+                skills: Vec::new(),
+                equipment: [0; EQUIPMENT_SLOTS],
+            },
+        );
+
+        assert_eq!(state.equip(0, 80009, 8), None, "帽子槽本来是空的");
+        assert_eq!(state.equipped(0, 1), Some(80009));
+        assert_eq!(
+            state.equip(0, 80010, 8),
+            Some(80009),
+            "换下的帽子交还给调用方"
+        );
+        assert_eq!(state.unequip(0, 1), Some(80010));
+        assert_eq!(state.equipped(0, 1), None);
     }
 
     #[test]
