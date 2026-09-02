@@ -1,0 +1,269 @@
+// PAL3 in-game 道具 (item) page — standalone overlay, opened from the
+// 状态 page's toolbar.
+//
+// Geometry comes from the original PAL3.exe (v1.4): page init
+// `FUN_0049f2e0`, tabs + list + scrollbar + grid `FUN_0049e8e0`, the
+// category filter `FUN_0040d010`. Full write-up in
+// switch/re/notes/item_page_layout.md. The rendering model (native-size
+// sprites anchored at a rect's top-left, 16 px text cells with an 8 px
+// inset) lives in menu_chrome.p7.
+//
+// Not yet reproduced from the original, and called out where it matters:
+//   * the item's 3D model preview inside the Info panel (the original
+//     renders `Item\<model>\<model>.pol` there),
+//   * the top party bar (its per-member rects are still unresolved),
+//   * the three sort buttons draw but do not sort,
+//   * the second Info line (the original shows something under the
+//     description; which value is still unidentified).
+
+import radiance;
+import shared.openpal3;
+import radiance_scripting.ui as gui;
+import yaobow.openpal3.menu_chrome as chrome;
+
+// --- Layout (native 800x600) ---------------------------------------------
+let SPR_FRAME: string    = "ui/GameMainUI/Prop/Frame.tga";
+let SPR_INFO: string     = "ui/GameMainUI/Communal/Info.tga";
+let SPR_LISTFRAME: string = "ui/GameMainUI/Equip/ListFrame.tga";
+let SPR_GRID: string     = "ui/GameMainUI/Prop/List_Grid.tga";
+let SPR_SELECTED: string = "ui/assistant/Communal/ListBoxSelPic.tga";
+let SPR_SCROLL: string   = "ui/GameMainUI/Communal/Scroll/scrollbar";
+let SPR_SORT: string     = "ui/GameMainUI/Communal/Sort";
+let SPR_TAB: string      = "ui/GameMainUI/Prop/";
+
+// 说明面板 Info.tga (10,125,242,539); 列表框 ListFrame.tga (251,125,587,518).
+let INFO_X: float = 10.0;  let INFO_Y: float = 125.0;
+let LF_X: float = 251.0;   let LF_Y: float = 125.0;
+
+// 六个分类页签: 42x50, y 123..173. x1 spacing is 11 px except before the
+// last one, which is 9.
+let TAB_Y0: float = 123.0; let TAB_Y1: float = 173.0;
+let TAB_W: float = 42.0;   let TAB_H: float = 50.0;
+let TAB_X: array<float> = [266.0, 319.0, 372.0, 425.0, 478.0, 529.0];
+let TAB_BASE: array<string> = ["Resume", "Treasure", "Attack", "Smelt", "Ancient", "Special"];
+// Tab -> ItemType bitmask, read off `FUN_0040d010`'s switch:
+// 恢复 1 治疗 · 仙宝 3 · 攻击 2 投掷 · 炼制 5 矿石 或 12 尸块 ·
+// 古董 4 · 特殊 6 剧情.
+let TAB_MASK: array<int> = [2, 8, 4, 4128, 16, 64];
+
+// 12-row grid: row k at (269, 203+23k, 525, 226+23k); List_Grid is 256x24.
+let ROWS: int = 12;
+let GRID_X: float = 269.0;
+let GRID_Y0: float = 203.0;
+let ROW_H: float = 23.0;
+// Two columns, 220 + 36 = the grid's 256 px width.
+let COL_NAME_W: float = 220.0;
+// A row is 23 px but a glyph cell is 16, so the text is centred in the row
+// rather than sitting at the widget model's 8 px inset. [推断]
+let ROW_TEXT_DY: float = 3.5;
+
+// 表头 (269,177,645,197): "名称" then 23 spaces then "数量".
+let HEAD_X: float = 269.0; let HEAD_Y: float = 177.0;
+
+// 滚动条列 (529,201,567,489): track, arrows, thumb.
+let SB_TRACK_X: float = 529.0; let SB_TRACK_Y: float = 202.0;
+let SB_UP_X: float = 536.0;    let SB_UP_Y: float = 216.0;
+let SB_DOWN_X: float = 536.0;  let SB_DOWN_Y: float = 448.0;
+let SB_ARROW_W: float = 22.0;  let SB_ARROW_H: float = 27.0;
+// The thumb slides between the arrows.
+let SB_THUMB_X: float = 534.0;
+let SB_THUMB_TOP: float = 246.0;
+let SB_THUMB_BOTTOM: float = 444.0;
+let SB_THUMB_H: float = 28.0;
+
+// 说明文本 (22,372,234,540); the panel is 232 wide, so the text area is
+// 232 - 16 = 216 px.
+let DESC_X: float = 22.0; let DESC_Y: float = 372.0;
+let DESC_WRAP: float = 196.0;
+
+// 三个排序按钮, y 492..512, 94x20.
+let SORT_Y: float = 492.0;
+let SORT_W: float = 94.0; let SORT_H: float = 20.0;
+let SORT_X: array<float> = [271.0, 373.0, 475.0];
+let SORT_BASE: array<string> = ["Use", "Price", "Func"];
+
+// Text colour of the list and the description: RGB(0x0c,0x1f,0x00).
+let INK_R: float = 0.05; let INK_G: float = 0.12; let INK_B: float = 0.0;
+
+// Return sentinels. Anything >= 0 is the page's packed state.
+pub let CLOSE: int = -1;
+pub let TO_STATE: int = -2;
+pub let TO_SYSTEM: int = -3;
+
+// The page's whole state packed into one int, because the script bridge
+// hands screens a single value: tab * 10000 + scroll * 100 + selection.
+pub fn pack(tab: int, scroll: int, sel: int) -> int {
+    return tab * 10000 + scroll * 100 + sel;
+}
+pub fn tab_of(state: int) -> int { return state / 10000; }
+pub fn scroll_of(state: int) -> int { return (state - tab_of(state) * 10000) / 100; }
+pub fn sel_of(state: int) -> int { return state - tab_of(state) * 10000 - scroll_of(state) * 100; }
+
+// Paint the page over the live scene. `mx`/`my` are the cursor, `click`
+// the left-button rising edge, `state` the packed state from last frame.
+// Returns the new packed state, or one of the sentinels above.
+pub fn paint_item_menu(
+    ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+    pal3: box<openpal3.IPal3Service>,
+    mx: float, my: float, down: bool, click: bool, state: int,
+) -> int {
+    let lw = ui.display_size_x() as float;
+    let lh = ui.display_size_y() as float;
+    if lw <= 0.0 || lh <= 0.0 { return state; }
+
+    let viewport = gui.Rect(0.0, 0.0, lw, lh);
+    let native = gui.Size(chrome.REF_W, chrome.REF_H);
+    let canvas = viewport.fit(native);
+    let s = viewport.fit_scale(native);
+    let cw = canvas.w;
+    let ch = canvas.h;
+    let ox = canvas.x;
+    let oy = canvas.y;
+
+    ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
+
+    let mut tab = tab_of(state);
+    if tab < 0 || tab > 5 { tab = 0; }
+    let mut scroll = scroll_of(state);
+    let mut sel = sel_of(state);
+
+    // ---- Panels ----------------------------------------------------------
+    chrome.sprite(ui, atlas, SPR_INFO, ox + INFO_X * s, oy + INFO_Y * s, s);
+    chrome.sprite(ui, atlas, SPR_LISTFRAME, ox + LF_X * s, oy + LF_Y * s, s);
+    chrome.paint_frame(ui, atlas, pal3, SPR_FRAME, ox, oy, s);
+
+    // ---- Category tabs ---------------------------------------------------
+    let mut new_tab = tab;
+    for i in Range(0, 6) {
+        let tx0 = ox + TAB_X[i] * s;
+        let ty0 = oy + TAB_Y0 * s;
+        let hover = mx >= tx0 && mx <= tx0 + TAB_W * s
+            && my >= ty0 && my <= ty0 + TAB_H * s;
+        // `<base>0` normal, `<base>1` selected, `<base>2` hover.
+        let mut variant = "0";
+        if i == tab { variant = "1"; }
+        else { if hover { variant = "2"; } }
+        chrome.sprite(ui, atlas, SPR_TAB + TAB_BASE[i] + variant + ".tga", tx0, ty0, s);
+        if hover && click { new_tab = i; }
+    }
+    if new_tab != tab {
+        tab = new_tab;
+        scroll = 0;
+        sel = 0;
+    }
+
+    // ---- List ------------------------------------------------------------
+    let mask = TAB_MASK[tab];
+    let count = pal3.inventory_size(mask);
+
+    // Clamp the view after a tab switch or after items were consumed.
+    let mut max_scroll = count - ROWS;
+    if max_scroll < 0 { max_scroll = 0; }
+    if scroll > max_scroll { scroll = max_scroll; }
+    if scroll < 0 { scroll = 0; }
+    if sel >= count { sel = count - 1; }
+    if sel < 0 { sel = 0; }
+
+    // Wheel scrolling, one row per detent.
+    let wheel = ui.mouse_wheel();
+    if wheel > 0.0 { if scroll > 0 { scroll = scroll - 1; } }
+    if wheel < 0.0 { if scroll < max_scroll { scroll = scroll + 1; } }
+
+    let grid_x0 = ox + GRID_X * s;
+    for k in Range(0, ROWS) {
+        let ry0 = oy + (GRID_Y0 + (k as float) * ROW_H) * s;
+        chrome.sprite(ui, atlas, SPR_GRID, grid_x0, ry0, s);
+
+        let index = scroll + k;
+        if index < count {
+            let item_id = pal3.inventory_item_id(mask, index);
+            if item_id >= 0 {
+                let hover = mx >= grid_x0 && mx <= grid_x0 + 256.0 * s
+                    && my >= ry0 && my <= ry0 + ROW_H * s;
+                if index == sel {
+                    chrome.sprite(ui, atlas, SPR_SELECTED, grid_x0, ry0, s);
+                }
+                if hover && click { sel = index; }
+
+                pal3.draw_item_name(ui,
+                    item_id,
+                    grid_x0 + chrome.TXT_MARGIN * s,
+                    ry0 + ROW_TEXT_DY * s,
+                    chrome.TXT * s,
+                    INK_R, INK_G, INK_B, 1.0);
+                chrome.widget_text(ui, grid_x0 + COL_NAME_W * s, ry0,
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B,
+                    chrome.int_str(pal3.item_count(item_id)));
+            }
+        }
+    }
+
+    // 表头: the original pads the two labels apart with 23 spaces, which
+    // lands 数量 at the head of the count column.
+    chrome.widget_text(ui, ox + HEAD_X * s, oy + HEAD_Y * s, 0.0, s,
+        INK_R, INK_G, INK_B, "名称                       数量");
+
+    // ---- Scrollbar -------------------------------------------------------
+    chrome.sprite(ui, atlas, SPR_SCROLL + "3.tga", ox + SB_TRACK_X * s, oy + SB_TRACK_Y * s, s);
+
+    let up_x = ox + SB_UP_X * s;
+    let up_y = oy + SB_UP_Y * s;
+    let on_up = mx >= up_x && mx <= up_x + SB_ARROW_W * s && my >= up_y && my <= up_y + SB_ARROW_H * s;
+    chrome.sprite(ui, atlas, SPR_SCROLL + arrow_variant(on_up, down, 4) + ".tga", up_x, up_y, s);
+    if on_up && click { if scroll > 0 { scroll = scroll - 1; } }
+
+    let dn_x = ox + SB_DOWN_X * s;
+    let dn_y = oy + SB_DOWN_Y * s;
+    let on_dn = mx >= dn_x && mx <= dn_x + SB_ARROW_W * s && my >= dn_y && my <= dn_y + SB_ARROW_H * s;
+    chrome.sprite(ui, atlas, SPR_SCROLL + arrow_variant(on_dn, down, 7) + ".tga", dn_x, dn_y, s);
+    if on_dn && click { if scroll < max_scroll { scroll = scroll + 1; } }
+
+    // Thumb position tracks the scroll fraction; it only moves when the
+    // list is longer than a page.
+    let mut frac = 0.0;
+    if max_scroll > 0 { frac = (scroll as float) / (max_scroll as float); }
+    let thumb_y = SB_THUMB_TOP + frac * (SB_THUMB_BOTTOM - SB_THUMB_TOP - SB_THUMB_H);
+    chrome.sprite(ui, atlas, SPR_SCROLL + "0.tga", ox + SB_THUMB_X * s, oy + thumb_y * s, s);
+
+    // ---- Selected item's description ------------------------------------
+    if count > 0 {
+        let item_id = pal3.inventory_item_id(mask, sel);
+        if item_id >= 0 {
+            pal3.draw_item_description(ui,
+                item_id,
+                ox + (DESC_X + chrome.TXT_MARGIN) * s,
+                oy + (DESC_Y + chrome.TXT_MARGIN) * s,
+                chrome.TXT * s,
+                DESC_WRAP * s,
+                INK_R, INK_G, INK_B, 1.0);
+        }
+    }
+
+    // ---- Sort buttons (drawn, inert) ------------------------------------
+    for i in Range(0, 3) {
+        let sx0 = ox + SORT_X[i] * s;
+        let sy0 = oy + SORT_Y * s;
+        let hover = mx >= sx0 && mx <= sx0 + SORT_W * s && my >= sy0 && my <= sy0 + SORT_H * s;
+        let variant = if hover { "2" } else { "0" };
+        chrome.sprite(ui, atlas, SPR_SORT + SORT_BASE[i] + variant + ".tga", sx0, sy0, s);
+    }
+
+    // ---- Bottom action toolbar -------------------------------------------
+    let hit = chrome.paint_toolbar(ui, atlas, ox, oy, cw, ch, s, mx, my, down, click,
+        chrome.PAGE_PROP);
+    if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
+    if hit == chrome.PAGE_STATE { return TO_STATE; }
+    if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
+
+    return pack(tab, scroll, sel);
+}
+
+// Scroll arrows use three consecutive sprites from `base`: normal, hover,
+// pressed.
+fn arrow_variant(hover: bool, down: bool, base: int) -> string {
+    if hover {
+        if down { return chrome.int_str(base + 2); }
+        return chrome.int_str(base + 1);
+    }
+    return chrome.int_str(base);
+}
