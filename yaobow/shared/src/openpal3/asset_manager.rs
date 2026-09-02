@@ -81,7 +81,12 @@ impl AssetManager {
 
     pub fn load_scn(self: &Rc<Self>, cpk_name: &str, scn_name: &str) -> ComRc<IScene> {
         let scene_path = self.scn_path(cpk_name, scn_name);
-        log::info!("PAL3: loading scene {}/{} ({})", cpk_name, scn_name, scene_path.display());
+        log::info!(
+            "PAL3: loading scene {}/{} ({})",
+            cpk_name,
+            scn_name,
+            scene_path.display()
+        );
 
         let scn_file = scn_load_from_file(&self.vfs, scene_path, self.game);
         let nav_file = self.load_nav(&scn_file.cpk_name, &scn_file.scn_base_name);
@@ -398,6 +403,14 @@ impl AssetManager {
         } else {
             None
         }
+    }
+
+    /// Path to a full-screen caption picture — opcode 86's
+    /// `caption\%s.tga` (format string at 0x596234).
+    pub fn caption_path(&self, name: &str) -> PathBuf {
+        self.basedata_path
+            .join("caption")
+            .join(format!("{name}.tga"))
     }
 
     /// Path to the PAL3 scene-effect (`EffectScn`) asset root.

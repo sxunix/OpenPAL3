@@ -92,7 +92,15 @@ pub struct SceState {
     // has control (no SCE running). Same immediate-mode draw path as the
     // dialog renderer.
     status_renderer: ComRc<crate::openpal3::comdef::IPal3StatusRenderer>,
+    /// 68 Note's toast: the text and how long it still has to live. The
+    /// command does not block, so the vm draws and ages it.
+    note: Option<(String, f32)>,
 }
+
+/// How long a 68 Note stays up. The original's dwell time lives in the
+/// note widget's animation state (`+0xac = 2`) and was not read; this
+/// follows Pal3.Unity's 2.5 s visible plus 1 s fade. `[推断]`
+pub const NOTE_SECONDS: f32 = 3.5;
 
 impl SceState {
     pub fn new(
@@ -123,6 +131,7 @@ impl SceState {
             ui,
             dialog_renderer,
             status_renderer,
+            note: None,
         }
     }
 
@@ -195,6 +204,45 @@ impl SceState {
 
     pub fn ext_mut(&mut self) -> &mut HashMap<String, Box<dyn Any>> {
         &mut self.ext
+    }
+
+    pub fn show_note(&mut self, text: String) {
+        self.note = Some((text, NOTE_SECONDS));
+    }
+
+    /// Draw the pending note and age it out. `FUN_00450bc0` sizes the box
+    /// `max(0x40, (strlen + 5) * 10)` wide by `0x30` high and centres it
+    /// on screen (0x450bc0 onwards).
+    pub fn render_note(&mut self, ui: &imgui::Ui, delta_sec: f32) {
+        let Some((text, remaining)) = self.note.as_mut() else {
+            return;
+        };
+        *remaining -= delta_sec;
+        if *remaining <= 0. {
+            self.note = None;
+            return;
+        }
+
+        let text = text.clone();
+        let width = 64f32.max((text.chars().count() as f32 + 5.) * 10.);
+        let [screen_width, screen_height] = ui.io().display_size;
+        ui.window("Note")
+            .collapsible(false)
+            .title_bar(false)
+            .resizable(false)
+            .movable(false)
+            .scroll_bar(false)
+            .size([width, 48.], imgui::Condition::Always)
+            .position_pivot([0.5, 0.5])
+            .position(
+                [screen_width / 2., screen_height / 2.],
+                imgui::Condition::Always,
+            )
+            .build(|| {
+                let _font = radiance::imgui::game_font(radiance::imgui::GameFontSize::SMALL)
+                    .map(|f| ui.push_font(f));
+                ui.text_wrapped(&text);
+            });
     }
 
     pub fn asset_mgr(&self) -> &Rc<AssetManager> {

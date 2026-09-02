@@ -92,6 +92,7 @@ impl SceVm {
         self.draw_curtain();
 
         let ui = self.ui.ui();
+        self.state.render_note(ui, delta_sec);
         if self.active_commands.len() == 0 {
             loop {
                 match self.state.get_next_cmd() {
@@ -552,8 +553,8 @@ impl SceProcContext {
                 command!(self, SceCommandDlgFace, id: i32, face_name: string, left_or_right: i32)
             }
             68 => {
-                // Note
-                nop_command!(self, Note, string)
+                // Note — 提示框
+                command!(self, SceCommandNote, text: string)
             }
             69 => {
                 // FadeOut
@@ -622,8 +623,8 @@ impl SceProcContext {
                 command!(self, SceCommandObjectActive, object_id: i32, active: i32)
             }
             86 => {
-                // Caption
-                nop_command!(self, Caption, string, i32)
+                // Caption — 全屏字幕
+                command!(self, SceCommandCaption, name: string, lines: i32)
             }
             87 => {
                 // OpenDoor

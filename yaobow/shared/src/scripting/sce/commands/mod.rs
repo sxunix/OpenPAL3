@@ -63,6 +63,7 @@ mod start_hidefight;
 mod stop_music;
 mod story_flags;
 mod testgoto;
+mod text_ui;
 pub mod vars;
 
 pub use _let::{SceCommandLet, SceCommandLetAdd};
@@ -149,6 +150,7 @@ pub use story_flags::{
     SceCommandRoleScale, SceCommandVarDistract,
 };
 pub use testgoto::SceCommandTestGoto;
+pub use text_ui::{SceCommandCaption, SceCommandNote};
 
 use radiance::math::Vec3;
 
