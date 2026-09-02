@@ -177,6 +177,30 @@ pub struct PersistentState {
     /// 合成术 recipes the party has learnt — opcode 111.
     #[serde(default)]
     compose_recipes: BTreeSet<u32>,
+    /// Per-scene-object state the story writes and later reads back —
+    /// mazes remember which switches have been thrown. The original
+    /// keeps a table in the save-state store at `DAT_017b1550`, looked up
+    /// by `FUN_00539540(city, scene, objectId)`; the switch byte is the
+    /// record's `+3`. Keyed here by [`scene_object_key`] because JSON
+    /// object keys have to be strings.
+    #[serde(default)]
+    scene_object_states: BTreeMap<String, i32>,
+    /// Objects that must be built from the scene file rather than from
+    /// saved state — opcode 158 (`FUN_00539e70`). The original keeps one
+    /// list for the whole store, not one per scene.
+    #[serde(default)]
+    objects_not_from_save: BTreeSet<i32>,
+}
+
+/// `city/scene/objectId` — `city` is the scene's cpk name (the original's
+/// `scene+0x00`) and `scene` the block within it (`scene+0x20`).
+pub fn scene_object_key(city: &str, scene: &str, object_id: i32) -> String {
+    format!(
+        "{}/{}/{}",
+        city.to_lowercase(),
+        scene.to_lowercase(),
+        object_id
+    )
 }
 
 /// A menu page the story unlocks part-way through.
@@ -212,7 +236,31 @@ impl PersistentState {
             longkui_mode: 0,
             huaying_mode: 0,
             compose_recipes: BTreeSet::new(),
+            scene_object_states: BTreeMap::new(),
+            objects_not_from_save: BTreeSet::new(),
         }
+    }
+
+    /// A scene object's switch state, or 0 when the story has not
+    /// touched it. The original returns the raw byte, not a bool.
+    pub fn scene_object_state(&self, city: &str, scene: &str, object_id: i32) -> i32 {
+        self.scene_object_states
+            .get(&scene_object_key(city, scene, object_id))
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn set_scene_object_state(&mut self, city: &str, scene: &str, object_id: i32, state: i32) {
+        self.scene_object_states
+            .insert(scene_object_key(city, scene, object_id), state);
+    }
+
+    pub fn do_not_load_object_from_save(&mut self, object_id: i32) {
+        self.objects_not_from_save.insert(object_id);
+    }
+
+    pub fn object_loads_from_save(&self, object_id: i32) -> bool {
+        !self.objects_not_from_save.contains(&object_id)
     }
 
     pub fn feature_enabled(&self, feature: Feature) -> bool {

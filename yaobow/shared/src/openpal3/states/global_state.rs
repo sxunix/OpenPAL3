@@ -38,6 +38,7 @@ pub struct GlobalState {
     game_db: Option<Rc<GameDb>>,
 
     pass_through_wall: bool,
+    divine_tree_flower_initialized: bool,
 }
 
 impl GlobalState {
@@ -73,6 +74,7 @@ impl GlobalState {
             video_player,
             game_db,
             pass_through_wall: false,
+            divine_tree_flower_initialized: false,
         }
     }
 
@@ -223,6 +225,17 @@ impl GlobalState {
     fn remove_stopped_sound_sources(&mut self) {
         self.sound_sources
             .retain(|s| s.borrow().state() != AudioSourceState::Stopped);
+    }
+
+    /// 159 InitFlower's one-shot latch — the original's `DAT_00d8bc38`,
+    /// a plain global that is not part of the save file, so it resets
+    /// when the game restarts.
+    pub fn divine_tree_flower_initialized(&self) -> bool {
+        self.divine_tree_flower_initialized
+    }
+
+    pub fn set_divine_tree_flower_initialized(&mut self, done: bool) {
+        self.divine_tree_flower_initialized = done;
     }
 
     pub fn pass_through_wall(&self) -> bool {

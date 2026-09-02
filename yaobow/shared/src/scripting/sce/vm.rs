@@ -761,8 +761,8 @@ impl SceProcContext {
                 command!(self, SceCommandSetBigMapElement, id: i32, option: i32)
             }
             126 => {
-                // GetSwitch
-                nop_command!(self, GetSwitch, string, i32, i16)
+                // GetSwitch — 迷宫开关状态
+                command!(self, SceCommandGetSwitch, scene: string, object_id: i32, var: i16)
             }
             127 => {
                 command!(self, SceCommandEntryRow, id: i32, proc_id: i32)
@@ -876,12 +876,12 @@ impl SceProcContext {
                 command!(self, SceCommandMiniGamePawnshopNote, text: string)
             }
             158 => {
-                // ObjNotLoad
-                nop_command!(self, ObjNotLoad, i32)
+                // ObjNotLoad — 出场时不从存档拿状态
+                command!(self, SceCommandObjectNotFromSave, object_id: i32)
             }
             159 => {
-                // InitFlower
-                nop_command!(self, InitFlower)
+                // InitFlower — 初始化神树之花
+                command!(self, SceCommandInitFlower)
             }
             201 => {
                 // RolePathOut
