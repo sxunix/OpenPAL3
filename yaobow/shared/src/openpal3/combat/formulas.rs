@@ -7,9 +7,8 @@
 //! zero, so does this; where it divides an already-negative number, so
 //! does this. A 1:1 port is only worth anything if the edge cases match.
 //!
-//! The two places where the executable says something surprising are
-//! marked `SUSPECT` and listed in the notes' 未解决 section. They are
-//! transcribed as read, not as they "should" be.
+//! One place still says something surprising and is marked `SUSPECT`; it
+//! is transcribed as read, not as it "should" be.
 
 /// The C runtime's LCG, which the combat code inlines in over a hundred
 /// places. Kept explicit and seedable so a battle can be replayed.
@@ -241,9 +240,25 @@ pub enum Poison {
 
 /// One round of poison damage, as a negative HP delta.
 ///
-/// SUSPECT: 风毒 taking three quarters of max HP every round for five
-/// rounds, and 雷/水毒 half, is wildly out of scale with 火毒's 5% — but
-/// this is what 0x4f4955 / 0x4f498b / 0x4f49b0 compute, verified twice.
+/// The five poisons look wildly inconsistent until you line each one up
+/// with its duration (`FUN_004f3e20`, 0x4f3fdc onwards) and notice which
+/// ones read the *maximum* and which the *current* HP:
+///
+/// | 毒 | 潜伏 | 持续 | 每回合 | 结果 |
+/// |---|---|---|---|---|
+/// | 风 | 3 | 5 | −75% 上限 | 三回合内不解就必死 |
+/// | 雷 | 3 | 2 | −50% 上限 | 同上 |
+/// | 水 | 0 | 5 | −50% **当前** | 每回合减半,永远杀不死 |
+/// | 火 | 0 | 永久 | −5% 上限 | 慢性消耗 |
+/// | 土 | 0 | 永久 | −2% 上限 ×1.5ⁿ | 越拖越重 |
+///
+/// So 风毒 and 雷毒 are death timers with a three-round grace period,
+/// 水毒 is a drain that asymptotes rather than kills, and 火/土毒 are
+/// chip damage. That the water branch reads current HP where the others
+/// read the maximum is the detail that shows the split is deliberate —
+/// it is the same function, one argument apart (`FUN_004f2bb0(x, 0)`
+/// against `(x, 1)`).
+///
 /// `earth_accumulator` carries 土毒's escalation between rounds; seed it
 /// with `-0.02 * max_hp` when the state is first applied.
 pub fn poison_tick(

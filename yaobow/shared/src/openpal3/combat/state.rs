@@ -34,6 +34,7 @@ pub const TICKING_STATES: std::ops::RangeInclusive<usize> = 1..=23;
 
 /// The states this code names. `k` values, i.e. already `enum + 1`.
 pub const K_POISON_WIND: usize = 1;
+pub const K_POISON_WATER: usize = 3;
 pub const K_POISON_FIRE: usize = 4;
 pub const K_POISON_EARTH: usize = 5;
 pub const K_ATTACK_UP: usize = 6;
@@ -51,6 +52,16 @@ pub const K_INVISIBLE: usize = 23;
 
 /// A permanent duration (`0x7fff`).
 pub const FOREVER: i16 = 0x7fff;
+
+/// Onset delay and duration per poison, straight out of `FUN_004f3e20`
+/// (0x4f3fdc onwards). Indexed by `k - 1`, i.e. 风雷水火土.
+pub const POISON_TIMERS: [(i16, i16); 5] = [
+    (3, 5),       // 风毒
+    (3, 2),       // 雷毒
+    (0, 5),       // 水毒
+    (0, FOREVER), // 火毒
+    (0, FOREVER), // 土毒
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Side {
@@ -704,6 +715,35 @@ mod tests {
         b.get_mut(0).unwrap().gauge = 3000.;
         b.interrupt(0, None);
         assert_eq!(b.get(0).unwrap().gauge, 3000.);
+    }
+
+    #[test]
+    fn poison_timers_are_a_coherent_set() {
+        // 风毒: three rounds of grace, then five rounds at 75% of the
+        // maximum — a death sentence unless it is cured in time.
+        let mut c = fighter(0, Side::Party, 100, 10, 0, 3);
+        let (onset, duration) = POISON_TIMERS[0];
+        c.apply_state(K_POISON_WIND, onset, duration);
+        for _ in 0..3 {
+            c.tick_states();
+        }
+        assert_eq!(c.hp, 100, "潜伏期内一点不掉");
+        c.tick_states();
+        c.tick_states();
+        assert!(!c.alive, "两跳之内必死");
+
+        // 水毒 halves what is left, so it never finishes anyone off.
+        let mut c = fighter(0, Side::Party, 100, 10, 0, 3);
+        let (onset, duration) = POISON_TIMERS[2];
+        c.apply_state(K_POISON_WATER, onset, duration);
+        for _ in 0..duration {
+            c.tick_states();
+        }
+        assert!(c.alive, "水毒杀不死人");
+        // 100 → 50 → 25 → 13 → 7 → 4: each tick subtracts `current / 2`
+        // with C's truncation, so the survivor keeps slightly more than a
+        // clean halving would leave.
+        assert_eq!(c.hp, 4);
     }
 
     #[test]
