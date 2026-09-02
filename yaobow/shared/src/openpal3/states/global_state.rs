@@ -1,11 +1,13 @@
 use std::{
     cell::{Ref, RefCell, RefMut},
     collections::HashMap,
+    path::PathBuf,
     rc::Rc,
 };
 
 use crate::openpal3::asset_manager::AssetManager;
 
+use super::game_db::GameDb;
 use super::persistent_state::PersistentState;
 use common::store_ext::StoreExt2;
 use radiance::{
@@ -28,6 +30,11 @@ pub struct GlobalState {
     default_scene_bgm: HashMap<String, String>,
     video_player: Box<VideoPlayer>,
 
+    /// Items, skills, combat actors and the experience curve. `None` when
+    /// the shipped data is missing or unreadable — callers fall back to
+    /// placeholder behaviour rather than refusing to run.
+    game_db: Option<Rc<GameDb>>,
+
     pass_through_wall: bool,
 }
 
@@ -44,6 +51,11 @@ impl GlobalState {
         let default_scene_bgm =
             parse_music_mapping(asset_mgr.vfs().read_to_end_from_gbk(music_path).unwrap());
 
+        let game_db = GameDb::load(asset_mgr.vfs(), &PathBuf::from("/basedata/basedata"));
+        if let Some(db) = game_db.as_ref() {
+            persistent_state.borrow_mut().seed_from_db(db);
+        }
+
         Self {
             persistent_state,
             audio_engine,
@@ -55,8 +67,14 @@ impl GlobalState {
             sound_sources,
             default_scene_bgm,
             video_player,
+            game_db,
             pass_through_wall: false,
         }
+    }
+
+    /// The shipped item/skill/actor tables and experience curve.
+    pub fn game_db(&self) -> Option<&Rc<GameDb>> {
+        self.game_db.as_ref()
     }
 
     pub fn adv_input_enabled(&self) -> bool {
@@ -140,6 +158,13 @@ impl GlobalState {
         self.persistent_state.borrow_mut()
     }
 
+    /// A handle to the save state that outlives borrows of the director.
+    /// The UI service holds one so status screens can read party stats
+    /// while painting from inside the director's own update.
+    pub fn persistent_state_rc(&self) -> Rc<RefCell<PersistentState>> {
+        self.persistent_state.clone()
+    }
+
     pub fn add_sound_source(&mut self, source: Rc<RefCell<Box<dyn AudioMemorySource>>>) {
         self.sound_sources.push(source);
     }
@@ -155,7 +180,13 @@ impl GlobalState {
         &mut self.fop_state
     }
 
-    pub fn update(&mut self, _delta_sec: f32) {
+    pub fn update(&mut self, delta_sec: f32) {
+        // The status page's clock is play time, so it advances only while
+        // an adventure is running (this is called from `SceVm::update`).
+        self.persistent_state
+            .borrow_mut()
+            .advance_play_time(delta_sec);
+
         if self.bgm_source.state() == AudioSourceState::Playing {
             self.bgm_source.update();
         }
