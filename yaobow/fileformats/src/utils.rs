@@ -112,7 +112,7 @@ pub fn parse_sized_string() -> BinResult<String> {
 
 #[binrw]
 #[brw(little)]
-#[derive(Clone)]
+#[derive(Clone, Default)]
 #[brw(import(capacity: u32))]
 pub struct StringWithCapacity {
     #[br(count = capacity)]

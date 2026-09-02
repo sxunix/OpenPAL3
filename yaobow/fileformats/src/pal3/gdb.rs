@@ -222,7 +222,10 @@ pub struct SkillInfo {
 }
 
 /// An item. 800 bytes (PAL3 layout).
-#[derive(Debug, BinRead, Serialize)]
+///
+/// `Default` is derived so callers (tests, editors) can build a blank row
+/// without naming the padding fields, which are private on purpose.
+#[derive(Debug, Default, BinRead, Serialize)]
 #[brw(little)]
 pub struct GameItemInfo {
     pub id: u32,
@@ -276,6 +279,18 @@ pub struct GameItemInfo {
     /// The two materials this item is synthesised from.
     pub synthesis_material_ids: [u32; 2],
     pub synthesis_product_id: u32,
+}
+
+impl GameItemInfo {
+    /// An empty row carrying only an id — for tests and for tools that
+    /// build a record up field by field. The padding fields stay private,
+    /// so struct-update syntax cannot do this from another crate.
+    pub fn blank(id: u32) -> Self {
+        Self {
+            id,
+            ..Default::default()
+        }
+    }
 }
 
 /// A combo skill / 合击技. 632 bytes.
