@@ -204,7 +204,9 @@ interface IPal3Service: IUnknown {
     // 0 类型 (SkillType) · 1 等级 · 2 消耗气 · 3 消耗神 ·
     // 4 成功率档 · 5 五灵掩码 (bit 0 水 … bit 4 土) ·
     // 6 所需角色等级 · 7 可否战斗外使用 · 8 下一级法术ID ·
-    // 9 目标范围 · 10 本级法术等级. 0 for an unknown skill or field.
+    // 9 目标范围 · 10 本级法术等级 ·
+    // 11 升级前还需使用次数 (at the skill's current level).
+    // 0 for an unknown skill or field.
     int skill_info(int skill_id, int field);
 
     // Draw a skill's name / description, for the same reason the item

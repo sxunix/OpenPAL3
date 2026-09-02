@@ -91,6 +91,7 @@ const SKILL_FIELD_OUTSIDE_COMBAT: i32 = 7;
 const SKILL_FIELD_NEXT_LEVEL_ID: i32 = 8;
 const SKILL_FIELD_TARGET_RANGE: i32 = 9;
 const SKILL_FIELD_MAGIC_LEVEL: i32 = 10;
+const SKILL_FIELD_USE_TIMES: i32 = 11;
 
 /// `IPal3Service::item_info` selectors.
 const ITEM_FIELD_TYPE: i32 = 0;
@@ -1090,6 +1091,13 @@ impl IPal3ServiceImpl for Pal3Service {
             SKILL_FIELD_NEXT_LEVEL_ID => skill.next_level_skill_id as i32,
             SKILL_FIELD_TARGET_RANGE => skill.target_range_type as i32,
             SKILL_FIELD_MAGIC_LEVEL => skill.magic_level as i32,
+            // Uses still needed before this level advances. `level` is
+            // 1-based; the table has one entry per level below the cap.
+            SKILL_FIELD_USE_TIMES => skill
+                .times_before_level_up
+                .get(skill.level.saturating_sub(1) as usize)
+                .map(|v| *v as i32)
+                .unwrap_or(0),
             _ => 0,
         }
     }
