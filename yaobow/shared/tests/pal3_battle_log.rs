@@ -15,6 +15,8 @@ use std::io::Cursor;
 
 use fileformats::pal3::gdb::GdbFile;
 use shared::openpal3::combat::actions::{ATTR_HP, ATTRIBUTE_SLOTS, SkillEffect};
+use shared::openpal3::combat::ai::{self, Decision, SkillOption};
+use shared::openpal3::combat::formulas::CombatRng;
 use shared::openpal3::combat::state::{Battle, Combatant, Outcome, SLOTS, Side};
 use shared::openpal3::states::game_db::combat_id_of_party_member;
 use shared::openpal3::states::growth;
@@ -79,6 +81,53 @@ fn monster(gdb: &GdbFile, actor: u32) -> Combatant {
         c.elements[i + 1] = *v > 0;
     }
     c
+}
+
+/// A skill's name, for the log.
+fn effect_name(gdb: &GdbFile, skill_id: u32) -> String {
+    gdb.skills
+        .iter()
+        .find(|s| s.id == skill_id)
+        .and_then(|s| s.name.as_str().ok())
+        .unwrap_or_else(|| format!("仙术#{skill_id}"))
+}
+
+/// What the AI weighs: a monster its four database skills, a party member
+/// whatever we handed it.
+fn ai_options(
+    gdb: &GdbFile,
+    actor_id: u32,
+    side: Side,
+    player_skill: &Option<SkillEffect>,
+) -> Vec<SkillOption> {
+    match side {
+        Side::Party => player_skill
+            .iter()
+            .map(|s| SkillOption {
+                id: s.id,
+                hp_impact: s.impacts[ATTR_HP].1 as i32,
+            })
+            .collect(),
+        Side::Enemy => gdb
+            .combat_actors
+            .iter()
+            .find(|a| a.id == actor_id)
+            .map(|a| {
+                a.skill_ids
+                    .iter()
+                    .copied()
+                    .filter(|id| *id != 0)
+                    .filter_map(|id| {
+                        let s = gdb.skills.iter().find(|s| s.id == id)?;
+                        Some(SkillOption {
+                            id,
+                            hp_impact: s.attribute_impact_value[ATTR_HP] as i32,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
 }
 
 fn name(gdb: &GdbFile, actor: u32) -> String {
@@ -160,6 +209,8 @@ fn a_battle_against_the_shipped_data_plays_out() {
     }
 
     println!("=== 开打 ===");
+    // The AI draws from its own generator, as the original does.
+    let mut ai_rng = CombatRng::new(0x9e37_79b9);
     let mut elapsed = 0.0f32;
     let mut turns = 0;
     while battle.outcome() == Outcome::Ongoing && turns < 400 {
@@ -172,33 +223,46 @@ fn a_battle_against_the_shipped_data_plays_out() {
         let actor = battle.get(slot).unwrap();
         let side = actor.side;
         let actor_id = actor.actor_id;
-        let target = (0..SLOTS).find(|s| {
-            battle
-                .get(*s)
-                .map(|c| c.side != side && c.in_play())
-                .unwrap_or(false)
-        });
-        let Some(target) = target else { break };
-        let target_id = battle.get(target).unwrap().actor_id;
+        let confused = actor.has_state(shared::openpal3::combat::state::K_CONFUSED);
 
-        // 景天 opens with a skill when he can afford it, otherwise
-        // everyone just swings.
-        let used_skill = match (&skill, side) {
-            (Some(s), Side::Party) if slot == 0 && battle.get(0).unwrap().mp >= s.mp_cost => {
-                let r = battle.cast_skill(slot, target, s);
-                Some(r)
-            }
-            _ => None,
-        };
+        // Both sides run the AI: it sweeps for a target with its own
+        // generator and reaches for whichever skill best fits what that
+        // target still has standing.
+        let options = ai_options(&gdb, actor_id, side, &skill);
+        let decision = ai::choose(&battle, &mut ai_rng, slot, &options, confused);
 
-        let line = match used_skill {
-            Some(r) if r.hit => {
-                format!("仙术 → {} 精{:+}", name(&gdb, target_id), r.deltas[ATTR_HP])
-            }
-            Some(_) => format!("仙术 → {} 未命中", name(&gdb, target_id)),
-            None => {
+        let line = match decision {
+            Decision::Pass => "按兵不动".to_string(),
+            Decision::Attack { target } => {
+                let target_id = battle.get(target).unwrap().actor_id;
                 let moved = battle.basic_attack(slot, target);
                 format!("普攻 → {} 精{:+}", name(&gdb, target_id), moved)
+            }
+            Decision::Cast { target, skill: id } => {
+                let target_id = battle.get(target).unwrap().actor_id;
+                match skill_effect(&gdb, id) {
+                    Some(effect) => {
+                        let r = battle.cast_skill(slot, target, &effect);
+                        if r.hit {
+                            format!(
+                                "{} → {} 精{:+}",
+                                effect_name(&gdb, id),
+                                name(&gdb, target_id),
+                                r.deltas[ATTR_HP]
+                            )
+                        } else {
+                            format!(
+                                "{} → {} 未命中",
+                                effect_name(&gdb, id),
+                                name(&gdb, target_id)
+                            )
+                        }
+                    }
+                    None => {
+                        let moved = battle.basic_attack(slot, target);
+                        format!("普攻 → {} 精{:+}", name(&gdb, target_id), moved)
+                    }
+                }
             }
         };
 

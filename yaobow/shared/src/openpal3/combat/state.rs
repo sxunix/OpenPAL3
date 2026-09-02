@@ -45,6 +45,7 @@ pub const K_LUCK_DOWN: usize = 11;
 pub const K_SPEED_UP: usize = 12;
 pub const K_SPEED_DOWN: usize = 13;
 pub const K_SLEEP: usize = 17;
+pub const K_CONFUSED: usize = 18;
 pub const K_EVADE: usize = 21;
 pub const K_INVISIBLE: usize = 23;
 
