@@ -1134,6 +1134,45 @@ impl IUiHostImpl for ImguiUiHost {
         });
     }
 
+    fn text_at_sized(&self, x: f32, y: f32, size: f32, r: f32, g: f32, b: f32, a: f32, s: &str) {
+        let _ = with_frame("text_at_sized", |f| {
+            // Draw at an explicit pixel size (logical px; multiplied by
+            // the dpi scale like `text_at`). Uses the LARGE face — it is
+            // rasterised biggest, so downscaling keeps strokes solid,
+            // where upscaling the small face renders thin and blurry.
+            // imgui-rs exposes no sized AddText, so this goes through the
+            // sys bindings; the background draw list and the font both
+            // stay owned by the live imgui context we're called under.
+            let font_id = radiance::imgui::game_font(radiance::imgui::GameFontSize::LARGE)
+                .unwrap_or_else(|| f.ui.fonts().fonts()[0]);
+            let scale = if f.dpi_scale > 0.0 { f.dpi_scale } else { 1.0 };
+            let color = imgui::ImColor32::from_rgba_f32s(r, g, b, a);
+            let fonts = f.ui.fonts();
+            let Some(font) = fonts.get_font(font_id) else {
+                return;
+            };
+            let bytes = s.as_bytes();
+            unsafe {
+                let font_ptr =
+                    imgui::internal::RawCast::raw(font) as *const imgui::sys::ImFont;
+                imgui::sys::ImDrawList_AddText_FontPtr(
+                    imgui::sys::igGetBackgroundDrawList_Nil(),
+                    font_ptr,
+                    size * scale,
+                    imgui::sys::ImVec2 {
+                        x: x * scale,
+                        y: y * scale,
+                    },
+                    color.to_bits(),
+                    bytes.as_ptr() as *const _,
+                    bytes.as_ptr().add(bytes.len()) as *const _,
+                    0.0,
+                    std::ptr::null(),
+                );
+            }
+        });
+    }
+
     fn game_font_size_small(&self) -> f32 {
         with_frame("game_font_size_small", |f| {
             // Same fallback as `game_font_size`; index 1 is the bundled

@@ -734,6 +734,17 @@ impl IUiHostImpl for HostFacade {
             s: s.into(),
         });
     }
+    fn text_at_sized(&self, x: f32, y: f32, _size: f32, r: f32, g: f32, b: f32, a: f32, s: &str) {
+        self.inner.record(UiCall::TextAt {
+            x,
+            y,
+            r,
+            g,
+            b,
+            a,
+            s: s.into(),
+        });
+    }
     fn game_font_size_small(&self) -> f32 {
         0.0
     }

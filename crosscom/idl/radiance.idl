@@ -881,6 +881,11 @@ interface IUiHost: IUnknown {
     // shared by menus and selection lists.
     void text_at_small(float x, float y, float r, float g, float b, float a, &str s);
 
+    // As `text_at_small`, but drawn at `size` logical pixels instead of
+    // the face's registered size — for UI screens whose text must track
+    // the fitted canvas scale (the original scaled with resolution).
+    void text_at_sized(float x, float y, float size, float r, float g, float b, float a, &str s);
+
     // Pixel size of the SMALL game font in logical/script pixels, the
     // companion to `game_font_size()` for callers rendering with
     // `text_at_small` (e.g. the PAL3 dialog text grid).
