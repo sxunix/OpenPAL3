@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::io::Cursor;
 use std::rc::Rc;
 
+use super::combat_data::CombatData;
 use common::store_ext::StoreExt2;
 use encoding::types::Encoding;
 use fileformats::pal3::gdb::{CombatActorInfo, ComboSkillInfo, GameItemInfo, GdbFile, SkillInfo};
@@ -41,6 +42,10 @@ pub struct GameDb {
     /// Cumulative experience needed to *be* level N, indexed by `N - 1`.
     /// From `combat.ini [Level]`; 99 entries.
     level_exp: Vec<i32>,
+
+    /// Stage placement and the battlefield lookup, from `combat.ini` and
+    /// `combatScn.txt`.
+    combat: CombatData,
 }
 
 impl GameDb {
@@ -64,10 +69,13 @@ impl GameDb {
         let skills_by_id = index(gdb.skills.iter().map(|s| s.id).collect());
         let items_by_id = index(gdb.items.iter().map(|i| i.id).collect());
 
-        let level_exp = Self::load_level_table(vfs, basedata).unwrap_or_else(|| {
+        let combat_ini = Self::read_gbk(vfs, &basedata.join("datascript").join("combat.ini"));
+        let combat_scn = Self::read_gbk(vfs, &basedata.join("datascript").join("combatScn.txt"));
+        let level_exp = Self::parse_level_table(&combat_ini).unwrap_or_else(|| {
             log::error!("Cannot read combat.ini [Level]; experience curve unavailable");
             Vec::new()
         });
+        let combat = CombatData::parse(&combat_ini, &combat_scn);
 
         Some(Rc::new(Self {
             gdb,
@@ -75,20 +83,29 @@ impl GameDb {
             skills_by_id,
             items_by_id,
             level_exp,
+            combat,
         }))
     }
 
-    /// `combat.ini` is GBK and its `[Level]` values carry trailing spaces
-    /// and `;` comments, so it is parsed by hand rather than through the
-    /// ini crate's stricter reader.
-    fn load_level_table(vfs: &MiniFs, basedata: &std::path::Path) -> Option<Vec<i32>> {
-        let bytes = vfs
-            .read_to_end(basedata.join("datascript").join("combat.ini"))
-            .ok()?;
-        let text = encoding::all::GBK
-            .decode(&bytes, encoding::DecoderTrap::Ignore)
-            .ok()?;
+    /// Read a GBK text file, or an empty string when it is missing.
+    fn read_gbk(vfs: &MiniFs, path: &std::path::Path) -> String {
+        vfs.read_to_end(path)
+            .ok()
+            .and_then(|bytes| {
+                encoding::all::GBK
+                    .decode(&bytes, encoding::DecoderTrap::Ignore)
+                    .ok()
+            })
+            .unwrap_or_else(|| {
+                log::error!("Cannot read {}", path.display());
+                String::new()
+            })
+    }
 
+    /// `combat.ini`'s `[Level]` values carry trailing spaces and `;`
+    /// comments, so they are parsed by hand rather than through the ini
+    /// crate's stricter reader.
+    fn parse_level_table(text: &str) -> Option<Vec<i32>> {
         let mut table = vec![0i32; MAX_LEVEL as usize];
         let mut in_level_section = false;
         let mut seen = 0;
@@ -119,6 +136,11 @@ impl GameDb {
         }
 
         (seen == MAX_LEVEL).then_some(table)
+    }
+
+    /// Stage placement and the battlefield lookup.
+    pub fn combat(&self) -> &CombatData {
+        &self.combat
     }
 
     pub fn combat_actor(&self, id: u32) -> Option<&CombatActorInfo> {
