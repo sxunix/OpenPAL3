@@ -79,6 +79,19 @@ const STAT_DEFENSE: i32 = 15;
 const STAT_SPEED: i32 = 16;
 const STAT_LUCK: i32 = 17;
 
+/// `IPal3Service::skill_info` selectors.
+const SKILL_FIELD_TYPE: i32 = 0;
+const SKILL_FIELD_LEVEL: i32 = 1;
+const SKILL_FIELD_SP_COST: i32 = 2;
+const SKILL_FIELD_MP_COST: i32 = 3;
+const SKILL_FIELD_SUCCESS_RATE: i32 = 4;
+const SKILL_FIELD_ELEMENT_MASK: i32 = 5;
+const SKILL_FIELD_REQUIRED_LEVEL: i32 = 6;
+const SKILL_FIELD_OUTSIDE_COMBAT: i32 = 7;
+const SKILL_FIELD_NEXT_LEVEL_ID: i32 = 8;
+const SKILL_FIELD_TARGET_RANGE: i32 = 9;
+const SKILL_FIELD_MAGIC_LEVEL: i32 = 10;
+
 /// `IPal3Service::item_info` selectors.
 const ITEM_FIELD_TYPE: i32 = 0;
 const ITEM_FIELD_WEAPON_TYPE: i32 = 1;
@@ -628,6 +641,19 @@ impl Pal3Service {
         f(db.as_ref()?.item(item_id as u32)?)
     }
 
+    /// Pull one text field off a skill's database row.
+    fn skill_text(
+        &self,
+        skill_id: i32,
+        f: impl FnOnce(&fileformats::pal3::gdb::SkillInfo) -> Option<String>,
+    ) -> Option<String> {
+        if skill_id < 0 {
+            return None;
+        }
+        let db = self.active_game_db.borrow();
+        f(db.as_ref()?.skill(skill_id as u32)?)
+    }
+
     /// Run `f` against the active adventure's save state, or return
     /// `default` when no adventure is running. Uses `try_borrow` because
     /// this is called mid-paint and must never abort the frame.
@@ -1012,6 +1038,99 @@ impl IPal3ServiceImpl for Pal3Service {
         state
             .unequip_to_inventory(actor_id as u32, slot as usize)
             .is_some()
+    }
+
+    fn skill_count(&self, actor_id: i32) -> i32 {
+        if actor_id < 0 {
+            return 0;
+        }
+        self.with_persistent_state(0, |s| {
+            s.role(actor_id as u32)
+                .map(|r| r.skills.len() as i32)
+                .unwrap_or(0)
+        })
+    }
+
+    fn skill_id(&self, actor_id: i32, index: i32) -> i32 {
+        if actor_id < 0 || index < 0 {
+            return -1;
+        }
+        self.with_persistent_state(-1, |s| {
+            s.role(actor_id as u32)
+                .and_then(|r| r.skills.get(index as usize))
+                .map(|id| *id as i32)
+                .unwrap_or(-1)
+        })
+    }
+
+    fn skill_info(&self, skill_id: i32, field: i32) -> i32 {
+        if skill_id < 0 {
+            return 0;
+        }
+        let db = self.active_game_db.borrow();
+        let Some(skill) = db.as_ref().and_then(|db| db.skill(skill_id as u32)) else {
+            return 0;
+        };
+        match field {
+            SKILL_FIELD_TYPE => skill.skill_type as i32,
+            SKILL_FIELD_LEVEL => skill.level as i32,
+            SKILL_FIELD_SP_COST => skill.sp_consume_value,
+            SKILL_FIELD_MP_COST => skill.mp_consume_value,
+            SKILL_FIELD_SUCCESS_RATE => skill.success_rate_level as i32,
+            // The database stores one i32 per element, of which only the
+            // low byte matters; fold them into bit 0 水 … bit 4 土.
+            SKILL_FIELD_ELEMENT_MASK => skill
+                .element_attributes
+                .iter()
+                .enumerate()
+                .filter(|(_, v)| **v != 0)
+                .fold(0, |mask, (i, _)| mask | (1 << i)),
+            SKILL_FIELD_REQUIRED_LEVEL => skill.required_actor_level as i32,
+            SKILL_FIELD_OUTSIDE_COMBAT => skill.is_usable_outside_combat as i32,
+            SKILL_FIELD_NEXT_LEVEL_ID => skill.next_level_skill_id as i32,
+            SKILL_FIELD_TARGET_RANGE => skill.target_range_type as i32,
+            SKILL_FIELD_MAGIC_LEVEL => skill.magic_level as i32,
+            _ => 0,
+        }
+    }
+
+    fn draw_skill_name(
+        &self,
+        ui: ComRc<IUiHost>,
+        skill_id: i32,
+        x: f32,
+        y: f32,
+        size: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        let Some(name) = self.skill_text(skill_id, |s| s.name.as_str().ok()) else {
+            return;
+        };
+        ui.text_at_sized(x, y, size, r, g, b, a, &name);
+    }
+
+    fn draw_skill_description(
+        &self,
+        ui: ComRc<IUiHost>,
+        skill_id: i32,
+        x: f32,
+        y: f32,
+        size: f32,
+        wrap_px: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        let Some(desc) = self.skill_text(skill_id, |s| s.description.as_str().ok()) else {
+            return;
+        };
+        for (line_no, line) in wrap_widget_text(&desc, size, wrap_px).iter().enumerate() {
+            ui.text_at_sized(x, y + line_no as f32 * size, size, r, g, b, a, line);
+        }
     }
 
     fn party_size(&self) -> i32 {

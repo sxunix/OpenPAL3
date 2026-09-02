@@ -191,6 +191,29 @@ interface IPal3Service: IUnknown {
     // slot was empty.
     bool unequip_slot(int actor_id, int slot);
 
+    // ---- Skills, for the 仙术 page ----
+
+    // How many skills this character has learned.
+    int skill_count(int actor_id);
+
+    // The `index`-th learned skill id, in the order they were learned,
+    // or -1.
+    int skill_id(int actor_id, int index);
+
+    // One numeric field of a skill's database row. `field` selects:
+    // 0 类型 (SkillType) · 1 等级 · 2 消耗气 · 3 消耗神 ·
+    // 4 成功率档 · 5 五灵掩码 (bit 0 水 … bit 4 土) ·
+    // 6 所需角色等级 · 7 可否战斗外使用 · 8 下一级法术ID ·
+    // 9 目标范围 · 10 本级法术等级. 0 for an unknown skill or field.
+    int skill_info(int skill_id, int field);
+
+    // Draw a skill's name / description, for the same reason the item
+    // ones paint rather than return.
+    void draw_skill_name(IUiHost ui, int skill_id, float x, float y,
+        float size, float r, float g, float b, float a);
+    void draw_skill_description(IUiHost ui, int skill_id, float x, float y,
+        float size, float wrap_px, float r, float g, float b, float a);
+
 
     // Build a `IVideoHandle` playing `LOGO.bik` (loaded from the
     // per-launch vfs via `AssetManager::load_movie_data`). Returns
