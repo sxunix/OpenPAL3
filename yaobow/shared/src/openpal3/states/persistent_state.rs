@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use crate::ydirs;
 
 use super::game_db::{BASE_FAVOR, FAVOR_ACTOR_IDS, GameDb, MAX_LEVEL, PLAYER_ACTOR_IDS};
+use super::growth;
 
 pub const PAL3_APP_NAME: &str = "OpenPAL3";
 
@@ -79,21 +80,29 @@ pub struct RoleState {
 }
 
 impl RoleState {
-    /// Seed from the character's level-1 row in the game database.
+    /// Seed a character at its starting level.
+    ///
+    /// 精/气/神/武/防 come from the level curves, not from the database
+    /// row: those columns are the curves' level-0 intercepts, so reading
+    /// them directly would leave everyone one level's growth short (景天
+    /// would start on 精 80 instead of the original's 88). 速 and 运 have
+    /// no curve and are taken from the database as-is.
     pub fn from_db(db: &GameDb, actor_id: u32) -> Option<Self> {
         let a = db.combat_actor(actor_id)?;
         let attr = &a.attribute_values;
+        let level = a.level.clamp(1, MAX_LEVEL);
+        let g = growth::at_level(actor_id as usize, level);
         Some(Self {
-            level: a.level.clamp(1, MAX_LEVEL),
-            exp: db.exp_for_level(a.level),
-            hp: attr[0],
-            max_hp: attr[0],
-            sp: attr[1],
-            max_sp: attr[1],
-            mp: attr[2],
-            max_mp: attr[2],
-            attack: attr[3],
-            defense: attr[4],
+            level,
+            exp: db.exp_for_level(level),
+            hp: g.max_hp,
+            max_hp: g.max_hp,
+            sp: g.max_sp,
+            max_sp: g.max_sp,
+            mp: g.max_mp,
+            max_mp: g.max_mp,
+            attack: g.attack,
+            defense: g.defense,
             speed: attr[5],
             luck: attr[6],
             elements: a.element_attribute_values,
@@ -329,6 +338,27 @@ impl PersistentState {
         let previous = role.equipment[slot];
         role.equipment[slot] = 0;
         (previous != 0).then_some(previous)
+    }
+
+    /// Raise a character to `level`, recomputing every level-derived
+    /// attribute and topping current 精气神 up to the new maxima — the
+    /// original's `FUN_0040ff70` ends by copying the whole maximum bank
+    /// over the current one, so a level-up is also a full heal.
+    pub fn set_level(&mut self, actor_id: u32, level: i32) {
+        let level = level.clamp(1, MAX_LEVEL);
+        let g = growth::at_level(actor_id as usize, level);
+        let Some(role) = self.roles.get_mut(&actor_id) else {
+            return;
+        };
+        role.level = level;
+        role.max_hp = g.max_hp;
+        role.max_sp = g.max_sp;
+        role.max_mp = g.max_mp;
+        role.attack = g.attack;
+        role.defense = g.defense;
+        role.hp = g.max_hp;
+        role.sp = g.max_sp;
+        role.mp = g.max_mp;
     }
 
     /// Which slot `item_id` is worn in, if any.
