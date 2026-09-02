@@ -358,6 +358,10 @@ impl SceProcContext {
                 // Let
                 command!(self, SceCommandLet, var: i16, value: i32)
             }
+            14 => {
+                // LetAdd — Var += Value
+                command!(self, SceCommandLetAdd, var: i16, value: i32)
+            }
             16 => {
                 //Call
                 command!(self, SceCommandCall, proc_id: u32)
@@ -479,6 +483,10 @@ impl SceProcContext {
             39 => {
                 // CameraPopState
                 nop_command!(self, CameraPopState)
+            }
+            41 => {
+                // SetRoleAtt
+                command!(self, SceCommandSetRoleAtt, actor_id: i32, attribute: i32, value: i32)
             }
             42 => {
                 // LK_Ghost
@@ -643,21 +651,37 @@ impl SceProcContext {
                 // FadeInWhite
                 command!(self, SceCommandFadeInWhite)
             }
+            100 => {
+                // 买卖系统
+                command!(self, SceCommandDealerMenu, shop: string)
+            }
+            101 => {
+                // 当铺等级
+                command!(self, SceCommandGetPawnshopLevel, var: i16)
+            }
             102 => {
                 // SwitchRS
                 nop_command!(self, SwitchRS, i32)
             }
+            103 => {
+                // MiniGame: 当铺经营
+                command!(self, SceCommandMiniGamePawnshop, flag: i32)
+            }
             104 => {
                 // APPR Entry
                 nop_command!(self, APPREntry)
+            }
+            105 => {
+                // MiniGame: 打苍蝇
+                command!(self, SceCommandMiniGameSwatAFly)
             }
             106 => {
                 // ENCAMP_Entry
                 nop_command!(self, ENCAMP_Entry, i32)
             }
             107 => {
-                // SKEE_Entry
-                nop_command!(self, SKEE_Entry, i32)
+                // MiniGame: 滑雪
+                command!(self, SceCommandMiniGameSki, end_game_proc: i32)
             }
             108 => {
                 // Get Appr
@@ -667,9 +691,17 @@ impl SceProcContext {
                 // Enable_Sword
                 nop_command!(self, Enable_Sword, i32)
             }
+            110 => {
+                // Enable_JusticeBook
+                nop_command!(self, Enable_JusticeBook, i32)
+            }
             111 => {
                 // Specify_Compos
                 nop_command!(self, Specify_Compos, i32)
+            }
+            112 => {
+                // MiniGame: 山洞初体验
+                command!(self, SceCommandMiniGameCaveExperience)
             }
             113 => {
                 // Start_HideFight
@@ -701,6 +733,22 @@ impl SceProcContext {
                     not_enough_money_proc: u32,
                     after_rest_proc: u32
                 )
+            }
+            120 => {
+                // 当铺 Manage 类型
+                command!(self, SceCommandGetPawnshopManage, var: i16)
+            }
+            121 => {
+                // 当铺 Period 类型
+                command!(self, SceCommandGetPawnshopPeriod, var: i16)
+            }
+            122 => {
+                // 当铺 Accrual 类型
+                command!(self, SceCommandGetPawnshopAccrual, var: i16)
+            }
+            123 => {
+                // 当铺 UnHock 类型
+                command!(self, SceCommandGetPawnshopUnHock, var: i16)
             }
             124 => {
                 // Trigger
@@ -780,6 +828,10 @@ impl SceProcContext {
                 // AverageLv
                 nop_command!(self, AverageLv, i32, i32)
             }
+            146 => {
+                // 冶炼菜单
+                command!(self, SceCommandSmeltingMenu, kind: i32)
+            }
             147 => {
                 // Switch2Menu
                 nop_command!(self, Switch2Menu)
@@ -804,6 +856,10 @@ impl SceProcContext {
                 // FullTeamAtt
                 command!(self, SceCommandFullTeamAtt)
             }
+            154 => {
+                // 引路蜂飞向
+                command!(self, SceCommandNavigationBeeFlyTo, nav_layer: i32, tile_x: i32, tile_y: i32)
+            }
             155 => {
                 // CameraYaw
                 nop_command!(self, CameraYaw, f32)
@@ -811,6 +867,10 @@ impl SceProcContext {
             156 => {
                 // XJ_Pic
                 nop_command!(self, XJ_Pic)
+            }
+            157 => {
+                // 当铺信息
+                command!(self, SceCommandMiniGamePawnshopNote, text: string)
             }
             158 => {
                 // ObjNotLoad

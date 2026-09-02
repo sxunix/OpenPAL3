@@ -12,9 +12,20 @@ use radiance::comdef::ISceneManager;
 
 /// Attribute selector used by `FullRoleAtt`; indexes the same table as the
 /// game database's `attribute_values`.
+///
+/// The original keeps the party's stats as a flat dword array: current
+/// values at `DAT_00c0476c`, maxima twelve dwords earlier at
+/// `DAT_00c0473c`, stride `0x160` dwords per role. `FullRoleAtt`
+/// (`FUN_0040cc00`) copies max into current at `[role * 0x160 +
+/// attribute]`, and `SetRoleAtt` (`FUN_0040cbd0`) writes into the same
+/// slot, so both opcodes share this selector.
 const ATTRIBUTE_HP: i32 = 0;
 const ATTRIBUTE_SP: i32 = 1;
 const ATTRIBUTE_MP: i32 = 2;
+
+/// `FullRoleAtt`'s "every active party member" actor id — `FUN_0040cc00`
+/// branches on `param_1 == 6` and walks all five role slots.
+const ACTOR_ALL: i32 = 6;
 
 fn restore_all(state: &mut SceState, actor_id: u32) {
     if let Some(role) = state
@@ -168,23 +179,75 @@ impl SceCommand for SceCommandFullRoleAtt {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
-        let actor_id = self.actor_id as u32;
         let attribute = self.attribute;
-        if let Some(role) = state
-            .global_state_mut()
-            .persistent_state_mut()
-            .role_mut(actor_id)
-        {
-            match attribute {
-                ATTRIBUTE_HP => role.hp = role.max_hp,
-                ATTRIBUTE_SP => role.sp = role.max_sp,
-                ATTRIBUTE_MP => role.mp = role.max_mp,
-                // The remaining attributes have no separate "current"
-                // value to top up.
-                other => log::warn!("FullRoleAtt: unsupported attribute {}", other),
+        let actors: Vec<u32> = if self.actor_id == ACTOR_ALL {
+            state.global_state().persistent_state().team().to_vec()
+        } else {
+            vec![self.actor_id as u32]
+        };
+
+        for actor_id in actors {
+            if let Some(role) = state
+                .global_state_mut()
+                .persistent_state_mut()
+                .role_mut(actor_id)
+            {
+                match attribute {
+                    ATTRIBUTE_HP => role.hp = role.max_hp,
+                    ATTRIBUTE_SP => role.sp = role.max_sp,
+                    ATTRIBUTE_MP => role.mp = role.max_mp,
+                    // The remaining attributes have no separate "current"
+                    // value to top up.
+                    other => log::warn!("FullRoleAtt: unsupported attribute {}", other),
+                }
             }
         }
         true
+    }
+}
+
+/// 41 设置角色某项属性值 — `LAB_00435770` → `FUN_0040cbd0(actor,
+/// attribute, value)`, a straight store into the same flat stat array
+/// `FullRoleAtt` reads, with no clamping against the maximum.
+#[derive(Debug, Clone)]
+pub struct SceCommandSetRoleAtt {
+    actor_id: i32,
+    attribute: i32,
+    value: i32,
+}
+
+impl SceCommand for SceCommandSetRoleAtt {
+    fn update(
+        &mut self,
+        _scene_manager: ComRc<ISceneManager>,
+        _ui: &Ui,
+        state: &mut SceState,
+        _delta_sec: f32,
+    ) -> bool {
+        let (attribute, value) = (self.attribute, self.value);
+        if let Some(role) = state
+            .global_state_mut()
+            .persistent_state_mut()
+            .role_mut(self.actor_id as u32)
+        {
+            match attribute {
+                ATTRIBUTE_HP => role.hp = value,
+                ATTRIBUTE_SP => role.sp = value,
+                ATTRIBUTE_MP => role.mp = value,
+                other => log::warn!("SetRoleAtt: unsupported attribute {}", other),
+            }
+        }
+        true
+    }
+}
+
+impl SceCommandSetRoleAtt {
+    pub fn new(actor_id: i32, attribute: i32, value: i32) -> Self {
+        Self {
+            actor_id,
+            attribute,
+            value,
+        }
     }
 }
 

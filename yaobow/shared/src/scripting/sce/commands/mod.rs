@@ -29,6 +29,7 @@ mod idle;
 mod if_in_team;
 mod inventory;
 mod load_scene;
+mod minigames;
 mod movie;
 mod music;
 mod nop;
@@ -60,8 +61,9 @@ mod show_chat_rest;
 mod start_hidefight;
 mod stop_music;
 mod testgoto;
+pub mod vars;
 
-pub use _let::SceCommandLet;
+pub use _let::{SceCommandLet, SceCommandLetAdd};
 pub use between::SceCommandBetween;
 pub use call::SceCommandCall;
 pub use camera_default::SceCommandCameraDefault;
@@ -98,13 +100,20 @@ pub use idle::SceCommandIdle;
 pub use if_in_team::SceCommandIfInTeam;
 pub use inventory::{SceCommandAddItem, SceCommandAddMoney, SceCommandRemoveItem};
 pub use load_scene::SceCommandLoadScene;
+pub use minigames::{
+    SceCommandDealerMenu, SceCommandGetPawnshopAccrual, SceCommandGetPawnshopLevel,
+    SceCommandGetPawnshopManage, SceCommandGetPawnshopPeriod, SceCommandGetPawnshopUnHock,
+    SceCommandMiniGameCaveExperience, SceCommandMiniGamePawnshop, SceCommandMiniGamePawnshopNote,
+    SceCommandMiniGameSki, SceCommandMiniGameSwatAFly, SceCommandNavigationBeeFlyTo,
+    SceCommandSmeltingMenu,
+};
 pub use movie::SceCommandMovie;
 pub use music::SceCommandMusic;
 pub use nop::SceCommandNop;
 pub use object_active::SceCommandObjectActive;
 pub use party::{
     SceCommandAddSkill, SceCommandFavorAdd, SceCommandFullRoleAtt, SceCommandFullTeamAtt,
-    SceCommandGetFavor, SceCommandGetFavorite, SceCommandInTeam,
+    SceCommandGetFavor, SceCommandGetFavorite, SceCommandInTeam, SceCommandSetRoleAtt,
 };
 pub use play_sound::SceCommandPlaySound;
 pub use quake::SceCommandQuake;
