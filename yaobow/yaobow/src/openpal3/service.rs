@@ -32,7 +32,6 @@ use radiance::input::{InputEngine, SyntheticInputBridge};
 use radiance::radiance::{UiLayerBand, UiLayerHandle};
 use radiance::video::Codec as VideoCodec;
 use radiance_scripting::comdef::services::IAudioSource;
-use radiance_scripting::comdef::services::ISprite;
 use radiance_scripting::comdef::services::ISpriteService;
 use radiance_scripting::comdef::services::IVideoHandle;
 use radiance_scripting::services::AudioSource;
@@ -88,10 +87,6 @@ const ITEM_FIELD_ANCIENT_VALUE: i32 = 3;
 const ITEM_FIELD_PLACE_OF_USE: i32 = 4;
 const ITEM_FIELD_TARGET_RANGE: i32 = 5;
 const ITEM_FIELD_SPECIAL_TYPE: i32 = 6;
-
-/// Where the item icons live in the UI atlas. The database stores only
-/// the numeric suffix (`"1"`, `"6"`, …).
-const ITEM_ICON_PREFIX: &str = "ui/GameMainUI/Prop/Icon/";
 
 /// Lay out `text` the way an original text widget does: a fixed cell of
 /// `cell` logical pixels, ASCII advancing half a cell and CJK a whole
@@ -937,18 +932,6 @@ impl IPal3ServiceImpl for Pal3Service {
         for (line_no, line) in wrap_widget_text(&desc, size, wrap_px).iter().enumerate() {
             ui.text_at_sized(x, y + line_no as f32 * size, size, r, g, b, a, line);
         }
-    }
-
-    fn item_icon(&self, atlas: ComRc<IPal3UiAtlas>, item_id: i32) -> Option<ComRc<ISprite>> {
-        let icon = self.item_text(item_id, |item| item.icon_name.as_str().ok())?;
-        if icon.is_empty() {
-            return None;
-        }
-        let name = format!("{}{}.tga", ITEM_ICON_PREFIX, icon);
-        if !atlas.has_sprite(&name) {
-            return None;
-        }
-        atlas.sprite(&name)
     }
 
     fn party_size(&self) -> i32 {

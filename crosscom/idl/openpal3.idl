@@ -167,9 +167,6 @@ interface IPal3Service: IUnknown {
     void draw_item_description(IUiHost ui, int item_id, float x, float y,
         float size, float wrap_px, float r, float g, float b, float a);
 
-    // The atlas sprite for an item's icon, resolved through the item's
-    // database row. Null when the item or its art is missing.
-    ISprite? item_icon(IPal3UiAtlas atlas, int item_id);
 
     // Build a `IVideoHandle` playing `LOGO.bik` (loaded from the
     // per-launch vfs via `AssetManager::load_movie_data`). Returns
