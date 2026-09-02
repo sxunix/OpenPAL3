@@ -14,9 +14,16 @@
 //!   `FUN_004db780` have no callers at all; both gauge phases advance at
 //!   the same rate whatever you picked. What differs is how being hit
 //!   interrupts you — see [`Battle::interrupt`].
-//! * **Escape is not a roll.** It succeeds unless the encounter forbids
-//!   fleeing outright; the database's per-monster `escape_rate` has no
-//!   reader anywhere in the combat code.
+//! * **Escape is a roll on 运 and level, not on `escape_rate`.** The
+//!   battle menu (`FUN_00500d50`) rolls [`formulas::escape_percent`];
+//!   the encounter's 禁止逃跑 flag (descriptor `+0x50`) forces a failure.
+//!   The database's per-monster `escape_rate` has no reader anywhere in
+//!   the combat code.
+//! * **Running out of rounds is a win, not a loss.** `FUN_004f7910` sends
+//!   `round >= max_round` down the same settlement path as "every enemy
+//!   is down", unless the script said `CombatMustFail`, in which case the
+//!   cap stops ending the battle at all. A successful escape ends the same
+//!   way (phase 4 → settlement → result 2).
 
 use super::formulas::{self, CombatRng};
 
@@ -319,25 +326,45 @@ impl Combatant {
     }
 }
 
+/// How a battle ended. The original's `CBSystem + 0x7c` result codes are
+/// in the comments; the script-visible flag (`GetCombat`, `DAT_005833d0`)
+/// is `result == 2`, so an escape reads as a win to the script.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Outcome {
     Ongoing,
-    /// Every enemy is down.
+    /// Result 2: every enemy is down, or the round cap ran out.
     Win,
-    /// The party is down, or the round cap was reached.
+    /// Result 3: the party is down.
     Lose,
+    /// Result 2 as well: the party got away (`LAB_00515200` → phase 4).
+    /// Whatever fell before that is still paid for.
+    Escaped,
+}
+
+impl Outcome {
+    /// What `GetCombat` will read.
+    pub fn counts_as_win(self) -> bool {
+        matches!(self, Outcome::Win | Outcome::Escaped)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Battle {
     pub combatants: Vec<Option<Combatant>>,
     pub round: i32,
-    /// `+0x1c`, from `CombatMaxRound`. Zero or less means no cap.
+    /// `+0x21c` from descriptor `+0x1c` (`CombatMaxRound`). Zero or less
+    /// means no cap.
     pub max_round: i32,
-    /// `+0x48`, from `CombatNotGameOver`: losing does not end the game.
-    pub not_game_over: bool,
+    /// `+0x224` from descriptor `+0x48` (`CombatMustFail`): the round cap
+    /// no longer ends the battle, so the only way out is to be beaten.
+    pub must_fail: bool,
+    /// Descriptor `+0x50`: the 逃跑 entry always fails. Set for every
+    /// scripted `Combat`/`CombatBoss`, clear for field encounters.
+    pub escape_forbidden: bool,
     /// The battlefield's own 五灵, from `combatScn.txt`'s `fivemagic`.
     pub scene_element: Option<u8>,
+    /// Set by a successful [`Battle::try_escape`].
+    pub escaped: bool,
     pub rng: CombatRng,
 }
 
@@ -347,8 +374,10 @@ impl Battle {
             combatants: vec![None; SLOTS],
             round: 0,
             max_round: 0,
-            not_game_over: false,
+            must_fail: false,
+            escape_forbidden: false,
             scene_element: None,
+            escaped: false,
             rng: CombatRng::new(seed),
         }
     }
@@ -374,17 +403,26 @@ impl Battle {
             .any(|c| c.side == side && c.in_play())
     }
 
+    /// `FUN_004f7910`, in its order: the party-down test comes first
+    /// (0x4f7940), then enemy-down or round-out (0x4f7a6a), then the
+    /// escape task's phase 4.
     pub fn outcome(&self) -> Outcome {
-        if !self.side_in_play(Side::Enemy) {
-            return Outcome::Win;
+        // A party that has retired to flee is not a party that is down.
+        if self.escaped {
+            return Outcome::Escaped;
         }
         if !self.side_in_play(Side::Party) {
             return Outcome::Lose;
         }
-        // The round cap only loses the battle when the script has not
-        // declared it survivable.
-        if self.max_round > 0 && self.max_round <= self.round && !self.not_game_over {
-            return Outcome::Lose;
+        if !self.side_in_play(Side::Enemy) {
+            return Outcome::Win;
+        }
+        // `+0x21c <= +0x220 && +0x224 == 0`: the cap is a win — the
+        // settlement runs exactly as if the enemies had fallen — unless
+        // the script declared the fight unwinnable, in which case the cap
+        // does nothing at all.
+        if self.max_round > 0 && self.max_round <= self.round && !self.must_fail {
+            return Outcome::Win;
         }
         Outcome::Ongoing
     }
@@ -485,12 +523,42 @@ impl Battle {
         c.phase = Phase::Charging;
     }
 
-    /// Fleeing. The original runs no roll at all: it either always works
-    /// or is refused outright, depending on a flag on the encounter
-    /// (`FUN_004f1fa0` case 2). `CombatActorInfo::escape_rate` is never
-    /// read by the combat code.
-    pub fn try_escape(&self, escape_forbidden: bool) -> bool {
-        !escape_forbidden
+    /// The 逃跑 menu entry, chosen by party slot `runner`
+    /// (`FUN_00500d50`, 0x500e60–0x500f10): roll
+    /// [`formulas::escape_percent`] against the present enemies, then let
+    /// the encounter's 禁止逃跑 flag veto the result. On success the whole
+    /// party leaves the field and the battle settles as a win.
+    ///
+    /// `CombatActorInfo::escape_rate` is never read by the combat code.
+    pub fn try_escape(&mut self, runner: usize) -> bool {
+        let Some((level, luck)) = self.get(runner).map(|c| (c.level, c.luck_eff())) else {
+            return false;
+        };
+        let enemies: Vec<(i32, i32)> = self
+            .combatants
+            .iter()
+            .flatten()
+            // The original tests `+0x241` (present) only, not `+0x242`
+            // (alive): a dead enemy still counts.
+            .filter(|c| c.side == Side::Enemy)
+            .map(|c| (c.level, c.luck_eff()))
+            .collect();
+        let percent = formulas::escape_percent(level, luck, &enemies);
+        let mut ok = formulas::escape_roll(&mut self.rng, percent);
+        // Descriptor `+0x50` is checked *after* the roll, so the LCG
+        // still advances on a forbidden attempt.
+        if self.escape_forbidden {
+            ok = false;
+        }
+        if ok {
+            self.escaped = true;
+            for c in self.combatants.iter_mut().flatten() {
+                if c.side == Side::Party {
+                    c.retired = true;
+                }
+            }
+        }
+        ok
     }
 
     /// A plain physical attack from `attacker` onto `target`.
@@ -561,14 +629,22 @@ mod tests {
     }
 
     #[test]
-    fn round_cap_only_loses_when_the_script_allows_it() {
+    fn running_out_of_rounds_is_a_win_unless_the_script_says_must_fail() {
         let mut b = two_sided_battle();
         b.max_round = 3;
         b.round = 3;
-        assert_eq!(b.outcome(), Outcome::Lose);
+        assert_eq!(b.outcome(), Outcome::Win, "回合打满走结算，不是输");
 
-        b.not_game_over = true;
-        assert_eq!(b.outcome(), Outcome::Ongoing, "剧本声明输了也不结束");
+        b.must_fail = true;
+        assert_eq!(b.outcome(), Outcome::Ongoing, "必败战里回合上限不结束战斗");
+    }
+
+    #[test]
+    fn a_wiped_party_loses_even_when_the_enemies_are_down_too() {
+        let mut b = two_sided_battle();
+        b.get_mut(0).unwrap().die();
+        b.get_mut(5).unwrap().die();
+        assert_eq!(b.outcome(), Outcome::Lose, "FUN_004f7910 先看我方");
     }
 
     #[test]
@@ -690,10 +766,48 @@ mod tests {
     }
 
     #[test]
-    fn escape_is_not_a_roll() {
-        let b = two_sided_battle();
-        assert!(b.try_escape(false));
-        assert!(!b.try_escape(true));
+    fn escape_rolls_on_luck_and_level_and_settles_as_a_win() {
+        // Same level, luck 20 vs 0: (20 - 0) * (1 - 1) + 3 = 3 → 30%.
+        let mut b = two_sided_battle();
+        b.get_mut(0).unwrap().luck = 20;
+        assert_eq!(
+            formulas::escape_percent(1, 20, &[(1, 0)]),
+            30,
+            "((运差) * (等级差) + 3) * 10"
+        );
+
+        let mut got_away = 0;
+        let mut tries = 0;
+        while got_away == 0 && tries < 50 {
+            tries += 1;
+            if b.try_escape(0) {
+                got_away += 1;
+            }
+        }
+        assert!(got_away > 0, "30% 五十次一次都没成");
+        assert_eq!(b.outcome(), Outcome::Escaped);
+        assert!(b.outcome().counts_as_win(), "GetCombat 读到的是 1");
+    }
+
+    #[test]
+    fn a_forbidden_escape_never_works_and_a_hopeless_one_never_rolls() {
+        let mut b = two_sided_battle();
+        b.get_mut(0).unwrap().luck = 50;
+        b.escape_forbidden = true;
+        for _ in 0..50 {
+            assert!(!b.try_escape(0), "禁止逃跑");
+        }
+        assert_eq!(b.outcome(), Outcome::Ongoing);
+
+        // Out-levelling a luckier enemy: (0 - 5) * (10 - 1) + 3 = -42, the
+        // product goes negative and the roll is skipped outright. (Being
+        // *under*-levelled by the luckier enemy flips both signs and the
+        // formula happily reports several hundred percent.)
+        assert!(formulas::escape_percent(10, 0, &[(1, 5)]) < 1);
+        let mut rng = CombatRng::new(1);
+        assert!(!formulas::escape_roll(&mut rng, 0));
+        // With nobody to flee from the division would be by zero; 100.
+        assert_eq!(formulas::escape_percent(1, 0, &[]), 100);
     }
 
     #[test]

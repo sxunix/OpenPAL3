@@ -28,6 +28,13 @@ impl CombatRng {
         ((self.seed >> 16) & 0x7FFF) as i32
     }
 
+    /// The ten-bit draw (`>> 0x10 & 0x3ff`) the escape roll compares
+    /// against a 0..1024 threshold.
+    pub fn rand10(&mut self) -> i32 {
+        self.seed = self.seed.wrapping_mul(0x343F_D).wrapping_add(0x269E_C3);
+        ((self.seed >> 16) & 0x3FF) as i32
+    }
+
     /// The coin flip the damage paths use to pick a spread's sign.
     pub fn coin(&mut self) -> bool {
         self.rand15() & 1 != 0
@@ -202,6 +209,38 @@ pub fn skill_hits(
         return rng.rand15() % 1024 < (p as f32 * 10.24).round() as i32;
     }
     success_rate_level == 100
+}
+
+/// `FUN_004f98b0` kind 3 (0x4f9c00 area): the percentage chance the party
+/// gets away, rolled by the battle menu's 逃跑 entry (`FUN_00500d50`).
+///
+/// `enemies` are the present (`+0x241`) enemy slots as `(level, 运_eff)`.
+/// The original divides by their count without a guard; with nobody
+/// present there is nobody to flee from, so 100 is returned instead.
+///
+/// Transcribed as read: the two differences are *multiplied*, so being
+/// both unluckier and lower-levelled than the enemy comes out positive.
+pub fn escape_percent(self_level: i32, self_luck_eff: i32, enemies: &[(i32, i32)]) -> i32 {
+    if enemies.is_empty() {
+        return 100;
+    }
+    let level_sum: i32 = enemies.iter().map(|(level, _)| *level).sum();
+    let average_level = level_sum / enemies.len() as i32;
+    let min_luck = enemies
+        .iter()
+        .map(|(_, luck)| *luck)
+        .min()
+        .unwrap_or(0xff_ffff);
+    ((self_luck_eff - min_luck) * (self_level - average_level) + 3) * 10
+}
+
+/// The roll itself (`FUN_00500d50`, 0x500e9c–0x500ef0): below 1 never
+/// works; otherwise ten bits of the LCG against `round(p * 10.24)`.
+pub fn escape_roll(rng: &mut CombatRng, percent: i32) -> bool {
+    if percent < 1 {
+        return false;
+    }
+    rng.rand10() < (percent as f32 * 10.24).round() as i32
 }
 
 // ---- The action gauge ----------------------------------------------------

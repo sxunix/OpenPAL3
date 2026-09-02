@@ -28,6 +28,8 @@ pub struct GlobalState {
     bgm_source: Box<dyn AudioMemorySource>,
     sound_sources: Vec<Rc<RefCell<Box<dyn AudioMemorySource>>>>,
     default_scene_bgm: HashMap<String, String>,
+    /// `music.txt` `[combat]`: city → battle theme.
+    combat_bgm: HashMap<String, String>,
     video_player: Box<VideoPlayer>,
 
     /// Items, skills, combat actors and the experience curve. `None` when
@@ -48,8 +50,9 @@ impl GlobalState {
         let video_player = asset_mgr.component_factory().create_video_player();
         let sound_sources = vec![];
         let music_path = "/basedata/basedata/datascript/music.txt";
-        let default_scene_bgm =
-            parse_music_mapping(asset_mgr.vfs().read_to_end_from_gbk(music_path).unwrap());
+        let music_txt = asset_mgr.vfs().read_to_end_from_gbk(music_path).unwrap();
+        let default_scene_bgm = parse_music_mapping(&music_txt, "scene");
+        let combat_bgm = parse_music_mapping(&music_txt, "combat");
 
         let game_db = GameDb::load(asset_mgr.vfs(), &PathBuf::from("/basedata/basedata"));
         if let Some(db) = game_db.as_ref() {
@@ -66,6 +69,7 @@ impl GlobalState {
             bgm_source,
             sound_sources,
             default_scene_bgm,
+            combat_bgm,
             video_player,
             game_db,
             pass_through_wall: false,
@@ -124,6 +128,23 @@ impl GlobalState {
                 self.bgm_source.stop();
             }
         }
+    }
+
+    /// The battle theme for the current city: `music.txt`'s `[combat]`
+    /// section keyed by scene name, as `FUN_0053e680` reads it. Returns
+    /// false, and leaves the BGM alone, when the city has no entry — the
+    /// original does the same.
+    pub fn play_combat_bgm(&mut self) -> bool {
+        let scene_name = self
+            .persistent_state
+            .borrow()
+            .scene_name()
+            .map(|s| s.to_lowercase());
+        let Some(name) = scene_name.and_then(|s| self.combat_bgm.get(&s).cloned()) else {
+            return false;
+        };
+        self.play_bgm(&name);
+        true
     }
 
     pub fn bgm_source(&mut self) -> &mut dyn AudioSource {
@@ -253,9 +274,9 @@ impl FopState {
     }
 }
 
-fn parse_music_mapping(mapping: String) -> HashMap<String, String> {
+fn parse_music_mapping(mapping: &str, section: &str) -> HashMap<String, String> {
     let mut scene_mapping = HashMap::new();
-    let scene_begin_regex = Regex::new(r"BEGIN,\s*scene").unwrap();
+    let scene_begin_regex = Regex::new(&format!(r"BEGIN,\s*{}\b", section)).unwrap();
     let scene_end_regex = Regex::new(r"END").unwrap();
     let music_mapping_regex = Regex::new(r"(.+?)\s*\$(.+?)&").unwrap();
     let mut scene_mapping_state = 0;
