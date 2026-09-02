@@ -191,6 +191,137 @@ pub fn paint_toolbar(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas
     return TOOLBAR_NONE;
 }
 
+// --- Party head plates (the right-hand column) ---------------------------
+// Every full-screen page arranges these the same way — 状态 `FUN_004a4c20`,
+// 道具 `FUN_0049aaf0`, 装备 `FUN_00494660` and 仙术 `FUN_0048a010` all walk
+// the party with the same base rect and the same 122 px step, so the plate
+// column is chrome, not per-page decoration.
+//
+// Base plate (686,62,796,157); the arrange loop's cursor starts at y=60,
+// so the first plate is at 62 and every later one is 122 lower: 62, 182,
+// 304, 426. Plate-local offsets from `FUN_004a3730` / `FUN_004929e0`:
+// HeadBk at (x,y), RoleHead at (x+25,y+10), the vertical nameplate at
+// (x2-27,y+36), and the 精/气/神 bars to the plate's left.
+pub let HB_X: float = 686.0; pub let HB_Y: float = 62.0; pub let HB_X2: float = 796.0;
+pub let HB_Y1: float = 182.0; pub let HB_STEP: float = 122.0;
+pub let HB_W: float = 110.0; pub let HB_H: float = 95.0;
+let RH_DX: float = 25.0; let RH_DY: float = 10.0;
+let NM_DX2: float = -27.0; let NM_DY: float = 36.0;
+let BAR_J_DX: float = -72.0; let BAR_J_DY: float = 21.0;
+let BAR_Q_DX: float = -80.0; let BAR_Q_DY: float = 49.0;
+let BAR_S_DX: float = -70.0; let BAR_S_DY: float = 77.0;
+let BAR_TXT_DX: float = -70.0; let BAR_TXT_STEP: float = 28.0;
+let SPR_HEADBK: string  = "ui/GameMainUI/Communal/HeadBk.tga";
+let SPR_ROLEHEAD: string = "ui/GameMainUI/Communal/RoleHead";
+let SPR_BAR: string     = "ui/GameMainUI/Communal/Bar.tga";
+
+// `IPal3Service::role_stat` selectors (see crosscom/idl/openpal3.idl).
+pub let ST_LEVEL: int = 0;
+pub let ST_EXP: int = 1;
+pub let ST_EXP_NEXT: int = 2;
+pub let ST_HP: int = 3;  pub let ST_MAX_HP: int = 4;
+pub let ST_SP: int = 5;  pub let ST_MAX_SP: int = 6;
+pub let ST_MP: int = 7;  pub let ST_MAX_MP: int = 8;
+pub let ST_WATER: int = 9; pub let ST_FIRE: int = 10; pub let ST_WIND: int = 11;
+pub let ST_THUNDER: int = 12; pub let ST_EARTH: int = 13;
+
+// Head-plate y for the n-th party member.
+pub fn head_row(n: int) -> float {
+    if n <= 0 { return HB_Y; }
+    return HB_Y1 + ((n - 1) as float) * HB_STEP;
+}
+
+// Actor id of the party member at `index`; 景天 (0) when the slot is empty
+// so a page still draws something without a running adventure.
+pub fn role_at(pal3: box<openpal3.IPal3Service>, index: int) -> int {
+    let r = pal3.party_actor_id(index);
+    if r < 0 { return 0; }
+    return r;
+}
+
+// Nameplate sprite prefix per role (jt/xj/lk/zx/cq_name.tga).
+pub fn name_tag(role: int) -> string {
+    if role == 1 { return "xj"; }
+    if role == 2 { return "lk"; }
+    if role == 3 { return "zx"; }
+    if role == 4 { return "cq"; }
+    return "jt";
+}
+
+// 精/气/神 bar (x, y = trough top-left): Bar.tga trough, then the
+// element's <L>_BarProgress fill from x+5, y+3, up to 80 px wide at full
+// value (progress-bar insets 4/1/-4/-3 in FUN_0043fca0 / 0x4401de).
+pub fn draw_stat_bar(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, kind: string,
+        x: float, y: float, s: float, cur: int, max: int) {
+    sprite(ui, atlas, SPR_BAR, x, y, s);
+    if max <= 0 { return; }
+    let mut ratio = (cur as float) / (max as float);
+    if ratio < 0.0 { ratio = 0.0; }
+    if ratio > 1.0 { ratio = 1.0; }
+    let osp = atlas.sprite("ui/GameMainUI/Communal/" + kind + "_BarProgress.tga");
+    if osp == null { return; }
+    let sp = osp!;
+    let fx0 = x + 5.0 * s;
+    let fy0 = y + 3.0 * s;
+    let full = 80.0 * s;
+    let w = full * ratio;
+    if w <= 0.0 { return; }
+    let u1 = sp.u0() + (sp.u1() - sp.u0()) * ratio;
+    ui.image_rect(sp.com_id(), fx0, fy0, fx0 + w, fy0 + (sp.height() as float) * s,
+        sp.u0(), sp.v0(), u1, sp.v1());
+}
+
+// The party column down the right edge. Returns the member index whose
+// plate was clicked, or -1. Pages that only display the party pass
+// `clickable = false`.
+pub fn paint_head_plates(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+                         pal3: box<openpal3.IPal3Service>,
+                         ox: float, oy: float, s: float,
+                         mx: float, my: float, click: bool, clickable: bool) -> int {
+    let mut present = pal3.party_size();
+    if present < 1 { present = 1; }
+    if present > 4 { present = 4; }
+
+    let mut hit = -1;
+    let mut h = 0;
+    while h < present {
+        let role = role_at(pal3, h);
+        let hb_x = ox + HB_X * s;
+        let hb_y = oy + head_row(h) * s;
+
+        let jing_cur = pal3.role_stat(role, ST_HP);
+        let jing_max = pal3.role_stat(role, ST_MAX_HP);
+        let qi_cur = pal3.role_stat(role, ST_SP);
+        let qi_max = pal3.role_stat(role, ST_MAX_SP);
+        let shen_cur = pal3.role_stat(role, ST_MP);
+        let shen_max = pal3.role_stat(role, ST_MAX_MP);
+
+        // Bars first — the plate's rim overlaps their right ends.
+        draw_stat_bar(ui, atlas, "J", hb_x + BAR_J_DX * s, hb_y + BAR_J_DY * s, s, jing_cur, jing_max);
+        draw_stat_bar(ui, atlas, "Q", hb_x + BAR_Q_DX * s, hb_y + BAR_Q_DY * s, s, qi_cur, qi_max);
+        draw_stat_bar(ui, atlas, "S", hb_x + BAR_S_DX * s, hb_y + BAR_S_DY * s, s, shen_cur, shen_max);
+        widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y, 0.0, s, 0.15, 0.15, 0.15,
+            int_str(jing_cur) + "/" + int_str(jing_max));
+        widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y + BAR_TXT_STEP * s, 0.0, s, 0.15, 0.15, 0.15,
+            int_str(qi_cur) + "/" + int_str(qi_max));
+        widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y + BAR_TXT_STEP * 2.0 * s, 0.0, s, 0.15, 0.15, 0.15,
+            int_str(shen_cur) + "/" + int_str(shen_max));
+        sprite(ui, atlas, SPR_HEADBK, hb_x, hb_y, s);
+        sprite(ui, atlas, SPR_ROLEHEAD + int_str(role) + "0.tga", hb_x + RH_DX * s, hb_y + RH_DY * s, s);
+        sprite(ui, atlas, "ui/GameMainUI/Communal/" + name_tag(role) + "_name.tga",
+            ox + (HB_X2 + NM_DX2) * s, hb_y + NM_DY * s, s);
+
+        if clickable && click
+            && mx >= hb_x && mx <= hb_x + HB_W * s
+            && my >= hb_y && my <= hb_y + HB_H * s {
+            hit = h;
+        }
+
+        h = h + 1;
+    }
+    return hit;
+}
+
 pub fn digit(d: int) -> string {
     if d == 0 { return "0"; } if d == 1 { return "1"; }
     if d == 2 { return "2"; } if d == 3 { return "3"; }

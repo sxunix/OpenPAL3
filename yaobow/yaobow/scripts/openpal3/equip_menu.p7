@@ -16,11 +16,11 @@
 //   * the attribute-comparison rows (the original shows how a highlighted
 //     piece would change your stats; which four attributes map to its five
 //     rows is still unresolved),
-//   * the original's `SelRole0..4` character buttons — that art is not in
-//     `UI_opt.tli` and the arrange function that positions them has not
-//     been located, so this page uses the `AttFrameHead<n>` portrait
-//     frames as selectors at a placement of OUR choosing. Flagged here so
-//     nobody mistakes those coordinates for the original's.
+//   * `SelRole0..4`'s own art, which is not in `UI_opt.tli` — the
+//     character plates down the right edge double as the selectors
+//     instead, which is where the original puts them: its arrange
+//     function `FUN_00494660` walks the party with exactly the state
+//     page's base rect and 122 px step.
 
 import radiance;
 import shared.openpal3;
@@ -39,7 +39,6 @@ let SPR_SORT: string      = "ui/GameMainUI/Communal/Sort";
 let SPR_TAB: string       = "ui/GameMainUI/Equip/";
 let SPR_WEAPON_CTRL: string = "ui/GameMainUI/Equip/Weapon_Ctrl";
 let SPR_EQUIP_CTRL: string  = "ui/GameMainUI/Equip/Equip_Ctrl";
-let SPR_HEAD: string      = "ui/GameMainUI/Communal/AttFrameHead";
 // Top strip, nine-sliced. The original steps each piece by the previous
 // one's native width (0xf0 / 0xe / 0x100 in FUN_00491f20), so the pieces
 // simply abut from x = 12.
@@ -85,13 +84,6 @@ let ICON_NAME: array<string> = ["HatIcon", "ClothIcon", "ShoesIcon", "AdornIcon"
 let ICON_X: array<float> = [438.0, 438.0, 438.0, 438.0, 438.0];
 let ICON_Y: array<float> = [8.0, 29.0, 50.0, 69.0, 91.0];
 let WEAPON_ICON_X: float = 336.0; let WEAPON_ICON_Y: float = 40.0;
-
-// OUR placement for the character selectors (see the header note).
-let HEAD_X0: float = 44.0;
-let HEAD_Y: float = 16.0;
-let HEAD_STEP: float = 70.0;
-let HEAD_W: float = 65.0;
-let HEAD_H: float = 86.0;
 
 // List: same rects as the 道具 page, but the columns are 198 / 60.
 let ROWS: int = 12;
@@ -188,23 +180,13 @@ pub fn paint_equip_menu(
         }
     }
 
-    // Character selectors (our placement, see the header note).
-    let mut new_member = member;
-    for i in Range(0, party) {
-        let hx = ox + (HEAD_X0 + (i as float) * HEAD_STEP) * s;
-        let hy = oy + HEAD_Y * s;
-        let hover = mx >= hx && mx <= hx + HEAD_W * s && my >= hy && my <= hy + HEAD_H * s;
-        let id = pal3.party_actor_id(i);
-        if id >= 0 {
-            chrome.sprite(ui, atlas, SPR_HEAD + chrome.int_str(id) + ".tga", hx, hy, s);
-            // The selected member's frame is underlined by the row art
-            // below it; a hovered one just takes the click.
-            if hover && click { new_member = i; }
-        }
-    }
-    if new_member != member {
-        member = new_member;
+    // The party column down the right edge doubles as the character
+    // selector — clicking a plate switches whose equipment is shown.
+    let picked = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, click, true);
+    if picked >= 0 && picked != member {
+        member = picked;
         actor = pal3.party_actor_id(member);
+        if actor < 0 { actor = 0; }
         scroll = 0;
         sel = 0;
     }

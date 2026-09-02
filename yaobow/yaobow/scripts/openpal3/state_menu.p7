@@ -83,33 +83,9 @@ let EXP_VAL_INDENT: float = 16.0;
 let NB_X0: float = 147.0;
 let NB_STEP: float = 148.0;
 
-// Head plate base rect (686,62,796,157) for the first member; the next
-// member's plate is 122 lower. Plate-local offsets from FUN_004a3730:
-// HeadBk at (x,y) (115x100 art), RoleHead at (x+25,y+10) (65x86), the
-// vertical nameplate at (x2-27,y+36) (22x32).
-let HB_X: float = 686.0; let HB_Y: float = 62.0; let HB_X2: float = 796.0;
-// The arrange loop (FUN_004a4c20) tracks the plate cursor from y=60, so the
-// first plate sits at 62 and every later one is 122 lower than the previous:
-// 62, 182, 304, 426.
-let HB_Y1: float = 182.0; let HB_STEP: float = 122.0;
-
 // `IPal3Service::role_stat` selectors (see crosscom/idl/openpal3.idl).
-let ST_LEVEL: int = 0;
-let ST_EXP: int = 1;
-let ST_EXP_NEXT: int = 2;
-let ST_HP: int = 3;  let ST_MAX_HP: int = 4;
-let ST_SP: int = 5;  let ST_MAX_SP: int = 6;
-let ST_MP: int = 7;  let ST_MAX_MP: int = 8;
-let ST_WATER: int = 9; let ST_FIRE: int = 10; let ST_WIND: int = 11;
-let ST_THUNDER: int = 12; let ST_EARTH: int = 13;
-let RH_DX: float = 25.0; let RH_DY: float = 10.0;
-let NM_DX2: float = -27.0; let NM_DY: float = 36.0;
 // 精/气/神 bars (Bar.tga 86x12 trough) at (x-72,y+21), (x-80,y+49),
 // (x-70,y+77); their "cur/max" text rects at (x-70, y+28k) 100x32.
-let BAR_J_DX: float = -72.0; let BAR_J_DY: float = 21.0;
-let BAR_Q_DX: float = -80.0; let BAR_Q_DY: float = 49.0;
-let BAR_S_DX: float = -70.0; let BAR_S_DY: float = 77.0;
-let BAR_TXT_DX: float = -70.0; let BAR_TXT_STEP: float = 28.0;
 
 // Right 状态 dragon panel: Frame.tga (195x526) at (592,18); Frame_Line
 // (16x526) at (784,44); TimeMoney (204x64) at (596,0) over the frame top
@@ -122,9 +98,6 @@ let SPR_SHADE: string   = "ui/GameMainUI/State/Shade.tga";
 let SPR_FRAME: string   = "ui/GameMainUI/State/Frame.tga";
 let SPR_PORTRAIT: string = "ui/GameMainUI/State/Portrait";
 let SPR_NOBODY: string  = "ui/GameMainUI/State/NoBodyFrame.tga";
-let SPR_HEADBK: string  = "ui/GameMainUI/Communal/HeadBk.tga";
-let SPR_ROLEHEAD: string = "ui/GameMainUI/Communal/RoleHead";
-let SPR_BAR: string     = "ui/GameMainUI/Communal/Bar.tga";
 
 // Compose the menu over the live scene + HUD. `mx`/`my` are the cursor,
 // `click` is the left-button rising edge this frame.
@@ -166,7 +139,7 @@ pub fn paint_state_menu(
     // ---- Left character panels, one per party member ---------------------
     let mut m = 0;
     while m < present {
-        let role = role_at(pal3, m);
+        let role = chrome.role_at(pal3, m);
         let lp_x0 = ox + (LP_X + (m as float) * LP_STEP) * s;
         let lp_y0 = oy + LP_Y * s;
         chrome.sprite(ui, atlas, SPR_SHADE, lp_x0, lp_y0, s);
@@ -174,7 +147,7 @@ pub fn paint_state_menu(
             lp_x0 + POR_X * s, lp_y0 + portrait_top(role) * s, s);
 
         // Level: vertical Chinese numerals + 级, one character per line.
-        let lv_txt = cn_num(pal3.role_stat(role, ST_LEVEL)) + "级";
+        let lv_txt = cn_num(pal3.role_stat(role, chrome.ST_LEVEL)) + "级";
         let lv_n = lv_txt.len_chars();
         let mut lv_i = 0;
         while lv_i < lv_n {
@@ -188,25 +161,25 @@ pub fn paint_state_menu(
 
         // 五行 values under the glyphs baked into Shade.
         chrome.widget_text(ui, lp_x0 + WX_SHUI_X * s, lp_y0 + WX_SHUI_Y * s, 0.0, s, 0.1, 0.1, 0.1,
-            chrome.int_str(pal3.role_stat(role, ST_WATER)));
+            chrome.int_str(pal3.role_stat(role, chrome.ST_WATER)));
         chrome.widget_text(ui, lp_x0 + WX_HUO_X * s,  lp_y0 + WX_HUO_Y * s,  0.0, s, 0.1, 0.1, 0.1,
-            chrome.int_str(pal3.role_stat(role, ST_FIRE)));
+            chrome.int_str(pal3.role_stat(role, chrome.ST_FIRE)));
         chrome.widget_text(ui, lp_x0 + WX_FENG_X * s, lp_y0 + WX_FENG_Y * s, 0.0, s, 0.1, 0.1, 0.1,
-            chrome.int_str(pal3.role_stat(role, ST_WIND)));
+            chrome.int_str(pal3.role_stat(role, chrome.ST_WIND)));
         chrome.widget_text(ui, lp_x0 + WX_LEI_X * s,  lp_y0 + WX_LEI_Y * s,  0.0, s, 0.1, 0.1, 0.1,
-            chrome.int_str(pal3.role_stat(role, ST_THUNDER)));
+            chrome.int_str(pal3.role_stat(role, chrome.ST_THUNDER)));
         chrome.widget_text(ui, lp_x0 + WX_TU_X * s,   lp_y0 + WX_TU_Y * s,   0.0, s, 0.1, 0.1, 0.1,
-            chrome.int_str(pal3.role_stat(role, ST_EARTH)));
+            chrome.int_str(pal3.role_stat(role, chrome.ST_EARTH)));
 
         // Experience blocks: "%s\n  %d" — label, then the value on the next
         // line indented by two spaces. At level 99 the original swaps the
         // number for a string; we show a dash until that label is identified.
-        let exp_next = pal3.role_stat(role, ST_EXP_NEXT);
+        let exp_next = pal3.role_stat(role, chrome.ST_EXP_NEXT);
         let mut exp_next_txt = chrome.int_str(exp_next);
         if exp_next < 0 { exp_next_txt = "-"; }
         chrome.widget_text(ui, lp_x0 + EXP_X * s, lp_y0 + EXP1_Y * s, 0.0, s, 0.1, 0.1, 0.1, "经验值");
         chrome.widget_text(ui, lp_x0 + (EXP_X + EXP_VAL_INDENT) * s, lp_y0 + EXP1_Y * s, chrome.TXT, s,
-            0.1, 0.1, 0.1, chrome.int_str(pal3.role_stat(role, ST_EXP)));
+            0.1, 0.1, 0.1, chrome.int_str(pal3.role_stat(role, chrome.ST_EXP)));
         chrome.widget_text(ui, lp_x0 + EXP_X * s, lp_y0 + EXP2_Y * s, 0.0, s, 0.1, 0.1, 0.1, "升级所需经验值");
         chrome.widget_text(ui, lp_x0 + (EXP_X + EXP_VAL_INDENT) * s, lp_y0 + EXP2_Y * s, chrome.TXT, s,
             0.1, 0.1, 0.1, exp_next_txt);
@@ -227,37 +200,9 @@ pub fn paint_state_menu(
     // ---- Right 状态 dragon panel + money/time ----------------------------
     chrome.paint_frame(ui, atlas, pal3, SPR_FRAME, ox, oy, s);
 
-    // Head plate per party member: bars first (the plate's rim overlaps
-    // their right ends), then HeadBk, the role head, and the nameplate.
-    let mut h = 0;
-    while h < present {
-        let role = role_at(pal3, h);
-        let hb_x = ox + HB_X * s;
-        let hb_y = oy + head_row(h) * s;
-
-        let jing_cur = pal3.role_stat(role, ST_HP);
-        let jing_max = pal3.role_stat(role, ST_MAX_HP);
-        let qi_cur = pal3.role_stat(role, ST_SP);
-        let qi_max = pal3.role_stat(role, ST_MAX_SP);
-        let shen_cur = pal3.role_stat(role, ST_MP);
-        let shen_max = pal3.role_stat(role, ST_MAX_MP);
-
-        draw_stat_bar(ui, atlas, "J", hb_x + BAR_J_DX * s, hb_y + BAR_J_DY * s, s, jing_cur, jing_max);
-        draw_stat_bar(ui, atlas, "Q", hb_x + BAR_Q_DX * s, hb_y + BAR_Q_DY * s, s, qi_cur, qi_max);
-        draw_stat_bar(ui, atlas, "S", hb_x + BAR_S_DX * s, hb_y + BAR_S_DY * s, s, shen_cur, shen_max);
-        chrome.widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y, 0.0, s, 0.15, 0.15, 0.15,
-            chrome.int_str(jing_cur) + "/" + chrome.int_str(jing_max));
-        chrome.widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y + BAR_TXT_STEP * s, 0.0, s, 0.15, 0.15, 0.15,
-            chrome.int_str(qi_cur) + "/" + chrome.int_str(qi_max));
-        chrome.widget_text(ui, hb_x + BAR_TXT_DX * s, hb_y + BAR_TXT_STEP * 2.0 * s, 0.0, s, 0.15, 0.15, 0.15,
-            chrome.int_str(shen_cur) + "/" + chrome.int_str(shen_max));
-        chrome.sprite(ui, atlas, SPR_HEADBK, hb_x, hb_y, s);
-        chrome.sprite(ui, atlas, SPR_ROLEHEAD + chrome.int_str(role) + "0.tga", hb_x + RH_DX * s, hb_y + RH_DY * s, s);
-        chrome.sprite(ui, atlas, "ui/GameMainUI/Communal/" + name_tag(role) + "_name.tga",
-            ox + (HB_X2 + NM_DX2) * s, hb_y + NM_DY * s, s);
-
-        h = h + 1;
-    }
+    // The party column down the right edge — shared chrome; every
+    // full-screen page arranges it identically.
+    let _ = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, false, false);
 
 
     // ---- Bottom action toolbar -------------------------------------------
@@ -281,35 +226,6 @@ fn portrait_top(role: int) -> float {
     return 30.0;
 }
 
-// Nameplate sprite prefix per role (jt/xj/lk/zx/cq_name.tga).
-fn name_tag(role: int) -> string {
-    if role == 1 { return "xj"; }
-    if role == 2 { return "lk"; }
-    if role == 3 { return "zx"; }
-    if role == 4 { return "cq"; }
-    return "jt";
-}
-
-// 精/气/神 bar (x, y = trough top-left): Bar.tga trough, then the
-// element's <L>_BarProgress fill from x+5, y+3, up to 80 px wide at full
-// value (progress-bar insets 4/1/-4/-3 in FUN_0043fca0 / 0x4401de).
-fn draw_stat_bar(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, kind: string,
-        x: float, y: float, s: float, cur: int, max: int) {
-    chrome.sprite(ui, atlas, SPR_BAR, x, y, s);
-    if max <= 0 { return; }
-    let mut ratio = (cur as float) / (max as float);
-    if ratio < 0.0 { ratio = 0.0; }
-    if ratio > 1.0 { ratio = 1.0; }
-    let osp = atlas.sprite("ui/GameMainUI/Communal/" + kind + "_BarProgress.tga");
-    if osp == null { return; }
-    let sp = osp!;
-    let fx0 = x + 5.0 * s;
-    let fy0 = y + 3.0 * s;
-    let u1 = sp.u0() + (sp.u1() - sp.u0()) * ratio;
-    ui.image_rect(sp.com_id(), fx0, fy0, fx0 + 80.0 * s * ratio, fy0 + (sp.height() as float) * s,
-        sp.u0(), sp.v0(), u1, sp.v1());
-}
-
 // Level number as Chinese numerals (1..99 — the original's cap).
 fn cn_num(n: int) -> string {
     if n <= 0 { return "零"; }
@@ -329,20 +245,4 @@ fn cn_digit(d: int) -> string {
     if d == 5 { return "五"; } if d == 6 { return "六"; }
     if d == 7 { return "七"; } if d == 8 { return "八"; }
     return "九";
-}
-
-// stdlib-less integer -> decimal string.
-// Actor id of the party member at `index`; 景天 (0) when the slot is empty
-// so the page still draws something without a running adventure.
-fn role_at(pal3: box<openpal3.IPal3Service>, index: int) -> int {
-    let r = pal3.party_actor_id(index);
-    if r < 0 { return 0; }
-    return r;
-}
-
-// Head-plate y for the n-th party member: 62, then 122 apart (the arrange
-// loop starts its cursor at 60, which is why the first gap is 120).
-fn head_row(n: int) -> float {
-    if n <= 0 { return HB_Y; }
-    return HB_Y1 + ((n - 1) as float) * HB_STEP;
 }

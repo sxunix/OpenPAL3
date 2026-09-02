@@ -11,7 +11,6 @@
 // Not yet reproduced from the original, and called out where it matters:
 //   * the item's 3D model preview inside the Info panel (the original
 //     renders `Item\<model>\<model>.pol` there),
-//   * the top party bar (its per-member rects are still unresolved),
 //   * the three sort buttons draw but do not sort,
 //   * the second Info line (the original shows something under the
 //     description; which value is still unidentified).
@@ -132,6 +131,10 @@ pub fn paint_item_menu(
     chrome.sprite(ui, atlas, SPR_INFO, ox + INFO_X * s, oy + INFO_Y * s, s);
     chrome.sprite(ui, atlas, SPR_LISTFRAME, ox + LF_X * s, oy + LF_Y * s, s);
     chrome.paint_frame(ui, atlas, pal3, SPR_FRAME, ox, oy, s);
+
+    // The party column down the right edge — the original's 道具 page
+    // arranges it exactly like the 状态 page's (`FUN_0049aaf0`).
+    let _ = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, false, false);
 
     // ---- Category tabs ---------------------------------------------------
     let mut new_tab = tab;
