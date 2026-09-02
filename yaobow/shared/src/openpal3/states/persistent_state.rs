@@ -9,6 +9,7 @@ use super::game_db::{
     BASE_FAVOR, FAVOR_ACTOR_IDS, GameDb, MAX_LEVEL, PLAYER_ACTOR_IDS, combat_id_of_party_member,
 };
 use super::growth;
+use super::skills::{LearnedSkill, levelled_up_to};
 
 pub const PAL3_APP_NAME: &str = "OpenPAL3";
 
@@ -72,8 +73,9 @@ pub struct RoleState {
     /// 五灵: 水火风雷土.
     pub elements: [i32; 5],
 
-    /// Learned skill ids, in acquisition order.
-    pub skills: Vec<u32>,
+    /// Learned skills, in acquisition order, each with its own level and
+    /// use count — the original tracks all three per skill slot.
+    pub skills: Vec<LearnedSkill>,
 
     /// Item id per slot, 0 = empty:
     /// 0 帽 · 1 衣 · 2 鞋 · 3 饰品一 · 4 饰品二 · 5 武器
@@ -110,7 +112,13 @@ impl RoleState {
             speed: attr[5],
             luck: attr[6],
             elements: a.element_attribute_values,
-            skills: a.skill_ids.iter().copied().filter(|id| *id != 0).collect(),
+            skills: a
+                .skill_ids
+                .iter()
+                .copied()
+                .filter(|id| *id != 0)
+                .map(LearnedSkill::new)
+                .collect(),
             equipment: [0; EQUIPMENT_SLOTS],
         })
     }
@@ -414,6 +422,34 @@ impl PersistentState {
         self.gain_level(actor_id, db.level_for_exp(exp))
     }
 
+    /// Record one use of a skill and level it up if the use count has
+    /// reached the next threshold. Returns the new level when it changed.
+    pub fn use_skill(
+        &mut self,
+        actor_id: u32,
+        skill_id: u32,
+        times_before_level_up: &[u8; 4],
+    ) -> Option<u8> {
+        let role = self.roles.get_mut(&actor_id)?;
+        let skill = role.skills.iter_mut().find(|s| s.id == skill_id)?;
+        skill.uses = skill.uses.saturating_add(1);
+        let level = levelled_up_to(skill.level, skill.uses, times_before_level_up)?;
+        skill.level = level;
+        Some(level)
+    }
+
+    /// Teach a skill, if it is not already known.
+    pub fn learn_skill(&mut self, actor_id: u32, skill_id: u32) -> bool {
+        let Some(role) = self.roles.get_mut(&actor_id) else {
+            return false;
+        };
+        if role.skills.iter().any(|s| s.id == skill_id) {
+            return false;
+        }
+        role.skills.push(LearnedSkill::new(skill_id));
+        true
+    }
+
     /// Which slot `item_id` is worn in, if any.
     pub fn equipped_slot_of(&self, actor_id: u32, item_id: u32) -> Option<usize> {
         let role = self.roles.get(&actor_id)?;
@@ -710,6 +746,26 @@ mod tests {
         assert_eq!(state.unequip_to_inventory(0, SLOT_HAT), Some(80010));
         assert_eq!(state.equipped(0, SLOT_HAT), None);
         assert_eq!(state.item_count(80010), 1);
+    }
+
+    #[test]
+    fn using_a_skill_trains_it() {
+        let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
+        state.roles.insert(0, super::growth_test_role());
+        assert!(state.learn_skill(0, 4101));
+        assert!(!state.learn_skill(0, 4101), "不重复学");
+
+        let times = [3u8, 8, 20, 0];
+        assert_eq!(state.use_skill(0, 4101, &times), None);
+        assert_eq!(state.use_skill(0, 4101, &times), None);
+        assert_eq!(state.use_skill(0, 4101, &times), Some(1), "第三次到门槛");
+
+        let skill = state.role(0).unwrap().skills[0];
+        assert_eq!(skill.level, 1);
+        assert_eq!(skill.uses, 3);
+
+        // An unknown skill is simply not tracked.
+        assert_eq!(state.use_skill(0, 9999, &times), None);
     }
 
     #[test]

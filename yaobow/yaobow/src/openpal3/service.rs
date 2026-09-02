@@ -1103,7 +1103,7 @@ impl IPal3ServiceImpl for Pal3Service {
         self.with_persistent_state(-1, |s| {
             s.role(actor_id as u32)
                 .and_then(|r| r.skills.get(index as usize))
-                .map(|id| *id as i32)
+                .map(|s| s.id as i32)
                 .unwrap_or(-1)
         })
     }

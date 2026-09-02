@@ -140,16 +140,10 @@ impl SceCommand for SceCommandAddSkill {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
-        let skill_id = self.skill_id as u32;
-        if let Some(role) = state
+        state
             .global_state_mut()
             .persistent_state_mut()
-            .role_mut(self.actor_id as u32)
-        {
-            if !role.skills.contains(&skill_id) {
-                role.skills.push(skill_id);
-            }
-        }
+            .learn_skill(self.actor_id as u32, self.skill_id as u32);
         true
     }
 }
