@@ -135,6 +135,12 @@ pub fn get_camera_rotation(
 
     current_rotation -= CAMERA_ROTATE_SPEED * delta_sec * right_x;
 
+    // Mouse wheel matches the original PC binding (滚轮 = 转换视觉).
+    // `get_mouse_wheel` reports detents accumulated over the last engine
+    // update, so this steps per tick rather than per frame.
+    const WHEEL_ROTATE_STEP: f32 = 0.12;
+    current_rotation -= input.get_mouse_wheel() * WHEEL_ROTATE_STEP;
+
     if current_rotation < 0. {
         current_rotation += std::f32::consts::PI * 2.;
     }

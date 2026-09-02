@@ -482,7 +482,11 @@ impl AdventureDirectorProps {
         }
 
         let input = self.input_engine.borrow_mut();
-        if input.get_key_state(Key::F).pressed() || input.get_key_state(Key::GamePadEast).pressed()
+        // Space matches the original PC binding (空格 = 对话/调查/确定);
+        // F is the upstream OpenPAL3 binding, GamePadEast the pad one.
+        if input.get_key_state(Key::F).pressed()
+            || input.get_key_state(Key::Space).pressed()
+            || input.get_key_state(Key::GamePadEast).pressed()
         {
             let trigger_proc_id = {
                 let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
