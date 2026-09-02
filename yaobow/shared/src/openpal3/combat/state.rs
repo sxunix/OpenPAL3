@@ -5,12 +5,18 @@
 //! enemies), a two-phase action gauge per slot, and per-state onset and
 //! duration counters. See `switch/re/notes/combat_flow.md`.
 //!
-//! What is deliberately NOT here yet: the speed→gauge conversion (the raw
-//! 速度 attribute cannot be what feeds the gauge — see
-//! [`Combatant::gauge_speed`]), per-action costs, the escape roll, and
-//! combo skills. Those are still being read out of the executable, and
-//! each is isolated behind one function so the answer drops into a single
-//! place.
+//! Three findings shape this file and are worth knowing before reading
+//! it:
+//!
+//! * The gauge rate is `(速_eff + 4) * 5`, stored in a **u8**
+//!   (`FUN_004db640`/`FUN_004db660`) — see [`Combatant::gauge_rate`].
+//! * **Actions have no individual cost.** `FUN_004db730` and
+//!   `FUN_004db780` have no callers at all; both gauge phases advance at
+//!   the same rate whatever you picked. What differs is how being hit
+//!   interrupts you — see [`Battle::interrupt`].
+//! * **Escape is not a roll.** It succeeds unless the encounter forbids
+//!   fleeing outright; the database's per-monster `escape_rate` has no
+//!   reader anywhere in the combat code.
 
 use super::formulas::{self, CombatRng};
 
@@ -172,15 +178,20 @@ impl Combatant {
         )
     }
 
-    /// The rate the action gauge actually fills at.
+    /// The rate the action gauge fills at: `(速_eff + 4) * 5`
+    /// (`FUN_004db640`), which both gauge phases share — the original
+    /// writes the same value to its speed and cast-speed bytes.
     ///
-    /// UNRESOLVED: the raw 速度 attribute cannot be it — 景天's 3 would
-    /// mean 11500 / (3 * 50) ≈ 77 seconds per turn. Until the writer of
-    /// the original's `+0x2c` byte is found, this stands in for the
-    /// conversion so that everything else can be built and tested; it is
-    /// the one number in this file that is not read off the binary.
-    pub fn gauge_speed(&self) -> f32 {
-        self.speed_eff().max(1) as f32
+    /// It is stored as a **u8**, so the wrap is part of the behaviour:
+    /// 速_eff 47 gives the maximum 255, and 48 wraps around to 4. A
+    /// character at 速 3 therefore fills one segment in
+    /// `11500 / (35 * 50)` ≈ 6.6 seconds.
+    pub fn gauge_rate(&self) -> u8 {
+        (((self.speed_eff() + 4) * 5) & 0xff) as u8
+    }
+
+    fn gauge_speed(&self) -> f32 {
+        self.gauge_rate() as f32
     }
 
     /// Apply an HP delta the way `FUN_004f2c70` does: clamp into
@@ -442,6 +453,34 @@ impl Battle {
         }
     }
 
+    /// Being hit knocks a target that is mid-action back to charging.
+    /// A skill hit sets the gauge back by an eighth per skill level
+    /// (`FUN_004f1070`), a physical hit halves it (`FUN_004f0a10`); both
+    /// only bite while the target is executing and its cast gauge has not
+    /// filled.
+    pub fn interrupt(&mut self, target: usize, skill_level: Option<i32>) {
+        let Some(c) = self.get_mut(target) else {
+            return;
+        };
+        if c.phase != Phase::Executing {
+            return;
+        }
+        c.gauge = match skill_level {
+            Some(level) => formulas::GAUGE_FULL - level as f32 * (formulas::GAUGE_FULL / 8.0),
+            None => formulas::GAUGE_FULL / 2.0,
+        }
+        .max(0.);
+        c.phase = Phase::Charging;
+    }
+
+    /// Fleeing. The original runs no roll at all: it either always works
+    /// or is refused outright, depending on a flag on the encounter
+    /// (`FUN_004f1fa0` case 2). `CombatActorInfo::escape_rate` is never
+    /// read by the combat code.
+    pub fn try_escape(&self, escape_forbidden: bool) -> bool {
+        !escape_forbidden
+    }
+
     /// A plain physical attack from `attacker` onto `target`.
     pub fn basic_attack(&mut self, attacker: usize, target: usize) -> i32 {
         let (level, atk, attacker_element) = {
@@ -618,6 +657,52 @@ mod tests {
         }
         assert!(b.round > 0, "回合从未推进");
         assert!(b.get(0).unwrap().hp < 80, "火毒应该在扣血");
+    }
+
+    #[test]
+    fn gauge_rate_is_speed_plus_four_times_five() {
+        let mut c = fighter(0, Side::Party, 50, 10, 0, 3);
+        assert_eq!(c.gauge_rate(), 35, "(3 + 4) * 5");
+
+        // A 速+ state feeds through the same ±25%.
+        c.apply_state(K_SPEED_UP, 0, 5);
+        assert_eq!(c.speed_eff(), 4, "3 + round(0.75)");
+        assert_eq!(c.gauge_rate(), 40);
+
+        // The u8 the original stores it in wraps, and that is behaviour,
+        // not an accident: 47 saturates the byte, 48 comes back as 4.
+        let mut fast = fighter(0, Side::Party, 50, 10, 0, 47);
+        assert_eq!(fast.gauge_rate(), 255);
+        fast.speed = 48;
+        assert_eq!(fast.gauge_rate(), 4, "(48 + 4) * 5 = 260 → 4");
+    }
+
+    #[test]
+    fn escape_is_not_a_roll() {
+        let b = two_sided_battle();
+        assert!(b.try_escape(false));
+        assert!(!b.try_escape(true));
+    }
+
+    #[test]
+    fn a_hit_knocks_the_target_out_of_its_action() {
+        let mut b = two_sided_battle();
+        b.get_mut(5).unwrap().phase = Phase::Executing;
+        b.get_mut(5).unwrap().gauge = 9000.;
+
+        b.interrupt(5, None);
+        assert_eq!(b.get(5).unwrap().gauge, formulas::GAUGE_FULL / 2.0);
+        assert_eq!(b.get(5).unwrap().phase, Phase::Charging);
+
+        // A level-8 skill knocks the gauge all the way to zero.
+        b.get_mut(5).unwrap().phase = Phase::Executing;
+        b.interrupt(5, Some(8));
+        assert_eq!(b.get(5).unwrap().gauge, 0.);
+
+        // Someone merely charging is not affected.
+        b.get_mut(0).unwrap().gauge = 3000.;
+        b.interrupt(0, None);
+        assert_eq!(b.get(0).unwrap().gauge, 3000.);
     }
 
     #[test]
