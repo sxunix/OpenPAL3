@@ -344,10 +344,14 @@ impl PersistentState {
         (previous != 0).then_some(previous)
     }
 
-    /// Raise a character to `level`, recomputing every level-derived
-    /// attribute and topping current 精气神 up to the new maxima — the
-    /// original's `FUN_0040ff70` ends by copying the whole maximum bank
-    /// over the current one, so a level-up is also a full heal.
+    /// Put a character *at* `level`, the way the script-driven path does
+    /// (`FUN_0040ff70`): recompute every level-derived attribute from
+    /// scratch, then copy the whole maximum bank over the current one —
+    /// so this is also a full heal.
+    ///
+    /// This is not how winning a battle levels someone up; that path adds
+    /// only the difference between the two levels and heals nothing. See
+    /// [`Self::gain_level`].
     pub fn set_level(&mut self, actor_id: u32, level: i32) {
         let level = level.clamp(1, MAX_LEVEL);
         let g = growth::at_level(actor_id as usize, level);
@@ -363,6 +367,51 @@ impl PersistentState {
         role.hp = g.max_hp;
         role.sp = g.max_sp;
         role.mp = g.max_mp;
+    }
+
+    /// Level a character up the way the victory settlement does
+    /// (`FUN_004fa930`): add the **difference** between the old and new
+    /// level's curves to whatever the character currently has, and do not
+    /// heal. Adding the delta is what lets a permanent bonus — an item
+    /// that raised a maximum, say — survive a level-up, which recomputing
+    /// from scratch would silently wipe.
+    ///
+    /// Returns the levels actually gained.
+    pub fn gain_level(&mut self, actor_id: u32, new_level: i32) -> i32 {
+        let new_level = new_level.clamp(1, MAX_LEVEL);
+        let Some(role) = self.roles.get(&actor_id) else {
+            return 0;
+        };
+        let old_level = role.level;
+        if new_level <= old_level {
+            return 0;
+        }
+
+        let actor = actor_id as usize;
+        let before = growth::at_level(actor, old_level);
+        let after = growth::at_level(actor, new_level);
+        let Some(role) = self.roles.get_mut(&actor_id) else {
+            return 0;
+        };
+
+        role.level = new_level;
+        role.max_hp += after.max_hp - before.max_hp;
+        role.max_sp += after.max_sp - before.max_sp;
+        role.max_mp += after.max_mp - before.max_mp;
+        role.attack += after.attack - before.attack;
+        role.defense += after.defense - before.defense;
+        new_level - old_level
+    }
+
+    /// Award experience and level up as far as it carries. Returns the
+    /// levels gained.
+    pub fn award_experience(&mut self, actor_id: u32, db: &GameDb, amount: i32) -> i32 {
+        let Some(role) = self.roles.get_mut(&actor_id) else {
+            return 0;
+        };
+        role.exp += amount;
+        let exp = role.exp;
+        self.gain_level(actor_id, db.level_for_exp(exp))
     }
 
     /// Which slot `item_id` is worn in, if any.
@@ -519,6 +568,29 @@ impl PersistentState {
     }
 }
 
+/// A level-1 景天 built off the curves, for tests in this module.
+#[cfg(test)]
+fn growth_test_role() -> RoleState {
+    let g = growth::at_level(0, 1);
+    RoleState {
+        level: 1,
+        exp: 0,
+        hp: g.max_hp,
+        max_hp: g.max_hp,
+        sp: g.max_sp,
+        max_sp: g.max_sp,
+        mp: g.max_mp,
+        max_mp: g.max_mp,
+        attack: g.attack,
+        defense: g.defense,
+        speed: 3,
+        luck: 2,
+        elements: [3, 3, 6, 1, 2],
+        skills: Vec::new(),
+        equipment: [0; EQUIPMENT_SLOTS],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -638,6 +710,48 @@ mod tests {
         assert_eq!(state.unequip_to_inventory(0, SLOT_HAT), Some(80010));
         assert_eq!(state.equipped(0, SLOT_HAT), None);
         assert_eq!(state.item_count(80010), 1);
+    }
+
+    #[test]
+    fn a_battle_level_up_keeps_bonuses_that_a_reset_would_wipe() {
+        let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
+        let mut role = super::growth_test_role();
+        // A permanent +30 max HP on top of the level-1 curve.
+        role.max_hp += 30;
+        state.roles.insert(0, role);
+
+        let gained = state.gain_level(0, 3);
+        assert_eq!(gained, 2);
+
+        let role = state.role(0).unwrap();
+        assert_eq!(role.level, 3);
+        // 景天's 精 curve is 8L + 80, so two levels are worth 16 — added
+        // on top of the bonus rather than replacing it.
+        assert_eq!(role.max_hp, growth::max_hp(0, 3) + 30);
+        assert_eq!(role.hp, growth::max_hp(0, 1), "升级不回血");
+    }
+
+    #[test]
+    fn setting_a_level_outright_heals_and_forgets_bonuses() {
+        let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
+        let mut role = super::growth_test_role();
+        role.max_hp += 30;
+        role.hp = 1;
+        state.roles.insert(0, role);
+
+        state.set_level(0, 3);
+        let role = state.role(0).unwrap();
+        assert_eq!(role.max_hp, growth::max_hp(0, 3), "重算,加成没了");
+        assert_eq!(role.hp, role.max_hp, "顺带全满");
+    }
+
+    #[test]
+    fn levelling_down_does_nothing() {
+        let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
+        state.roles.insert(0, super::growth_test_role());
+        state.set_level(0, 10);
+        assert_eq!(state.gain_level(0, 5), 0);
+        assert_eq!(state.role(0).unwrap().level, 10);
     }
 
     #[test]
