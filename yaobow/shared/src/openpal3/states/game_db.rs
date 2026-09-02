@@ -15,10 +15,30 @@ use encoding::types::Encoding;
 use fileformats::pal3::gdb::{CombatActorInfo, ComboSkillInfo, GameItemInfo, GdbFile, SkillInfo};
 use mini_fs::MiniFs;
 
-/// The five playable characters, in the order they occupy the head of the
-/// combat-actor table (and the order every 5-slot "which actor may use
-/// this" array in the database uses).
+/// The five playable characters as the adventure side numbers them —
+/// SCE scripts, the party list and every 5-slot "which actor may use
+/// this" array in the database all use these.
 pub const PLAYER_ACTOR_IDS: [u32; 5] = [0, 1, 2, 3, 4];
+
+/// The same five characters as the **combat-actor table** numbers them.
+/// The two numbering schemes are unrelated: 景天 is party 0 but combat
+/// actor 101, 长卿 is party 4 but combat actor 102. The combat code's own
+/// id→slot table (0x65→0, 0x66→4, 0x68→1, 0x69/0x6a→2, 0x6b→3) is what
+/// ties them together.
+pub const PLAYER_COMBAT_IDS: [u32; 5] = [101, 104, 106, 107, 102];
+
+/// Party index → its row in the combat-actor table.
+pub fn combat_id_of_party_member(party_index: u32) -> Option<u32> {
+    PLAYER_COMBAT_IDS.get(party_index as usize).copied()
+}
+
+/// The inverse: combat-actor id → party index.
+pub fn party_member_of_combat_id(combat_id: u32) -> Option<u32> {
+    PLAYER_COMBAT_IDS
+        .iter()
+        .position(|id| *id == combat_id)
+        .map(|i| i as u32)
+}
 
 /// Highest level the original engine allows.
 pub const MAX_LEVEL: i32 = 99;

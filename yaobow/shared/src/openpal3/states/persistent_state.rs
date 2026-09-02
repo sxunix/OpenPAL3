@@ -5,7 +5,9 @@ use std::path::PathBuf;
 
 use crate::ydirs;
 
-use super::game_db::{BASE_FAVOR, FAVOR_ACTOR_IDS, GameDb, MAX_LEVEL, PLAYER_ACTOR_IDS};
+use super::game_db::{
+    BASE_FAVOR, FAVOR_ACTOR_IDS, GameDb, MAX_LEVEL, PLAYER_ACTOR_IDS, combat_id_of_party_member,
+};
 use super::growth;
 
 pub const PAL3_APP_NAME: &str = "OpenPAL3";
@@ -88,7 +90,9 @@ impl RoleState {
     /// would start on 精 80 instead of the original's 88). 速 and 运 have
     /// no curve and are taken from the database as-is.
     pub fn from_db(db: &GameDb, actor_id: u32) -> Option<Self> {
-        let a = db.combat_actor(actor_id)?;
+        // `actor_id` is the party index; the combat-actor table is keyed
+        // by a different set of numbers entirely.
+        let a = db.combat_actor(combat_id_of_party_member(actor_id)?)?;
         let attr = &a.attribute_values;
         let level = a.level.clamp(1, MAX_LEVEL);
         let g = growth::at_level(actor_id as usize, level);
