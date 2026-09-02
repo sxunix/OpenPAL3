@@ -934,6 +934,86 @@ impl IPal3ServiceImpl for Pal3Service {
         }
     }
 
+    fn draw_item_stat_line(
+        &self,
+        ui: ComRc<IUiHost>,
+        item_id: i32,
+        x: f32,
+        y: f32,
+        size: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        let Some(desc) = self.item_text(item_id, |item| item.description.as_str().ok()) else {
+            return;
+        };
+        let Some((_, stats)) = desc.split_once('$') else {
+            return;
+        };
+        let stats = stats.trim_end_matches(['\n', '\r', ' ', '\u{3000}']);
+        if stats.is_empty() {
+            return;
+        }
+        ui.text_at_sized(x, y, size, r, g, b, a, stats);
+    }
+
+    fn equipped_item(&self, actor_id: i32, slot: i32) -> i32 {
+        if actor_id < 0 || slot < 0 {
+            return -1;
+        }
+        self.with_persistent_state(-1, |s| {
+            s.equipped(actor_id as u32, slot as usize)
+                .map(|id| id as i32)
+                .unwrap_or(-1)
+        })
+    }
+
+    fn equip_item(&self, actor_id: i32, item_id: i32) -> bool {
+        if actor_id < 0 || item_id < 0 {
+            return false;
+        }
+        let Some(item_type) = ({
+            let db = self.active_game_db.borrow();
+            db.as_ref()
+                .and_then(|db| db.item(item_id as u32))
+                .map(|item| item.item_type)
+        }) else {
+            return false;
+        };
+
+        let handle = self.active_persistent_state.borrow();
+        let Some(state) = handle.as_ref() else {
+            return false;
+        };
+        let Ok(mut state) = state.try_borrow_mut() else {
+            return false;
+        };
+        // `equip` reports the displaced piece, not success — a first-time
+        // fit displaces nothing, so check the slot instead.
+        state.equip(actor_id as u32, item_id as u32, item_type);
+        state
+            .equipped_slot_of(actor_id as u32, item_id as u32)
+            .is_some()
+    }
+
+    fn unequip_slot(&self, actor_id: i32, slot: i32) -> bool {
+        if actor_id < 0 || slot < 0 {
+            return false;
+        }
+        let handle = self.active_persistent_state.borrow();
+        let Some(state) = handle.as_ref() else {
+            return false;
+        };
+        let Ok(mut state) = state.try_borrow_mut() else {
+            return false;
+        };
+        state
+            .unequip_to_inventory(actor_id as u32, slot as usize)
+            .is_some()
+    }
+
     fn party_size(&self) -> i32 {
         self.with_persistent_state(0, |s| s.team().len() as i32)
     }

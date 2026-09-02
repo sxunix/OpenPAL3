@@ -167,6 +167,30 @@ interface IPal3Service: IUnknown {
     void draw_item_description(IUiHost ui, int item_id, float x, float y,
         float size, float wrap_px, float r, float g, float b, float a);
 
+    // Just the stat line — what follows the `$` in the description, e.g.
+    // "防+28 速-1". The 装备 page's slot rows show this rather than the
+    // item's name. Draws nothing when the item has no stat line.
+    void draw_item_stat_line(IUiHost ui, int item_id, float x, float y,
+        float size, float r, float g, float b, float a);
+
+    // ---- Equipment, for the 装备 page ----
+    //
+    // Six slots per character: 0 帽 · 1 衣 · 2 鞋 · 3 饰品一 ·
+    // 4 饰品二 · 5 武器.
+
+    // Item id worn in `slot`, or -1 when the slot is empty.
+    int equipped_item(int actor_id, int slot);
+
+    // Wear an item out of the inventory, putting whatever it displaces
+    // back there — what the original does. False when the character
+    // doesn't hold the item, the item isn't equipment, or the id is
+    // unknown.
+    bool equip_item(int actor_id, int item_id);
+
+    // Take a slot's piece off, back into the inventory. False when the
+    // slot was empty.
+    bool unequip_slot(int actor_id, int slot);
+
 
     // Build a `IVideoHandle` playing `LOGO.bik` (loaded from the
     // per-launch vfs via `AssetManager::load_movie_data`). Returns
