@@ -1,0 +1,227 @@
+// Chrome shared by PAL3's full-screen in-game pages (状态 / 道具 / 装备 /
+// …): the 800x600 letterboxed canvas, the right-hand dragon frame with the
+// money+time header, the bottom category toolbar, and the small drawing
+// helpers every page needs.
+//
+// Rendering model, reverse-engineered from PAL3.exe v1.4 (see
+// switch/re/notes/state_page_layout.md — the numbers here come straight
+// from it):
+//
+//   * An image widget draws its sprite at the TLI's NATIVE size, anchored
+//     at the widget rect's top-left. It is never stretched into the rect,
+//     so a rect and its art often disagree in size.
+//   * A text widget insets 8 px on every side and lays glyphs on a 16 px
+//     cell (font mode 1): ASCII advances 8 px, CJK 16 px, line pitch 16.
+//     The glyph row's bottom sits at rect.y + 8 + 16 (inferred from the
+//     overflow test; unverified).
+
+import radiance;
+import shared.openpal3;
+
+// --- Native (800x600) reference canvas -----------------------------------
+pub let REF_W: float = 800.0;
+pub let REF_H: float = 600.0;
+
+// Widget text: 16 px font, 8 px inner margin, 16 px line pitch.
+pub let TXT: float = 16.0;
+pub let TXT_MARGIN: float = 8.0;
+
+// --- Right-hand frame + money/time header --------------------------------
+// Frame.tga at (592,18) (the 状态 and 道具 pages ship different art at the
+// same rect); Frame_Line (16x526) at (784,44); TimeMoney (204x64) at
+// (596,0) over the frame's top — its x1 is Frame_Line's x2 minus 0xcd.
+pub let FR_X: float = 592.0;  pub let FR_Y: float = 18.0;
+pub let FRL_X: float = 784.0; pub let FRL_Y: float = 44.0;
+pub let TM_X: float = 596.0;  pub let TM_Y: float = 0.0;
+// Money / time text widget rects: (618,-4,738,28) and (668,16,748,48).
+pub let MONEY_X: float = 618.0; pub let MONEY_Y: float = -4.0;
+pub let TIME_X: float  = 668.0; pub let TIME_Y: float  = 16.0;
+
+// --- Bottom toolbar ------------------------------------------------------
+// StpBarL (0,543)-(256,600), StpBarM to 768, StpBarR to 800; Effect.tga
+// (256x54) at (0,546) between the bar and the buttons; eight 110x50
+// buttons at x0 = 38 + 88n, y 546; hit rects (x0+35,551)-(x1-36,591).
+pub let TB_Y: float = 543.0;
+pub let TB_LEFT_W: float = 256.0;
+pub let TB_RIGHT_W: float = 32.0;
+pub let TB_EFFECT_X: float = 0.0;
+pub let TB_EFFECT_Y: float = 546.0;
+pub let TB_BTN_W: float = 110.0;
+pub let TB_BTN_H: float = 50.0;
+pub let TB_BTN_X0: float = 38.0;
+pub let TB_BTN_Y: float = 546.0;
+pub let TB_STEP: float = 88.0;
+pub let TB_HIT_DX: float = 35.0;
+pub let TB_HIT_W: float = 39.0;
+pub let TB_HIT_Y0: float = 551.0;
+pub let TB_HIT_Y1: float = 591.0;
+
+// Exit button (Exit*.tga 37x48) at (762,549).
+pub let EX_W: float = 37.0;
+pub let EX_H: float = 48.0;
+pub let EX_X: float = 762.0;
+pub let EX_Y: float = 549.0;
+
+// Toolbar page indices, in the original's order (FUN_004a26d0).
+pub let PAGE_STATE: int = 0;
+pub let PAGE_PROP: int = 1;
+pub let PAGE_EQUIP: int = 2;
+pub let PAGE_MAGIC: int = 3;
+pub let PAGE_ARRAY: int = 4;
+pub let PAGE_SWORD: int = 5;
+pub let PAGE_BOOK: int = 6;
+pub let PAGE_SYSTEM: int = 7;
+// `paint_toolbar` returns this when the 关闭 button was clicked, and -1
+// when nothing was.
+pub let TOOLBAR_EXIT: int = 8;
+pub let TOOLBAR_NONE: int = -1;
+
+pub let SPR_STPBARL: string = "ui/GameMainUI/Communal/StpCtl/StpBarL.tga";
+pub let SPR_STPBARM: string = "ui/GameMainUI/Communal/StpCtl/StpBarM.tga";
+pub let SPR_STPBARR: string = "ui/GameMainUI/Communal/StpCtl/StpBarR.tga";
+pub let SPR_EFFECT: string  = "ui/GameMainUI/Communal/StpCtl/Effect.tga";
+pub let SPR_EXIT: string    = "ui/GameMainUI/Communal/StpCtl/Exit";
+pub let SPR_TIMEMONEY: string = "ui/GameMainUI/Communal/TimeMoney.tga";
+pub let SPR_FRAME_LINE: string = "ui/GameMainUI/Communal/Frame_Line.tga";
+
+// Draw an atlas sprite at its native size with its top-left at (x, y) —
+// the original engine never stretches UI sprites into widget rects.
+pub fn sprite(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, name: string,
+              x: float, y: float, s: float) {
+    let osp = atlas.sprite(name);
+    if osp == null { return; }
+    let sp = osp!;
+    ui.image_rect(sp.com_id(), x, y, x + (sp.width() as float) * s, y + (sp.height() as float) * s,
+        sp.u0(), sp.v0(), sp.u1(), sp.v1());
+}
+
+// Blit an atlas sprite stretched into the screen rect (x0,y0)-(x1,y1).
+// Only for art the original itself tiles or stretches (the toolbar bars).
+pub fn blit(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, name: string,
+            x0: float, y0: float, x1: float, y1: float) {
+    let osp = atlas.sprite(name);
+    if osp == null { return; }
+    let sp = osp!;
+    ui.image_rect(sp.com_id(), x0, y0, x1, y1, sp.u0(), sp.v0(), sp.u1(), sp.v1());
+}
+
+// One line of widget text. (rx, ry) is the widget rect's top-left in
+// screen space; `line_dy` is the native y offset of this line within the
+// rect (0 for the first line, 16 for the second, ...). The glyph's
+// top-left lands at (rect.x + 8, rect.y + 8 + line_dy).
+pub fn widget_text(ui: box<radiance.IUiHost>, rx: float, ry: float, line_dy: float, s: float,
+                   r: float, g: float, b: float, text: string) {
+    ui.text_at_sized(rx + TXT_MARGIN * s, ry + (TXT_MARGIN + line_dy) * s, TXT * s,
+        r, g, b, 1.0, text);
+}
+
+// The dragon frame down the right edge plus the money/time header.
+// `frame_sprite` differs per page (State\Frame.tga vs Prop\Frame.tga) but
+// the rect does not.
+pub fn paint_frame(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+                   pal3: box<openpal3.IPal3Service>,
+                   frame_sprite: string, ox: float, oy: float, s: float) {
+    sprite(ui, atlas, frame_sprite, ox + FR_X * s, oy + FR_Y * s, s);
+    sprite(ui, atlas, SPR_FRAME_LINE, ox + FRL_X * s, oy + FRL_Y * s, s);
+    sprite(ui, atlas, SPR_TIMEMONEY, ox + TM_X * s, oy + TM_Y * s, s);
+    widget_text(ui, ox + MONEY_X * s, oy + MONEY_Y * s, 0.0, s, 1.0, 0.95, 0.5,
+        int_str(pal3.money()));
+    widget_text(ui, ox + TIME_X * s, oy + TIME_Y * s, 0.0, s, 0.85, 1.0, 0.95,
+        time_str(pal3.play_time()));
+}
+
+// The bottom bar, its eight category medallions and the 关闭 button.
+// `current` is the page being displayed (lit art); pages without a screen
+// yet draw normally but stay inert. Returns the page index that was
+// clicked, `TOOLBAR_EXIT`, or `TOOLBAR_NONE`.
+//
+// The exit button is tested FIRST: the 系统 medallion's art overlaps the X
+// at the bar's right end and must not steal those clicks.
+pub fn paint_toolbar(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+                     ox: float, oy: float, cw: float, ch: float, s: float,
+                     mx: float, my: float, down: bool, click: bool, current: int) -> int {
+    let tb_y0 = oy + TB_Y * s;
+    let tb_y1 = oy + ch;
+    let bl_x1 = ox + TB_LEFT_W * s;
+    let br_x0 = ox + (REF_W - TB_RIGHT_W) * s;
+    blit(ui, atlas, SPR_STPBARL, ox, tb_y0, bl_x1, tb_y1);
+    blit(ui, atlas, SPR_STPBARM, bl_x1, tb_y0, br_x0, tb_y1);
+    blit(ui, atlas, SPR_STPBARR, br_x0, tb_y0, ox + cw, tb_y1);
+    sprite(ui, atlas, SPR_EFFECT, ox + TB_EFFECT_X * s, oy + TB_EFFECT_Y * s, s);
+
+    let ex_x0 = ox + EX_X * s;
+    let ex_y0 = oy + EX_Y * s;
+    let on_exit = mx >= ex_x0 && mx <= ex_x0 + EX_W * s && my >= ex_y0 && my <= ex_y0 + EX_H * s;
+
+    let btn_y0 = oy + TB_BTN_Y * s;
+    let hit_y0 = oy + TB_HIT_Y0 * s;
+    let hit_y1 = oy + TB_HIT_Y1 * s;
+    // `ui/GameMainUI/Communal/StpCtl/` art. Variants: `<base>0` normal,
+    // `<base>1` lit (the open page), `<base>2` hover, `Un<base>` greyed.
+    let bases: array<string> = [
+        "State", "Prop", "Equip", "Magic", "Battle_Array", "Sword", "JusticeBook", "System",
+    ];
+    // Pages with a working screen; the rest stay inert.
+    let implemented: array<bool> = [true, true, false, false, false, false, false, true];
+    let mut hit = TOOLBAR_NONE;
+    for i in Range(0, 8) {
+        let bx0 = ox + (TB_BTN_X0 + (i as float) * TB_STEP) * s;
+        let hx0 = bx0 + TB_HIT_DX * s;
+        let hover = !on_exit
+            && mx >= hx0 && mx <= hx0 + TB_HIT_W * s
+            && my >= hit_y0 && my <= hit_y1;
+
+        let mut variant = "0";
+        if i == current { variant = "1"; }
+        else { if hover && implemented[i] { variant = "2"; } }
+        let name = "ui/GameMainUI/Communal/StpCtl/" + bases[i] + variant + ".tga";
+        blit(ui, atlas, name, bx0, btn_y0, bx0 + TB_BTN_W * s, btn_y0 + TB_BTN_H * s);
+
+        if hover && implemented[i] && i != current { hit = i; }
+    }
+
+    let ex_variant = if on_exit { (if down { "2" } else { "1" }) } else { "0" };
+    blit(ui, atlas, SPR_EXIT + ex_variant + ".tga", ex_x0, ex_y0, ex_x0 + EX_W * s, ex_y0 + EX_H * s);
+
+    if click {
+        if on_exit { return TOOLBAR_EXIT; }
+        return hit;
+    }
+    return TOOLBAR_NONE;
+}
+
+pub fn digit(d: int) -> string {
+    if d == 0 { return "0"; } if d == 1 { return "1"; }
+    if d == 2 { return "2"; } if d == 3 { return "3"; }
+    if d == 4 { return "4"; } if d == 5 { return "5"; }
+    if d == 6 { return "6"; } if d == 7 { return "7"; }
+    if d == 8 { return "8"; } return "9";
+}
+
+pub fn int_str(n: int) -> string {
+    if n == 0 { return "0"; }
+    let mut v = n; let mut neg = false;
+    if v < 0 { neg = true; v = -v; }
+    let mut out: string = "";
+    while v > 0 {
+        let d = v - (v / 10) * 10;
+        out = digit(d) + out; v = v / 10;
+    }
+    if neg { out = "-" + out; }
+    return out;
+}
+
+pub fn pad2(v: int) -> string {
+    if v < 10 && v >= 0 { return "0" + int_str(v); }
+    return int_str(v);
+}
+
+// Play time as the original's "%02d:%02d:%02d" (hours widen past 99).
+pub fn time_str(secs: int) -> string {
+    let mut t = secs;
+    if t < 0 { t = 0; }
+    let hours = t / 3600;
+    let mins = (t - hours * 3600) / 60;
+    let rest = t - hours * 3600 - mins * 60;
+    return pad2(hours) + ":" + pad2(mins) + ":" + pad2(rest);
+}
