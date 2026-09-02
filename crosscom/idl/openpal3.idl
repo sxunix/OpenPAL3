@@ -244,6 +244,17 @@ interface IPal3Service: IUnknown {
         float y, float size, float wrap_px,
         float r, float g, float b, float a);
 
+    // ---- 阵法 (五灵 formation) ----
+
+    // The formation position (0..=4) this character stands in, or -1.
+    int lineup_position(int actor_id);
+
+    // Which character stands in `position`, or -1.
+    int lineup_occupant(int position);
+
+    // Move a character into a position, evicting whoever stood there.
+    bool set_lineup_position(int actor_id, int position);
+
     // Whether this monster has been recorded in the 侠义榜, and the
     // number recorded so far. Nothing marks monsters yet — that happens
     // when combat exists — so today these report an empty book.

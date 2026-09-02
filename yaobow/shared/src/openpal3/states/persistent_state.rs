@@ -13,6 +13,9 @@ pub const PAL3_APP_NAME: &str = "OpenPAL3";
 /// is the original role struct's (`role + 0x354`, 12 bytes per entry).
 pub const EQUIPMENT_SLOTS: usize = 6;
 
+/// 五灵阵法 has five standing positions.
+pub const LINEUP_POSITIONS: u8 = 5;
+
 pub const SLOT_HAT: usize = 0;
 pub const SLOT_CLOTH: usize = 1;
 pub const SLOT_SHOES: usize = 2;
@@ -127,6 +130,10 @@ pub struct PersistentState {
     /// Elapsed play time in seconds; shown on the status page.
     #[serde(default)]
     play_time: f32,
+    /// 阵法: which of the five 五灵 formation positions each character
+    /// stands in. A position holds at most one character.
+    #[serde(default)]
+    lineup: HashMap<u32, u8>,
     /// Combat actors recorded in the 侠义榜. Populated when a monster is
     /// fought, so it stays empty until combat exists.
     #[serde(default)]
@@ -147,6 +154,7 @@ impl PersistentState {
             money: 0,
             favor: HashMap::new(),
             play_time: 0.,
+            lineup: HashMap::new(),
             seen_monsters: BTreeSet::new(),
         }
     }
@@ -424,6 +432,36 @@ impl PersistentState {
         best
     }
 
+    // ---- 阵法 ----
+
+    /// The 五灵 position (0..=4) this character stands in, if any.
+    pub fn lineup_position(&self, actor_id: u32) -> Option<u8> {
+        self.lineup.get(&actor_id).copied()
+    }
+
+    /// Which character stands in `position`, if any.
+    pub fn lineup_occupant(&self, position: u8) -> Option<u32> {
+        self.lineup
+            .iter()
+            .find(|(_, p)| **p == position)
+            .map(|(id, _)| *id)
+    }
+
+    /// Move a character into a formation position, evicting whoever was
+    /// standing there. Positions above 4 are rejected.
+    pub fn set_lineup_position(&mut self, actor_id: u32, position: u8) -> bool {
+        if position >= LINEUP_POSITIONS {
+            return false;
+        }
+        self.lineup.retain(|_, p| *p != position);
+        self.lineup.insert(actor_id, position);
+        true
+    }
+
+    pub fn clear_lineup_position(&mut self, actor_id: u32) {
+        self.lineup.remove(&actor_id);
+    }
+
     // ---- 侠义榜 ----
 
     pub fn monster_seen(&self, actor_id: u32) -> bool {
@@ -566,6 +604,23 @@ mod tests {
         assert_eq!(state.unequip_to_inventory(0, SLOT_HAT), Some(80010));
         assert_eq!(state.equipped(0, SLOT_HAT), None);
         assert_eq!(state.item_count(80010), 1);
+    }
+
+    #[test]
+    fn lineup_positions_are_exclusive() {
+        let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
+        assert!(state.set_lineup_position(0, 2));
+        assert_eq!(state.lineup_position(0), Some(2));
+        assert_eq!(state.lineup_occupant(2), Some(0));
+
+        // Moving someone else in evicts the previous occupant.
+        assert!(state.set_lineup_position(1, 2));
+        assert_eq!(state.lineup_occupant(2), Some(1));
+        assert_eq!(state.lineup_position(0), None);
+
+        assert!(!state.set_lineup_position(3, 9), "只有五个阵位");
+        state.clear_lineup_position(1);
+        assert_eq!(state.lineup_occupant(2), None);
     }
 
     #[test]

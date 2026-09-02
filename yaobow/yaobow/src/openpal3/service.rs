@@ -1270,6 +1270,42 @@ impl IPal3ServiceImpl for Pal3Service {
         }
     }
 
+    fn lineup_position(&self, actor_id: i32) -> i32 {
+        if actor_id < 0 {
+            return -1;
+        }
+        self.with_persistent_state(-1, |s| {
+            s.lineup_position(actor_id as u32)
+                .map(|p| p as i32)
+                .unwrap_or(-1)
+        })
+    }
+
+    fn lineup_occupant(&self, position: i32) -> i32 {
+        if position < 0 {
+            return -1;
+        }
+        self.with_persistent_state(-1, |s| {
+            s.lineup_occupant(position as u8)
+                .map(|id| id as i32)
+                .unwrap_or(-1)
+        })
+    }
+
+    fn set_lineup_position(&self, actor_id: i32, position: i32) -> bool {
+        if actor_id < 0 || position < 0 {
+            return false;
+        }
+        let handle = self.active_persistent_state.borrow();
+        let Some(state) = handle.as_ref() else {
+            return false;
+        };
+        let Ok(mut state) = state.try_borrow_mut() else {
+            return false;
+        };
+        state.set_lineup_position(actor_id as u32, position as u8)
+    }
+
     fn monster_seen(&self, actor_id: i32) -> bool {
         if actor_id < 0 {
             return false;
