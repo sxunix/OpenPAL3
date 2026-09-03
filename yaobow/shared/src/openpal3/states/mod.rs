@@ -1,4 +1,5 @@
 pub mod attributes;
+pub mod camera;
 pub mod combat_data;
 pub mod game_db;
 pub mod global_state;

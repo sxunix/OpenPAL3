@@ -429,12 +429,12 @@ impl SceProcContext {
                 command!(self, SceCommandRoleScript, role: i32, proc_id: i32)
             }
             30 => {
-                // CameraFocusRole
-                nop_command!(self, CameraFocusRole, i32)
+                // CameraFocusRole — 锁定角色
+                command!(self, SceCommandCameraFocusRole, role_id: i32)
             }
             31 => {
-                // CameraFocusPoint
-                nop_command!(self, CameraFocusPoint, f32, f32, f32)
+                // CameraFocusPoint — 锁定定点
+                command!(self, SceCommandCameraFocusPoint, x: f32, y: f32, z: f32)
             }
             32 => {
                 // CameraPush
@@ -479,11 +479,11 @@ impl SceProcContext {
             }
             38 => {
                 // CameraPushState
-                nop_command!(self, CameraPushState)
+                command!(self, SceCommandCameraPushState)
             }
             39 => {
                 // CameraPopState
-                nop_command!(self, CameraPopState)
+                command!(self, SceCommandCameraPopState)
             }
             41 => {
                 // SetRoleAtt
@@ -960,16 +960,14 @@ impl SceProcContext {
                 command!(self, SceCommandRoleEndAction, role_id: i32)
             }
             250 => {
-                // CameraFree
-                nop_command!(self, CameraFree, i32)
+                // CameraFollowPlayer
+                command!(self, SceCommandCameraFollowPlayer, follow: i32)
             }
             251 => {
-                // CameraFocusOnSceneObject — one object id, not the five
-                // parameters this arm used to read. The dispatch table at
-                // 0xd8d414 gives handler 0x435350 a single int argument,
-                // and reading four extra dwords desynced the instruction
-                // stream for the rest of the proc.
-                nop_command!(self, CameraFocusOnSceneObject, i32)
+                // CameraFocusOnSceneObject — 锁定场景物品。分发表
+                // 0xd8d414 只给了一个 int 参数，这里曾按五个参数读，
+                // 会把该 proc 剩下的指令流全部错位。
+                command!(self, SceCommandCameraFocusObject, object_id: i32)
             }
             default => {
                 error!("Unsupported command: {}", default);

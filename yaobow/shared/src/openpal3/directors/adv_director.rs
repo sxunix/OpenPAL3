@@ -68,6 +68,7 @@ impl AdventureDirector {
                 scene_manager,
                 sce_vm,
                 camera_rotation: 0.,
+                scripted_camera_seeded: false,
                 layer_switch_triggered: false,
                 agent_bridge: None,
             }),
@@ -156,6 +157,7 @@ impl AdventureDirector {
                 scene_manager: scene_manager.clone(),
                 sce_vm,
                 camera_rotation: 0.,
+                scripted_camera_seeded: false,
                 layer_switch_triggered: false,
                 agent_bridge: None,
             }),
@@ -258,6 +260,10 @@ struct AdventureDirectorProps {
     scene_manager: ComRc<ISceneManager>,
     sce_vm: SceVm,
     camera_rotation: f32,
+    /// Whether the polar camera's angles have been taken from the live
+    /// camera since a script last focused it somewhere. Reset when the
+    /// camera goes back to following the player.
+    scripted_camera_seeded: bool,
     layer_switch_triggered: bool,
     /// Agent-server bridge. `None` when the embedded HTTP listener
     /// is not running; `Some(_)` gates pause/step + provides the
@@ -349,7 +355,15 @@ impl AdventureDirectorProps {
             role_controller.inner::<RoleController>().idle();
         }
 
-        {
+        // The default follow rig, left exactly as it was so nothing moves
+        // on screen while no script has taken the camera over. A script
+        // that focuses the camera elsewhere, or turns following off with
+        // CameraFollowPlayer(0), is served by `apply_scripted_camera`.
+        let script_has_camera = !matches!(
+            self.sce_vm.global_state().camera().focus(),
+            crate::openpal3::states::camera::Focus::Player
+        ) || !self.sce_vm.global_state().camera().follow_player();
+        if !script_has_camera {
             let scene = scene_manager.scene().unwrap();
             scene
                 .camera_mut()
@@ -359,6 +373,70 @@ impl AdventureDirectorProps {
                 .translate(&position)
                 .look_at(&position);
         }
+    }
+
+    /// Point the camera at whatever the script has focused it on, using
+    /// the polar model in [`Pal3Camera`](crate::openpal3::states::camera::Pal3Camera).
+    ///
+    /// The angles and distance are seeded from wherever the camera
+    /// already is the first time a script takes it over, so a focus
+    /// command swings the view onto its target without also changing the
+    /// framing — which is what `FUN_0041c170` and friends do: they write
+    /// the target pointer and nothing else.
+    fn apply_scripted_camera(&mut self) {
+        use crate::openpal3::states::camera::{Focus, polar_of};
+
+        let focus = self.sce_vm.global_state().camera().focus().clone();
+        let target = match &focus {
+            Focus::Player => {
+                self.scripted_camera_seeded = false;
+                return;
+            }
+            Focus::Point(p) => Some(*p),
+            Focus::Role(id) => self
+                .scene_manager
+                .get_resolved_role(self.sce_vm.state(), *id)
+                .map(|e| e.transform().borrow().position()),
+            Focus::Object(id) => self
+                .scene_manager
+                .scn_scene()
+                .and_then(|s| {
+                    s.inner::<crate::openpal3::scene::ScnScene>()
+                        .get_root_object(*id)
+                })
+                .map(|e| e.transform().borrow().position()),
+        };
+
+        let Some(target) = target else {
+            return;
+        };
+
+        let Some(scene) = self.scene_manager.scene() else {
+            return;
+        };
+
+        // Seed from the live camera the first time round: offset from the
+        // new target to where the camera is now gives the angles and
+        // distance to keep.
+        let current = scene.camera().transform().position();
+        let camera = self.sce_vm.global_state_mut().camera_mut();
+        if !self.scripted_camera_seeded {
+            let (yaw, pitch, distance) = polar_of(&Vec3::sub(&current, &target));
+            if distance > f32::EPSILON {
+                camera.set_yaw(yaw);
+                camera.set_pitch(pitch);
+                camera.set_distance(distance);
+            }
+            self.scripted_camera_seeded = true;
+        }
+
+        camera.look_at_target(target);
+        let position = camera.position();
+        scene
+            .camera_mut()
+            .transform_mut()
+            .set_position(&position)
+            .look_at(&target);
     }
 
     fn do_update(&mut self, delta_sec: f32) -> Option<ComRc<IDirector>> {
@@ -377,6 +455,11 @@ impl AdventureDirectorProps {
         if let Some(scene) = self.scene_manager.scene() {
             scene.set_active(!freeze);
         }
+
+        // Has to run before the input guard: during a cutscene the ADV
+        // director stops updating the world, but the script's camera
+        // still needs to be applied every frame.
+        self.apply_scripted_camera();
 
         if !adv_enabled {
             return None;

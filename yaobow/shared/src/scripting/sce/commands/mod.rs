@@ -2,6 +2,7 @@ mod _let;
 mod between;
 mod call;
 mod camera_default;
+mod camera_focus;
 mod camera_move;
 mod camera_rotate;
 mod camera_set;
@@ -70,6 +71,10 @@ pub use _let::{SceCommandLet, SceCommandLetAdd};
 pub use between::SceCommandBetween;
 pub use call::SceCommandCall;
 pub use camera_default::SceCommandCameraDefault;
+pub use camera_focus::{
+    SceCommandCameraFocusObject, SceCommandCameraFocusPoint, SceCommandCameraFocusRole,
+    SceCommandCameraFollowPlayer, SceCommandCameraPopState, SceCommandCameraPushState,
+};
 pub use camera_move::SceCommandCameraMove;
 pub use camera_rotate::SceCommandCameraRotate;
 pub use camera_set::SceCommandCameraSet;

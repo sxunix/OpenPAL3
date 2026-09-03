@@ -7,6 +7,7 @@ use std::{
 
 use crate::openpal3::asset_manager::AssetManager;
 
+use super::camera::Pal3Camera;
 use super::game_db::GameDb;
 use super::persistent_state::PersistentState;
 use common::store_ext::StoreExt2;
@@ -45,6 +46,7 @@ pub struct GlobalState {
     /// Nothing renders it yet; it is kept so the position half of those
     /// opcodes is right when a VFX system arrives.
     effect_position: Vec3,
+    camera: Pal3Camera,
 }
 
 impl GlobalState {
@@ -82,6 +84,7 @@ impl GlobalState {
             pass_through_wall: false,
             divine_tree_flower_initialized: false,
             effect_position: Vec3::new(0., 0., 0.),
+            camera: Pal3Camera::default(),
         }
     }
 
@@ -243,6 +246,14 @@ impl GlobalState {
 
     pub fn set_divine_tree_flower_initialized(&mut self, done: bool) {
         self.divine_tree_flower_initialized = done;
+    }
+
+    pub fn camera(&self) -> &Pal3Camera {
+        &self.camera
+    }
+
+    pub fn camera_mut(&mut self) -> &mut Pal3Camera {
+        &mut self.camera
     }
 
     pub fn effect_position(&self) -> Vec3 {
