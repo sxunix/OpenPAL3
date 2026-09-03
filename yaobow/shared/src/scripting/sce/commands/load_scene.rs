@@ -36,6 +36,39 @@ impl SceCommandLoadScene {
         Self { name, sub_name }
     }
 
+    /// Put back every scene object the story has slid with opcode 90.
+    ///
+    /// The original persists a moved position through the object's
+    /// `+0x244` flag and rebuilds the object from saved state on the way
+    /// in; opcode 158 is what opts an object out of that. Without this,
+    /// a bridge lowered before leaving would be back up on return.
+    fn restore_moved_objects(&self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
+        let Some(scene_rc) = scene_manager.scn_scene() else {
+            return;
+        };
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let saved: Vec<(i32, radiance::math::Vec3)> = {
+            let p_state = state.global_state().persistent_state();
+            scene
+                .object_ids()
+                .into_iter()
+                .filter(|id| p_state.object_loads_from_save(*id))
+                .filter_map(|id| {
+                    p_state
+                        .scene_object_position(&self.name, &self.sub_name, id)
+                        .map(|p| (id, p))
+                })
+                .collect()
+        };
+
+        for (id, position) in saved {
+            if let Some(entity) = scene.get_root_object(id) {
+                use radiance::comdef::IEntityExt;
+                entity.transform().borrow_mut().set_position(&position);
+            }
+        }
+    }
+
     /// Perform the actual scene swap immediately (no transition).
     /// Also used by `SceCommandEntryRow`, which needs the load done
     /// within its single update call.
@@ -57,6 +90,8 @@ impl SceCommandLoadScene {
             .global_state_mut()
             .persistent_state_mut()
             .set_scene_name(self.name.clone(), self.sub_name.clone());
+
+        self.restore_moved_objects(scene_manager.clone(), state);
         if cpk_changed {
             let sce = Rc::new(state.asset_mgr().load_sce(&self.name));
             state.context_mut().set_sce(sce, self.name.clone());

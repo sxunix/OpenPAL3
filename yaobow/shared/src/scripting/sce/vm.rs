@@ -645,8 +645,16 @@ impl SceProcContext {
                 )
             }
             90 => {
-                // ObjectMove
-                nop_command!(self, ObjectMove, i32, f32, f32, f32, f32)
+                // ObjectMove — 移动场景物体
+                command!(
+                    self,
+                    SceCommandObjectMove,
+                    object_id: i32,
+                    x: f32,
+                    y: f32,
+                    z: f32,
+                    duration: f32
+                )
             }
             91 => {
                 // FadeInWhite

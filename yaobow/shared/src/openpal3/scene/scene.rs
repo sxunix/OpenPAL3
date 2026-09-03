@@ -21,6 +21,11 @@ pub struct ScnScene {
     aabb_triggers: RefCell<Vec<SceAabbTrigger>>,
     item_triggers: RefCell<Vec<SceItemTrigger>>,
     ladder_triggers: RefCell<Vec<LadderTrigger>>,
+    /// Scene objects sliding to a new position — opcode 90. The original
+    /// queues the move onto the object's own command ring and lets the
+    /// script run on, so these are stepped per frame rather than held by
+    /// the command.
+    object_moves: RefCell<Vec<ObjectMove>>,
 }
 
 ComObject_ScnSceneComponent!(super::ScnScene);
@@ -56,6 +61,7 @@ impl ScnScene {
             aabb_triggers: RefCell::new(vec![]),
             item_triggers: RefCell::new(vec![]),
             ladder_triggers: RefCell::new(vec![]),
+            object_moves: RefCell::new(vec![]),
         }
     }
 
@@ -303,6 +309,11 @@ impl ScnScene {
             .map(|e| e.clone())
     }
 
+    /// Ids of every object the scene file declares.
+    pub fn object_ids(&self) -> Vec<i32> {
+        self.scn_file.nodes.iter().map(|n| n.index as i32).collect()
+    }
+
     pub fn get_root_object(&self, id: i32) -> Option<ComRc<IEntity>> {
         self.scene
             .root_entities()
@@ -338,6 +349,51 @@ impl ScnScene {
     /// Advance ambient NPC patrols by `delta_sec`. Only roles that were given a
     /// patrol path at load time (non-scripted townsfolk) move; scripted roles
     /// are untouched. Movement is ground-snapped via the role's nav layer.
+    /// Start sliding scene object `object_id` by `offset` over
+    /// `duration` seconds — opcode 90 (`LAB_004378e0`). A second move on
+    /// the same object replaces the first, the way re-queueing onto the
+    /// object's ring does.
+    /// Returns where the object will end up, or `None` if there is no
+    /// such object.
+    pub fn move_object(&self, object_id: i32, offset: Vec3, duration: f32) -> Option<Vec3> {
+        let entity = self.get_root_object(object_id).or_else(|| {
+            log::warn!("ObjectMove: 找不到场景物件 {object_id}");
+            None
+        })?;
+        let from = entity.transform().borrow().position();
+        let to = Vec3::add(&from, &offset);
+
+        let mut moves = self.object_moves.borrow_mut();
+        moves.retain(|m| m.object_id != object_id);
+        if duration <= 0. {
+            entity.transform().borrow_mut().set_position(&to);
+        } else {
+            moves.push(ObjectMove {
+                object_id,
+                entity,
+                from,
+                to,
+                duration,
+                elapsed: 0.,
+            });
+        }
+        Some(to)
+    }
+
+    /// Advance the opcode-90 slides. Called once a frame beside
+    /// [`Self::step_patrols`].
+    pub fn step_object_moves(&self, delta_sec: f32) {
+        let mut moves = self.object_moves.borrow_mut();
+        moves.retain_mut(|m| {
+            m.elapsed += delta_sec;
+            let done = m.elapsed >= m.duration;
+            let t = if done { 1. } else { m.elapsed / m.duration };
+            let position = Vec3::add(&m.from, &Vec3::scalar_mul(t, &Vec3::sub(&m.to, &m.from)));
+            m.entity.transform().borrow_mut().set_position(&position);
+            !done
+        });
+    }
+
     pub fn step_patrols(&self, delta_sec: f32) {
         // Default walk speed when the role record carries no per-role speed
         // (0x150 is zero for most patrol roles).
@@ -825,4 +881,14 @@ pub struct TriggerTarget {}
 pub enum LadderTestResult {
     SceProc(u32),
     NewPosition((bool, Vec3)),
+}
+
+/// One in-flight opcode-90 slide.
+struct ObjectMove {
+    object_id: i32,
+    entity: ComRc<IEntity>,
+    from: Vec3,
+    to: Vec3,
+    duration: f32,
+    elapsed: f32,
 }

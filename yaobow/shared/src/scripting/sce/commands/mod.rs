@@ -145,7 +145,9 @@ pub use role_set_pos::SceCommandRoleSetPos;
 pub use role_show_action::SceCommandRoleShowAction;
 pub use role_stop::SceCommandRoleStop;
 pub use role_turn_face::SceCommandRoleTurnFace;
-pub use scene_state::{SceCommandGetSwitch, SceCommandInitFlower, SceCommandObjectNotFromSave};
+pub use scene_state::{
+    SceCommandGetSwitch, SceCommandInitFlower, SceCommandObjectMove, SceCommandObjectNotFromSave,
+};
 pub use script_run_mode::SceCommandScriptRunMode;
 pub use set_bigmap_element::SceCommandSetBigMapElement;
 pub use show_chat_rest::SceCommandShowChatRest;

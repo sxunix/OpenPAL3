@@ -190,6 +190,11 @@ pub struct PersistentState {
     /// list for the whole store, not one per scene.
     #[serde(default)]
     objects_not_from_save: BTreeSet<i32>,
+    /// Where opcode 90 has slid a scene object to. `LAB_004378e0` sets
+    /// the object's "position was modified" flag at `+0x244` after the
+    /// move, except in the nine scenes listed at 0x437997–0x437a67.
+    #[serde(default)]
+    scene_object_positions: BTreeMap<String, [f32; 3]>,
 }
 
 /// `city/scene/objectId` — `city` is the scene's cpk name (the original's
@@ -238,6 +243,7 @@ impl PersistentState {
             compose_recipes: BTreeSet::new(),
             scene_object_states: BTreeMap::new(),
             objects_not_from_save: BTreeSet::new(),
+            scene_object_positions: BTreeMap::new(),
         }
     }
 
@@ -253,6 +259,25 @@ impl PersistentState {
     pub fn set_scene_object_state(&mut self, city: &str, scene: &str, object_id: i32, state: i32) {
         self.scene_object_states
             .insert(scene_object_key(city, scene, object_id), state);
+    }
+
+    pub fn scene_object_position(&self, city: &str, scene: &str, object_id: i32) -> Option<Vec3> {
+        self.scene_object_positions
+            .get(&scene_object_key(city, scene, object_id))
+            .map(|p| Vec3::new(p[0], p[1], p[2]))
+    }
+
+    pub fn set_scene_object_position(
+        &mut self,
+        city: &str,
+        scene: &str,
+        object_id: i32,
+        position: Vec3,
+    ) {
+        self.scene_object_positions.insert(
+            scene_object_key(city, scene, object_id),
+            [position.x, position.y, position.z],
+        );
     }
 
     pub fn do_not_load_object_from_save(&mut self, object_id: i32) {

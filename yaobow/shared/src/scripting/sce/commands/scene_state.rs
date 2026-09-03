@@ -149,7 +149,22 @@ impl SceCommandInitFlower {
 
 #[cfg(test)]
 mod tests {
+    use super::position_is_persisted;
     use crate::openpal3::states::persistent_state::{PersistentState, scene_object_key};
+
+    #[test]
+    fn the_nine_listed_scenes_do_not_remember_a_moved_object() {
+        for sub in ["A", "B", "C", "D", "A1", "B1", "C1", "D1"] {
+            assert!(!position_is_persisted("m15", sub), "m15/{sub}");
+        }
+        assert!(!position_is_persisted("m08", "3"));
+        // Case comes from two different places — the script and the scn.
+        assert!(!position_is_persisted("M15", "a"));
+        // Anything else does remember.
+        assert!(position_is_persisted("m15", "E"));
+        assert!(position_is_persisted("m08", "2"));
+        assert!(position_is_persisted("m16", "4"));
+    }
 
     #[test]
     fn a_switch_defaults_to_zero_and_survives_being_set() {
@@ -176,5 +191,90 @@ mod tests {
         assert!(state.object_loads_from_save(7));
         state.do_not_load_object_from_save(7);
         assert!(!state.object_loads_from_save(7));
+    }
+}
+
+/// The nine scenes where `LAB_004378e0` performs the move but skips
+/// setting the object's "position was modified" flag at `+0x244`
+/// (0x437997–0x437a67, each an `FUN_004235b0(scene, sub_scene)` test).
+const NOT_PERSISTED: [(&str, &str); 9] = [
+    ("m15", "A"),
+    ("m15", "B"),
+    ("m15", "C"),
+    ("m15", "D"),
+    ("m15", "A1"),
+    ("m15", "B1"),
+    ("m15", "C1"),
+    ("m15", "D1"),
+    ("m08", "3"),
+];
+
+fn position_is_persisted(scene: &str, sub_scene: &str) -> bool {
+    !NOT_PERSISTED
+        .iter()
+        .any(|(s, sub)| scene.eq_ignore_ascii_case(s) && sub.eq_ignore_ascii_case(sub_scene))
+}
+
+/// 90 移动场景物体 — `LAB_004378e0`.
+///
+/// The three floats are an **offset** from where the object is, not a
+/// destination (0x437922–0x437966). It does not block: the move is
+/// queued onto the object's own command ring and the script runs on, so
+/// here it goes to `ScnScene`'s per-frame slide list.
+///
+/// Pal3.Unity skips the move entirely in a couple of scenes; the binary
+/// always moves and only skips *remembering* the new position, in the
+/// nine scenes above.
+#[derive(Debug, Clone)]
+pub struct SceCommandObjectMove {
+    object_id: i32,
+    x: f32,
+    y: f32,
+    z: f32,
+    duration: f32,
+}
+
+impl SceCommand for SceCommandObjectMove {
+    fn update(
+        &mut self,
+        scene_manager: ComRc<ISceneManager>,
+        _ui: &Ui,
+        state: &mut SceState,
+        _delta_sec: f32,
+    ) -> bool {
+        let Some(scene_rc) = scene_manager.scn_scene() else {
+            return true;
+        };
+        let scene = scene_rc.inner::<ScnScene>();
+        let offset = radiance::math::Vec3::new(self.x, self.y, self.z);
+        let duration = if state.fast_forward() {
+            0.
+        } else {
+            self.duration
+        };
+        let Some(landing) = scene.move_object(self.object_id, offset, duration) else {
+            return true;
+        };
+
+        let (name, sub_name) = (scene.name().to_string(), scene.sub_name().to_string());
+        if position_is_persisted(&name, &sub_name) {
+            state
+                .global_state_mut()
+                .persistent_state_mut()
+                .set_scene_object_position(&name, &sub_name, self.object_id, landing);
+        }
+        true
+    }
+}
+
+impl SceCommandObjectMove {
+    pub fn new(object_id: i32, x: f32, y: f32, z: f32, duration: f32) -> Self {
+        Self {
+            object_id,
+            x,
+            y,
+            z,
+            duration,
+        }
     }
 }

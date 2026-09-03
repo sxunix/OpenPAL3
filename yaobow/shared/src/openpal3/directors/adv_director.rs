@@ -461,6 +461,14 @@ impl AdventureDirectorProps {
         // still needs to be applied every frame.
         self.apply_scripted_camera();
 
+        // Scenery slid by opcode 90 keeps moving during a cutscene, when
+        // the world sim below is not running.
+        if let Some(scene_rc) = self.scene_manager.scn_scene() {
+            scene_rc
+                .inner::<crate::openpal3::scene::ScnScene>()
+                .step_object_moves(delta_sec);
+        }
+
         if !adv_enabled {
             return None;
         }
