@@ -412,3 +412,43 @@ impl SceCommandLoadAction {
         Self { role_id, action }
     }
 }
+
+/// 116 给角色更换纹理贴图 — `LAB_00437ff0` → `FUN_0041a150`.
+///
+/// The script passes a bare stem; the engine builds
+/// `role\<model>\<stem>.tga` from the format string at 0x5889d4 and
+/// reloads the model's texture. Non-blocking.
+///
+/// Pal3.Unity resolves the name through its generic texture provider and
+/// only swaps the first sub-mesh's material; the binary replaces the
+/// texture for the whole model, so that is what happens here.
+#[derive(Debug, Clone)]
+pub struct SceCommandSetRoleTexture {
+    role_id: i32,
+    texture: String,
+}
+
+impl SceCommand for SceCommandSetRoleTexture {
+    fn update(
+        &mut self,
+        scene_manager: ComRc<ISceneManager>,
+        _ui: &Ui,
+        state: &mut SceState,
+        _delta_sec: f32,
+    ) -> bool {
+        // Every shipped use names a real texture (花盈's 109_B, 109_F …),
+        // so an empty name is only a guard: it puts the model's own
+        // texture back rather than asking for "role\<model>\.tga".
+        let texture = (!self.texture.trim().is_empty()).then(|| self.texture.clone());
+        scene_manager.resolve_role_mut_do(state, self.role_id, |_e, role| {
+            role.set_texture_override(texture.clone())
+        });
+        true
+    }
+}
+
+impl SceCommandSetRoleTexture {
+    pub fn new(role_id: i32, texture: String) -> Self {
+        Self { role_id, texture }
+    }
+}

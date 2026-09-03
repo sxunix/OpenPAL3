@@ -156,7 +156,7 @@ pub use stop_music::SceCommandStopMusic;
 pub use story_flags::{
     SceCommandAverageLevel, SceCommandEnableFeature, SceCommandGiveCloth, SceCommandHuaYingMode,
     SceCommandLearnCompose, SceCommandLoadAction, SceCommandLongKuiMode, SceCommandRoleOverlap,
-    SceCommandRoleScale, SceCommandVarDistract,
+    SceCommandRoleScale, SceCommandSetRoleTexture, SceCommandVarDistract,
 };
 pub use testgoto::SceCommandTestGoto;
 pub use text_ui::{SceCommandCaption, SceCommandNote};

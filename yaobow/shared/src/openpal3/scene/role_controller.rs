@@ -94,6 +94,10 @@ pub struct RoleController {
     // and does nothing else. Kept here so the collision code can read it
     // once role-vs-role blocking exists.
     overlap: RefCell<i32>,
+    // 116 SetRoleTexture. The texture is baked into the material when the
+    // mesh is built, so an override means rebuilding: it invalidates the
+    // animation cache and the active action is reloaded through it.
+    texture_override: RefCell<Option<String>>,
 }
 
 ComObject_RoleController!(super::RoleController);
@@ -163,6 +167,7 @@ impl RoleController {
             patrol_mode: RefCell::new(0),
             patrol_speed: RefCell::new(0.),
             overlap: RefCell::new(0),
+            texture_override: RefCell::new(None),
         }
     }
 
@@ -191,6 +196,23 @@ impl RoleController {
 
     /// 205 RoleOverlap's argument. Nothing reads it yet — role-vs-role
     /// blocking does not exist — but the script's intent is recorded.
+    /// 116 给角色更换纹理贴图 — `LAB_00437ff0` → `FUN_0041a150`, which
+    /// builds `role\<model>\<name>.tga` and reloads the model's texture.
+    /// The script passes the bare stem; the folder and extension are the
+    /// engine's.
+    pub fn set_texture_override(&self, texture: Option<String>) {
+        if *self.texture_override.borrow() == texture {
+            return;
+        }
+        *self.texture_override.borrow_mut() = texture;
+        self.animations.clear();
+        if self.is_active() {
+            let anim_name = { self.active_anim_name.borrow().clone() };
+            let mode = *self.anim_repeat_mode.borrow();
+            self.play_anim(&anim_name, mode);
+        }
+    }
+
     pub fn overlap(&self) -> i32 {
         *self.overlap.borrow()
     }
@@ -219,11 +241,32 @@ impl RoleController {
                     );
                 }
                 _ => {
-                    let anim = self.asset_mgr.load_role_anim(
-                        self.entity.clone(),
-                        &self.model_name,
-                        &anim_name,
-                    );
+                    let override_name = self.texture_override.borrow().clone();
+                    let anim = self
+                        .asset_mgr
+                        .load_role_anim_with_texture(
+                            self.entity.clone(),
+                            &self.model_name,
+                            &anim_name,
+                            override_name.as_deref(),
+                        )
+                        .or_else(|| {
+                            // A texture the script named but the data does
+                            // not have would otherwise leave the actor with
+                            // no mesh at all; fall back to its own.
+                            if let Some(name) = &override_name {
+                                log::warn!(
+                                    "SetRoleTexture: role\\{}\\{}.tga 读不到，用原贴图",
+                                    self.model_name,
+                                    name
+                                );
+                            }
+                            self.asset_mgr.load_role_anim(
+                                self.entity.clone(),
+                                &self.model_name,
+                                &anim_name,
+                            )
+                        });
 
                     if let Some(anim) = anim {
                         self.animations.insert(anim_name.to_string(), anim.clone());
@@ -464,6 +507,20 @@ pub fn create_animated_mesh_from_mv3<P: AsRef<Path>>(
     vfs: &MiniFs,
     path: P,
 ) -> anyhow::Result<ComRc<IAnimatedMeshComponent>> {
+    create_animated_mesh_from_mv3_with_texture(entity, component_factory, vfs, path, None)
+}
+
+/// As [`create_animated_mesh_from_mv3`], but with every model's texture
+/// replaced by `<mv3 dir>/<texture>.tga` — opcode 116's
+/// `role\%s\%s.tga` (format string at 0x5889d4), whose first `%s` is
+/// the model directory the `.mv3` already lives in.
+pub fn create_animated_mesh_from_mv3_with_texture<P: AsRef<Path>>(
+    entity: ComRc<IEntity>,
+    component_factory: &Rc<dyn ComponentFactory>,
+    vfs: &MiniFs,
+    path: P,
+    texture: Option<&str>,
+) -> anyhow::Result<ComRc<IAnimatedMeshComponent>> {
     let mv3file = read_mv3(&mut Cursor::new(vfs.read_to_end(&path)?))?;
     let mut frames = vec![];
 
@@ -477,11 +534,14 @@ pub fn create_animated_mesh_from_mv3<P: AsRef<Path>>(
             0
         };
 
-        texture_path.push(
-            mv3file.textures[texture_index].names[0]
-                .to_string()
-                .unwrap(),
-        );
+        match texture {
+            Some(name) => texture_path.push(format!("{name}.tga")),
+            None => texture_path.push(
+                mv3file.textures[texture_index].names[0]
+                    .to_string()
+                    .unwrap(),
+            ),
+        }
 
         // MV3 actor textures (PAL3 roles) typically rely on alpha cutout
         // for hair / eye fringes. Keep the default `BlendMode::AlphaTest`.

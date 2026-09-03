@@ -295,6 +295,31 @@ impl AssetManager {
         create_animated_mesh_from_mv3(entity, &self.component_factory(), &self.vfs, &path).ok()
     }
 
+    /// As [`Self::load_role_anim`], with opcode 116's texture override.
+    pub fn load_role_anim_with_texture(
+        &self,
+        entity: ComRc<IEntity>,
+        role_name: &str,
+        action_name: &str,
+        texture: Option<&str>,
+    ) -> Option<ComRc<IAnimatedMeshComponent>> {
+        let path = self
+            .basedata_path
+            .join("ROLE")
+            .join(role_name)
+            .join(action_name)
+            .with_extension("mv3");
+
+        crate::openpal3::scene::create_animated_mesh_from_mv3_with_texture(
+            entity,
+            &self.component_factory(),
+            &self.vfs,
+            &path,
+            texture,
+        )
+        .ok()
+    }
+
     pub fn mv3_path(&self, role_name: &str, action_name: &str) -> PathBuf {
         self.basedata_path
             .join("ROLE")

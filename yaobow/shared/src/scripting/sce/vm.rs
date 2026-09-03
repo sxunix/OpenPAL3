@@ -723,8 +723,8 @@ impl SceProcContext {
                 command!(self, SceCommandMovie, name: string)
             }
             116 => {
-                // SetRoleTexture
-                nop_command!(self, SetRoleTexture, i32, string)
+                // SetRoleTexture — 更换角色贴图
+                command!(self, SceCommandSetRoleTexture, role_id: i32, texture: string)
             }
             117 => {
                 // Rotate
