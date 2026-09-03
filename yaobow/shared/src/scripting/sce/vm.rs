@@ -945,12 +945,12 @@ impl SceProcContext {
                 command!(self, SceCommandRoleSetFace, role_id: i32, direction: i32)
             }
             211 => {
-                // TeamOpenA
-                nop_command!(self, TeamOpenA)
+                // TeamOpenA — 进情节关，队伍散开
+                command!(self, SceCommandTeamOpenOnSceneChange)
             }
             212 => {
-                // TeamCloseA
-                nop_command!(self, TeamCloseA)
+                // TeamCloseA — 出情节关，队伍合并
+                command!(self, SceCommandTeamCloseOnSceneChange)
             }
             214 => {
                 // RoleMovTo

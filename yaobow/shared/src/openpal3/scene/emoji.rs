@@ -36,11 +36,16 @@ pub fn emoji_entity_name(id: i32) -> String {
 pub const EMOJI_ENTITY_PREFIX: &str = "EMOJI_";
 
 /// How far above the actor's origin the bubble sits, and how tall it is,
-/// in world units. For scale: a torch flame is 28 × 40 units and a
-/// candle holder is 27 tall, so an actor is roughly 50 units.
+/// in world units.
+///
+/// Measured rather than guessed: MV3 vertices are scaled by 0.01562 when
+/// the mesh is built, and 景天's `ROLE/101/c01.mv3` spans 4863 model
+/// units vertically, so he is 76 world units tall (龙葵 63, 花盈 28).
+/// The bubble therefore starts just clear of a head at 80.
+///
 /// `[推断]` — the original sizes the bubble inside the emoji widget,
-/// which was not read; these want a look at the screen.
-pub const EMOJI_BASE_Y: f32 = 52.0;
+/// which was not read; the height still wants a look at the screen.
+pub const EMOJI_BASE_Y: f32 = 80.0;
 pub const EMOJI_HEIGHT: f32 = 26.0;
 
 /// `(width, height, frames)` of one frame within sheet `EM_<id>.tga`,

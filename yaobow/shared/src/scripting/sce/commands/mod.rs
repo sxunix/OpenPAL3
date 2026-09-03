@@ -64,6 +64,7 @@ mod show_chat_rest;
 mod start_hidefight;
 mod stop_music;
 mod story_flags;
+mod team;
 mod testgoto;
 mod text_ui;
 pub mod vars;
@@ -158,6 +159,7 @@ pub use story_flags::{
     SceCommandLearnCompose, SceCommandLoadAction, SceCommandLongKuiMode, SceCommandRoleOverlap,
     SceCommandRoleScale, SceCommandSetRoleTexture, SceCommandVarDistract,
 };
+pub use team::{SceCommandTeamCloseOnSceneChange, SceCommandTeamOpenOnSceneChange};
 pub use testgoto::SceCommandTestGoto;
 pub use text_ui::{SceCommandCaption, SceCommandNote};
 
