@@ -200,6 +200,25 @@ impl AdventureDirector {
         Some(role.transform().borrow().position())
     }
 
+    /// Run an SCE proc by id, as the debug overlay's "Execute" button
+    /// does. Exposed so an automation driver can reach a scripted beat
+    /// without playing up to it — the only way to exercise commands
+    /// whose effect is on screen.
+    pub fn call_sce_proc(&self, proc_id: u32) {
+        self.props.borrow_mut().sce_vm.call_proc(proc_id);
+    }
+
+    /// Set a script global, the way the debug overlay's "Main Story"
+    /// box does. Negative indices are globals; see `commands::vars`.
+    pub fn set_script_global(&self, var: i16, value: i32) {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .global_state_mut()
+            .persistent_state_mut()
+            .set_global(var, value);
+    }
+
     /// Teleport the leader (the role returned by `role_controlled`)
     /// to `pos`. Mirrors the agent server's `/v1/player/teleport`
     /// semantics. Returns `false` when no scene/role is available.

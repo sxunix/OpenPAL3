@@ -24,8 +24,9 @@ use std::rc::Rc;
 
 use agent_server::protocol::{
     AgentCommand, AgentError, AgentResponse, AxisInputParams, DialogSnapshot, KeyAction,
-    KeyInputParams, ScreenshotResponse, ScriptGlobalsParams, ScriptGlobalsResponse, SlotParams,
-    StateSnapshot, StatusMenuParams, StepTimeParams, TeleportParams,
+    KeyInputParams, ScreenshotResponse, ScriptEvalParams, ScriptEvalResponse, ScriptGlobalsParams,
+    ScriptGlobalsResponse, SlotParams, StateSnapshot, StatusMenuParams, StepTimeParams,
+    TeleportParams,
 };
 use crosscom::ComRc;
 use radiance::comdef::ISceneManager;
@@ -137,9 +138,7 @@ pub fn dispatch_pal3_command(ctx: &Pal3DispatchCtx, command: AgentCommand) -> Ag
         C::InteractObject(_) => AgentResponse::err(AgentError::not_implemented(
             "PAL3 has no GOB Examine handler analog",
         )),
-        C::ScriptEval(_) => AgentResponse::err(AgentError::not_implemented(
-            "PAL3 script_eval is not supported (no AngelScript VM)",
-        )),
+        C::ScriptEval(p) => handle_script_eval(ctx, p),
         C::TraceStart(_) | C::TraceStop | C::TraceDrain(_) => {
             AgentResponse::err(AgentError::not_implemented(
                 "PAL3 SceVm has no trace adapter yet; /v1/script/trace/* unavailable",
@@ -316,6 +315,60 @@ fn handle_teleport(ctx: &Pal3DispatchCtx, params: TeleportParams) -> AgentRespon
         AgentResponse::err(AgentError::conflict(
             "no scene loaded or controlled role cannot be resolved",
         ))
+    }
+}
+
+/// PAL3 has no AngelScript VM, so `/v1/script/eval` carries the two
+/// script pokes the debug overlay offers instead:
+///
+/// * `{"function": "call_proc", "args": [<proc id>]}` runs an SCE proc,
+///   the way the overlay's "Execute" button does;
+/// * `{"function": "set_global", "args": [<var>, <value>]}` writes a
+///   script variable — `-32768` is the main-story flag.
+///
+/// Both exist so an automation driver can reach a scripted beat without
+/// playing up to it; commands whose only effect is on screen cannot be
+/// checked any other way.
+fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentResponse {
+    let Some(director) = ctx.director else {
+        return AgentResponse::err(AgentError::conflict(
+            "no active adventure director — start a New Game first",
+        ));
+    };
+
+    let int_arg = |i: usize| -> Option<i64> { params.args.get(i).and_then(|v| v.as_i64()) };
+
+    match params.function.as_str() {
+        "call_proc" => {
+            let Some(proc_id) = int_arg(0).filter(|v| *v >= 0) else {
+                return AgentResponse::err(AgentError::bad_request(
+                    "call_proc needs args: [proc_id]",
+                ));
+            };
+            director.call_sce_proc(proc_id as u32);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "set_global" => {
+            let (Some(var), Some(value)) = (int_arg(0), int_arg(1)) else {
+                return AgentResponse::err(AgentError::bad_request(
+                    "set_global needs args: [var, value]",
+                ));
+            };
+            if !(i16::MIN as i64..=i16::MAX as i64).contains(&var) {
+                return AgentResponse::err(AgentError::bad_request("var must fit in i16"));
+            }
+            director.set_script_global(var as i16, value as i32);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        other => AgentResponse::err(AgentError::bad_request(format!(
+            "PAL3 script_eval supports call_proc and set_global, got {other:?}"
+        ))),
     }
 }
 
