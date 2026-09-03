@@ -569,8 +569,8 @@ impl SceProcContext {
                 command!(self, SceCommandRoleStop, role_id: i32)
             }
             72 => {
-                // RoleEmote
-                nop_command!(self, RoleEmote, i32, i32)
+                // RoleEmote — 头顶表情
+                command!(self, SceCommandRoleEmote, role_id: i32, emoji_id: i32)
             }
             73 => {
                 // Combat

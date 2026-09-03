@@ -203,7 +203,7 @@ pub fn build_effect(
 /// quads span `y0..y1` vertically and `width` horizontally, centred on
 /// the local origin in X/Z. UVs map the full `[0, 1]` cell so a
 /// [`FrameAnimationComponent`] can later address atlas cells.
-fn build_billboard(
+pub(crate) fn build_frame_animated_billboard(
     factory: &Rc<dyn ComponentFactory>,
     atlas: image::RgbaImage,
     mat_name: &str,
@@ -211,6 +211,7 @@ fn build_billboard(
     y0: f32,
     y1: f32,
     name: String,
+    blend: BlendMode,
 ) -> ComRc<IEntity> {
     let hw = width / 2.0;
     let verts = vec![
@@ -240,7 +241,7 @@ fn build_billboard(
     }
 
     let material = SimpleMaterialDef::create_with_image(mat_name, Some(atlas))
-        .with_blend(BlendMode::Additive)
+        .with_blend(blend)
         .make_unique();
     let geometry = Geometry::new(
         &verts,
@@ -300,7 +301,7 @@ fn build_flame(
         image::imageops::replace(&mut atlas, fr, col * fw, row * fh);
     }
 
-    let entity = build_billboard(
+    let entity = build_frame_animated_billboard(
         factory,
         atlas,
         "effect_flame",
@@ -308,6 +309,7 @@ fn build_flame(
         base_y,
         base_y + height,
         name,
+        BlendMode::Additive,
     );
 
     let anim =
@@ -332,7 +334,7 @@ fn build_glow(
 ) -> Option<ComRc<IEntity>> {
     let atlas = load_texture(vfs, path)?;
     let half = size / 2.0;
-    Some(build_billboard(
+    Some(build_frame_animated_billboard(
         factory,
         atlas,
         "effect_glow",
@@ -340,5 +342,6 @@ fn build_glow(
         center_y - half,
         center_y + half,
         name,
+        BlendMode::Additive,
     ))
 }

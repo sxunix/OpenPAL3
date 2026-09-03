@@ -405,6 +405,12 @@ impl AssetManager {
         }
     }
 
+    /// The `/basedata/basedata` root, for callers that build their own
+    /// asset paths under it.
+    pub fn basedata_path(&self) -> &PathBuf {
+        &self.basedata_path
+    }
+
     /// Path to a full-screen caption picture — opcode 86's
     /// `caption\%s.tga` (format string at 0x596234).
     pub fn caption_path(&self, name: &str) -> PathBuf {

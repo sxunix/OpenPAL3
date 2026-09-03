@@ -1,5 +1,6 @@
 mod cvd_entity;
 mod effect;
+pub mod emoji;
 mod error;
 mod role_controller;
 mod scene;
