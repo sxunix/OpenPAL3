@@ -24,14 +24,19 @@ impl SceCommand for SceCommandHyFly {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
-        let entity = scene_manager.get_resolved_role(state, 5).unwrap();
-        let role_controller = RoleController::get_role_controller(entity.clone()).unwrap();
+        // 花盈 is not in every scene; moving her when she is absent is a
+        // no-op rather than a crash.
+        let Some(entity) = scene_manager.get_resolved_role(state, 5) else {
+            return true;
+        };
         entity.transform().borrow_mut().set_position(&Vec3::new(
             self.position_x,
             self.position_y,
             self.position_z,
         ));
-        role_controller.inner::<RoleController>().idle();
+        if let Some(rc) = RoleController::get_role_controller(entity) {
+            rc.inner::<RoleController>().idle();
+        }
         true
     }
 }

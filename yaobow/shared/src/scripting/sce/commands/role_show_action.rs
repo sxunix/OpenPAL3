@@ -46,6 +46,10 @@ impl SceCommand for SceCommandRoleShowAction {
             return true;
         }
 
+        // A role that is not in the scene cannot finish an action, and
+        // waiting for one that will never arrive is worse than not
+        // waiting: a scene change while this command is still active
+        // used to panic here. Treat a missing role as "done".
         scene_manager
             .resolve_role_do(state, self.role_id, |_, r| {
                 let s = r.state();
@@ -53,7 +57,7 @@ impl SceCommand for SceCommandRoleShowAction {
                     || s == RoleState::AnimationFinished
                     || s == RoleState::AnimationHolding
             })
-            .unwrap()
+            .unwrap_or(true)
     }
 }
 
