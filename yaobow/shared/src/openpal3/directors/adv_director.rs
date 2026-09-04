@@ -261,6 +261,7 @@ impl AdventureDirector {
             scene.to_string(),
             sub_scene.to_string(),
         );
+        p.sce_vm.abort_active_commands();
         command.load_for_debug(scene_manager, p.sce_vm.state_mut());
         true
     }

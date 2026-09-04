@@ -174,6 +174,24 @@ impl SceVm {
         self.state.call_proc(proc_id)
     }
 
+    /// Drop whatever commands are mid-flight.
+    ///
+    /// Only for the agent server's debug scene jump: a blocking command
+    /// waits on the scene it was issued against, so swapping the scene
+    /// underneath one leaves the vm stuck on a role or object that no
+    /// longer means anything, and it never fetches again. A scene load
+    /// that comes from the script itself does not need this — it *is*
+    /// the command in flight.
+    pub fn abort_active_commands(&mut self) {
+        if !self.active_commands.is_empty() {
+            log::info!(
+                "abort_active_commands: 放弃 {} 条挂起命令",
+                self.active_commands.len()
+            );
+            self.active_commands.clear();
+        }
+    }
+
     pub fn state(&self) -> &SceState {
         &self.state
     }
