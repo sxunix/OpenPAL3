@@ -39,6 +39,19 @@ pub trait RenderObject {
     /// against every render object it knows about.
     fn set_uv_xform(&self, _scale: [f32; 2], _offset: [f32; 2]) {}
 
+    /// Re-upload the material's tint alpha, the multiplier the shaders
+    /// apply to both RGB and alpha (`outColor = vec4(rgb * tint.a,
+    /// sampled.a * tint.a)`).
+    ///
+    /// This is a genuine fade rather than a cutout: `AlphaTest`'s discard
+    /// tests the **texture's** alpha, untouched by the tint, and its
+    /// pipeline has blending enabled just like `AlphaBlend`. So an actor
+    /// on the usual cutout material fades smoothly as this goes to 0.
+    ///
+    /// No-op by default, as `set_uv_xform` is, so backends without
+    /// per-material params ignore it.
+    fn set_alpha(&self, _alpha: f32) {}
+
     /// Returns the source material's `debug_name`, when available.
     ///
     /// PAL4's water-UV-animation driver uses this to find render objects

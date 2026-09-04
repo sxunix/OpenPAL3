@@ -62,6 +62,10 @@ impl RenderObject for VulkanRenderObject {
         self.material.update_uv_xform(scale, offset);
     }
 
+    fn set_alpha(&self, alpha: f32) {
+        self.material.update_tint_alpha(alpha);
+    }
+
     fn material_debug_name(&self) -> Option<&str> {
         Some(self.material.debug_name())
     }
