@@ -832,12 +832,12 @@ impl SceProcContext {
                 command!(self, SceCommandStopMusic)
             }
             135 => {
-                // RoleFadeOut
-                nop_command!(self, RoleFadeOut, i32)
+                // RoleFadeOut — 角色淡出
+                command!(self, SceCommandRoleFadeOut, role_id: i32)
             }
             136 => {
-                // RoleFadeIn
-                nop_command!(self, RoleFadeIn, i32)
+                // RoleFadeIn — 角色淡入
+                command!(self, SceCommandRoleFadeIn, role_id: i32)
             }
             137 => {
                 // IfInTeam
