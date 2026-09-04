@@ -52,6 +52,7 @@ impl SceCommand for SceCommandRoleEmote {
             return;
         };
         let Some(actor) = scene_manager.get_resolved_role(state, self.role_id) else {
+            log::warn!("RoleEmote: 找不到角色 {}", self.role_id);
             return;
         };
 
@@ -69,6 +70,7 @@ impl SceCommand for SceCommandRoleEmote {
                     asset_mgr.basedata_path(),
                     self.emoji_id,
                 ) else {
+                    log::warn!("RoleEmote: 表情 {} 的气泡建不出来", self.emoji_id);
                     return;
                 };
                 actor.attach(bubble.clone());

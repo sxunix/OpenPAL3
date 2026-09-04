@@ -97,13 +97,27 @@ pub fn build_emoji(
         .join("ui")
         .join("EMOTE")
         .join(format!("EM_{id:02}.tga"));
-    let mut file = vfs.open(&path).ok()?;
+    let mut file = match vfs.open(&path) {
+        Ok(f) => f,
+        Err(e) => {
+            log::warn!("emoji {id}: 读不到 {} ({e})", path.display());
+            return None;
+        }
+    };
     let mut bytes = vec![];
     file.read_to_end(&mut bytes).ok()?;
+    // The format has to be named: TGA has no magic number, so
+    // `load_from_memory`'s sniffing always fails on these sheets.
     // Flipped like every other PAL3 texture the scene loads (see
     // `effect::load_texture`), so the atlas rows line up with the
     // billboard's v = 0 at the top.
-    let sheet = image::load_from_memory(&bytes).ok()?.flipv().to_rgba8();
+    let sheet = match image::load_from_memory_with_format(&bytes, image::ImageFormat::Tga) {
+        Ok(img) => img.flipv().to_rgba8(),
+        Err(e) => {
+            log::warn!("emoji {id}: {} 解不开 ({e})", path.display());
+            return None;
+        }
+    };
 
     // The sheet is padded to a power of two; only `frames * frame_w` by
     // `frame_h` of it is the animation. Crop from the bottom-left, since
