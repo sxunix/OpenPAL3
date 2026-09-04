@@ -24,6 +24,10 @@ use std::rc::Rc;
 
 use super::error::EntityError;
 
+/// Model units to world units for MV3 actors. 景天's `ROLE/101/c01.mv3`
+/// spans 4863 model units vertically, which is 76 world units.
+pub const MV3_SCALE: f32 = 0.01562;
+
 #[derive(PartialEq, Copy, Clone, Debug)]
 pub enum RoleAnimationRepeatMode {
     Repeat(i32),
@@ -98,6 +102,11 @@ pub struct RoleController {
     // mesh is built, so an override means rebuilding: it invalidates the
     // animation cache and the active action is reloaded through it.
     texture_override: RefCell<Option<String>>,
+    /// How tall the model stands, in world units — the Y extent of the
+    /// idle animation's first frame. Anything that has to sit above an
+    /// actor's head (the 72 emoji bubble) needs it, and it differs a lot
+    /// between characters: 景天 is 76, 龙葵 63, 花盈 28.
+    model_height: f32,
 }
 
 ComObject_RoleController!(super::RoleController);
@@ -146,6 +155,9 @@ impl RoleController {
             .unwrap_or(walking_anim_name.as_str())
             .to_string();
 
+        let model_height =
+            mv3_model_height(&asset_mgr, role_name, idle_anim_name).unwrap_or(DEFAULT_MODEL_HEIGHT);
+
         Self {
             entity,
             model_name: role_name.to_string(),
@@ -168,6 +180,7 @@ impl RoleController {
             patrol_speed: RefCell::new(0.),
             overlap: RefCell::new(0),
             texture_override: RefCell::new(None),
+            model_height,
         }
     }
 
@@ -366,6 +379,12 @@ impl RoleController {
 
     pub fn nav_layer(&self) -> usize {
         *self.nav_layer.borrow()
+    }
+
+    /// The model's height in world units; see [`Self::model_height`]'s
+    /// field docs.
+    pub fn model_height(&self) -> f32 {
+        self.model_height
     }
 
     pub fn model_name(&self) -> String {
@@ -623,9 +642,9 @@ fn create_geometry_frames(
                     for k in 0..model.frame_count as usize {
                         let frame = &model.frames[k];
                         vertices[k].push(Vec3::new(
-                            frame.vertices[i as usize].x as f32 * 0.01562,
-                            frame.vertices[i as usize].y as f32 * 0.01562,
-                            frame.vertices[i as usize].z as f32 * 0.01562,
+                            frame.vertices[i as usize].x as f32 * MV3_SCALE,
+                            frame.vertices[i as usize].y as f32 * MV3_SCALE,
+                            frame.vertices[i as usize].z as f32 * MV3_SCALE,
                         ));
 
                         // Share the original vertex's smooth normal across every
@@ -705,4 +724,24 @@ fn compute_mv3_frame_normals(
         }
     }
     normals
+}
+
+/// Fallback when the `.mv3` cannot be measured — roughly a main
+/// character's height.
+pub const DEFAULT_MODEL_HEIGHT: f32 = 76.0;
+
+/// Measure a role model by the Y extent of its idle animation's first
+/// frame. Cheap enough to do once per role; the file is already in the
+/// package cache by the time this runs.
+fn mv3_model_height(asset_mgr: &Rc<AssetManager>, role_name: &str, action: &str) -> Option<f32> {
+    let path = asset_mgr.mv3_path(role_name, action);
+    let data = asset_mgr.vfs().read_to_end(&path).ok()?;
+    let mv3 = read_mv3(&mut Cursor::new(data)).ok()?;
+    let frame = mv3.models.first()?.frames.first()?;
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    for v in &frame.vertices {
+        lo = lo.min(v.y as f32);
+        hi = hi.max(v.y as f32);
+    }
+    (hi > lo).then(|| (hi - lo) * MV3_SCALE)
 }

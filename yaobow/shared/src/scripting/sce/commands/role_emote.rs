@@ -11,6 +11,7 @@ use crate::openpal3::directors::SceneManagerExtensions;
 use crate::openpal3::scene::emoji::{
     EMOJI_ENTITY_PREFIX, build_emoji, emoji_duration, emoji_entity_name, emoji_sound,
 };
+use crate::openpal3::scene::{DEFAULT_MODEL_HEIGHT, RoleController};
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use imgui::Ui;
@@ -63,12 +64,16 @@ impl SceCommand for SceCommandRoleEmote {
         let bubble = match existing {
             Some(bubble) => bubble,
             None => {
+                let height = RoleController::get_role_controller(actor.clone())
+                    .map(|rc| rc.inner::<RoleController>().model_height())
+                    .unwrap_or(DEFAULT_MODEL_HEIGHT);
                 let asset_mgr = state.asset_mgr().clone();
                 let Some(bubble) = build_emoji(
                     &asset_mgr.component_factory(),
                     asset_mgr.vfs(),
                     asset_mgr.basedata_path(),
                     self.emoji_id,
+                    height,
                 ) else {
                     log::warn!("RoleEmote: 表情 {} 的气泡建不出来", self.emoji_id);
                     return;

@@ -35,18 +35,19 @@ pub fn emoji_entity_name(id: i32) -> String {
 /// Prefix of [`emoji_entity_name`], for finding every bubble on an actor.
 pub const EMOJI_ENTITY_PREFIX: &str = "EMOJI_";
 
-/// How far above the actor's origin the bubble sits, and how tall it is,
-/// in world units.
+/// How tall the bubble is drawn, in world units, and how far its base
+/// clears the actor's head.
 ///
-/// Measured rather than guessed: MV3 vertices are scaled by 0.01562 when
-/// the mesh is built, and 景天's `ROLE/101/c01.mv3` spans 4863 model
-/// units vertically, so he is 76 world units tall (龙葵 63, 花盈 28).
-/// The bubble therefore starts just clear of a head at 80.
+/// Both are relative to the actor rather than fixed: model heights vary
+/// a lot (景天 76 world units, 龙葵 63, 花盈 28), and a constant that
+/// sits just over 景天's head floats half a body above a shorter NPC —
+/// which is what the first pass did on screen.
 ///
 /// `[推断]` — the original sizes the bubble inside the emoji widget,
-/// which was not read; the height still wants a look at the screen.
-pub const EMOJI_BASE_Y: f32 = 80.0;
-pub const EMOJI_HEIGHT: f32 = 26.0;
+/// which was not read. Pal3.Unity places it at the actor's height with
+/// a scale of 1.5, which is the shape these two follow.
+pub const EMOJI_HEIGHT_RATIO: f32 = 0.34;
+pub const EMOJI_CLEARANCE: f32 = 2.0;
 
 /// `(width, height, frames)` of one frame within sheet `EM_<id>.tga`,
 /// and how many times the sheet loops, for emoji ids 1..=11.
@@ -85,11 +86,14 @@ pub fn emoji_duration(id: i32) -> Option<f32> {
 }
 
 /// Build the bubble entity for `id`, ready to attach to an actor.
+/// `actor_height` is the model's own height in world units — see
+/// [`RoleController::model_height`](super::RoleController::model_height).
 pub fn build_emoji(
     factory: &Rc<dyn ComponentFactory>,
     vfs: &MiniFs,
     basedata: &Path,
     id: i32,
+    actor_height: f32,
 ) -> Option<ComRc<IEntity>> {
     let (frame_w, frame_h, frames, _) = emoji_spec(id)?;
 
@@ -137,14 +141,16 @@ pub fn build_emoji(
     }
     let atlas = image::imageops::crop_imm(&sheet, 0, 0, used_w, frame_h).to_image();
 
-    let width = EMOJI_HEIGHT * frame_w as f32 / frame_h as f32;
+    let height = actor_height * EMOJI_HEIGHT_RATIO;
+    let base_y = actor_height + EMOJI_CLEARANCE;
+    let width = height * frame_w as f32 / frame_h as f32;
     let entity = build_frame_animated_billboard(
         factory,
         atlas,
         "actor_emoji",
         width,
-        EMOJI_BASE_Y,
-        EMOJI_BASE_Y + EMOJI_HEIGHT,
+        base_y,
+        base_y + height,
         emoji_entity_name(id),
         radiance::rendering::BlendMode::AlphaBlend,
     );
