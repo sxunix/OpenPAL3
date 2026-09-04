@@ -594,4 +594,3 @@ mod tests {
         assert_eq!(session.take_common_dialog_choice(), 1);
     }
 }
-

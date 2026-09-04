@@ -14,8 +14,10 @@
 //! | 4 |  28.96 | 0 | -122.99 |
 //!
 //! `FUN_0040e110` (211) multiplies it by **−3** and `FUN_0040e3c0` (212)
-//! by **+2**, then builds the offset out of the leader's own axes:
-//! `right · x + up · y + forward · z`, added to the leader's position.
+//! by **+2**, then builds the offset out of the leader's own axes and
+//! adds it to the leader's position. Every row's z is negative and 211's
+//! multiplier is negative, so members end up **behind** the leader — the
+//! basis at `role+0x14` is the backward direction, not the facing one.
 //! For scale, 景天 is 76 world units tall, so the spread runs from about
 //! one to five body-heights out.
 //!
@@ -76,7 +78,15 @@ fn place(scene_manager: &ComRc<ISceneManager>, state: &mut SceState, scale: f32)
         row += 1;
 
         // The offset is in the leader's own frame — `right · x + up · y
-        // + forward · z` in the original, which is a local translation.
+        // + basis_z · z` in the original, which is a local translation.
+        // `basis_z` (the original's `role+0x14`) is the **backward**
+        // direction, not the facing one: the table's z is negative and
+        // the multiplier is -3, so a member lands behind the leader,
+        // which is where Pal3.Unity independently puts them
+        // (`-playerActorTransform.Forward` in `CalculateSpawnPosition`).
+        // radiance agrees: `Transform::look_at` writes
+        // `normalize(position - target)` into the local Z column, so
+        // local +Z already points away from what the actor faces.
         let mut transform = Transform::from_matrix(leader_matrix);
         transform.translate_local(&Vec3::new(
             offset[0] * scale,
@@ -163,6 +173,21 @@ mod tests {
         // Every row is level with the leader, which is why the `up` term
         // of the original's basis sum never contributes.
         assert!(FORMATION.iter().all(|row| row[1] == 0.));
+    }
+
+    #[test]
+    fn a_positive_local_z_offset_is_behind_the_actor() {
+        // The whole formation hinges on this: the original composes its
+        // offsets against a backward-pointing basis, so mapping them to
+        // a local translation is only right while radiance's local +Z
+        // points away from what an actor faces.
+        let mut t = Transform::new();
+        t.set_position(&Vec3::new(0., 0., 0.))
+            .look_at(&Vec3::new(0., 0., -100.));
+        t.translate_local(&Vec3::new(0., 0., 10.));
+        let p = t.position();
+        assert!(p.z > 9.9, "局部 +Z 应当指向身后，实得 {p:?}");
+        assert!(p.x.abs() < 1e-3 && p.y.abs() < 1e-3);
     }
 
     #[test]
