@@ -333,6 +333,8 @@ fn handle_teleport(ctx: &Pal3DispatchCtx, params: TeleportParams) -> AgentRespon
 ///
 /// * `{"function": "call_proc", "args": [<proc id>]}` runs an SCE proc,
 ///   the way the overlay's "Execute" button does;
+/// * `{"function": "load_scene", "args": [<scene>, <sub scene>]}` jumps
+///   to another scene, which also swaps the running `.sce`;
 /// * `{"function": "set_global", "args": [<var>, <value>]}` writes a
 ///   script variable — `-32768` is the main-story flag.
 ///
@@ -376,8 +378,22 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "load_scene" => {
+            let name = params.args.first().and_then(|v| v.as_str());
+            let sub = params.args.get(1).and_then(|v| v.as_str());
+            let (Some(name), Some(sub)) = (name, sub) else {
+                return AgentResponse::err(AgentError::bad_request(
+                    "load_scene needs args: [scene, sub_scene]",
+                ));
+            };
+            director.load_scene(name, sub);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         other => AgentResponse::err(AgentError::bad_request(format!(
-            "PAL3 script_eval supports call_proc and set_global, got {other:?}"
+            "PAL3 script_eval supports call_proc, set_global and load_scene, got {other:?}"
         ))),
     }
 }

@@ -69,6 +69,12 @@ impl SceCommandLoadScene {
         }
     }
 
+    /// Same swap as [`Self::load`], for the agent server's debug
+    /// scene jump.
+    pub fn load_for_debug(&self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
+        self.load(scene_manager, state);
+    }
+
     /// Perform the actual scene swap immediately (no transition).
     /// Also used by `SceCommandEntryRow`, which needs the load done
     /// within its single update call.

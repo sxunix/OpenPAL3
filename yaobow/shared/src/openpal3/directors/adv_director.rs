@@ -208,6 +208,20 @@ impl AdventureDirector {
         self.props.borrow_mut().sce_vm.call_proc(proc_id);
     }
 
+    /// Swap to `scene`/`sub_scene` immediately, the way the debug
+    /// overlay's "Load" button does. Exposed for the same reason as
+    /// [`Self::call_sce_proc`]: a scripted beat in another scene cannot
+    /// be reached any other way without playing to it.
+    pub fn load_scene(&self, scene: &str, sub_scene: &str) {
+        let mut p = self.props.borrow_mut();
+        let scene_manager = p.scene_manager.clone();
+        let command = crate::scripting::sce::commands::SceCommandLoadScene::new(
+            scene.to_string(),
+            sub_scene.to_string(),
+        );
+        command.load_for_debug(scene_manager, p.sce_vm.state_mut());
+    }
+
     /// Set a script global, the way the debug overlay's "Main Story"
     /// box does. Negative indices are globals; see `commands::vars`.
     pub fn set_script_global(&self, var: i16, value: i32) {
