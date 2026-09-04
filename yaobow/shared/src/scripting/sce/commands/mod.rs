@@ -29,6 +29,7 @@ mod have_item;
 mod hy_fly;
 mod idle;
 mod if_in_team;
+mod interact;
 mod inventory;
 mod load_scene;
 mod main_menu;
@@ -74,6 +75,7 @@ mod testgoto;
 mod text_ui;
 pub mod vars;
 mod world_rotate;
+mod xj_pic;
 
 pub use _let::{SceCommandLet, SceCommandLetAdd};
 pub use between::SceCommandBetween;
@@ -117,6 +119,7 @@ pub use have_item::SceCommandHaveItem;
 pub use hy_fly::SceCommandHyFly;
 pub use idle::SceCommandIdle;
 pub use if_in_team::SceCommandIfInTeam;
+pub use interact::SceCommandInteractWithObject;
 pub use inventory::{SceCommandAddItem, SceCommandAddMoney, SceCommandRemoveItem};
 pub use load_scene::SceCommandLoadScene;
 pub use main_menu::SceCommandSwitchToMainMenu;
@@ -179,6 +182,7 @@ pub use team::{
 pub use testgoto::SceCommandTestGoto;
 pub use text_ui::{SceCommandCaption, SceCommandNote};
 pub use world_rotate::{SceCommandRotateWorld, SceCommandRotateWorldBack};
+pub use xj_pic::SceCommandShowXueJianPicture;
 
 use radiance::math::Vec3;
 

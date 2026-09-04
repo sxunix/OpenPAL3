@@ -797,7 +797,7 @@ impl SceProcContext {
             }
             124 => {
                 // Trigger
-                nop_command!(self, Trigger, i32)
+                command!(self, SceCommandInteractWithObject, object_id: i32)
             }
             125 => {
                 // SetBigMapElement
@@ -913,7 +913,7 @@ impl SceProcContext {
             }
             156 => {
                 // XJ_Pic
-                nop_command!(self, XJ_Pic)
+                command!(self, SceCommandShowXueJianPicture)
             }
             157 => {
                 // 当铺信息
