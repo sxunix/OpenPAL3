@@ -375,3 +375,93 @@ pub fn walk_verbose(inst: &[u8], mut seen: impl FnMut(usize, u16, String)) -> Re
     }
     Ok(())
 }
+
+/// Find every proc that uses a given opcode, for picking a cheap place to
+/// verify a newly implemented command in the running game:
+///
+/// ```sh
+/// YAOBOW_PAL3_ASSETS=... YAOBOW_FIND_OP=135 \
+///   cargo test -p shared --test pal3_sce_opcode_census find_op -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn find_the_procs_that_use_an_opcode() {
+    let (Ok(assets), Ok(want)) = (
+        std::env::var("YAOBOW_PAL3_ASSETS"),
+        std::env::var("YAOBOW_FIND_OP"),
+    ) else {
+        eprintln!("set YAOBOW_PAL3_ASSETS and YAOBOW_FIND_OP");
+        return;
+    };
+    let want: u16 = want.trim().parse().unwrap();
+
+    let vfs = packfs::init_virtual_fs(&assets, None);
+    let mut files: Vec<PathBuf> = vec![PathBuf::from("/basedata/basedata/init.sce")];
+    for entry in std::fs::read_dir(PathBuf::from(&assets).join("scene")).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().to_string();
+        if let Some(stem) = name.strip_suffix(".cpk") {
+            files.push(PathBuf::from(format!("/scene/{stem}/{stem}.sce")));
+        }
+    }
+
+    for path in &files {
+        let sce = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sce_load_from_file(&vfs, path)
+        }));
+        let Ok(sce) = sce else { continue };
+        for (id, proc) in &sce.procs {
+            let mut lines = vec![];
+            let _ = walk_verbose(&proc.inst, |pos, op, args| {
+                if op == want {
+                    lines.push(format!("      @{pos} {args}"));
+                }
+            });
+            if !lines.is_empty() {
+                println!(
+                    "{} proc {id} 「{}」 {} 字节",
+                    path.display(),
+                    proc.name,
+                    proc.inst.len()
+                );
+                for l in lines {
+                    println!("{l}");
+                }
+            }
+        }
+    }
+}
+
+/// Disassemble one proc:
+///
+/// ```sh
+/// YAOBOW_PAL3_ASSETS=... YAOBOW_DUMP_PROC=Q06:1204 \
+///   cargo test -p shared --test pal3_sce_opcode_census dump_one_proc -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn dump_one_proc() {
+    let (Ok(assets), Ok(what)) = (
+        std::env::var("YAOBOW_PAL3_ASSETS"),
+        std::env::var("YAOBOW_DUMP_PROC"),
+    ) else {
+        eprintln!("set YAOBOW_PAL3_ASSETS and YAOBOW_DUMP_PROC=<scene>:<proc id>");
+        return;
+    };
+    let (scene, id) = what.split_once(':').expect("want <scene>:<proc id>");
+    let id: u32 = id.trim().parse().unwrap();
+
+    let vfs = packfs::init_virtual_fs(&assets, None);
+    let sce = sce_load_from_file(&vfs, &PathBuf::from(format!("/scene/{scene}/{scene}.sce")));
+    let proc = &sce.procs[&id];
+    println!(
+        "{scene} proc {id} 「{}」 {} 字节",
+        proc.name,
+        proc.inst.len()
+    );
+    let r = walk_verbose(&proc.inst, |pos, op, args| {
+        println!("  @{pos:5} {op:3}  {args}")
+    });
+    if let Err(e) = r {
+        println!("  走不通: {e}");
+    }
+}

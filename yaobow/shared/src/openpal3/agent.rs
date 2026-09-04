@@ -337,7 +337,11 @@ fn handle_teleport(ctx: &Pal3DispatchCtx, params: TeleportParams) -> AgentRespon
 /// * `{"function": "load_scene", "args": [<scene>, <sub scene>]}` jumps
 ///   to another scene, which also swaps the running `.sce`;
 /// * `{"function": "set_global", "args": [<var>, <value>]}` writes a
-///   script variable — `-32768` is the main-story flag.
+///   script variable — `-32768` is the main-story flag;
+/// * `{"function": "set_role_alpha", "args": [<role id>, <alpha>]}` writes
+///   an actor's tint alpha, the value the 135/136 fades ramp. Reaching
+///   those two through a proc means playing a whole cutscene first, and
+///   every proc that fades also walks and talks its way there.
 ///
 /// Both exist so an automation driver can reach a scripted beat without
 /// playing up to it; commands whose only effect is on screen cannot be
@@ -377,6 +381,23 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
             AgentResponse::Script(ScriptEvalResponse {
                 function: params.function,
                 result: None,
+            })
+        }
+        "set_role_alpha" => {
+            let alpha = params.args.get(1).and_then(|v| v.as_f64());
+            let (Some(role_id), Some(alpha)) = (int_arg(0), alpha) else {
+                return AgentResponse::err(AgentError::bad_request(
+                    "set_role_alpha needs args: [role_id, alpha]",
+                ));
+            };
+            let Some(n) = director.set_role_alpha(role_id as i32, alpha as f32) else {
+                return AgentResponse::err(AgentError::bad_request(format!(
+                    "no such role: {role_id}"
+                )));
+            };
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: Some(serde_json::json!({ "render_objects": n })),
             })
         }
         "load_scene" => {

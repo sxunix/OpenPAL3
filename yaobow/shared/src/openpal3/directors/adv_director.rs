@@ -268,6 +268,27 @@ impl AdventureDirector {
 
     /// Set a script global, the way the debug overlay's "Main Story"
     /// box does. Negative indices are globals; see `commands::vars`.
+    /// Write an actor's tint alpha, for checking the 135/136 fades.
+    /// Returns how many render objects it reached, or `None` if the scene
+    /// has no such role.
+    pub fn set_role_alpha(&self, role_id: i32, alpha: f32) -> Option<usize> {
+        let props = self.props.borrow();
+        let scene = props.scene_manager.scn_scene()?;
+        // -1 is "whoever the player is driving", as everywhere else in
+        // the script layer.
+        let role_id = if role_id == -1 {
+            props.sce_vm.global_state().role_controlled()
+        } else {
+            role_id
+        };
+        let entity = scene
+            .inner::<crate::openpal3::scene::ScnScene>()
+            .get_role_entity(role_id)?;
+        Some(crate::scripting::sce::commands::role_fade::set_alpha(
+            &entity, alpha,
+        ))
+    }
+
     pub fn set_script_global(&self, var: i16, value: i32) {
         self.props
             .borrow_mut()
