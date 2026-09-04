@@ -187,7 +187,7 @@ impl SwitchGLRenderingEngine {
         {
             let (view, proj) = {
                 let camera = scene.camera();
-                let view = Mat44::inversed(camera.transform().matrix());
+                let view = camera.view_matrix();
                 let proj = *camera.projection_matrix();
                 (view, proj)
             };

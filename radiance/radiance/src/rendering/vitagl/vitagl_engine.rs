@@ -49,7 +49,7 @@ impl RenderingEngine for VitaGLRenderingEngine {
         if let Some(scene) = scene {
             let (view, proj) = {
                 let camera = scene.camera();
-                let view = Mat44::inversed(camera.transform().matrix());
+                let view = camera.view_matrix();
                 let proj = *camera.projection_matrix();
                 (view, proj)
             };

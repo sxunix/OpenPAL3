@@ -1,6 +1,7 @@
 use crate::math::Mat44;
 use crate::math::Rect;
 use crate::math::Transform;
+use crate::math::Vec3;
 
 #[derive(Copy, Clone)]
 pub enum Viewport {
@@ -16,6 +17,13 @@ pub struct Camera {
     aspect: f32,
     near_clip: f32,
     far_clip: f32,
+    /// A rotation applied to the whole world before the view transform,
+    /// about the world origin. PAL3 keeps three angles in globals and
+    /// pushes them onto the matrix stack right after
+    /// `gbSceneGraph::Begin`, so every model drawn that frame is turned
+    /// with them; the 117 / 128 SCE commands tilt M15's rooms with it.
+    /// Identity for everything else.
+    world_rotation: Mat44,
 }
 
 /// Six-plane world-space view frustum.
@@ -42,6 +50,7 @@ impl Camera {
             aspect,
             near_clip,
             far_clip,
+            world_rotation: Mat44::new_identity(),
         }
     }
 
@@ -81,6 +90,30 @@ impl Camera {
         &self.projection
     }
 
+    /// The view matrix, world rotation included. Rendering backends and
+    /// the frustum both go through this so culling matches what is drawn.
+    pub fn view_matrix(&self) -> Mat44 {
+        Mat44::multiplied(
+            &Mat44::inversed(self.transform.matrix()),
+            &self.world_rotation,
+        )
+    }
+
+    /// Turn the world by these three angles (radians) about the X, Y and
+    /// Z axes in that order — the order `gbMatrixStack::Rotate` is called
+    /// in at 0x4180xx.
+    pub fn set_world_rotation(&mut self, x: f32, y: f32, z: f32) {
+        let mut t = Transform::new();
+        t.rotate_axis_angle_local(&Vec3::new(1., 0., 0.), x)
+            .rotate_axis_angle_local(&Vec3::new(0., 1., 0.), y)
+            .rotate_axis_angle_local(&Vec3::new(0., 0., 1.), z);
+        self.world_rotation = *t.matrix();
+    }
+
+    pub fn world_rotation(&self) -> &Mat44 {
+        &self.world_rotation
+    }
+
     /// Vertical-reference field of view (4:3 basis) in radians, as supplied to
     /// the projection. Used by the shadow system to reconstruct the view
     /// frustum's split corners.
@@ -112,7 +145,7 @@ impl Camera {
     /// to Vulkan `[0, 1]` NDC later would mean using `row2` alone
     /// here.
     pub fn frustum(&self) -> Frustum {
-        let view = Mat44::inversed(&self.transform.matrix());
+        let view = self.view_matrix();
         let m = Mat44::multiplied(&self.projection, &view);
         let r = m.floats();
 

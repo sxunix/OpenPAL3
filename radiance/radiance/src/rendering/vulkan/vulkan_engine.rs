@@ -344,10 +344,7 @@ impl RenderingEngine for VulkanRenderingEngine {
         // Build opaque / cutout / transparent buckets (mirrors `render_objects`).
         let (camera_view, camera_proj) = {
             let camera = scene.camera();
-            (
-                Mat44::inversed(camera.transform().matrix()),
-                *camera.projection_matrix(),
-            )
+            (camera.view_matrix(), *camera.projection_matrix())
         };
 
         // Editor render-target preview doesn't run a shadow pass.
