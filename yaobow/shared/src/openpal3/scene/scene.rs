@@ -343,6 +343,29 @@ impl ScnScene {
     /// transform. Commands that place an actor relative to an object
     /// (74 攀爬) need the angle itself, which the transform no longer
     /// spells out.
+    /// The `.scn` node type of a scene object — what the original
+    /// switches on at `obj+0xf4` when the player interacts with it.
+    pub fn object_node_type(&self, id: i32) -> Option<u16> {
+        self.scn_file
+            .nodes
+            .iter()
+            .find(|n| n.object_id() == id)
+            .map(|n| n.node_type)
+    }
+
+    /// The first dword of a scene node's per-type parameter block —
+    /// record offset `0x4c`, which the runtime object copies to
+    /// `obj+0xf8` (0x4251xx copies six dwords from there). Ladders use it
+    /// for a nav coordinate; a type-22 lift uses it as the height it
+    /// rises to (`local_e4 = (float)*(int *)(in_ECX + 0xf8)`).
+    pub fn object_parameter(&self, id: i32) -> Option<i32> {
+        self.scn_file
+            .nodes
+            .iter()
+            .find(|n| n.object_id() == id)
+            .map(|n| n.ladder_nav_coord1.0)
+    }
+
     pub fn object_placement(&self, id: i32) -> Option<(Vec3, f32)> {
         self.scn_file
             .nodes
