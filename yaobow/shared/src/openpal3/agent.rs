@@ -23,10 +23,10 @@
 use std::rc::Rc;
 
 use agent_server::protocol::{
-    AgentCommand, AgentError, AgentResponse, AxisInputParams, DialogSnapshot, KeyAction,
-    KeyInputParams, ScreenshotResponse, ScriptEvalParams, ScriptEvalResponse, ScriptGlobalsParams,
-    ScriptGlobalsResponse, SlotParams, StateSnapshot, StatusMenuParams, StepTimeParams,
-    TeleportParams,
+    AgentCommand, AgentError, AgentResponse, AxisInputParams, CameraPoseParams, DialogSnapshot,
+    KeyAction, KeyInputParams, ScreenshotResponse, ScriptEvalParams, ScriptEvalResponse,
+    ScriptGlobalsParams, ScriptGlobalsResponse, SlotParams, StateSnapshot, StatusMenuParams,
+    StepTimeParams, TeleportParams,
 };
 use crosscom::ComRc;
 use radiance::comdef::ISceneManager;
@@ -139,6 +139,7 @@ pub fn dispatch_pal3_command(ctx: &Pal3DispatchCtx, command: AgentCommand) -> Ag
             "PAL3 has no GOB Examine handler analog",
         )),
         C::ScriptEval(p) => handle_script_eval(ctx, p),
+        C::SetCamera(p) => handle_set_camera(ctx, p),
         C::TraceStart(_) | C::TraceStop | C::TraceDrain(_) => {
             AgentResponse::err(AgentError::not_implemented(
                 "PAL3 SceVm has no trace adapter yet; /v1/script/trace/* unavailable",
@@ -395,6 +396,25 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
         other => AgentResponse::err(AgentError::bad_request(format!(
             "PAL3 script_eval supports call_proc, set_global and load_scene, got {other:?}"
         ))),
+    }
+}
+
+/// `/v1/camera/pose` — put the camera where the caller asks and leave it
+/// there. Needed to check anything whose only evidence is on screen: a
+/// scripted beat usually points the camera at what *it* cares about, not
+/// at the actor whose bubble or formation is being verified.
+fn handle_set_camera(ctx: &Pal3DispatchCtx, params: CameraPoseParams) -> AgentResponse {
+    let Some(director) = ctx.director else {
+        return AgentResponse::err(AgentError::conflict(
+            "no active adventure director — start a New Game first",
+        ));
+    };
+    let eye = Vec3::new(params.eye[0], params.eye[1], params.eye[2]);
+    let target = Vec3::new(params.target[0], params.target[1], params.target[2]);
+    if director.set_camera_pose(eye, target) {
+        AgentResponse::Ok
+    } else {
+        AgentResponse::err(AgentError::conflict("no scene loaded"))
     }
 }
 

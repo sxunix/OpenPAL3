@@ -208,6 +208,37 @@ impl AdventureDirector {
         self.props.borrow_mut().sce_vm.call_proc(proc_id);
     }
 
+    /// Point the camera at `target` from `eye` and hold it there.
+    ///
+    /// Parks the polar camera in "a script has it" mode — following off,
+    /// focus left on the player — which is the one combination neither
+    /// the follow rig nor `apply_scripted_camera` writes to, so the pose
+    /// survives until something else claims the camera.
+    pub fn set_camera_pose(&self, eye: Vec3, target: Vec3) -> bool {
+        let p = self.props.borrow();
+        let Some(scene) = p.scene_manager.scene() else {
+            return false;
+        };
+        scene
+            .camera_mut()
+            .transform_mut()
+            .set_position(&eye)
+            .look_at(&target);
+        drop(p);
+
+        let mut p = self.props.borrow_mut();
+        let camera = p.sce_vm.global_state_mut().camera_mut();
+        camera.set_focus(crate::openpal3::states::camera::Focus::Player);
+        camera.set_follow_player(false);
+        let (yaw, pitch, distance) =
+            crate::openpal3::states::camera::polar_of(&Vec3::sub(&eye, &target));
+        camera.set_yaw(yaw);
+        camera.set_pitch(pitch);
+        camera.set_distance(distance);
+        camera.set_look_at(target);
+        true
+    }
+
     /// Swap to `scene`/`sub_scene` immediately, the way the debug
     /// overlay's "Load" button does. Exposed for the same reason as
     /// [`Self::call_sce_proc`]: a scripted beat in another scene cannot
