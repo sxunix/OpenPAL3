@@ -213,6 +213,23 @@ impl IComponentImpl for YaobowApplicationLoader {
                 .pal3()
                 .inner::<crate::openpal3::Pal3Service>()
                 .pump_pre_update();
+            // 147 Switch2Menu (and a game-over) hand the request up here
+            // rather than swapping the director from inside its own
+            // update, which would alias the update in progress.
+            if host_context
+                .pal3()
+                .inner::<crate::openpal3::Pal3Service>()
+                .take_title_request()
+            {
+                let factory = self.factory.borrow().clone();
+                if let Some(factory) = factory {
+                    let scene_manager = self.app.engine().borrow().scene_manager().clone();
+                    self.install_title_director(&scene_manager, &factory);
+                    log::info!("回到主菜单");
+                } else {
+                    log::warn!("请求回主菜单，但脚本工厂已经不在了");
+                }
+            }
             host_context
                 .pal3()
                 .inner::<crate::openpal3::Pal3Service>()

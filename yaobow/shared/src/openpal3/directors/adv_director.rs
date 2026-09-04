@@ -214,6 +214,16 @@ impl AdventureDirector {
     /// focus left on the player — which is the one combination neither
     /// the follow rig nor `apply_scripted_camera` writes to, so the pose
     /// survives until something else claims the camera.
+    /// Read and clear "147 asked for the title screen". The host polls
+    /// this once a frame from outside the director's own update.
+    pub fn take_title_request(&self) -> bool {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .state_mut()
+            .take_title_request()
+    }
+
     pub fn set_camera_pose(&self, eye: Vec3, target: Vec3) -> bool {
         let p = self.props.borrow();
         let Some(scene) = p.scene_manager.scene() else {

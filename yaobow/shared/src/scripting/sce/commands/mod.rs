@@ -31,6 +31,7 @@ mod idle;
 mod if_in_team;
 mod inventory;
 mod load_scene;
+mod main_menu;
 mod minigames;
 mod movie;
 mod music;
@@ -116,6 +117,7 @@ pub use idle::SceCommandIdle;
 pub use if_in_team::SceCommandIfInTeam;
 pub use inventory::{SceCommandAddItem, SceCommandAddMoney, SceCommandRemoveItem};
 pub use load_scene::SceCommandLoadScene;
+pub use main_menu::SceCommandSwitchToMainMenu;
 pub use minigames::{
     SceCommandDealerMenu, SceCommandEffectAtRole, SceCommandEffectPosition,
     SceCommandGetPawnshopAccrual, SceCommandGetPawnshopLevel, SceCommandGetPawnshopManage,

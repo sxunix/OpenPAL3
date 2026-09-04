@@ -100,6 +100,10 @@ pub struct SceState {
     /// back, and an automation driver has no other way to tell "waiting
     /// for the player to advance text" from "stuck".
     dialog: Option<DialogState>,
+    /// 147 退出游戏到主菜单 asked for the title screen. `FUN_0044f610(4)`
+    /// swaps the game's whole state object; here the host has to build
+    /// the title director, so the request is parked until it looks.
+    title_requested: bool,
 }
 
 /// The dialog box's readable state — mirrors the agent contract's
@@ -149,6 +153,7 @@ impl SceState {
             status_renderer,
             note: None,
             dialog: None,
+            title_requested: false,
         }
     }
 
@@ -251,6 +256,18 @@ impl SceState {
 
     pub fn close_dialog(&mut self) {
         self.dialog = None;
+    }
+
+    /// 147 asks to leave for the title screen.
+    pub fn request_title(&mut self) {
+        self.title_requested = true;
+    }
+
+    /// Read and clear the title request. Called by the host once a
+    /// frame, from outside any director update — swapping the director
+    /// from inside one would alias its own update.
+    pub fn take_title_request(&mut self) -> bool {
+        std::mem::take(&mut self.title_requested)
     }
 
     pub fn show_note(&mut self, text: String) {

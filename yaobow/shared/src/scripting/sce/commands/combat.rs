@@ -614,12 +614,12 @@ impl SceCommand for SceCommandCombat {
     ) -> bool {
         if self.game_over {
             Self::draw_game_over(ui);
-            // The original switches to mode 0xf (the title). There is no
-            // title director to return to from here yet, so the process
-            // ends instead — see the notes' 未解决 list.
+            // The original switches the game's state object to the
+            // title screen; the same request 147 Switch2Menu makes.
             if Self::poll_input(state) == Some(Input::Confirm) || state.fast_forward() {
-                log::info!("Combat: game over, exiting (no title screen to return to)");
-                std::process::exit(0);
+                log::info!("Combat: 游戏结束，返回主菜单");
+                state.request_title();
+                return true;
             }
             return false;
         }

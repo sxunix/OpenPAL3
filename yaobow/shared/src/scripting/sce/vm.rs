@@ -878,7 +878,7 @@ impl SceProcContext {
             }
             147 => {
                 // Switch2Menu
-                nop_command!(self, Switch2Menu)
+                command!(self, SceCommandSwitchToMainMenu)
             }
             148 => {
                 // CEft_Load

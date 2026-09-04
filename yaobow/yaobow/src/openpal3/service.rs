@@ -606,6 +606,16 @@ impl Pal3Service {
         AgentResponse::Ok
     }
 
+    /// Whether the running script asked to go back to the title screen
+    /// (147 Switch2Menu, or a lost battle that ends the game). Polled by
+    /// `YaobowApplicationLoader::on_updating`, which owns the script
+    /// factory that can build the title director.
+    pub fn take_title_request(&self) -> bool {
+        self.active_adventure_director_owned()
+            .map(|adv| adv.inner::<AdventureDirector>().take_title_request())
+            .unwrap_or(false)
+    }
+
     fn active_adventure_director(
         scene_manager: &ComRc<ISceneManager>,
     ) -> Option<ComRc<IAdventureDirector>> {
