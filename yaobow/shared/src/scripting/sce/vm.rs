@@ -610,7 +610,7 @@ impl SceProcContext {
             }
             74 => {
                 // Climb
-                nop_command!(self, Climb, i32, i32)
+                command!(self, SceCommandClimb, object_id: i32, up: i32)
             }
             76 => {
                 // DlgTime

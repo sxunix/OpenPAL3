@@ -6,6 +6,7 @@ mod camera_default;
 mod camera_focus;
 mod camera_move;
 mod camera_set;
+mod climb;
 mod cmp;
 mod combat;
 mod dlg;
@@ -84,6 +85,7 @@ pub use camera_focus::{
 };
 pub use camera_move::SceCommandCameraMove;
 pub use camera_set::SceCommandCameraSet;
+pub use climb::SceCommandClimb;
 pub use cmp::{
     SceCommandEq, SceCommandGeq, SceCommandGeq2, SceCommandGt, SceCommandLeq, SceCommandLs,
     SceCommandNeq,
