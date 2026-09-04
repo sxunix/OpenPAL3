@@ -100,6 +100,9 @@ pub struct SceState {
     /// back, and an automation driver has no other way to tell "waiting
     /// for the player to advance text" from "stuck".
     dialog: Option<DialogState>,
+    /// 141 设置全局屏幕特效: the full-screen picture to lay over the
+    /// frame, once loaded. `None` when no effect is on.
+    screen_effect: Option<Rc<radiance::rendering::Sprite>>,
     /// 147 退出游戏到主菜单 asked for the title screen. `FUN_0044f610(4)`
     /// swaps the game's whole state object; here the host has to build
     /// the title director, so the request is parked until it looks.
@@ -153,6 +156,7 @@ impl SceState {
             status_renderer,
             note: None,
             dialog: None,
+            screen_effect: None,
             title_requested: false,
         }
     }
@@ -256,6 +260,37 @@ impl SceState {
 
     pub fn close_dialog(&mut self) {
         self.dialog = None;
+    }
+
+    /// 141: put a full-screen picture over everything, or clear it.
+    pub fn set_screen_effect(&mut self, sprite: Option<Rc<radiance::rendering::Sprite>>) {
+        self.screen_effect = sprite;
+    }
+
+    /// Draw the 141 overlay. The original renders a UI quad spanning the
+    /// whole viewport in NDC with uv (0,0)-(1,1) and vertex colour white
+    /// (`gbDynVertBuf::RenderUIQuad` at 0x4b6e20), so it stretches rather
+    /// than fits.
+    pub fn render_screen_effect(&self, ui: &imgui::Ui) {
+        let Some(sprite) = self.screen_effect.as_ref() else {
+            return;
+        };
+        let size = ui.io().display_size;
+        let _pad = ui.push_style_var(imgui::StyleVar::WindowPadding([0., 0.]));
+        let _border = ui.push_style_var(imgui::StyleVar::WindowBorderSize(0.));
+        ui.window("ScreenEffect")
+            .collapsible(false)
+            .title_bar(false)
+            .resizable(false)
+            .movable(false)
+            .scroll_bar(false)
+            .draw_background(false)
+            .no_inputs()
+            .position([0., 0.], imgui::Condition::Always)
+            .size(size, imgui::Condition::Always)
+            .build(|| {
+                imgui::Image::new(sprite.imgui_texture_id(), size).build(ui);
+            });
     }
 
     /// 147 asks to leave for the title screen.

@@ -62,6 +62,7 @@ mod role_show_action;
 mod role_stop;
 mod role_turn_face;
 mod scene_state;
+mod screen_effect;
 mod script_run_mode;
 mod set_bigmap_element;
 mod show_chat_rest;
@@ -160,6 +161,7 @@ pub use role_turn_face::SceCommandRoleTurnFace;
 pub use scene_state::{
     SceCommandGetSwitch, SceCommandInitFlower, SceCommandObjectMove, SceCommandObjectNotFromSave,
 };
+pub use screen_effect::SceCommandScreenEffect;
 pub use script_run_mode::SceCommandScriptRunMode;
 pub use set_bigmap_element::SceCommandSetBigMapElement;
 pub use show_chat_rest::SceCommandShowChatRest;

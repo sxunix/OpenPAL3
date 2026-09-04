@@ -92,6 +92,7 @@ impl SceVm {
         self.draw_curtain();
 
         let ui = self.ui.ui();
+        self.state.render_screen_effect(ui);
         self.state.render_note(ui, delta_sec);
         if self.active_commands.len() == 0 {
             loop {
@@ -262,13 +263,13 @@ pub struct SceProcContext {
 }
 
 impl SceProcContext {
-    pub fn new_from_id(sce: Rc<SceFile>, proc_id: u32) -> Self {
-        let index = sce
-            .proc_headers
-            .iter()
-            .position(|h| h.id == proc_id)
-            .unwrap();
-        Self::new(sce, index)
+    /// `None` when this `.sce` has no such proc — a script calling into
+    /// another scene's numbering, or the agent's debug `call_proc`
+    /// against the wrong scene. Used to be an unwrap, which took the
+    /// whole process down.
+    pub fn new_from_id(sce: Rc<SceFile>, proc_id: u32) -> Option<Self> {
+        let index = sce.proc_headers.iter().position(|h| h.id == proc_id)?;
+        Some(Self::new(sce, index))
     }
 
     pub fn new_from_name(sce: Rc<SceFile>, proc_name: &str) -> Option<Self> {
@@ -856,7 +857,7 @@ impl SceProcContext {
             }
             141 => {
                 // ScrEft
-                nop_command!(self, ScrEft, i32)
+                command!(self, SceCommandScreenEffect, effect: i32)
             }
             142 => {
                 // CEft_Pos — 设置特效位置
@@ -1111,8 +1112,11 @@ impl SceExecutionContext {
     }
 
     pub fn call_proc(&mut self, proc_id: u32, global_state: &mut GlobalState) {
-        self.proc_stack
-            .push(SceProcContext::new_from_id(self.sce.clone(), proc_id));
+        let Some(context) = SceProcContext::new_from_id(self.sce.clone(), proc_id) else {
+            log::warn!("当前 .sce 里没有 proc {proc_id}");
+            return;
+        };
+        self.proc_stack.push(context);
         self.proc_begin(proc_id, global_state);
     }
 

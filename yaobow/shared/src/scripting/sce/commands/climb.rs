@@ -25,7 +25,6 @@
 //!
 //! The opcode then blocks the script on the role until that finishes.
 
-use crate::openpal3::comdef::IRoleController;
 use crate::openpal3::directors::SceneManagerExtensions;
 use crate::openpal3::scene::{RoleAnimationRepeatMode, RoleController, ScnScene};
 use crate::scripting::sce::{SceCommand, SceState};
