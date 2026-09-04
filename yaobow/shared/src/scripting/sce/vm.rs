@@ -437,12 +437,19 @@ impl SceProcContext {
                 command!(self, SceCommandCameraFocusPoint, x: f32, y: f32, z: f32)
             }
             32 => {
-                // CameraPush
-                nop_command!(self, CameraPush, f32, f32, i32)
+                // CameraPush — 推镜头
+                command!(self, SceCommandCameraPush, distance: f32, duration: f32, curve: i32)
             }
             33 => {
-                // CameraRotate
-                command!(self, SceCommandCameraRotate, to_rot_x: f32, to_rot_y: f32, duration: f32, _unknown: i32)
+                // CameraOrbit — 环绕 lookAt 旋转（lookAt 固定）
+                command!(
+                    self,
+                    SceCommandCameraOrbit,
+                    yaw: f32,
+                    pitch: f32,
+                    duration: f32,
+                    curve: i32,
+                )
             }
             34 => {
                 // CameraMove
@@ -457,8 +464,15 @@ impl SceProcContext {
                 )
             }
             35 => {
-                //CameraWag
-                nop_command!(self, CameraWag, f32, f32, f32, i32)
+                // CameraSwing — 摇镜（相机位置固定）
+                command!(
+                    self,
+                    SceCommandCameraSwing,
+                    yaw: f32,
+                    pitch: f32,
+                    duration: f32,
+                    curve: i32,
+                )
             }
             36 => {
                 // CameraSet
@@ -873,8 +887,8 @@ impl SceProcContext {
                 command!(self, SceCommandNavigationBeeFlyTo, nav_layer: i32, tile_x: i32, tile_y: i32)
             }
             155 => {
-                // CameraYaw
-                nop_command!(self, CameraYaw, f32)
+                // CameraYaw — 绝对 yaw，弧度
+                command!(self, SceCommandCameraYaw, yaw: f32)
             }
             156 => {
                 // XJ_Pic
