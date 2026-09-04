@@ -6,12 +6,13 @@ use crate::openpal3::loaders::cvd_loader::{
 use crosscom::ComRc;
 use mini_fs::{MiniFs, StoreExt};
 use radiance::comdef::{IComponentImpl, IEntity, IEntityExt};
-use radiance::math::{Vec2, Vec3};
+use radiance::math::{Mat44, Quaternion, Vec2, Vec3};
 use radiance::rendering::{
     ComponentFactory, MaterialDef, Pal3PropMaterialDef, VertexBuffer, VertexComponents,
 };
 use radiance::scene::CoreEntity;
 use std::{
+    cell::{Cell, RefCell},
     path::{Path, PathBuf},
     rc::Rc,
 };
@@ -87,6 +88,10 @@ fn new_from_cvd_model_node<P: AsRef<Path>>(
         rotation_keyframes,
         scale_keyframes,
         meshes,
+        scale_factor: Cell::new(scale_factor),
+        play_mode: RefCell::new(CvdPlayMode::Hold),
+        speed: Cell::new(1.),
+        elapsed: Cell::new(0.),
     };
 
     mesh_component.setup_transform(entity.clone(), scale_factor);
@@ -132,6 +137,44 @@ fn load_texture<P: AsRef<Path>>(
     Pal3PropMaterialDef::create(texture_path.to_str().unwrap(), |name| vfs.open(name).ok())
 }
 
+/// How a CVD node's keyframe tracks are driven.
+///
+/// `Hold` is the default and reproduces what the port did before there
+/// was any playback: frame 0, frozen. The original decides per scene
+/// object whether a prop animates; until that exists, nothing moves
+/// unless a command asks it to — `SceneOpenDoor` (87) is the first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CvdPlayMode {
+    #[default]
+    Hold,
+    Once,
+    Loop,
+}
+
+/// Pick the two keyframes bracketing `t` and how far between them it
+/// falls. `None` when the track is absent or empty; a single keyframe
+/// yields itself twice at weight 0.
+fn sample<T>(frames: Option<&Vec<T>>, t: f32, at: impl Fn(&T) -> f32) -> Option<(&T, &T, f32)> {
+    let frames = frames?;
+    let first = frames.first()?;
+    if t <= at(first) {
+        return Some((first, first, 0.));
+    }
+    let last = frames.last()?;
+    if t >= at(last) {
+        return Some((last, last, 0.));
+    }
+    let i = frames.partition_point(|f| at(f) <= t).max(1);
+    let (a, b) = (&frames[i - 1], &frames[i]);
+    let span = at(b) - at(a);
+    let w = if span > f32::EPSILON {
+        (t - at(a)) / span
+    } else {
+        0.
+    };
+    Some((a, b, w))
+}
+
 pub struct CvdModelComponent {
     entity: ComRc<IEntity>,
     component_factory: Rc<dyn ComponentFactory>,
@@ -139,6 +182,12 @@ pub struct CvdModelComponent {
     rotation_keyframes: Option<CvdRotationKeyFrames>,
     scale_keyframes: Option<CvdScaleKeyFrames>,
     meshes: Vec<CvdMesh>,
+    /// The node's own uniform scale, kept so the transform can be rebuilt
+    /// from identity each frame rather than accumulated.
+    scale_factor: Cell<f32>,
+    play_mode: RefCell<CvdPlayMode>,
+    speed: Cell<f32>,
+    elapsed: Cell<f32>,
 }
 
 ComObject_CvdModel!(super::CvdModelComponent);
@@ -164,7 +213,29 @@ impl IComponentImpl for CvdModelComponent {
 
     fn on_unloading(&self) {}
 
-    fn on_updating(&self, _delta_sec: f32) -> crosscom::Void {}
+    fn on_updating(&self, delta_sec: f32) -> crosscom::Void {
+        let mode = *self.play_mode.borrow();
+        if matches!(mode, CvdPlayMode::Hold) {
+            return;
+        }
+        let duration = self.duration();
+        if duration <= 0. {
+            return;
+        }
+
+        let mut t = self.elapsed.get() + delta_sec * self.speed.get();
+        match mode {
+            CvdPlayMode::Loop => {
+                while t > duration {
+                    t -= duration;
+                }
+            }
+            CvdPlayMode::Once => t = t.min(duration),
+            CvdPlayMode::Hold => unreachable!(),
+        }
+        self.elapsed.set(t);
+        self.apply_at(t);
+    }
 }
 
 impl CvdModelComponent {
@@ -176,10 +247,104 @@ impl CvdModelComponent {
             rotation_keyframes: None,
             scale_keyframes: None,
             meshes: vec![],
+            scale_factor: Cell::new(1.),
+            play_mode: RefCell::new(CvdPlayMode::Hold),
+            speed: Cell::new(1.),
+            elapsed: Cell::new(0.),
+        }
+    }
+
+    /// Start the node's keyframe animation. `speed` scales time —
+    /// `SceneOpenDoor` (opcode 87) runs the door at 2.0
+    /// (`gbVisNode::SetTimeScale` at 0x42bea0).
+    pub fn play(&self, mode: CvdPlayMode, speed: f32) {
+        *self.play_mode.borrow_mut() = mode;
+        self.speed.set(speed.max(0.001));
+        self.elapsed.set(0.);
+    }
+
+    /// Whether a one-shot animation has run to its end. `SceneOpenDoor`
+    /// blocks the script on this.
+    pub fn finished(&self) -> bool {
+        matches!(*self.play_mode.borrow(), CvdPlayMode::Hold)
+            || (matches!(*self.play_mode.borrow(), CvdPlayMode::Once)
+                && self.elapsed.get() >= self.duration())
+    }
+
+    /// Longest timestamp across the three tracks.
+    fn duration(&self) -> f32 {
+        let last = |t: Option<f32>| t.unwrap_or(0.);
+        let p = self
+            .position_keyframes
+            .as_ref()
+            .and_then(|k| k.frames.last())
+            .map(|f| f.timestamp);
+        let r = self
+            .rotation_keyframes
+            .as_ref()
+            .and_then(|k| k.frames.last())
+            .map(|f| f.timestamp);
+        let sc = self
+            .scale_keyframes
+            .as_ref()
+            .and_then(|k| k.frames.last())
+            .map(|f| f.timestamp);
+        last(p).max(last(r)).max(last(sc))
+    }
+
+    /// Rebuild the node's transform for time `t`, from identity — the
+    /// tracks compose, so they cannot be applied incrementally.
+    fn apply_at(&self, t: f32) {
+        let entity = &self.entity;
+        entity
+            .transform()
+            .borrow_mut()
+            .set_matrix(Mat44::new_identity());
+
+        if let Some(p) = sample(
+            self.position_keyframes.as_ref().map(|k| &k.frames),
+            t,
+            |f| f.timestamp,
+        )
+        .map(|(a, b, w)| Vec3::lerp(&a.position, &b.position, w))
+        {
+            entity.transform().borrow_mut().translate_local(&p);
+        }
+
+        let sf = self.scale_factor.get();
+        entity
+            .transform()
+            .borrow_mut()
+            .scale_local(&Vec3::new(sf, sf, sf));
+
+        if let Some(q) = sample(
+            self.rotation_keyframes.as_ref().map(|k| &k.frames),
+            t,
+            |f| f.timestamp,
+        )
+        .map(|(a, b, w)| Quaternion::slerp(&a.quaternion, &b.quaternion, w))
+        {
+            entity.transform().borrow_mut().rotate_quaternion_local(&q);
+        }
+
+        if let Some((a, b, w)) = sample(self.scale_keyframes.as_ref().map(|k| &k.frames), t, |f| {
+            f.timestamp
+        }) {
+            let scale = Vec3::lerp(&a.scale, &b.scale, w);
+            let q2 = Quaternion::slerp(&a.quaternion, &b.quaternion, w);
+            let mut q3 = q2;
+            q3.inverse();
+            entity
+                .transform()
+                .borrow_mut()
+                .rotate_quaternion_local(&q2)
+                .scale_local(&scale)
+                .rotate_quaternion_local(&q3);
         }
     }
 
     pub fn setup_transform(&self, entity: ComRc<IEntity>, scale_factor: f32) {
+        self.scale_factor.set(scale_factor);
         if let Some(p) = self
             .position_keyframes
             .as_ref()
@@ -280,5 +445,54 @@ impl CvdMesh {
             vertices,
             indices,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sample;
+
+    #[derive(Debug, PartialEq)]
+    struct F(f32, i32);
+
+    fn frames() -> Vec<F> {
+        vec![F(0., 10), F(1., 20), F(3., 40)]
+    }
+
+    #[test]
+    fn a_time_before_the_first_key_holds_it() {
+        let f = frames();
+        let (a, b, w) = sample(Some(&f), -1., |x| x.0).unwrap();
+        assert_eq!((a.1, b.1, w), (10, 10, 0.));
+    }
+
+    #[test]
+    fn a_time_past_the_last_key_holds_it() {
+        let f = frames();
+        let (a, b, w) = sample(Some(&f), 99., |x| x.0).unwrap();
+        assert_eq!((a.1, b.1, w), (40, 40, 0.));
+    }
+
+    #[test]
+    fn a_time_between_keys_brackets_them_with_a_weight() {
+        let f = frames();
+        let (a, b, w) = sample(Some(&f), 2., |x| x.0).unwrap();
+        assert_eq!((a.1, b.1), (20, 40));
+        assert!((w - 0.5).abs() < 1e-6, "1..3 的中点权重应为 0.5，实得 {w}");
+    }
+
+    #[test]
+    fn an_exact_key_time_lands_on_that_key() {
+        let f = frames();
+        let (a, _, w) = sample(Some(&f), 1., |x| x.0).unwrap();
+        assert_eq!(a.1, 20);
+        assert_eq!(w, 0.);
+    }
+
+    #[test]
+    fn a_missing_or_empty_track_samples_to_nothing() {
+        assert!(sample::<F>(None, 0., |x| x.0).is_none());
+        let empty: Vec<F> = vec![];
+        assert!(sample(Some(&empty), 0., |x| x.0).is_none());
     }
 }

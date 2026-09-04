@@ -35,6 +35,7 @@ mod movie;
 mod music;
 mod nop;
 mod object_active;
+mod open_door;
 mod party;
 mod play_sound;
 mod quake;
@@ -123,6 +124,7 @@ pub use movie::SceCommandMovie;
 pub use music::SceCommandMusic;
 pub use nop::SceCommandNop;
 pub use object_active::SceCommandObjectActive;
+pub use open_door::SceCommandOpenDoor;
 pub use party::{
     SceCommandAddSkill, SceCommandFavorAdd, SceCommandFullRoleAtt, SceCommandFullTeamAtt,
     SceCommandGetFavor, SceCommandGetFavorite, SceCommandInTeam, SceCommandSetRoleAtt,

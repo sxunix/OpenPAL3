@@ -6,7 +6,7 @@ mod role_controller;
 mod scene;
 mod shadow;
 
-pub use cvd_entity::create_entity_from_cvd_model;
+pub use cvd_entity::{CvdModelComponent, CvdPlayMode, create_entity_from_cvd_model};
 pub use effect::build_effect;
 pub use role_controller::{
     DEFAULT_MODEL_HEIGHT, RoleAnimationRepeatMode, RoleController, RoleState,

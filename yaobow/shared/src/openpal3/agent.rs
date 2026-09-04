@@ -387,7 +387,11 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                     "load_scene needs args: [scene, sub_scene]",
                 ));
             };
-            director.load_scene(name, sub);
+            if !director.load_scene(name, sub) {
+                return AgentResponse::err(AgentError::bad_request(format!(
+                    "no such scene: {name}/{sub}"
+                )));
+            }
             AgentResponse::Script(ScriptEvalResponse {
                 function: params.function,
                 result: None,

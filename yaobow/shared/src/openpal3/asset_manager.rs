@@ -196,7 +196,7 @@ impl AssetManager {
     /// PAL3 stores each scene's `.scn` next to its cpk
     /// (`/scene/<cpk>/<scn>.scn`); PAL3A collects every `.scn` in
     /// `scn.cpk` as `/scene/scn/Scn/<cpk>/<cpk>_<scn>.scn`.
-    fn scn_path(&self, cpk_name: &str, scn_name: &str) -> PathBuf {
+    pub fn scn_path(&self, cpk_name: &str, scn_name: &str) -> PathBuf {
         match self.game {
             GameType::PAL3A => self
                 .scene_path

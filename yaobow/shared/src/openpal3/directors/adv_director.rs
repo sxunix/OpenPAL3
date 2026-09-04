@@ -243,7 +243,18 @@ impl AdventureDirector {
     /// overlay's "Load" button does. Exposed for the same reason as
     /// [`Self::call_sce_proc`]: a scripted beat in another scene cannot
     /// be reached any other way without playing to it.
-    pub fn load_scene(&self, scene: &str, sub_scene: &str) {
+    pub fn load_scene(&self, scene: &str, sub_scene: &str) -> bool {
+        {
+            // A debug jump must not be able to kill the game: the scene
+            // loader unwraps its file open, so a name that does not
+            // exist would panic rather than come back as an error.
+            let p = self.props.borrow();
+            let path = p.sce_vm.state().asset_mgr().scn_path(scene, sub_scene);
+            if mini_fs::StoreExt::open(p.sce_vm.state().asset_mgr().vfs(), &path).is_err() {
+                log::warn!("load_scene: 没有 {}", path.display());
+                return false;
+            }
+        }
         let mut p = self.props.borrow_mut();
         let scene_manager = p.scene_manager.clone();
         let command = crate::scripting::sce::commands::SceCommandLoadScene::new(
@@ -251,6 +262,7 @@ impl AdventureDirector {
             sub_scene.to_string(),
         );
         command.load_for_debug(scene_manager, p.sce_vm.state_mut());
+        true
     }
 
     /// Set a script global, the way the debug overlay's "Main Story"

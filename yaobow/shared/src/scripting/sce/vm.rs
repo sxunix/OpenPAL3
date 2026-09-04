@@ -641,8 +641,8 @@ impl SceProcContext {
                 command!(self, SceCommandCaption, name: string, lines: i32)
             }
             87 => {
-                // OpenDoor
-                nop_command!(self, OpenDoor, i32)
+                // OpenDoor — 播放门打开动画
+                command!(self, SceCommandOpenDoor, object_id: i32)
             }
             88 => {
                 // HY_Mode — 花盈行为模式
