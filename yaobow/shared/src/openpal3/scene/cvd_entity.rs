@@ -5,7 +5,8 @@ use crate::openpal3::loaders::cvd_loader::{
 };
 use crosscom::ComRc;
 use mini_fs::{MiniFs, StoreExt};
-use radiance::comdef::{IComponentImpl, IEntity, IEntityExt};
+use radiance::comdef::{IAnimatedMeshComponent, IComponent, IComponentImpl, IEntity, IEntityExt};
+use radiance::components::mesh::{AnimatedMeshComponent, Geometry, MorphTarget};
 use radiance::math::{Mat44, Quaternion, Vec2, Vec3};
 use radiance::rendering::{
     ComponentFactory, MaterialDef, Pal3PropMaterialDef, VertexBuffer, VertexComponents,
@@ -57,7 +58,13 @@ fn new_from_cvd_model_node<P: AsRef<Path>>(
     let mut rotation_keyframes = None;
     let mut scale_keyframes = None;
     let mut meshes = vec![];
+    // One geometry list per mesh frame, so the frames can be handed to the
+    // engine's morph animation. `meshes` keeps frame 0 for the static path.
+    let mut frame_geometries: Vec<Vec<Geometry>> = vec![];
+    let mut animation_time_keys: Vec<f32> = vec![];
     if let Some(model) = &node.model {
+        frame_geometries = vec![vec![]; model.mesh.frames.len()];
+        animation_time_keys = model.mesh.animation_time_keys.clone();
         position_keyframes = model.position_keyframes.clone();
         rotation_keyframes = model.rotation_keyframes.clone();
         scale_keyframes = model.scale_keyframes.clone();
@@ -66,20 +73,18 @@ fn new_from_cvd_model_node<P: AsRef<Path>>(
             if material.triangles.is_none() {
                 continue;
             }
+            let mat = load_texture(material, vfs, path.as_ref());
 
-            // Only the first frame reaches the GPU. A CVD mesh carries one
-            // vertex set per frame plus `animation_time_keys`, and the
-            // visible part of a prop's animation is the morph between them
-            // — the node's position/rotation/scale tracks move far less.
-            // Pal3.Unity rebuilds the vertex buffer every frame from
-            // `frameIndex` + `influence` (`CvdModelRenderer::UpdateMesh`);
-            // the same shape is already available here as `MorphTarget` +
-            // `AnimatedMeshComponent`, which is how MV3 actors animate.
-            // Until that is wired up, props hold their first frame.
-            for v in &model.mesh.frames {
-                let mesh = CvdMesh::new(v, material, load_texture(material, vfs, path.as_ref()));
-                meshes.push(mesh);
-                break;
+            for (frame, verts) in model.mesh.frames.iter().enumerate() {
+                let mesh = CvdMesh::new(verts, material, mat.clone());
+                if frame == 0 {
+                    meshes.push(mesh.clone());
+                }
+                frame_geometries[frame].push(Geometry {
+                    material: mesh.material,
+                    vertices: mesh.vertices,
+                    indices: mesh.indices,
+                });
             }
         }
 
@@ -94,7 +99,14 @@ fn new_from_cvd_model_node<P: AsRef<Path>>(
         position_keyframes,
         rotation_keyframes,
         scale_keyframes,
-        meshes,
+        // With more than one frame the vertices are driven by the morph
+        // component below, so the static path must not also build render
+        // objects for them.
+        meshes: if frame_geometries.len() > 1 {
+            vec![]
+        } else {
+            meshes
+        },
         scale_factor: Cell::new(scale_factor),
         play_mode: RefCell::new(CvdPlayMode::Hold),
         speed: Cell::new(1.),
@@ -107,6 +119,34 @@ fn new_from_cvd_model_node<P: AsRef<Path>>(
         ICvdModel::uuid(),
         crosscom::ComRc::from_object(mesh_component),
     );
+
+    // A CVD mesh's own animation is a vertex morph across its frames —
+    // `CvdModelRenderer::UpdateMesh` in Pal3.Unity rebuilds the vertex
+    // buffer every frame from a frame index and an influence. That is the
+    // same shape as an MV3 actor's morph targets, so it reuses the engine's
+    // animated mesh rather than a second vertex-upload path. Timestamps are
+    // rebased so the first frame sits at 0, as Pal3.Unity's reader does.
+    if frame_geometries.len() > 1 {
+        let base = animation_time_keys.first().copied().unwrap_or(0.);
+        let targets: Vec<MorphTarget> = frame_geometries
+            .into_iter()
+            .enumerate()
+            .map(|(i, geometries)| {
+                let t = animation_time_keys.get(i).copied().unwrap_or(0.) - base;
+                MorphTarget::new(geometries, t, component_factory.clone())
+            })
+            .collect();
+
+        let animated = AnimatedMeshComponent::new(entity.clone(), component_factory.clone());
+        animated.set_morph_targets(targets, 0.);
+        animated.set_loop_playback(true);
+        let animated: ComRc<IAnimatedMeshComponent> = ComRc::from_object(animated);
+        animated.play(true);
+        entity.add_component(
+            IAnimatedMeshComponent::uuid(),
+            animated.query_interface::<IComponent>().unwrap(),
+        );
+    }
 
     if let Some(children) = &node.children {
         for child in children {
@@ -201,6 +241,13 @@ ComObject_CvdModel!(super::CvdModelComponent);
 
 impl IComponentImpl for CvdModelComponent {
     fn on_loading(&self) -> crosscom::Void {
+        // With more than one mesh frame the vertices belong to the morph
+        // component, which builds and owns the rendering. Setting an empty
+        // rendering component here would clobber it.
+        if self.meshes.is_empty() {
+            return;
+        }
+
         let mut objects = vec![];
         for mesh in &self.meshes {
             let ro = self.component_factory.create_render_object(
@@ -396,6 +443,7 @@ impl CvdModelComponent {
     }
 }
 
+#[derive(Clone)]
 struct CvdMesh {
     material: MaterialDef,
     vertices: VertexBuffer,
