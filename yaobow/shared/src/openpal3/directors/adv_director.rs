@@ -71,6 +71,9 @@ impl AdventureDirector {
                 scripted_camera_seeded: false,
                 layer_switch_triggered: false,
                 agent_bridge: None,
+                snow: crate::openpal3::scene::Snow::new(),
+                snow_entity: None,
+                snow_failed: false,
             }),
         }
     }
@@ -160,6 +163,9 @@ impl AdventureDirector {
                 scripted_camera_seeded: false,
                 layer_switch_triggered: false,
                 agent_bridge: None,
+                snow: crate::openpal3::scene::Snow::new(),
+                snow_entity: None,
+                snow_failed: false,
             }),
         })
     }
@@ -377,6 +383,117 @@ struct AdventureDirectorProps {
     /// is not running; `Some(_)` gates pause/step + provides the
     /// synthetic-input overlay backing `/v1/input/*`.
     agent_bridge: Option<Rc<AgentBridge>>,
+    /// 140 下雪. The simulation always exists; the entity is built the
+    /// first time a script turns the weather on, and hidden rather than
+    /// removed when it turns it off.
+    snow: crate::openpal3::scene::Snow,
+    snow_entity: Option<ComRc<radiance::comdef::IEntity>>,
+    snow_failed: bool,
+}
+
+impl AdventureDirectorProps {
+    /// Step the weather and lay its quads out for this frame.
+    ///
+    /// `gbSnow` keeps its drops in camera space and `gbSnow::Draw`
+    /// billboards them, so each flake is a quad on the camera's right/up
+    /// axes centred at the drop's camera-space offset. `SIZE` is the
+    /// full edge; `Draw` halves it.
+    fn step_snow(&mut self, delta_sec: f32) {
+        use crate::openpal3::scene::{Snow, build_snow_entity};
+        use radiance::comdef::ISceneExt;
+        use radiance::rendering::VertexComponents;
+
+        let wanted = self.sce_vm.state().snow();
+        let Some(scene) = self.scene_manager.scene() else {
+            return;
+        };
+
+        if wanted && self.snow_entity.is_none() && !self.snow_failed {
+            let asset_mgr = self.sce_vm.state().asset_mgr();
+            match build_snow_entity(&asset_mgr) {
+                Some(entity) => {
+                    scene.add_entity(entity.clone());
+                    self.snow_entity = Some(entity);
+                }
+                None => {
+                    // Once is enough; this runs every frame.
+                    self.snow_failed = true;
+                    log::warn!("Snow: 读不到 effect\\{}", Snow::TEXTURE_NAME);
+                }
+            }
+        }
+
+        let Some(entity) = self.snow_entity.clone() else {
+            return;
+        };
+        entity.set_visible(wanted);
+        if !wanted {
+            return;
+        }
+
+        let (camera_position, right, up) = {
+            let camera = scene.camera();
+            let m = *camera.transform().matrix();
+            let f = m.floats();
+            (
+                Vec3::new(f[0][3], f[1][3], f[2][3]),
+                Vec3::new(f[0][0], f[1][0], f[2][0]),
+                Vec3::new(f[0][1], f[1][1], f[2][1]),
+            )
+        };
+        let forward = Vec3::cross(&right, &up);
+
+        self.snow.step(delta_sec);
+        let drops = self.snow.positions();
+        let half = Snow::SIZE / 2.;
+
+        let Some(rc) = entity.get_rendering_component() else {
+            return;
+        };
+        let offset = |c: &Vec3, a: f32, b: f32| {
+            Vec3::add(
+                c,
+                &Vec3::add(&Vec3::scalar_mul(a, &right), &Vec3::scalar_mul(b, &up)),
+            )
+        };
+        for object in rc.render_objects() {
+            object.as_dyn().update_vertices(&|mut buffer| {
+                for i in 0..Snow::MAX {
+                    // Camera space to world: a drop's z runs into the
+                    // screen, which is -forward.
+                    let corners = match drops.get(i) {
+                        // Unused quads collapse onto a point.
+                        None => [Vec3::new(0., 0., 0.); 4],
+                        Some(p) => {
+                            let centre = Vec3::add(
+                                &camera_position,
+                                &Vec3::add(
+                                    &Vec3::add(
+                                        &Vec3::scalar_mul(p.x, &right),
+                                        &Vec3::scalar_mul(p.y, &up),
+                                    ),
+                                    &Vec3::scalar_mul(-p.z, &forward),
+                                ),
+                            );
+                            [
+                                offset(&centre, -half, -half),
+                                offset(&centre, half, -half),
+                                offset(&centre, half, half),
+                                offset(&centre, -half, half),
+                            ]
+                        }
+                    };
+                    for (k, corner) in corners.iter().enumerate() {
+                        buffer.set_component(
+                            i * 4 + k,
+                            VertexComponents::POSITION,
+                            |p: &mut Vec3| *p = *corner,
+                        );
+                    }
+                }
+            });
+        }
+    }
 }
 
 impl AdventureDirectorProps {
@@ -576,6 +693,10 @@ impl AdventureDirectorProps {
                 .inner::<crate::openpal3::scene::ScnScene>()
                 .step_object_moves(delta_sec);
         }
+
+        // Weather is drawn over the whole frame in the original, after
+        // the scene graph ends, so it keeps running through cutscenes.
+        self.step_snow(delta_sec);
 
         if !adv_enabled {
             return None;

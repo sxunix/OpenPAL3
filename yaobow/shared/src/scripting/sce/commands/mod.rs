@@ -67,6 +67,7 @@ mod screen_effect;
 mod script_run_mode;
 mod set_bigmap_element;
 mod show_chat_rest;
+mod snow;
 mod start_hidefight;
 mod stop_music;
 mod story_flags;
@@ -168,6 +169,7 @@ pub use screen_effect::SceCommandScreenEffect;
 pub use script_run_mode::SceCommandScriptRunMode;
 pub use set_bigmap_element::SceCommandSetBigMapElement;
 pub use show_chat_rest::SceCommandShowChatRest;
+pub use snow::SceCommandSnow;
 pub use start_hidefight::SceCommandStartHideFight;
 pub use stop_music::SceCommandStopMusic;
 pub use story_flags::{

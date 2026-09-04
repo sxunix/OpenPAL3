@@ -100,6 +100,9 @@ pub struct SceState {
     /// back, and an automation driver has no other way to tell "waiting
     /// for the player to advance text" from "stuck".
     dialog: Option<DialogState>,
+    /// 140 开关下雪 — the flag at `0xbfda40` the frame loop tests
+    /// before `gbDropGroup::Render`.
+    snow: bool,
     /// 141 设置全局屏幕特效: the full-screen picture to lay over the
     /// frame, once loaded. `None` when no effect is on.
     screen_effect: Option<Rc<radiance::rendering::Sprite>>,
@@ -156,6 +159,7 @@ impl SceState {
             status_renderer,
             note: None,
             dialog: None,
+            snow: false,
             screen_effect: None,
             title_requested: false,
         }
@@ -260,6 +264,15 @@ impl SceState {
 
     pub fn close_dialog(&mut self) {
         self.dialog = None;
+    }
+
+    /// 140: whether it is snowing.
+    pub fn snow(&self) -> bool {
+        self.snow
+    }
+
+    pub fn set_snow(&mut self, snow: bool) {
+        self.snow = snow;
     }
 
     /// 141: put a full-screen picture over everything, or clear it.

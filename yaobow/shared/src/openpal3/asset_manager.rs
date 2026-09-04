@@ -465,6 +465,11 @@ impl AssetManager {
         self.basedata_path.join("EffectScn")
     }
 
+    /// `basedata\\effect`, where the weather textures live.
+    pub fn effect_root(&self) -> PathBuf {
+        self.basedata_path.join("effect")
+    }
+
     /// A file under `EffectScn`, e.g. the 141 screen effect's
     /// `EffectScn\Frame.Tga`.
     pub fn effect_scn_path(&self, name: &str) -> PathBuf {

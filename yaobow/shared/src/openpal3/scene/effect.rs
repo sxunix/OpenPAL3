@@ -259,6 +259,10 @@ pub(crate) fn build_frame_animated_billboard(
 
 /// Decode a PAL3 `.dds`/`.tga` texture, flipping it upright (PAL3 DDS
 /// are bottom-up D3D9 textures, like the rest of the loaders).
+pub(crate) fn load_effect_texture(vfs: &MiniFs, path: &Path) -> Option<image::RgbaImage> {
+    load_texture(vfs, path)
+}
+
 fn load_texture(vfs: &MiniFs, path: &Path) -> Option<image::RgbaImage> {
     let mut file = vfs.open(path).ok()?;
     let mut bytes = vec![];

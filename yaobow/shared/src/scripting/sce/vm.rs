@@ -853,7 +853,7 @@ impl SceProcContext {
             }
             140 => {
                 // Snow
-                nop_command!(self, Snow, i32)
+                command!(self, SceCommandSnow, on: i32)
             }
             141 => {
                 // ScrEft
