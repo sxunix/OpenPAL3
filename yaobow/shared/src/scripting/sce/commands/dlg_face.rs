@@ -27,17 +27,19 @@ impl SceCommand for SceCommandDlgFace {
         } else {
             self._id
         };
-        let role_entity = {
-            let scn = _scene_manager.scn_scene().unwrap();
-            let s = scn.inner::<crate::openpal3::scene::ScnScene>();
-            s.get_role_entity(_resolved_role_id)
-        }
-        .unwrap();
-        let role_name = RoleController::get_role_controller(role_entity.clone())
-            .unwrap()
-            .inner::<RoleController>()
-            .model_name()
-            .to_owned();
+        // A script can name a role the current scene never built — the
+        // portrait is then simply absent rather than fatal.
+        let role_entity = _scene_manager.scn_scene().and_then(|scn| {
+            scn.inner::<crate::openpal3::scene::ScnScene>()
+                .get_role_entity(_resolved_role_id)
+        });
+        let Some(role_name) = role_entity
+            .and_then(RoleController::get_role_controller)
+            .map(|c| c.inner::<RoleController>().model_name().to_owned())
+        else {
+            log::warn!("DlgFace: 场景里没有角色 {_resolved_role_id}");
+            return true;
+        };
         state.set_dialog_avatar(&role_name, &self.face_name, self.left_or_right);
 
         true

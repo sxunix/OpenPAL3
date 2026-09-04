@@ -77,38 +77,56 @@ impl ScnScene {
         &self.nav
     }
 
+    /// A scene ships either one or two nav layers, and a role carries the
+    /// layer it was standing on across a scene change —
+    /// `RoleController::switch_nav_layer` toggles modulo 2 whatever the
+    /// scene has. Reading past the end aborted the process, so every
+    /// layer lookup is clamped to what this scene actually holds.
+    fn nav_layer(&self, layer: usize) -> usize {
+        self.nav.layer(layer)
+    }
+
     pub fn nav_min_coord(&self, layer: usize) -> Vec3 {
-        self.nav.nav_file.maps[layer].min_coord
+        self.nav.nav_file.maps[self.nav_layer(layer)].min_coord
     }
 
     pub fn nav_block_size(&self, layer: usize) -> (f32, f32) {
-        self.nav.block_sizes[layer]
+        self.nav.block_sizes[self.nav_layer(layer)]
     }
 
     pub fn get_distance_to_border_by_scene_coord(&self, layer: usize, coord: &Vec3) -> f32 {
         let nav_coord = self.scene_coord_to_nav_coord(layer, coord);
-        if nav_coord.0.floor() as u32 >= self.nav.nav_file.maps[layer].width
-            || nav_coord.1.floor() as u32 >= self.nav.nav_file.maps[layer].height
+        if nav_coord.0.floor() as u32 >= self.nav.nav_file.maps[self.nav_layer(layer)].width
+            || nav_coord.1.floor() as u32 >= self.nav.nav_file.maps[self.nav_layer(layer)].height
         {
             return 0.;
         }
 
         let nav_coord_floor = (
-            (nav_coord.0.floor() as usize)
-                .clamp(0, self.nav.nav_file.maps[layer].width as usize - 1),
-            (nav_coord.1.floor() as usize)
-                .clamp(0, self.nav.nav_file.maps[layer].height as usize - 1),
+            (nav_coord.0.floor() as usize).clamp(
+                0,
+                self.nav.nav_file.maps[self.nav_layer(layer)].width as usize - 1,
+            ),
+            (nav_coord.1.floor() as usize).clamp(
+                0,
+                self.nav.nav_file.maps[self.nav_layer(layer)].height as usize - 1,
+            ),
         );
 
         let nav_coord_ceil = (
-            (nav_coord.0.ceil() as usize)
-                .clamp(0, self.nav.nav_file.maps[layer].width as usize - 1),
-            (nav_coord.1.ceil() as usize)
-                .clamp(0, self.nav.nav_file.maps[layer].height as usize - 1),
+            (nav_coord.0.ceil() as usize).clamp(
+                0,
+                self.nav.nav_file.maps[self.nav_layer(layer)].width as usize - 1,
+            ),
+            (nav_coord.1.ceil() as usize).clamp(
+                0,
+                self.nav.nav_file.maps[self.nav_layer(layer)].height as usize - 1,
+            ),
         );
-        let distance_floor =
-            &self.nav.nav_file.maps[layer].map[nav_coord_floor.1][nav_coord_floor.0];
-        let _distance_ceil = &self.nav.nav_file.maps[layer].map[nav_coord_ceil.1][nav_coord_ceil.0];
+        let distance_floor = &self.nav.nav_file.maps[self.nav_layer(layer)].map[nav_coord_floor.1]
+            [nav_coord_floor.0];
+        let _distance_ceil =
+            &self.nav.nav_file.maps[self.nav_layer(layer)].map[nav_coord_ceil.1][nav_coord_ceil.0];
         /*std::cmp::min(
             distance_floor.distance_to_border,
             distance_ceil.distance_to_border,
@@ -142,7 +160,8 @@ impl ScnScene {
     }
 
     pub fn test_nav_layer_trigger(&self, layer: usize, coord: &Vec3) -> bool {
-        if let Some(layer_triggers) = &self.nav.nav_file.maps[layer].layer_triggers {
+        if let Some(layer_triggers) = &self.nav.nav_file.maps[self.nav_layer(layer)].layer_triggers
+        {
             let nav_coord = self
                 .nav
                 .round_nav_coord(layer, self.scene_coord_to_nav_coord(layer, coord));
@@ -275,11 +294,15 @@ impl ScnScene {
     }
 
     pub fn get_height(&self, layer: usize, nav_coord: (f32, f32)) -> f32 {
-        let x = (nav_coord.0.floor() as usize)
-            .clamp(0, self.nav.nav_file.maps[layer].width as usize - 1);
-        let y = (nav_coord.1.floor() as usize)
-            .clamp(0, self.nav.nav_file.maps[layer].height as usize - 1);
-        self.nav.nav_file.maps[layer].map[y][x].height
+        let x = (nav_coord.0.floor() as usize).clamp(
+            0,
+            self.nav.nav_file.maps[self.nav_layer(layer)].width as usize - 1,
+        );
+        let y = (nav_coord.1.floor() as usize).clamp(
+            0,
+            self.nav.nav_file.maps[self.nav_layer(layer)].height as usize - 1,
+        );
+        self.nav.nav_file.maps[self.nav_layer(layer)].map[y][x].height
     }
 
     pub fn scene_coord_to_nav_coord(&self, layer: usize, coord: &Vec3) -> (f32, f32) {
@@ -730,6 +753,11 @@ pub struct Nav {
 }
 
 impl Nav {
+    /// See [`ScnScene::nav_layer`].
+    pub fn layer(&self, layer: usize) -> usize {
+        layer.min(self.nav_file.maps.len().saturating_sub(1))
+    }
+
     pub fn new(nav_file: NavFile) -> Self {
         let mut block_sizes = vec![];
         for i in 0..nav_file.maps.len() {
@@ -746,8 +774,10 @@ impl Nav {
 
     pub fn round_nav_coord(&self, layer: usize, nav_coord: (f32, f32)) -> (i32, i32) {
         let nav_coord_floor = (
-            (nav_coord.0.floor() as i32).clamp(0, self.nav_file.maps[layer].width as i32 - 1),
-            (nav_coord.1.floor() as i32).clamp(0, self.nav_file.maps[layer].height as i32 - 1),
+            (nav_coord.0.floor() as i32)
+                .clamp(0, self.nav_file.maps[self.layer(layer)].width as i32 - 1),
+            (nav_coord.1.floor() as i32)
+                .clamp(0, self.nav_file.maps[self.layer(layer)].height as i32 - 1),
         );
 
         nav_coord_floor
@@ -759,20 +789,23 @@ impl Nav {
 
     pub fn get_map_size(&self, layer: usize) -> (usize, usize) {
         (
-            self.nav_file.maps[layer].width as usize,
-            self.nav_file.maps[layer].height as usize,
+            self.nav_file.maps[self.layer(layer)].width as usize,
+            self.nav_file.maps[self.layer(layer)].height as usize,
         )
     }
 
     pub fn get(&self, layer: usize, nav_coord_x: i32, nav_coord_z: i32) -> Option<NavMapPoint> {
         if nav_coord_x < 0
             || nav_coord_z < 0
-            || nav_coord_x as u32 >= self.nav_file.maps[layer].width
-            || nav_coord_z as u32 >= self.nav_file.maps[layer].height
+            || nav_coord_x as u32 >= self.nav_file.maps[self.layer(layer)].width
+            || nav_coord_z as u32 >= self.nav_file.maps[self.layer(layer)].height
         {
             None
         } else {
-            Some(self.nav_file.maps[layer].map[nav_coord_z as usize][nav_coord_x as usize])
+            Some(
+                self.nav_file.maps[self.layer(layer)].map[nav_coord_z as usize]
+                    [nav_coord_x as usize],
+            )
         }
     }
 
@@ -788,11 +821,12 @@ impl Nav {
 
     pub fn print_map(&self) {
         for layer in 0..self.nav_file.maps.len() {
-            for j in 0..self.nav_file.maps[layer].height {
-                for i in 0..self.nav_file.maps[layer].width {
+            for j in 0..self.nav_file.maps[self.layer(layer)].height {
+                for i in 0..self.nav_file.maps[self.layer(layer)].width {
                     print!(
                         "{} ",
-                        self.nav_file.maps[layer].map[j as usize][i as usize].distance_to_border
+                        self.nav_file.maps[self.layer(layer)].map[j as usize][i as usize]
+                            .distance_to_border
                     );
                 }
 

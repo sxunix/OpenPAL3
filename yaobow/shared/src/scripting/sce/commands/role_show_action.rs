@@ -15,6 +15,11 @@ pub struct SceCommandRoleShowAction {
     role_id: i32,
     action_name: String,
     repeat_mode: i32,
+    /// Whether the action actually started. A model with no `.mv3` for
+    /// the named action leaves its animation state untouched, so waiting
+    /// on it never ends — Q08/hn01's role 11 (model 203, action `j04`)
+    /// used to hang the whole script system there.
+    started: bool,
 }
 
 impl SceCommand for SceCommandRoleShowAction {
@@ -26,10 +31,12 @@ impl SceCommand for SceCommandRoleShowAction {
             _ => RoleAnimationRepeatMode::Repeat(1),
         };
 
-        let _ = scene_manager.resolve_role_mut_do(state, self.role_id, |_, r| {
-            r.set_active(true);
-            r.play_anim(&self.action_name, repeat);
-        });
+        self.started = scene_manager
+            .resolve_role_mut_do(state, self.role_id, |_, r| {
+                r.set_active(true);
+                r.play_anim(&self.action_name, repeat)
+            })
+            .unwrap_or(false);
     }
 
     fn update(
@@ -43,6 +50,11 @@ impl SceCommand for SceCommandRoleShowAction {
         // signalling `AnimationFinished` each cycle — so the script must not
         // block on it. Treat it as fire-and-forget and advance immediately.
         if self.repeat_mode == -1 {
+            return true;
+        }
+
+        // Nothing started, nothing to wait for.
+        if !self.started {
             return true;
         }
 
@@ -67,6 +79,7 @@ impl SceCommandRoleShowAction {
             role_id,
             action_name,
             repeat_mode,
+            started: false,
         }
     }
 }

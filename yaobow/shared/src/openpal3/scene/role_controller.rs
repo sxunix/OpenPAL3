@@ -242,49 +242,62 @@ impl RoleController {
         *self.proc_id.borrow_mut() = proc_id;
     }
 
-    pub fn play_anim(&self, anim_name: &str, repeat_mode: RoleAnimationRepeatMode) {
+    /// Start `anim_name`. Returns whether an animation was actually
+    /// started: a name the model has no `.mv3` for leaves the controller
+    /// untouched, and a caller that blocks on the action finishing (the
+    /// 22 `RoleShowAction` command) has to know, or it waits for a state
+    /// change that can never come.
+    pub fn play_anim(&self, anim_name: &str, repeat_mode: RoleAnimationRepeatMode) -> bool {
         let anim_name = anim_name.to_lowercase();
-        if !anim_name.is_empty() {
-            match self.animations.get(&anim_name) {
-                Some(anim) => {
-                    self.play_anim_mesh_internal(
-                        anim.key().to_string(),
-                        anim.value().clone(),
-                        repeat_mode,
-                    );
-                }
-                _ => {
-                    let override_name = self.texture_override.borrow().clone();
-                    let anim = self
-                        .asset_mgr
-                        .load_role_anim_with_texture(
+        if anim_name.is_empty() {
+            return false;
+        }
+        match self.animations.get(&anim_name) {
+            Some(anim) => {
+                self.play_anim_mesh_internal(
+                    anim.key().to_string(),
+                    anim.value().clone(),
+                    repeat_mode,
+                );
+                true
+            }
+            _ => {
+                let override_name = self.texture_override.borrow().clone();
+                let anim = self
+                    .asset_mgr
+                    .load_role_anim_with_texture(
+                        self.entity.clone(),
+                        &self.model_name,
+                        &anim_name,
+                        override_name.as_deref(),
+                    )
+                    .or_else(|| {
+                        // A texture the script named but the data does
+                        // not have would otherwise leave the actor with
+                        // no mesh at all; fall back to its own.
+                        if let Some(name) = &override_name {
+                            log::warn!(
+                                "SetRoleTexture: role\\{}\\{}.tga 读不到，用原贴图",
+                                self.model_name,
+                                name
+                            );
+                        }
+                        self.asset_mgr.load_role_anim(
                             self.entity.clone(),
                             &self.model_name,
                             &anim_name,
-                            override_name.as_deref(),
                         )
-                        .or_else(|| {
-                            // A texture the script named but the data does
-                            // not have would otherwise leave the actor with
-                            // no mesh at all; fall back to its own.
-                            if let Some(name) = &override_name {
-                                log::warn!(
-                                    "SetRoleTexture: role\\{}\\{}.tga 读不到，用原贴图",
-                                    self.model_name,
-                                    name
-                                );
-                            }
-                            self.asset_mgr.load_role_anim(
-                                self.entity.clone(),
-                                &self.model_name,
-                                &anim_name,
-                            )
-                        });
+                    });
 
-                    if let Some(anim) = anim {
+                match anim {
+                    Some(anim) => {
                         self.animations.insert(anim_name.to_string(), anim.clone());
-                        self.play_anim_mesh_internal(anim_name, anim.clone(), repeat_mode);
-                        return;
+                        self.play_anim_mesh_internal(anim_name, anim, repeat_mode);
+                        true
+                    }
+                    None => {
+                        log::warn!("角色 {} 没有动作 {}", self.model_name, anim_name);
+                        false
                     }
                 }
             }
