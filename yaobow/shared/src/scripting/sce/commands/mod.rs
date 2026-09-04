@@ -163,7 +163,10 @@ pub use story_flags::{
     SceCommandLearnCompose, SceCommandLoadAction, SceCommandLongKuiMode, SceCommandRoleOverlap,
     SceCommandRoleScale, SceCommandSetRoleTexture, SceCommandVarDistract,
 };
-pub use team::{SceCommandTeamCloseOnSceneChange, SceCommandTeamOpenOnSceneChange};
+pub use team::{
+    SceCommandTeamClose, SceCommandTeamCloseOnSceneChange, SceCommandTeamOpen,
+    SceCommandTeamOpenOnSceneChange,
+};
 pub use testgoto::SceCommandTestGoto;
 pub use text_ui::{SceCommandCaption, SceCommandNote};
 

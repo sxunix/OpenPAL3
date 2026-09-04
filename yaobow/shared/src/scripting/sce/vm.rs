@@ -427,12 +427,12 @@ impl SceProcContext {
                 command!(self, SceCommandRoleTurnFace, role_id: i32, degree: i32)
             }
             25 => {
-                // TeamOpen
-                nop_command!(self, TeamOpen)
+                // TeamOpen — 队伍散开
+                command!(self, SceCommandTeamOpen)
             }
             26 => {
-                // TeamClose
-                nop_command!(self, TeamClose)
+                // TeamClose — 队伍合并
+                command!(self, SceCommandTeamClose)
             }
             27 => {
                 // RoleInput

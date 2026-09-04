@@ -1,4 +1,4 @@
-//! 211 进入情节关时队伍散开 · 212 出情节关时队伍合并.
+//! 25 队伍散开 · 26 队伍合并 · 211 进情节关散开 · 212 出情节关合并.
 //!
 //! Both walk the five party slots and place every active member that is
 //! not the leader, taking the next entry of a five-row offset table as
@@ -13,8 +13,9 @@
 //! | 3 |  28.96 | 0 |  -82.99 |
 //! | 4 |  28.96 | 0 | -122.99 |
 //!
-//! `FUN_0040e110` (211) multiplies it by **−3** and `FUN_0040e3c0` (212)
-//! by **+2**, then builds the offset out of the leader's own axes and
+//! `FUN_0040de10` (25) uses the table as it stands, `FUN_0040e110` (211)
+//! multiplies it by **−3** and `FUN_0040e3c0` (212) by **+2**, then each
+//! builds the offset out of the leader's own axes and
 //! adds it to the leader's position. Every row's z is negative and 211's
 //! multiplier is negative, so members end up **behind** the leader — the
 //! basis at `role+0x14` is the backward direction, not the facing one.
@@ -51,6 +52,12 @@ const SPREAD: f32 = -3.0;
 
 /// 212's, which the decompiler shows as `x + x`.
 const GATHER: f32 = 2.0;
+
+/// 25 uses the table unscaled — `FUN_0040de10` multiplies each basis by
+/// `local_5c[-2]` and friends directly, with no constant. The rows are
+/// 43 to 126 units out, well under 景天's 76-unit height at the near end,
+/// so this is the tight fan the party opens into rather than 211's spread.
+const OPEN: f32 = 1.0;
 
 /// The five party slots the original walks (`&DAT_00c05f60`, stride
 /// 0x2200, up to 0xc10960). In yaobow these are the `ROLE_0`..`ROLE_4`
@@ -98,6 +105,76 @@ fn place(scene_manager: &ComRc<ISceneManager>, state: &mut SceState, scale: f32)
     }
 }
 
+/// Both "gather" opcodes end with every member on the leader; the
+/// original walks them in and waits, which needs follower pathing.
+fn gather(scene_manager: &ComRc<ISceneManager>, state: &mut SceState) {
+    let Some(leader) = scene_manager.get_resolved_role(state, -1) else {
+        return;
+    };
+    let leader_name = leader.name();
+    let position = leader.transform().borrow().position();
+    for slot in PARTY_SLOTS {
+        let Some(member) = scene_manager.get_resolved_role(state, slot) else {
+            continue;
+        };
+        if member.name() == leader_name {
+            continue;
+        }
+        member.transform().borrow_mut().set_position(&position);
+    }
+}
+
+/// 25 玩家队伍散开 — `LAB_004365a0` → `FUN_0040de10(1)`.
+///
+/// The original nudges each member 12 units along the leader's backward
+/// axis, then walks them out to their slot and waits. Without pathing
+/// they go straight to the slot, so the nudge has nothing to do.
+#[derive(Debug, Clone)]
+pub struct SceCommandTeamOpen {}
+
+impl SceCommand for SceCommandTeamOpen {
+    fn update(
+        &mut self,
+        scene_manager: ComRc<ISceneManager>,
+        _ui: &Ui,
+        state: &mut SceState,
+        _delta_sec: f32,
+    ) -> bool {
+        place(&scene_manager, state, OPEN);
+        true
+    }
+}
+
+impl SceCommandTeamOpen {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
+/// 26 玩家队伍合并 — `LAB_004365b0` → `FUN_0040e0a0(1)`, which orders each
+/// member to the leader's position and waits for them to arrive.
+#[derive(Debug, Clone)]
+pub struct SceCommandTeamClose {}
+
+impl SceCommand for SceCommandTeamClose {
+    fn update(
+        &mut self,
+        scene_manager: ComRc<ISceneManager>,
+        _ui: &Ui,
+        state: &mut SceState,
+        _delta_sec: f32,
+    ) -> bool {
+        gather(&scene_manager, state);
+        true
+    }
+}
+
+impl SceCommandTeamClose {
+    pub fn new() -> Self {
+        Self {}
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SceCommandTeamOpenOnSceneChange {}
 
@@ -134,21 +211,8 @@ impl SceCommand for SceCommandTeamCloseOnSceneChange {
         // The original puts each member at twice the offset and then
         // walks them into the leader; with no pathing the endpoint is the
         // leader's own position.
-        let Some(leader) = scene_manager.get_resolved_role(state, -1) else {
-            return true;
-        };
-        let leader_name = leader.name();
-        let position = leader.transform().borrow().position();
-        for slot in PARTY_SLOTS {
-            let Some(member) = scene_manager.get_resolved_role(state, slot) else {
-                continue;
-            };
-            if member.name() == leader_name {
-                continue;
-            }
-            member.transform().borrow_mut().set_position(&position);
-        }
         let _ = GATHER;
+        gather(&scene_manager, state);
         true
     }
 }
@@ -188,6 +252,24 @@ mod tests {
         let p = t.position();
         assert!(p.z > 9.9, "局部 +Z 应当指向身后，实得 {p:?}");
         assert!(p.x.abs() < 1e-3 && p.y.abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_three_multipliers_scale_the_same_table_differently() {
+        // 25 takes the table as it stands, 211 spreads by -3 and 212
+        // gathers at +2. Only 211's is negative, which is what flips its
+        // members to the other side of the leader.
+        assert_eq!(OPEN, 1.0);
+        assert_eq!(SPREAD, -3.0);
+        assert_eq!(GATHER, 2.0);
+        assert!(SPREAD < 0. && OPEN > 0. && GATHER > 0.);
+
+        // 25's fan is tight: under two body heights at its widest.
+        let widest = FORMATION
+            .iter()
+            .map(|r| ((r[0] * OPEN).powi(2) + (r[2] * OPEN).powi(2)).sqrt())
+            .fold(0f32, f32::max);
+        assert!(widest < 2. * 76.0, "{widest}");
     }
 
     #[test]
