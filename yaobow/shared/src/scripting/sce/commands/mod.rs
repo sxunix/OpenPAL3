@@ -72,6 +72,7 @@ mod team;
 mod testgoto;
 mod text_ui;
 pub mod vars;
+mod world_rotate;
 
 pub use _let::{SceCommandLet, SceCommandLetAdd};
 pub use between::SceCommandBetween;
@@ -175,6 +176,7 @@ pub use team::{
 };
 pub use testgoto::SceCommandTestGoto;
 pub use text_ui::{SceCommandCaption, SceCommandNote};
+pub use world_rotate::{SceCommandRotateWorld, SceCommandRotateWorldBack};
 
 use radiance::math::Vec3;
 

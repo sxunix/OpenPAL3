@@ -759,8 +759,9 @@ impl SceProcContext {
                 command!(self, SceCommandSetRoleTexture, role_id: i32, texture: string)
             }
             117 => {
-                // Rotate
-                nop_command!(self, Rotate, i32, i32, i32)
+                // Rotate — turns the world back to normal; see
+                // `commands/world_rotate.rs` on the swapped names.
+                command!(self, SceCommandRotateWorldBack, x: i32, y: i32, z: i32)
             }
             118 => {
                 // Quake
@@ -809,7 +810,8 @@ impl SceProcContext {
                 command!(self, SceCommandEntryRow, id: i32, proc_id: i32)
             }
             128 => {
-                nop_command!(self, RotateInv, i32, i32, i32)
+                // RotateInv — the one that actually tilts the world.
+                command!(self, SceCommandRotateWorld, x: i32, y: i32, z: i32)
             }
             130 => {
                 // Dist — 变量相减取绝对值
