@@ -40,6 +40,18 @@ pub struct ScnNode {
     pub b: Vec<u8>,
 }
 
+impl ScnNode {
+    /// The id scripts address this object by. `index` is a `u16`, but the
+    /// runtime object only keeps its **low byte** and
+    /// `FUN_00421560` compares that byte against the id a command passes
+    /// in — so a scene numbering its nodes from 257 (M02 does) exposes
+    /// them to scripts as 1, 2, 3. The low byte is unique within every
+    /// shipped `.scn`.
+    pub fn object_id(&self) -> i32 {
+        (self.index & 0xff) as i32
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ScnRole {
     pub index: u8,

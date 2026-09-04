@@ -334,7 +334,21 @@ impl ScnScene {
 
     /// Ids of every object the scene file declares.
     pub fn object_ids(&self) -> Vec<i32> {
-        self.scn_file.nodes.iter().map(|n| n.index as i32).collect()
+        self.scn_file.nodes.iter().map(|n| n.object_id()).collect()
+    }
+
+    /// Where a scene object stands and which way it faces, straight out
+    /// of the `.scn` node — the rotation in radians, the same value
+    /// [`Self::apply_position_rotation`] turns into the entity's
+    /// transform. Commands that place an actor relative to an object
+    /// (74 攀爬) need the angle itself, which the transform no longer
+    /// spells out.
+    pub fn object_placement(&self, id: i32) -> Option<(Vec3, f32)> {
+        self.scn_file
+            .nodes
+            .iter()
+            .find(|n| n.object_id() == id)
+            .map(|n| (n.position, n.rotation.to_radians()))
     }
 
     pub fn get_root_object(&self, id: i32) -> Option<ComRc<IEntity>> {
@@ -532,7 +546,7 @@ impl ScnScene {
                         &self.scn_file.scn_base_name,
                         &obj.name,
                         self.scn_file.is_night,
-                        obj.index,
+                        obj.object_id() as u16,
                     ) {
                         Some(p) => {
                             entity = Some(p);
@@ -543,7 +557,7 @@ impl ScnScene {
                                 &self.scn_file.scn_base_name,
                                 &obj.name,
                                 self.scn_file.is_night,
-                                obj.index,
+                                obj.object_id() as u16,
                             ) {
                                 Some(c) => {
                                     entity = Some(c);
@@ -557,13 +571,13 @@ impl ScnScene {
                 } else if obj.name.to_lowercase().ends_with(".pol") {
                     entity = Some(
                         self.asset_mgr
-                            .load_object_item_pol(&obj.name, obj.index, visible)
+                            .load_object_item_pol(&obj.name, obj.object_id() as u16, visible)
                             .unwrap(),
                     );
                 } else if obj.name.to_lowercase().ends_with(".cvd") {
                     entity = Some(
                         self.asset_mgr
-                            .load_object_item_cvd(&obj.name, obj.index, visible)
+                            .load_object_item_cvd(&obj.name, obj.object_id() as u16, visible)
                             .unwrap(),
                     );
                 } else if obj.name.as_bytes()[0] as char == '+' {
@@ -571,7 +585,7 @@ impl ScnScene {
                 } else {
                     entity = Some(
                         self.asset_mgr
-                            .load_object_item_pol(&obj.name, obj.index, visible)
+                            .load_object_item_pol(&obj.name, obj.object_id() as u16, visible)
                             .unwrap(),
                     );
                 }
@@ -634,7 +648,8 @@ impl ScnScene {
             return None;
         }
         let effect_id = obj.dw184.get(3).copied().unwrap_or(0);
-        self.asset_mgr.load_scene_effect(effect_id, obj.index)
+        self.asset_mgr
+            .load_scene_effect(effect_id, obj.object_id() as u16)
     }
 
     fn apply_position_rotation(entity: ComRc<IEntity>, position: &Vec3, rotation: f32) {
