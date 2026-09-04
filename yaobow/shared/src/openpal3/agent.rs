@@ -192,9 +192,19 @@ pub fn build_snapshot(ctx: &Pal3DispatchCtx) -> StateSnapshot {
     snap.script_running = script_running;
     snap.current_script_fn = sce_vm.state().context().current_proc_name();
 
-    // PAL3 dialog/movie surfaces aren't readable from outside the
-    // SceVm today; leave them at defaults rather than fabricate data.
-    snap.dialog = DialogSnapshot::default();
+    // The dialog box itself lives in a p7 renderer that cannot be read
+    // back, so the dialog commands mirror what they are showing onto
+    // `SceState`. Without this an automation driver cannot tell "waiting
+    // for the player to advance text" from "stuck".
+    snap.dialog = match sce_vm.state().dialog() {
+        Some(d) => DialogSnapshot {
+            open: true,
+            text: d.text.clone(),
+            avatar: d.avatar.clone(),
+            choices: d.choices.clone(),
+        },
+        None => DialogSnapshot::default(),
+    };
     snap
 }
 

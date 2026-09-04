@@ -65,6 +65,7 @@ impl SceCommand for SceCommandDlgSel {
                     .context_mut()
                     .current_proc_context_mut()
                     .set_dlgsel(sel);
+                state.close_dialog();
                 return true;
             }
         }
@@ -74,9 +75,11 @@ impl SceCommand for SceCommandDlgSel {
             // is not_implemented). Under agent fast-forward, pick the first
             // option so automated runs don't stall waiting on a number key.
             state.context_mut().current_proc_context_mut().set_dlgsel(0);
+            state.close_dialog();
             return true;
         }
 
+        state.set_dialog_choices(self.list.clone());
         return false;
     }
 

@@ -95,6 +95,22 @@ pub struct SceState {
     /// 68 Note's toast: the text and how long it still has to live. The
     /// command does not block, so the vm draws and ages it.
     note: Option<(String, f32)>,
+    /// What the dialog box is showing, so the agent snapshot can report
+    /// it. The box itself lives in a p7 renderer that cannot be read
+    /// back, and an automation driver has no other way to tell "waiting
+    /// for the player to advance text" from "stuck".
+    dialog: Option<DialogState>,
+}
+
+/// The dialog box's readable state — mirrors the agent contract's
+/// `DialogSnapshot`.
+#[derive(Debug, Clone, Default)]
+pub struct DialogState {
+    pub text: String,
+    /// `"left"`, `"right"`, or empty when no avatar is up.
+    pub avatar: String,
+    /// Choices offered by a select-dialog, empty otherwise.
+    pub choices: Vec<String>,
 }
 
 /// How long a 68 Note stays up. The original's dwell time lives in the
@@ -132,6 +148,7 @@ impl SceState {
             dialog_renderer,
             status_renderer,
             note: None,
+            dialog: None,
         }
     }
 
@@ -204,6 +221,36 @@ impl SceState {
 
     pub fn ext_mut(&mut self) -> &mut HashMap<String, Box<dyn Any>> {
         &mut self.ext
+    }
+
+    /// What the dialog box is showing, or `None` when it is closed.
+    pub fn dialog(&self) -> Option<&DialogState> {
+        self.dialog.as_ref()
+    }
+
+    /// Called by the dialog commands each frame the box is up.
+    pub fn set_dialog_text(&mut self, text: &str) {
+        match self.dialog.as_mut() {
+            Some(d) => {
+                if d.text != text {
+                    text.clone_into(&mut d.text);
+                }
+            }
+            None => {
+                self.dialog = Some(DialogState {
+                    text: text.to_string(),
+                    ..Default::default()
+                })
+            }
+        }
+    }
+
+    pub fn set_dialog_choices(&mut self, choices: Vec<String>) {
+        self.dialog.get_or_insert_with(Default::default).choices = choices;
+    }
+
+    pub fn close_dialog(&mut self) {
+        self.dialog = None;
     }
 
     pub fn show_note(&mut self, text: String) {
@@ -287,13 +334,18 @@ impl SceState {
     /// Set the dialog avatar/portrait (PAL3 `dlgface`). The p7 renderer
     /// loads the portrait sprite; called outside any `with_ui_host`
     /// scope so the texture-cache upload doesn't re-enter a held borrow.
-    pub fn set_dialog_avatar(&self, role: &str, face: &str, side: i32) {
+    pub fn set_dialog_avatar(&mut self, role: &str, face: &str, side: i32) {
         self.dialog_renderer.set_avatar(role, face, side);
+        let side = if side == 0 { "left" } else { "right" };
+        self.dialog.get_or_insert_with(Default::default).avatar = side.to_string();
     }
 
     /// Clear the dialog avatar/portrait (end of a `dlg` beat).
-    pub fn clear_dialog_avatar(&self) {
+    pub fn clear_dialog_avatar(&mut self) {
         self.dialog_renderer.clear_avatar();
+        if let Some(d) = self.dialog.as_mut() {
+            d.avatar.clear();
+        }
     }
 
     /// Compose the top-right status indicator for this frame. Called only

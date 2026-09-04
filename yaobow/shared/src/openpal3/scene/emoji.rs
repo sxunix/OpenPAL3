@@ -119,9 +119,11 @@ pub fn build_emoji(
         }
     };
 
-    // The sheet is padded to a power of two; only `frames * frame_w` by
-    // `frame_h` of it is the animation. Crop from the bottom-left, since
-    // the flip put the original top-left there.
+    // The sheet is padded to a power of two and the frames sit against
+    // its **bottom** edge, not its top: `EM_06.tga` is 128 x 64 with the
+    // four hearts occupying rows 23..64. In the raw image the strip is
+    // therefore at `y = height - frame_h`; after the flip above it lands
+    // at `y = 0`.
     let used_w = frame_w * frames;
     if sheet.width() < used_w || sheet.height() < frame_h {
         log::warn!(
@@ -133,8 +135,7 @@ pub fn build_emoji(
         );
         return None;
     }
-    let top = sheet.height() - frame_h;
-    let atlas = image::imageops::crop_imm(&sheet, 0, top, used_w, frame_h).to_image();
+    let atlas = image::imageops::crop_imm(&sheet, 0, 0, used_w, frame_h).to_image();
 
     let width = EMOJI_HEIGHT * frame_w as f32 / frame_h as f32;
     let entity = build_frame_animated_billboard(
