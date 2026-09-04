@@ -36,6 +36,13 @@ impl RenderObject for SwitchGLRenderObject {
     fn material_debug_name(&self) -> Option<&str> {
         Some(self.material.name())
     }
+
+    /// Same bounds the Vulkan backend reports, so anything that reads
+    /// geometry through this (the 74 攀爬 command sizes its climb off the
+    /// ladder's own height) behaves the same on the Switch.
+    fn local_aabb(&self) -> Option<([f32; 3], [f32; 3])> {
+        self.vertices.borrow().aabb_min_max()
+    }
 }
 
 impl SwitchGLRenderObject {
