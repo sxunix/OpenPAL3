@@ -67,11 +67,18 @@ fn new_from_cvd_model_node<P: AsRef<Path>>(
                 continue;
             }
 
+            // Only the first frame reaches the GPU. A CVD mesh carries one
+            // vertex set per frame plus `animation_time_keys`, and the
+            // visible part of a prop's animation is the morph between them
+            // — the node's position/rotation/scale tracks move far less.
+            // Pal3.Unity rebuilds the vertex buffer every frame from
+            // `frameIndex` + `influence` (`CvdModelRenderer::UpdateMesh`);
+            // the same shape is already available here as `MorphTarget` +
+            // `AnimatedMeshComponent`, which is how MV3 actors animate.
+            // Until that is wired up, props hold their first frame.
             for v in &model.mesh.frames {
                 let mesh = CvdMesh::new(v, material, load_texture(material, vfs, path.as_ref()));
                 meshes.push(mesh);
-
-                // TODO: Support multiple frames
                 break;
             }
         }

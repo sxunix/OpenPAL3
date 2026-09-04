@@ -507,7 +507,7 @@ fn build_mesh(
         frames.push(vertices);
     }
 
-    let frame_extra = extras
+    let animation_time_keys = extras
         .map(|e| e.unknown_data.clone())
         .filter(|d| d.len() == frame_count)
         .unwrap_or_else(|| frame_times.clone());
@@ -516,7 +516,7 @@ fn build_mesh(
         frame_count: frame_count as u32,
         vertex_count,
         frames,
-        frame_extra,
+        animation_time_keys,
         material_count: materials.len() as u32,
         materials,
     })
@@ -959,7 +959,7 @@ fn model_to_extras(model: &CvdModel) -> CvdExtrasModel {
 
 fn mesh_to_extras(mesh: &CvdMesh) -> CvdExtrasMesh {
     CvdExtrasMesh {
-        unknown_data: mesh.frame_extra.clone(),
+        unknown_data: mesh.animation_time_keys.clone(),
         materials: mesh
             .materials
             .iter()

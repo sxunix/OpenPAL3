@@ -1039,7 +1039,7 @@ fn cvd_material_metadata_survives_leading_empty_material() {
         frame_count: 1,
         vertex_count: 3,
         frames: vec![frame],
-        unknown_data: vec![0.0],
+        animation_time_keys: vec![0.0],
         material_count: 2,
         materials: vec![empty_material, real_material],
     };
@@ -1327,7 +1327,7 @@ fn cvd_round_trip_preserves_vertex_count_across_shared_material_buffer() {
         frame_count: 1,
         vertex_count: 6,
         frames: vec![frame],
-        unknown_data: vec![0.0],
+        animation_time_keys: vec![0.0],
         material_count: 2,
         materials: vec![material_a, material_b],
     };

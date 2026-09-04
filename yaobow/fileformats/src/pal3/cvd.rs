@@ -173,9 +173,14 @@ pub struct CvdMesh {
     pub frame_count: u32,
     pub vertex_count: u32,
     pub frames: Vec<Vec<CvdVertex>>,
-    /// One `f32` per frame (originally read into `unknown_data`); purpose
-    /// unconfirmed.
-    pub frame_extra: Vec<f32>,
+    /// Timestamp of each mesh frame, one `f32` per frame, straight from
+    /// the file. These are the mesh's own animation keys — the vertex
+    /// morph runs on them, separately from the node's position/rotation/
+    /// scale tracks. Cross-checked against Pal3.Unity's `ReadMesh`, which
+    /// reads the same run of floats right after the frame vertices as
+    /// `AnimationTimeKeys`; it then rebases them so the first is 0, which
+    /// is left to the consumer here.
+    pub animation_time_keys: Vec<f32>,
     pub material_count: u32,
     pub materials: Vec<CvdMaterial>,
 }
@@ -618,8 +623,8 @@ pub fn read_mesh(reader: &mut (impl Read + ?Sized), version: CvdVersion) -> Resu
         frames.push(vertices);
     }
 
-    let mut frame_extra = vec![0f32; frame_count as usize];
-    reader.read_f32_into::<LittleEndian>(&mut frame_extra)?;
+    let mut animation_time_keys = vec![0f32; frame_count as usize];
+    reader.read_f32_into::<LittleEndian>(&mut animation_time_keys)?;
 
     let material_count = reader.read_u32::<LittleEndian>()?;
     let mut materials = Vec::with_capacity(material_count as usize);
@@ -631,7 +636,7 @@ pub fn read_mesh(reader: &mut (impl Read + ?Sized), version: CvdVersion) -> Resu
         frame_count,
         vertex_count,
         frames,
-        frame_extra,
+        animation_time_keys,
         material_count,
         materials,
     })
@@ -643,7 +648,7 @@ pub fn validate_mesh(mesh: &CvdMesh, version: CvdVersion) -> Result<()> {
     for frame in &mesh.frames {
         check_count("mesh.vertex_count", mesh.vertex_count, frame.len())?;
     }
-    check_count("mesh.frame_extra", mesh.frame_count, mesh.frame_extra.len())?;
+    check_count("mesh.animation_time_keys", mesh.frame_count, mesh.animation_time_keys.len())?;
     check_count(
         "mesh.material_count",
         mesh.material_count,
@@ -689,7 +694,7 @@ pub fn write_mesh(writer: &mut impl Write, mesh: &CvdMesh, version: CvdVersion) 
         }
     }
 
-    for v in &mesh.frame_extra {
+    for v in &mesh.animation_time_keys {
         writer.write_f32::<LittleEndian>(*v)?;
     }
 
@@ -875,7 +880,7 @@ mod tests {
                 vec![sample_vertex(0.0), sample_vertex(1.0), sample_vertex(2.0)],
                 vec![sample_vertex(3.0), sample_vertex(4.0), sample_vertex(5.0)],
             ],
-            frame_extra: vec![0.0, 1.0],
+            animation_time_keys: vec![0.0, 1.0],
             material_count: 1,
             materials: vec![sample_material(version.has_material_extra())],
         }

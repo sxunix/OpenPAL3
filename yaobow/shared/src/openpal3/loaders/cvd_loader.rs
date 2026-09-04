@@ -44,7 +44,9 @@ pub struct CvdMesh {
     pub frame_count: u32,
     pub vertex_count: u32,
     pub frames: Vec<Vec<CvdVertex>>,
-    pub unknown_data: Vec<f32>,
+    /// Timestamp of each mesh frame — the keys the vertex morph runs on,
+    /// separate from the node's position/rotation/scale tracks.
+    pub animation_time_keys: Vec<f32>,
     pub material_count: u32,
     pub materials: Vec<CvdMaterial>,
 }
@@ -221,7 +223,7 @@ fn convert_mesh(mesh: raw::CvdMesh) -> CvdMesh {
         frame_count: mesh.frame_count,
         vertex_count: mesh.vertex_count,
         frames,
-        unknown_data: mesh.frame_extra,
+        animation_time_keys: mesh.animation_time_keys,
         material_count: mesh.material_count,
         materials,
     }
