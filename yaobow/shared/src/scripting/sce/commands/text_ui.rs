@@ -121,16 +121,9 @@ impl SceCommand for SceCommandCaption {
 }
 
 fn load_caption(state: &SceState, name: &str) -> Option<Rc<Sprite>> {
-    use common::store_ext::StoreExt2;
-
     let asset_mgr = state.asset_mgr();
     let path = asset_mgr.caption_path(name);
-    let data = asset_mgr.vfs().read_to_end(&path).ok()?;
-    Some(Rc::new(Sprite::load_from_buffer(
-        &data,
-        image::ImageFormat::Tga,
-        asset_mgr.component_factory().as_ref(),
-    )))
+    asset_mgr.load_sprite(path)
 }
 
 impl SceCommandCaption {

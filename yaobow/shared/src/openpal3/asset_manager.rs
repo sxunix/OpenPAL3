@@ -6,11 +6,11 @@ use mini_fs::MiniFs;
 use mini_fs::prelude::*;
 use radiance::comdef::{IAnimatedMeshComponent, IEntity, IScene};
 use radiance::math::Vec3;
-use radiance::rendering::ComponentFactory;
+use radiance::rendering::{ComponentFactory, Sprite};
 use radiance::scene::{CoreScene, ISceneExt, SceneLight, SceneLighting};
 use radiance::utils::SeekRead;
 use std::io::BufReader;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::{io, rc::Rc};
 
 use crate::GameType;
@@ -26,6 +26,22 @@ use super::scene::ScnScene;
 use super::scene::create_animated_mesh_from_mv3;
 use super::scene::create_entity_from_cvd_model;
 use super::scene::create_mv3_entity;
+
+/// Which decoder a picture's extension implies. TGA has no magic
+/// number, so `image` cannot sniff it and the format has to be named.
+fn format_of(path: &Path) -> image::ImageFormat {
+    match path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .as_deref()
+    {
+        Some("dds") => image::ImageFormat::Dds,
+        Some("bmp") => image::ImageFormat::Bmp,
+        Some("png") => image::ImageFormat::Png,
+        _ => image::ImageFormat::Tga,
+    }
+}
 
 pub struct AssetManager {
     factory: Rc<dyn ComponentFactory>,
@@ -447,6 +463,42 @@ impl AssetManager {
     /// Path to the PAL3 scene-effect (`EffectScn`) asset root.
     fn effect_scn_root(&self) -> PathBuf {
         self.basedata_path.join("EffectScn")
+    }
+
+    /// A file under `EffectScn`, e.g. the 141 screen effect's
+    /// `EffectScn\Frame.Tga`.
+    pub fn effect_scn_path(&self, name: &str) -> PathBuf {
+        self.effect_scn_root().join(name)
+    }
+
+    /// Load a 2D picture the way the rest of the port reads textures:
+    /// the retail Chinese release ships almost everything as `.dds` even
+    /// where the code (and the exe's own strings) names a `.tga`, so try
+    /// that first and fall back to the name as written.
+    pub fn read_picture<P: AsRef<Path>>(&self, path: P) -> Option<image::RgbaImage> {
+        let path = path.as_ref();
+        let candidates = [
+            (path.with_extension("dds"), image::ImageFormat::Dds),
+            (path.to_path_buf(), format_of(path)),
+        ];
+        for (candidate, format) in candidates {
+            let Ok(data) = self.vfs.read_to_end(&candidate) else {
+                continue;
+            };
+            match image::load_from_memory_with_format(&data, format) {
+                Ok(image) => return Some(image.to_rgba8()),
+                Err(e) => log::warn!("解不开图片 {}: {e}", candidate.display()),
+            }
+        }
+        None
+    }
+
+    pub fn load_sprite<P: AsRef<Path>>(&self, path: P) -> Option<Rc<Sprite>> {
+        let image = self.read_picture(path)?;
+        Some(Rc::new(Sprite::load_from_image(
+            image,
+            self.factory.as_ref(),
+        )))
     }
 
     /// Build a PAL3 scene effect (candle / lamp / torch / fire) for the
