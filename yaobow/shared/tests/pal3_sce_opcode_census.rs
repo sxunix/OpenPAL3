@@ -213,7 +213,7 @@ impl<'a> Cursor<'a> {
 
 /// Walk one proc's instruction bytes, calling `seen` for each opcode.
 /// Returns `Err` at the first instruction it cannot make sense of.
-fn walk(inst: &[u8], mut seen: impl FnMut(u16)) -> Result<(), String> {
+pub fn walk(inst: &[u8], mut seen: impl FnMut(u16)) -> Result<(), String> {
     let mut c = Cursor { data: inst, pos: 0 };
     let mut trail: Vec<u16> = vec![];
     while c.pos < inst.len() {
@@ -323,4 +323,55 @@ fn every_opcode_the_shipped_scripts_use_has_an_arm() {
         unhandled.is_empty(),
         "这些指令号会让 vm panic: {unhandled:?}"
     );
+}
+
+/// Like [`walk`], but hands the caller each instruction's offset,
+/// opcode and decoded arguments. Used by the ad-hoc proc dumper.
+pub fn walk_verbose(inst: &[u8], mut seen: impl FnMut(usize, u16, String)) -> Result<(), String> {
+    let mut c = Cursor { data: inst, pos: 0 };
+    while c.pos < inst.len() {
+        let at = c.pos;
+        let op = c.u16().ok_or("truncated opcode")?;
+        let mask = c.u16().ok_or("truncated mask")?;
+        let sig = signature(op).ok_or_else(|| format!("unknown opcode {op} at {at}"))?;
+        let mut args = vec![String::new(); sig.len()];
+        for (i, p) in sig.iter().enumerate().rev() {
+            let is_var = *p == Var || (*p == Int && mask & (1 << i) != 0);
+            if is_var {
+                let v = c.u16().ok_or("truncated var")? as i16;
+                args[i] = format!("var{v}");
+                continue;
+            }
+            match p {
+                Int | Jump => {
+                    let b = c.data.get(c.pos..c.pos + 4).ok_or("truncated int")?;
+                    c.pos += 4;
+                    args[i] = i32::from_le_bytes([b[0], b[1], b[2], b[3]]).to_string();
+                }
+                Float => {
+                    let b = c.data.get(c.pos..c.pos + 4).ok_or("truncated float")?;
+                    c.pos += 4;
+                    args[i] = format!("{:.2}", f32::from_le_bytes([b[0], b[1], b[2], b[3]]));
+                }
+                Str => {
+                    let len = c.u16().ok_or("truncated len")? as usize;
+                    let b = c.data.get(c.pos..c.pos + len).ok_or("truncated str")?;
+                    c.pos += len;
+                    args[i] = format!("{:?}", String::from_utf8_lossy(&b[..len.saturating_sub(1)]));
+                }
+                List => {
+                    let n = c.u16().ok_or("truncated list")?;
+                    for _ in 0..n {
+                        c.skip(1).ok_or("t")?;
+                        let len = c.u16().ok_or("t")? as usize;
+                        c.skip(len).ok_or("t")?;
+                    }
+                    args[i] = format!("[{n} items]");
+                }
+                Var => unreachable!(),
+            }
+        }
+        seen(at, op, args.join(", "));
+    }
+    Ok(())
 }

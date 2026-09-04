@@ -465,9 +465,9 @@ impl SceProcContext {
                 command!(
                     self,
                     SceCommandCameraSet,
-                    y_rot: f32,
-                    x_rot: f32,
-                    unknown: f32,
+                    yaw: f32,
+                    pitch: f32,
+                    distance: f32,
                     x: f32,
                     y: f32,
                     z: f32,

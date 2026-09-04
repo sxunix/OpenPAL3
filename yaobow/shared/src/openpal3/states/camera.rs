@@ -92,6 +92,12 @@ impl Default for Pal3Camera {
 }
 
 /// `FUN_0041c710`'s direction: from the look-at point towards the camera.
+///
+/// The signs are the binary's, and they were checked against the screen:
+/// q01/xa's cutscene camera is `(yaw -167.1°, pitch -16.42°, distance
+/// 664)` with its look-at 187 units up, which puts the camera near ground
+/// level — an odd-looking framing, but negating the pitch renders a black
+/// frame, so the literal reading is the right one.
 pub fn direction(yaw: f32, pitch: f32) -> Vec3 {
     Vec3::new(
         yaw.sin() * pitch.cos(),
