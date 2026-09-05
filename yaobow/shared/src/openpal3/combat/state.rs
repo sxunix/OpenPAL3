@@ -55,6 +55,12 @@ pub const K_SPEED_DOWN: usize = 13;
 pub const K_SLEEP: usize = 17;
 pub const K_CONFUSED: usize = 18;
 pub const K_EVADE: usize = 21;
+/// 濒死（`FUN_004f3e20` 的 `case 0x18`）：不是标记，而是**当场把精压到上限的
+/// 十分之一**（`+0x24c = +0x250 / 10`，当前更低就不动）。压完之后每帧钳位
+/// `FUN_004f7880` 会据此置濒死位。
+pub const K_DYING: usize = 24;
+/// 即死（`case 0x19`）：精 > 0 就直接清零。
+pub const K_INSTANT_DEATH: usize = 25;
 pub const K_INVISIBLE: usize = 23;
 
 /// A permanent duration (`0x7fff`).
@@ -335,8 +341,24 @@ impl Combatant {
             onset,
             remaining: duration,
         };
-        if k == K_POISON_EARTH {
-            self.earth_poison_acc = self.max_hp as f32 * -0.02;
+        match k {
+            K_POISON_EARTH => self.earth_poison_acc = self.max_hp as f32 * -0.02,
+            // 这两个不是「挂个状态等它跳」，施加当场就改精——`FUN_004f3e20`
+            // 的 case 0x18 / 0x19 直接写 `+0x24c` 然后 return，不落状态槽。
+            K_DYING => {
+                let floor = self.max_hp / 10;
+                if self.hp > floor {
+                    self.hp = floor;
+                }
+                self.states[k] = StateTimer::default();
+            }
+            K_INSTANT_DEATH => {
+                if self.hp > 0 {
+                    self.hp = 0;
+                }
+                self.states[k] = StateTimer::default();
+            }
+            _ => {}
         }
     }
 
@@ -1185,5 +1207,26 @@ mod tests {
         }
         assert_eq!(b.get(0).unwrap().phase, Phase::Ready);
         assert!(!b.get(0).unwrap().defending, "轮到自己就该解除防御");
+    }
+
+    #[test]
+    fn dying_and_instant_death_change_hp_on_the_spot() {
+        // FUN_004f3e20 的 case 0x18 / 0x19：不落状态槽，直接改精然后 return。
+        let mut c = Combatant::new(0, Side::Party);
+        c.max_hp = 100;
+        c.hp = 90;
+        c.apply_state(K_DYING, 0, 5);
+        assert_eq!(c.hp, 10, "濒死把精压到上限的十分之一");
+        assert!(!c.has_state(K_DYING), "它不占状态槽");
+
+        // 已经低于十分之一就不动。
+        c.hp = 3;
+        c.apply_state(K_DYING, 0, 5);
+        assert_eq!(c.hp, 3);
+
+        c.hp = 50;
+        c.apply_state(K_INSTANT_DEATH, 0, 5);
+        assert_eq!(c.hp, 0);
+        assert!(!c.has_state(K_INSTANT_DEATH));
     }
 }
