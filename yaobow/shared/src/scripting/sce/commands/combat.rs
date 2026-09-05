@@ -17,6 +17,7 @@
 //! Everything the overlay shows comes from the rules layer, so replacing
 //! it later is a rendering change only.
 
+use crate::openpal3::combat::actions::GU_ITEM_ID;
 use crate::openpal3::combat::encounter::{CrtRand, Encounter, NO_ROUND_CAP, PendingFlags};
 use crate::openpal3::combat::session::{
     Action, CombatSession, Input, Menu, MenuEntry, PlayerTurn, Profile, Reward, SkillChoice,
@@ -264,6 +265,11 @@ impl SceCommandCombat {
                 .combat_scene(&scene, &block, floor_type)
                 .and_then(|name| db.combat().scene_element(name));
 
+            // 花钱的技能和蛊术要看队伍身上的钱和背包里的蛊，散场时再把花掉
+            // 的写回去（`FUN_004f3430` 改的是全队共用的钱，蛊是物品 6113）。
+            battle.money = persistent.money();
+            battle.gu = persistent.item_count(GU_ITEM_ID);
+
             // ---- party ----
             let team: Vec<u32> = persistent
                 .team()
@@ -414,7 +420,8 @@ impl SceCommandCombat {
                     // }
                     // ```
                     //
-                    // 所以**倒下的人确实回到 1 精**（外加 `+0x274` 扣 2）。
+                    // 所以**倒下的人确实回到 1 精**（外加 `+0x274`「情」扣 2，
+                    // 见 `FUN_004f34e0`；情不写回冒险记录，所以这里不管）。
                     //
                     // 而且它**只写回精那一个 dword**——`mov eax,[esi];
                     // mov [edi],eax`，气和神没有写回，战后会退回进战斗前的值。
@@ -422,6 +429,15 @@ impl SceCommandCombat {
                     // 两边是两张表（冒险跨度 0x580、战斗 0x37c）。
                     role.hp = c.hp.max(1);
                 }
+            }
+
+            // 花掉的钱和用掉的蛊无论胜负都算数——它们是行动开始时就扣的
+            // （`FUN_004f2910`），不是结算的一部分。
+            if session.battle.spent_money > 0 {
+                persistent.add_money(-session.battle.spent_money);
+            }
+            if session.battle.spent_gu > 0 {
+                persistent.remove_item(GU_ITEM_ID, session.battle.spent_gu);
             }
 
             if won {

@@ -454,6 +454,16 @@ pub struct Battle {
     pub scene_element: Option<u8>,
     /// Set by a successful [`Battle::try_escape`].
     pub escaped: bool,
+    /// 开战时队伍身上的钱。花钱的技能（`special_consume_type` == 10）从这里
+    /// 判断买不买得起，实际扣除记在 [`Self::spent_money`]，散场时一次性写回
+    /// 冒险侧。
+    pub money: i32,
+    /// 开战时背包里的蛊（物品 6113）数量，蛊术的可用条件。
+    pub gu: u32,
+    /// 这一场里花掉的钱。
+    pub spent_money: i32,
+    /// 这一场里用掉的蛊。
+    pub spent_gu: u32,
     pub rng: CombatRng,
 }
 
@@ -467,8 +477,22 @@ impl Battle {
             escape_forbidden: false,
             scene_element: None,
             escaped: false,
+            money: 0,
+            gu: 0,
+            spent_money: 0,
+            spent_gu: 0,
             rng: CombatRng::new(seed),
         }
+    }
+
+    /// 现在还剩多少钱。
+    pub fn money_left(&self) -> i32 {
+        self.money - self.spent_money
+    }
+
+    /// 现在还剩几个蛊。
+    pub fn gu_left(&self) -> u32 {
+        self.gu.saturating_sub(self.spent_gu)
     }
 
     pub fn place(&mut self, slot: usize, combatant: Combatant) {

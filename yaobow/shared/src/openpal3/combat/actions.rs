@@ -54,7 +54,20 @@ pub struct SkillEffect {
     pub impacts: [(u8, i16); ATTRIBUTE_SLOTS],
     pub sp_cost: i32,
     pub mp_cost: i32,
+    /// 技能定义的 `+0x2b8`（`special_consume_type`）：气/神之外还要扣的那一
+    /// 项，取值是属性下标，`-1` 表示没有。
+    pub special_cost_type: i32,
+    /// `+0x2c0`（`special_consume_value`）：上面那一项要扣多少。
+    pub special_cost_value: i32,
 }
+
+/// `special_consume_type` == 10：扣钱（全队共用）。
+pub const SPECIAL_COST_MONEY: i32 = 10;
+/// `special_consume_type` == 16：扣一个「蛊」。
+pub const SPECIAL_COST_GU: i32 = 16;
+/// 蛊在物品表里的编号。原版把它硬编码在检查与扣除两处（`0x17e1`），
+/// 不看技能定义里的量。
+pub const GU_ITEM_ID: u32 = 6113;
 
 /// The 五灵 modifier applied to a skill's value.
 ///
@@ -170,6 +183,26 @@ pub struct CastResult {
 }
 
 impl Battle {
+    /// 扣掉技能的第三项消耗（`FUN_004f2910` 的那个 switch，分派在 0x4f2985）。
+    ///
+    /// 原版按 `special_consume_type` 分支：0..4（精气神武防）、9（级）、
+    /// 0xb..0xf（五灵）都只弹一个调试提示、不扣任何东西；5 情、6 经、7 速、
+    /// 8 运扣在战斗位上；10 扣钱、0x10 扣一个蛊。实机数据里只有后两种真的出
+    /// 现过（`pal3_gdb_census`：洒金笺 80 文、乾坤一掷 3000 文，五个蛊术各一
+    /// 个蛊），所以这里只实现这两支，其余按原版「不扣」处理。
+    ///
+    /// 洒金笺（4102）是个例外：原版扣的不是定义里的 80，而是调用方算好后从
+    /// `param_3` 传进来的量（可用性检查那一侧按 `2 × (景天等级 + 20) × 敌数`
+    /// 再验一遍，`FUN_004f7200` 的 0x4f73b6 分支）。这里先按定义值扣，差额记
+    /// 在 `combat_formulas.md`。
+    fn pay_special_cost(&mut self, skill: &SkillEffect) {
+        match skill.special_cost_type {
+            SPECIAL_COST_MONEY => self.spent_money += skill.special_cost_value,
+            SPECIAL_COST_GU => self.spent_gu += 1,
+            _ => {}
+        }
+    }
+
     /// Cast `skill` from `caster` at `target`.
     ///
     /// Costs come off the caster whether or not the skill lands, which is
@@ -192,6 +225,7 @@ impl Battle {
             c.sp = (c.sp - skill.sp_cost).max(0);
             c.mp = (c.mp - skill.mp_cost).max(0);
         }
+        self.pay_special_cost(skill);
 
         let Some(t) = self.get(target) else {
             return result;
@@ -373,6 +407,8 @@ mod tests {
             success_rate_level: 50,
             sp_cost: 5,
             mp_cost: 7,
+            special_cost_type: -1,
+            special_cost_value: 0,
             ..Default::default()
         };
         let result = b.cast_skill(0, 5, &skill);
@@ -380,6 +416,46 @@ mod tests {
         assert_eq!(b.get(0).unwrap().sp, 45, "气照扣");
         assert_eq!(b.get(0).unwrap().mp, 33, "神照扣");
         assert_eq!(b.get(5).unwrap().hp, 200, "没打中就没伤害");
+    }
+
+    #[test]
+    fn money_and_gu_skills_charge_the_party_purse() {
+        let mut b = Battle::new(2);
+        b.place(0, caster());
+        let mut enemy = Combatant::new(100, Side::Enemy);
+        enemy.hp = 200;
+        enemy.max_hp = 200;
+        b.place(5, enemy);
+        b.money = 500;
+        b.gu = 2;
+
+        // 洒金笺那一档：定义值 80。
+        let mut skill = SkillEffect {
+            id: 4102,
+            level: 1,
+            success_rate_level: 100,
+            special_cost_type: SPECIAL_COST_MONEY,
+            special_cost_value: 80,
+            ..Default::default()
+        };
+        b.cast_skill(0, 5, &skill);
+        assert_eq!(b.spent_money, 80);
+        assert_eq!(b.money_left(), 420);
+
+        // 蛊术：不看定义里的量，一次一个。
+        skill.id = 4401;
+        skill.special_cost_type = SPECIAL_COST_GU;
+        skill.special_cost_value = 1;
+        b.cast_skill(0, 5, &skill);
+        b.cast_skill(0, 5, &skill);
+        assert_eq!(b.spent_gu, 2);
+        assert_eq!(b.gu_left(), 0);
+
+        // 别的种类原版只弹提示、什么都不扣。
+        skill.special_cost_type = 5;
+        skill.special_cost_value = 30;
+        b.cast_skill(0, 5, &skill);
+        assert_eq!(b.spent_money, 80, "情那一档不该动到钱");
     }
 
     #[test]

@@ -13,7 +13,7 @@
 
 use std::collections::VecDeque;
 
-use super::actions::{ATTR_HP, SkillEffect};
+use super::actions::{ATTR_HP, SPECIAL_COST_GU, SPECIAL_COST_MONEY, SkillEffect};
 use super::ai::{self, Decision, SkillOption};
 use super::formulas::CombatRng;
 use super::settlement::{self, DefeatedEnemy, Spoils, Survivor};
@@ -241,11 +241,23 @@ impl CombatSession {
     }
 
     /// Whether `slot` can pay for its `i`-th skill right now.
+    ///
+    /// 气/神那两项是 `FUN_004f7480`；第三项消耗是 `FUN_004f7200` 的
+    /// switch（分派在 0x4f7267）：`-1` 和 0xb..0xf（五灵）无条件放行，10 要
+    /// 钱够，0x10 要背包里有蛊（不看量），其余拿定义值和对应属性比。实机数据
+    /// 只用到 10 和 0x10 两种。
     pub fn can_afford(&self, slot: usize, i: usize) -> bool {
         let (Some(c), Some(s)) = (self.battle.get(slot), self.skills(slot).get(i)) else {
             return false;
         };
-        c.sp >= s.effect.sp_cost && c.mp >= s.effect.mp_cost
+        if c.sp < s.effect.sp_cost || c.mp < s.effect.mp_cost {
+            return false;
+        }
+        match s.effect.special_cost_type {
+            SPECIAL_COST_MONEY => self.battle.money_left() >= s.effect.special_cost_value,
+            SPECIAL_COST_GU => self.battle.gu_left() > 0,
+            _ => true,
+        }
     }
 
     /// Advance the battle by `dt` seconds. Returns the outcome once the
@@ -701,6 +713,8 @@ mod tests {
                 impacts,
                 sp_cost: 10,
                 mp_cost: 0,
+                special_cost_type: -1,
+                special_cost_value: 0,
             },
         }
     }
