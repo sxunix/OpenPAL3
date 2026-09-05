@@ -53,10 +53,18 @@
 //! …      char[0x100] × 2
 //! ```
 //!
-//! The four blocks are identical in shape — keyframed tracks of some
-//! kind. What they drive, and what the dwords around them mean, is not
-//! read yet; the two fields that are certain are the name and the
-//! texture, and those hold across all 55 shipped files.
+//! The four blocks are keyframed tracks, and
+//! `gbPartGroupParam::ComputeParticleParam` (0x1002aed0) says what each
+//! drives as a particle ages: track 0 is the size Render multiplies in,
+//! track 3 writes the colour bytes, track 1 feeds a spin accumulator
+//! together with the random range at 0x148/0x14c, and the dword at
+//! 0x160 is the texture's frame count (`frame = (int)(count * t)`).
+//! A track is a three-component curve of up to 100 keys, linearly
+//! interpolated by the sampler at 0x100299b0.
+//!
+//! See `switch/re/notes/par_format.md` for the full write-up. Only the
+//! name and the texture are exposed here so far — those two hold across
+//! all 55 shipped files.
 //!
 //! An emitter has the same flavour: a 0x40 header, a `char[0x40]` at
 //! 0x58, and four of the same 4580-byte blocks.
@@ -186,6 +194,14 @@ pub fn read_par<R: Read>(reader: &mut R) -> Result<ParFile> {
         groups,
     })
 }
+
+/// The dword at 0x160: how many frames the group's texture has.
+/// `ComputeParticleParam` picks the particle's frame with
+/// `clamp((int)(count * t), 0, count - 1)`.
+pub const GROUP_PARAM_FRAME_COUNT: usize = 0x160;
+
+/// Where the four keyframed tracks start inside a group param.
+pub const GROUP_PARAM_TRACKS: [usize; 4] = [0x168, 0x134c, 0x2530, 0x3714];
 
 /// Offset and length of a group param's name — the 0x20 bytes the
 /// loader reads first (0x1002a80a).
