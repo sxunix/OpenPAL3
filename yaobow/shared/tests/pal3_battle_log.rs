@@ -17,7 +17,7 @@ use fileformats::pal3::gdb::GdbFile;
 use shared::openpal3::combat::actions::{ATTR_HP, ATTRIBUTE_SLOTS, SkillEffect};
 use shared::openpal3::combat::ai::{self, Decision, SkillOption};
 use shared::openpal3::combat::formulas::CombatRng;
-use shared::openpal3::combat::state::{Battle, Combatant, Outcome, SLOTS, Side};
+use shared::openpal3::combat::state::{Battle, Combatant, Due, Outcome, SLOTS, Side};
 use shared::openpal3::states::game_db::combat_id_of_party_member;
 use shared::openpal3::states::growth;
 
@@ -213,23 +213,47 @@ fn a_battle_against_the_shipped_data_plays_out() {
     let mut ai_rng = CombatRng::new(0x9e37_79b9);
     let mut elapsed = 0.0f32;
     let mut turns = 0;
+    // 两段行动条：条满先选行动并进入出手段，出手条满了才结算。选定的
+    // 行动挂在这里等，和原版行动任务把它记在 `task->+0x2c` 是一个意思。
+    let mut pending: Option<(usize, Decision)> = None;
     while battle.outcome() == Outcome::Ongoing && turns < 400 {
         elapsed += 0.1;
-        let Some(slot) = battle.update(0.1) else {
+        let Some(due) = battle.update(0.1) else {
             continue;
         };
+
+        let slot = match due {
+            Due::Ready(slot) => {
+                let actor = battle.get(slot).unwrap();
+                let side = actor.side;
+                let actor_id = actor.actor_id;
+                let confused = actor.has_state(shared::openpal3::combat::state::K_CONFUSED);
+                let options = ai_options(&gdb, actor_id, side, &skill);
+                let decision = ai::choose(&battle, &mut ai_rng, slot, &options, confused);
+                if matches!(decision, Decision::Pass) {
+                    battle.finish_turn(slot);
+                    continue;
+                }
+                pending = Some((slot, decision));
+                // 倍率取 1：技能表里那个字节还没接上，见 session.rs 的
+                // `cast_multiplier`。
+                battle.begin_execute(slot, 1);
+                continue;
+            }
+            Due::Executed(slot) => slot,
+        };
+
         turns += 1;
-
-        let actor = battle.get(slot).unwrap();
-        let side = actor.side;
-        let actor_id = actor.actor_id;
-        let confused = actor.has_state(shared::openpal3::combat::state::K_CONFUSED);
-
-        // Both sides run the AI: it sweeps for a target with its own
-        // generator and reaches for whichever skill best fits what that
-        // target still has standing.
-        let options = ai_options(&gdb, actor_id, side, &skill);
-        let decision = ai::choose(&battle, &mut ai_rng, slot, &options, confused);
+        let Some((owner, decision)) = pending.take() else {
+            battle.finish_turn(slot);
+            continue;
+        };
+        if owner != slot {
+            pending = Some((owner, decision));
+            battle.finish_turn(slot);
+            continue;
+        }
+        let actor_id = battle.get(slot).unwrap().actor_id;
 
         let line = match decision {
             Decision::Pass => "按兵不动".to_string(),

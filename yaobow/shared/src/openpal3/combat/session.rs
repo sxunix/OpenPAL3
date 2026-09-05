@@ -17,7 +17,7 @@ use super::actions::{ATTR_HP, SkillEffect};
 use super::ai::{self, Decision, SkillOption};
 use super::formulas::CombatRng;
 use super::settlement::{self, DefeatedEnemy, Spoils, Survivor};
-use super::state::{Battle, K_CONFUSED, K_SLEEP, Outcome, SLOTS, Side};
+use super::state::{Battle, Due, K_CONFUSED, K_SLEEP, Outcome, SLOTS, Side};
 
 /// A skill as the menu offers it.
 #[derive(Debug, Clone)]
@@ -126,6 +126,34 @@ pub const LOG_LINES: usize = 8;
 /// How long a transient notice (逃跑失败 and the like) stays up.
 const NOTICE_SECONDS: f32 = 1.2;
 
+/// 已经选定、正在出手段等待生效的行动。原版把这个记在行动任务的记录里
+/// （`FUN_00514870` 的 `task->+0x2c`/`+0x28`），出手条满了才真正结算。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Pending {
+    Attack {
+        slot: usize,
+        target: usize,
+    },
+    Cast {
+        slot: usize,
+        target: usize,
+        skill: usize,
+    },
+    Escape {
+        slot: usize,
+    },
+}
+
+impl Pending {
+    pub fn slot(&self) -> usize {
+        match self {
+            Pending::Attack { slot, .. }
+            | Pending::Cast { slot, .. }
+            | Pending::Escape { slot } => *slot,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct CombatSession {
     pub battle: Battle,
@@ -141,6 +169,9 @@ pub struct CombatSession {
     /// Every skill the party cast, `(slot, skill id)`, for the use
     /// counters the settlement levels skills with.
     pub casts: Vec<(usize, u32)>,
+    /// 选好了但还在出手段的那个行动，见 [`Pending`]。同一时刻只可能有一个
+    /// ——调度器一次只排一个行动任务。
+    pub pending: Option<Pending>,
     finished: Option<Outcome>,
 }
 
@@ -158,6 +189,7 @@ impl CombatSession {
             log: VecDeque::new(),
             turn: None,
             notice: None,
+            pending: None,
             defeated: Vec::new(),
             casts: Vec::new(),
             finished: None,
@@ -236,31 +268,89 @@ impl CombatSession {
         }
 
         self.elapsed += dt;
-        let Some(slot) = self.battle.update(dt) else {
+        let Some(due) = self.battle.update(dt) else {
             return None;
         };
-        let actor = self
-            .battle
-            .get(slot)
-            .expect("update returned a placed slot");
-        let side = actor.side;
-        let confused = actor.has_state(K_CONFUSED);
-        let asleep = actor.has_state(K_SLEEP);
 
-        if asleep {
-            self.push_log(format!("{} 睡着了", self.name(slot)));
-            self.battle.finish_turn(slot);
-        } else if side == Side::Party && !confused {
-            self.turn = Some(PlayerTurn {
-                slot,
-                menu: Menu::Main { index: 0 },
-            });
-            return None;
-        } else {
-            self.act_by_ai(slot, confused);
+        match due {
+            // 出手条满了：把先前选定的行动结算掉。
+            Due::Executed(slot) => {
+                self.resolve_pending(slot);
+                self.settle_outcome();
+                return self.finished;
+            }
+            Due::Ready(slot) => {
+                let actor = self
+                    .battle
+                    .get(slot)
+                    .expect("update returned a placed slot");
+                let side = actor.side;
+                let confused = actor.has_state(K_CONFUSED);
+                let asleep = actor.has_state(K_SLEEP);
+
+                if asleep {
+                    self.push_log(format!("{} 睡着了", self.name(slot)));
+                    self.battle.finish_turn(slot);
+                } else if side == Side::Party && !confused {
+                    self.turn = Some(PlayerTurn {
+                        slot,
+                        menu: Menu::Main { index: 0 },
+                    });
+                    return None;
+                } else {
+                    self.act_by_ai(slot, confused);
+                }
+            }
         }
         self.settle_outcome();
         self.finished
+    }
+
+    /// 出手段结束，行动生效。原版在这一步之后一律走 `FUN_004f4820` →
+    /// `FUN_004db710`（两条清零、回蓄力段）。
+    fn resolve_pending(&mut self, slot: usize) {
+        let Some(p) = self.pending.take() else {
+            // 没有登记的行动（例如被打断后又自己走完了出手段），当作空过。
+            self.battle.finish_turn(slot);
+            return;
+        };
+        if p.slot() != slot {
+            // 不是这个单位的行动，放回去。
+            self.pending = Some(p);
+            self.battle.finish_turn(slot);
+            return;
+        }
+        match p {
+            Pending::Attack { slot, target } => self.attack(slot, target),
+            Pending::Cast {
+                slot,
+                target,
+                skill,
+            } => self.cast(slot, target, skill),
+            Pending::Escape { slot } => {
+                let ok = self.battle.try_escape(slot);
+                self.push_log(format!(
+                    "{} 逃跑{}",
+                    self.name(slot),
+                    if ok { "成功" } else { "失败" }
+                ));
+                if !ok {
+                    self.notice("逃跑失败");
+                }
+            }
+        }
+        self.battle.finish_turn(slot);
+    }
+
+    /// 登记一个行动并进入出手段。`multiplier` 是 `FUN_004f76c0` 给的出手速度
+    /// 倍率，普通攻击没有技能可查，按 1 走。
+    fn commit(&mut self, action: Pending, multiplier: i32) {
+        let slot = action.slot();
+        self.pending = Some(action);
+        match action {
+            Pending::Escape { .. } => self.battle.begin_escape(slot),
+            _ => self.battle.begin_execute(slot, multiplier),
+        }
     }
 
     /// Let the AI take the pending player turn — 快进 while a script is
@@ -320,18 +410,10 @@ impl CombatSession {
                         return;
                     }
                     MenuEntry::Escape => {
+                        // 逃跑也要走一段出手，速度是 速_eff*8+20
+                        // （`LAB_00515200` 的 0x515295）。
                         self.turn = None;
-                        let ok = self.battle.try_escape(slot);
-                        self.push_log(format!(
-                            "{} 逃跑{}",
-                            self.name(slot),
-                            if ok { "成功" } else { "失败" }
-                        ));
-                        if !ok {
-                            self.notice("逃跑失败");
-                        }
-                        self.battle.finish_turn(slot);
-                        self.settle_outcome();
+                        self.commit(Pending::Escape { slot }, 1);
                         return;
                     }
                 },
@@ -387,11 +469,19 @@ impl CombatSession {
                         };
                         self.turn = None;
                         match action {
-                            Action::Attack => self.attack(slot, target),
-                            Action::Cast(i) => self.cast(slot, target, i),
+                            Action::Attack => self.commit(Pending::Attack { slot, target }, 1),
+                            Action::Cast(i) => {
+                                let m = self.cast_multiplier(slot, i);
+                                self.commit(
+                                    Pending::Cast {
+                                        slot,
+                                        target,
+                                        skill: i,
+                                    },
+                                    m,
+                                )
+                            }
                         }
-                        self.battle.finish_turn(slot);
-                        self.settle_outcome();
                         return;
                     }
                     Input::Cancel => {
@@ -460,17 +550,37 @@ impl CombatSession {
             .collect();
         match ai::choose(&self.battle, &mut self.ai_rng, slot, &options, confused) {
             Decision::Pass => {
+                // 不出手的这一支原版直接走 `FUN_004db750(k,0,0,0)`
+                // （0x513ac2），整条清零跳过这次。
                 self.push_log(format!("{} 按兵不动", self.name(slot)));
+                self.battle.finish_turn(slot);
             }
-            Decision::Attack { target } => self.attack(slot, target),
+            Decision::Attack { target } => self.commit(Pending::Attack { slot, target }, 1),
             Decision::Cast { target, skill } => {
                 match self.skills(slot).iter().position(|s| s.effect.id == skill) {
-                    Some(i) => self.cast(slot, target, i),
-                    None => self.attack(slot, target),
+                    Some(i) => {
+                        let m = self.cast_multiplier(slot, i);
+                        self.commit(
+                            Pending::Cast {
+                                slot,
+                                target,
+                                skill: i,
+                            },
+                            m,
+                        )
+                    }
+                    None => self.commit(Pending::Attack { slot, target }, 1),
                 }
             }
         }
-        self.battle.finish_turn(slot);
+    }
+
+    /// `FUN_004f76c0` 给的出手速度倍率。原版从角色的技能槽里取一个字节再
+    /// 加 1，取不到返回 0（任务里当 1 用）。那个字节在移植的技能数据里还没
+    /// 对应上，所以这里一律按 1 `[推断]`——效果是出手段以两倍蓄力速度推进，
+    /// 和原版没有该字段时的行为一致。
+    fn cast_multiplier(&self, _slot: usize, _skill: usize) -> i32 {
+        1
     }
 
     fn attack(&mut self, slot: usize, target: usize) {
@@ -635,6 +745,19 @@ mod tests {
         assert_eq!(s.elapsed, before);
     }
 
+    /// 一直 tick 到战斗有结果——出手段让行动不再是当帧结算。
+    fn run_until_finished(s: &mut CombatSession) -> Option<Outcome> {
+        for _ in 0..400 {
+            if let Some(o) = s.tick(0.05) {
+                return Some(o);
+            }
+            if s.turn.is_some() {
+                s.auto_play();
+            }
+        }
+        None
+    }
+
     #[test]
     fn attacking_through_the_menu_settles_a_kill_with_spoils() {
         let mut s = session();
@@ -650,8 +773,12 @@ mod tests {
         assert_eq!(s.targets(), vec![5]);
         s.input(Input::Confirm);
         assert!(s.turn.is_none());
+        // 确认菜单只是**选定**行动，单位这时进的是出手段；要等出手条走满
+        // 才真正打出去（原版 `FUN_004db730` → `FUN_004db6c0`）。
+        assert!(s.pending.is_some(), "行动应当挂在出手段等着");
+        assert_eq!(s.tick(0.05), None, "出手条还没满");
         // 100 attack against 10 defence at level 5 kills a 60 HP enemy.
-        assert_eq!(s.tick(0.05), Some(Outcome::Win));
+        assert_eq!(run_until_finished(&mut s), Some(Outcome::Win));
         let spoils = s.spoils();
         assert_eq!(spoils.money, 7);
         assert_eq!(spoils.loot, vec![(3001, 1)]);
@@ -696,6 +823,14 @@ mod tests {
         s.input(Input::Down); // 逃跑
         s.input(Input::Confirm);
         assert!(s.turn.is_none());
+        assert!(matches!(s.pending, Some(Pending::Escape { slot: 0 })));
+        // 逃跑一样要走一段出手（`LAB_00515200` 的 0x51527a）。
+        for _ in 0..400 {
+            if s.log.back().map(|l| l.contains("逃跑")).unwrap_or(false) {
+                break;
+            }
+            s.tick(0.05);
+        }
         assert_eq!(s.finished(), None);
         assert_eq!(s.log.back().unwrap(), "景天 逃跑失败");
     }

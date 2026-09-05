@@ -96,6 +96,17 @@ pub enum Phase {
     Executing,
 }
 
+/// [`Battle::update`] 这一帧算出来的事件。原版没有这个类型，它把两件事
+/// 分别用 `FUN_004db6a0`（蓄力条满，可以排行动）和 `FUN_004db6c0`
+/// （出手条满，行动生效）去问。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Due {
+    /// 蓄力条满了，该选行动。
+    Ready(usize),
+    /// 出手条满了，行动生效。
+    Executed(usize),
+}
+
 #[derive(Debug, Clone)]
 pub struct Combatant {
     pub actor_id: u32,
@@ -126,7 +137,13 @@ pub struct Combatant {
     /// 土毒's escalating damage carries between rounds.
     pub earth_poison_acc: f32,
 
+    /// 蓄力条（原版 `+0x20`）。
     pub gauge: f32,
+    /// 出手条（原版 `+0x24`）。原版是两条独立的条，不是一条复用。
+    pub cast_gauge: f32,
+    /// 出手速度（原版 `+0x2d`）。开局由 `FUN_004db660` 设成和蓄力速度一样，
+    /// 真正出手时被行动任务改写，见 [`Battle::begin_execute`]。
+    pub cast_rate: u8,
     pub phase: Phase,
 }
 
@@ -152,6 +169,8 @@ impl Combatant {
             states: [StateTimer::default(); STATE_SLOTS],
             earth_poison_acc: 0.,
             gauge: 0.,
+            cast_gauge: 0.,
+            cast_rate: 0,
             phase: Phase::Charging,
         }
     }
@@ -211,6 +230,31 @@ impl Combatant {
 
     fn gauge_speed(&self) -> f32 {
         self.gauge_rate() as f32
+    }
+
+    /// 出手速度，普通行动那一支：`min(蓄力速度 × 倍率 × 2, 255)`。
+    ///
+    /// 出自行动任务 `FUN_00514870` 的 0x514957：
+    ///
+    /// ```text
+    /// eax = FUN_004db640(k, 1);   // (速_eff + 4) * 5
+    /// imul eax, ebx;              // × 倍率
+    /// shl  eax, 1;                // × 2
+    /// if (eax > 0xff) eax = 0xff;
+    /// FUN_004db780(k, eax);       // -> +0x2d
+    /// ```
+    ///
+    /// 倍率来自 `FUN_004f76c0`（技能表里的一个字节 +1），找不到就是 0，
+    /// 任务里当 1 用。所以**光是普通攻击，出手段也比蓄力段快一倍**。
+    pub fn cast_rate_for(&self, multiplier: i32) -> u8 {
+        let m = multiplier.max(1);
+        (self.gauge_rate() as i32 * m * 2).clamp(0, 255) as u8
+    }
+
+    /// 逃跑任务自己的出手速度：`速_eff × 8 + 20`（0x515295 的
+    /// `shl al,3; add al,0x14`，按字节截断）。
+    pub fn escape_cast_rate(&self) -> u8 {
+        ((self.speed_eff() * 8 + 20) & 0xff) as u8
     }
 
     /// Apply an HP delta the way `FUN_004f2c70` does: clamp into
@@ -427,13 +471,16 @@ impl Battle {
         Outcome::Ongoing
     }
 
-    /// Advance every gauge by `dt` seconds and return the slot that is
-    /// due to act, if any.
+    /// 推进所有行动条，返回这一帧到点的那件事。
     ///
-    /// Ordering follows `FUN_004db7a0`: whoever has the smallest time to
-    /// completion goes first, and anyone still charging carries a +10000
-    /// bias so an in-flight action always resolves ahead of them.
-    pub fn update(&mut self, dt: f32) -> Option<usize> {
+    /// 原版是**两条条两个阶段**（`FUN_004dba60`）：蓄力段推 `+0x20`、出手段
+    /// 推 `+0x24`，各自用自己的速度。调度器先等蓄力条满（`FUN_004db6a0`）
+    /// 才把单位排上行动任务，任务里 `FUN_004db730` 把它切进出手段，等出手条
+    /// 满（`FUN_004db6c0`）行动才真正生效。中间这一段就是能被打断的窗口。
+    ///
+    /// 排序按 `FUN_004db7a0`：谁离完成最近谁先，还在蓄力的一律加 10000 的
+    /// 偏置，所以正在出手的永远排在前面。
+    pub fn update(&mut self, dt: f32) -> Option<Due> {
         for slot in 0..SLOTS {
             let Some(c) = self.get_mut(slot) else {
                 continue;
@@ -441,15 +488,43 @@ impl Battle {
             if !c.in_play() {
                 continue;
             }
-            if c.phase == Phase::Ready {
+            match c.phase {
+                // 条满等着被排上行动，原版此时仍是 phase 0、条停在 11500。
+                Phase::Ready => {}
+                Phase::Charging => {
+                    let speed = c.gauge_speed();
+                    c.gauge += formulas::gauge_step(dt, speed);
+                    if c.gauge > formulas::GAUGE_FULL - 1.0 {
+                        c.gauge = formulas::GAUGE_FULL;
+                        c.phase = Phase::Ready;
+                    }
+                }
+                Phase::Executing => {
+                    let rate = c.cast_rate as f32;
+                    c.cast_gauge += formulas::gauge_step(dt, rate);
+                    if c.cast_gauge > formulas::GAUGE_FULL {
+                        c.cast_gauge = formulas::GAUGE_FULL;
+                    }
+                }
+            }
+        }
+
+        // 出手完成的优先——原版的 +10000 偏置就是这个意思。
+        let mut best: Option<(usize, f32)> = None;
+        for slot in 0..SLOTS {
+            let Some(c) = self.get(slot) else { continue };
+            if !c.in_play() || c.phase != Phase::Executing {
                 continue;
             }
-            let speed = c.gauge_speed();
-            c.gauge += formulas::gauge_step(dt, speed);
-            if c.gauge > formulas::GAUGE_FULL - 1.0 {
-                c.gauge = formulas::GAUGE_FULL;
-                c.phase = Phase::Ready;
+            if c.cast_gauge > formulas::GAUGE_FULL - 1.0 {
+                let eta = formulas::seconds_until_turn(c.cast_gauge, c.cast_rate as f32, false);
+                if best.map(|(_, b)| eta < b).unwrap_or(true) {
+                    best = Some((slot, eta));
+                }
             }
+        }
+        if let Some((slot, _)) = best {
+            return Some(Due::Executed(slot));
         }
 
         let mut best: Option<(usize, f32)> = None;
@@ -463,7 +538,54 @@ impl Battle {
                 best = Some((slot, eta));
             }
         }
-        best.map(|(slot, _)| slot)
+        best.map(|(slot, _)| Due::Ready(slot))
+    }
+
+    /// `FUN_004db730` 加行动任务里紧跟着的出手速度设定
+    /// （`FUN_00514870`，0x514933 起）：
+    ///
+    /// ```text
+    /// FUN_004db730(k);                       // 蓄力条清零、进出手段
+    /// mult = FUN_004f76c0(this, k, 技能);     // 找不到返回 0
+    /// if (mult > 3) FUN_004db750(k, 0, 11500, 1);   // 出手条直接满
+    /// else          FUN_004db780(k, min(基速 × max(mult,1) × 2, 255));
+    /// ```
+    ///
+    /// 这就是单位**自己**从蓄力段进入出手段的写入点。之前笔记里把
+    /// `FUN_004db730` 和 `FUN_004db780` 都当成了没有调用方的死 API，是漏扫。
+    pub fn begin_execute(&mut self, slot: usize, multiplier: i32) {
+        let Some(c) = self.get_mut(slot) else { return };
+        c.gauge = 0.;
+        c.phase = Phase::Executing;
+        if multiplier > 3 {
+            // 瞬发：出手条直接拉满，出手速度不改。
+            c.cast_gauge = formulas::GAUGE_FULL;
+        } else {
+            c.cast_gauge = 0.;
+            c.cast_rate = c.cast_rate_for(multiplier);
+        }
+    }
+
+    /// 逃跑任务（`LAB_00515200`，0x51527a 起）走的是同一条路，只是出手速度
+    /// 换成 `速_eff × 8 + 20`。
+    pub fn begin_escape(&mut self, slot: usize) {
+        let Some(c) = self.get_mut(slot) else { return };
+        c.gauge = 0.;
+        c.phase = Phase::Executing;
+        c.cast_gauge = 0.;
+        c.cast_rate = c.escape_cast_rate();
+    }
+
+    /// `FUN_004db750(k, 0, 0, 1)` —— 留在出手段但把出手条清零，等于重新
+    /// 吟唱。四条效果路径用它（`FUN_004f1420` / `004f1a30` / `004f1b20` /
+    /// `004f1c40`）。
+    pub fn restart_cast(&mut self, slot: usize) {
+        let Some(c) = self.get_mut(slot) else { return };
+        if c.phase != Phase::Executing {
+            return;
+        }
+        c.gauge = 0.;
+        c.cast_gauge = 0.;
     }
 
     /// A combatant has finished acting: reset its gauge (`FUN_004db710`)
@@ -480,6 +602,7 @@ impl Battle {
     pub fn finish_turn(&mut self, slot: usize) {
         if let Some(c) = self.get_mut(slot) {
             c.gauge = 0.;
+            c.cast_gauge = 0.;
             c.phase = Phase::Charging;
         }
         if Some(slot) == self.last_occupied_slot() {
@@ -515,11 +638,14 @@ impl Battle {
         if c.phase != Phase::Executing {
             return;
         }
+        // 两条 API 都把出手条一并清掉：`FUN_004db750(k, g1, 0, 0)` 和
+        // `FUN_004db8b0(k)`（g1 = 5750, g2 = 0, phase = 0）。
         c.gauge = match skill_level {
             Some(level) => formulas::GAUGE_FULL - level as f32 * (formulas::GAUGE_FULL / 8.0),
             None => formulas::GAUGE_FULL / 2.0,
         }
         .max(0.);
+        c.cast_gauge = 0.;
         c.phase = Phase::Charging;
     }
 
@@ -654,7 +780,7 @@ mod tests {
         let mut first: Option<usize> = None;
 
         for _ in 0..4000 {
-            if let Some(slot) = b.update(0.1) {
+            if let Some(Due::Ready(slot)) = b.update(0.1) {
                 first.get_or_insert(slot);
                 turns[slot] += 1;
                 b.finish_turn(slot);
@@ -675,7 +801,7 @@ mod tests {
         let mut b = two_sided_battle();
         b.get_mut(5).unwrap().die();
         for _ in 0..2000 {
-            if let Some(slot) = b.update(0.1) {
+            if let Some(Due::Ready(slot)) = b.update(0.1) {
                 assert_ne!(slot, 5, "死者不该轮到");
                 b.finish_turn(slot);
             }
@@ -739,7 +865,7 @@ mod tests {
         b.get_mut(0).unwrap().apply_state(K_POISON_FIRE, 0, FOREVER);
 
         for _ in 0..4000 {
-            if let Some(slot) = b.update(0.1) {
+            if let Some(Due::Ready(slot)) = b.update(0.1) {
                 b.finish_turn(slot);
             }
         }
@@ -868,7 +994,9 @@ mod tests {
         while b.outcome() == Outcome::Ongoing {
             guard += 1;
             assert!(guard < 100_000, "战斗不收敛");
-            let Some(slot) = b.update(0.1) else { continue };
+            let Some(Due::Ready(slot)) = b.update(0.1) else {
+                continue;
+            };
 
             let side = b.get(slot).unwrap().side;
             let target = (0..SLOTS).find(|s| {
@@ -884,5 +1012,115 @@ mod tests {
 
         // 26 vs 8 beats 20 vs 14, so the party should be the one standing.
         assert_eq!(b.outcome(), Outcome::Win);
+    }
+
+    #[test]
+    fn a_unit_charges_then_casts_and_the_cast_runs_at_twice_the_speed() {
+        // 原版：蓄力条满 -> 行动任务调 FUN_004db730 进出手段，出手速度是
+        // min(基速 × 倍率 × 2, 255)。倍率 1 时出手段正好是蓄力段的两倍快。
+        let mut b = Battle::new(1);
+        let mut c = Combatant::new(0, Side::Party);
+        c.hp = 100;
+        c.max_hp = 100;
+        c.speed = 3; // 基速 (3+4)*5 = 35，没到 255 的截断
+        b.place(0, c);
+
+        let mut charged = 0f32;
+        loop {
+            charged += 0.1;
+            match b.update(0.1) {
+                Some(Due::Ready(0)) => break,
+                Some(other) => panic!("蓄力途中不该有 {other:?}"),
+                None => assert!(charged < 60., "蓄力条填不满"),
+            }
+        }
+        assert_eq!(b.get(0).unwrap().gauge, formulas::GAUGE_FULL);
+
+        b.begin_execute(0, 1);
+        let c = b.get(0).unwrap();
+        assert_eq!(c.phase, Phase::Executing);
+        assert_eq!(c.gauge, 0., "进出手段时蓄力条清零");
+        assert_eq!(c.cast_gauge, 0.);
+        assert_eq!(c.cast_rate, 70, "(3+4)*5*1*2");
+
+        let mut cast = 0f32;
+        loop {
+            cast += 0.1;
+            match b.update(0.1) {
+                Some(Due::Executed(0)) => break,
+                Some(other) => panic!("出手途中不该有 {other:?}"),
+                None => assert!(cast < 60., "出手条填不满"),
+            }
+        }
+        // 两段的时间比就是速度比：出手段快一倍，用时约一半。
+        assert!(
+            (charged / cast - 2.0).abs() < 0.15,
+            "蓄力 {charged}s / 出手 {cast}s 不像 2:1"
+        );
+    }
+
+    #[test]
+    fn being_hit_mid_cast_knocks_the_unit_back_to_charging() {
+        // 这是两条条模型真正的意义：以前行动是条满当帧结算的，出手段根本
+        // 不存在，interrupt 打不到任何人。
+        let mut b = Battle::new(1);
+        let mut c = Combatant::new(0, Side::Party);
+        c.hp = 100;
+        c.max_hp = 100;
+        c.speed = 10;
+        b.place(0, c);
+
+        b.get_mut(0).unwrap().gauge = formulas::GAUGE_FULL;
+        b.get_mut(0).unwrap().phase = Phase::Ready;
+        b.begin_execute(0, 1);
+        b.update(0.05);
+        assert!(b.get(0).unwrap().cast_gauge > 0., "出手条应当在走");
+
+        b.interrupt(0, None);
+        let c = b.get(0).unwrap();
+        assert_eq!(c.phase, Phase::Charging);
+        assert_eq!(c.cast_gauge, 0., "出手条被清掉");
+        assert_eq!(c.gauge, formulas::GAUGE_FULL / 2.0, "物理打断退一半");
+    }
+
+    #[test]
+    fn a_multiplier_over_three_finishes_the_cast_at_once() {
+        // 0x514a00: mult > 3 -> FUN_004db750(k, 0, 11500, 1)，出手条直接满。
+        let mut b = Battle::new(1);
+        let mut c = Combatant::new(0, Side::Party);
+        c.hp = 100;
+        c.max_hp = 100;
+        c.speed = 3;
+        b.place(0, c);
+        b.get_mut(0).unwrap().phase = Phase::Ready;
+        b.get_mut(0).unwrap().gauge = formulas::GAUGE_FULL;
+
+        b.begin_execute(0, 4);
+        let c = b.get(0).unwrap();
+        assert_eq!(c.phase, Phase::Executing);
+        assert_eq!(c.cast_gauge, formulas::GAUGE_FULL);
+        assert_eq!(b.update(0.01), Some(Due::Executed(0)));
+    }
+
+    #[test]
+    fn the_escape_task_uses_its_own_cast_speed() {
+        // 0x515295: shl al,3; add al,0x14  ->  速_eff * 8 + 20
+        let mut c = Combatant::new(0, Side::Party);
+        c.speed = 3;
+        assert_eq!(c.escape_cast_rate(), 44);
+        c.speed = 30;
+        assert_eq!(c.escape_cast_rate(), 4, "按字节截断：260 & 0xff");
+    }
+
+    #[test]
+    fn the_cast_rate_saturates_at_a_byte() {
+        let mut c = Combatant::new(0, Side::Party);
+        c.speed = 3;
+        assert_eq!(c.cast_rate_for(1), 70);
+        assert_eq!(c.cast_rate_for(3), 210);
+        // 基速 35 × 4 × 2 = 280，钳到 255。倍率 > 3 其实走瞬发那一支，
+        // 这里只是确认钳位本身。
+        assert_eq!(c.cast_rate_for(4), 255);
+        assert_eq!(c.cast_rate_for(0), 70, "倍率 0 当 1 用");
     }
 }
