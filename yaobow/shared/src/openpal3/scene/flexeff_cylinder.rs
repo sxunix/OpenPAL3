@@ -5,13 +5,16 @@
 //! `FUN_004c3c90`，实例 vtable 在 0x56f7c8，和 `quad` 同构：`+0x14` 每帧更新、
 //! `+0x18` 渲染、`+0x30` 建实例。
 //!
-//! # 定义记录 224..268 那一批是它专用的
+//! # 定义记录 224..268 那一批
 //!
-//! 全表扫下来，`RotAngle(224)` / `Width(228)` / `DivisionCount(232)` /
+//! `RotAngle(224)` / `Width(228)` / `DivisionCount(232)` /
 //! `Top`+`BottomShrink(236,240)` / `Top`+`BottomRadius(244,248)` /
 //! `Top`+`BottomRadiusIncreaseSpeed(252,256)` / `Top`+`BottomRiseSpeed(260,264)`
-//! / `TextureRepeat(268)` **只有 `cylinder` 在读**（0x4c4119–0x4c41c8 一段连着
-//! 搬进对象的 `+0x68`..`+0x94`）。Pal3.Unity 给这批起的名字就是照它来的。
+//! / `TextureRepeat(268)` —— `cylinder` 读得最全（0x4c4119–0x4c41c8 一段连着
+//! 搬进对象的 `+0x68`..`+0x94`），Pal3.Unity 给这批起的名字也最贴它。
+//!
+//! （`grid` 和 `meteor` 同样读这批字段，所以它不是 `cylinder` 专属——先前笔记
+//! 里写成「只有 cylinder 在读」是因为当时只扫了 cylinder 自己的地址区间。）
 //!
 //! # 几何
 //!
