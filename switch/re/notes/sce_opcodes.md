@@ -182,7 +182,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 92 | `-` | （无） | — | —  |  |
 | 100 | `00436c00` | string | UIShowDealerMenuCommand | ✓ SceCommandDealerMenu | 调用买卖系统， |
 | 101 | `00436cb0` | int | ScriptVarSetPawnshopLevelCommand | ✓ SceCommandGetPawnshopLevel | 取出当前当铺经营游戏的当铺等级并赋值给变量， |
-| 102 | `00436f90` | int | GameSwitchRenderingStateCommand | 桩 SwitchRS | 选择当前渲染状态 |
+| 102 | `00436f90` | int | GameSwitchRenderingStateCommand | 桩 SwitchRS | **实为 `SwitchMode(n)` 全局模式切换**，不是渲染状态；13 = 大地图、0 = 回冒险、15 = 回标题。见 [`bigmap.md`](bigmap.md) |
 | 103 | `00436c60` | int | MiniGameStartPawnshopCommand | ✓ SceCommandMiniGamePawnshop | 进入当铺经营游戏， |
 | 104 | `00437080` | （无） | MiniGameStartAppraisalsCommand | 桩 APPREntry | 进入签定游戏 |
 | 105 | `004370e0` | （无） | MiniGameStartSwatAFlyCommand | ✓ SceCommandMiniGameSwatAFly | 进入打苍蝇游戏 |

@@ -435,6 +435,7 @@ fn find_the_procs_that_use_an_opcode() {
 ///
 /// ```sh
 /// YAOBOW_PAL3_ASSETS=... YAOBOW_DUMP_PROC=Q06:1204 \
+/// # 或者 YAOBOW_DUMP_PROC=ui/bigmap/bigmap:2000
 ///   cargo test -p shared --test pal3_sce_opcode_census dump_one_proc -- --ignored --nocapture
 /// ```
 #[test]
@@ -451,7 +452,13 @@ fn dump_one_proc() {
     let id: u32 = id.trim().parse().unwrap();
 
     let vfs = packfs::init_virtual_fs(&assets, None);
-    let sce = sce_load_from_file(&vfs, &PathBuf::from(format!("/scene/{scene}/{scene}.sce")));
+    // 带斜杠的当成 vfs 路径，比如 ui/bigmap/bigmap —— 大地图有自己的脚本。
+    let path = if scene.contains('/') {
+        PathBuf::from(format!("/basedata/basedata/{scene}.sce"))
+    } else {
+        PathBuf::from(format!("/scene/{scene}/{scene}.sce"))
+    };
+    let sce = sce_load_from_file(&vfs, &path);
     let proc = &sce.procs[&id];
     println!(
         "{scene} proc {id} 「{}」 {} 字节",
