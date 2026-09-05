@@ -1,5 +1,7 @@
 pub mod agent;
+pub mod appraise;
 pub mod asset_manager;
+pub mod assis_lang;
 pub mod bigmap;
 pub mod combat;
 #[macro_use]

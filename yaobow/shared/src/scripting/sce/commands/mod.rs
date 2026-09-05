@@ -1,4 +1,5 @@
 mod _let;
+mod appraise;
 mod between;
 mod call;
 mod camera_anim;
@@ -82,6 +83,7 @@ mod world_rotate;
 mod xj_pic;
 
 pub use _let::{SceCommandLet, SceCommandLetAdd};
+pub use appraise::SceCommandAppraise;
 pub use between::SceCommandBetween;
 pub use call::SceCommandCall;
 pub use camera_anim::{

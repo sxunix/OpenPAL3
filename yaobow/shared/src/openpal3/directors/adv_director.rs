@@ -978,6 +978,12 @@ impl AdventureDirectorProps {
     fn apply_scripted_camera(&mut self) {
         use crate::openpal3::states::camera::{Focus, polar_of};
 
+        // 栈顶是小游戏压上来的普通场景（鉴定 104）时没有角色可解析，
+        // 也没有它的相机可管。
+        if self.scene_manager.scn_scene().is_none() {
+            return;
+        }
+
         let focus = self.sce_vm.global_state().camera().focus().clone();
         let target = match &focus {
             Focus::Player => {

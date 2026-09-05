@@ -47,6 +47,8 @@ pub struct GlobalState {
     /// opcodes is right when a VFX system arrives.
     effect_position: Vec3,
     camera: Pal3Camera,
+    /// `DAT_00d92784`：鉴定小游戏（104）的结果，108 `GetAppr` 读它。
+    appraise_result: i32,
 }
 
 impl GlobalState {
@@ -85,7 +87,16 @@ impl GlobalState {
             divine_tree_flower_initialized: false,
             effect_position: Vec3::new(0., 0., 0.),
             camera: Pal3Camera::default(),
+            appraise_result: 0,
         }
+    }
+
+    pub fn appraise_result(&self) -> i32 {
+        self.appraise_result
+    }
+
+    pub fn set_appraise_result(&mut self, result: i32) {
+        self.appraise_result = result;
     }
 
     /// The shipped item/skill/actor tables and experience curve.

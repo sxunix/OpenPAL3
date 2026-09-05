@@ -711,8 +711,8 @@ impl SceProcContext {
                 command!(self, SceCommandMiniGamePawnshop, flag: i32)
             }
             104 => {
-                // APPR Entry
-                nop_command!(self, APPREntry)
+                // APPREntry —— 鉴定小游戏，脚本停在这里等它结束
+                command!(self, SceCommandAppraise)
             }
             105 => {
                 // MiniGame: 打苍蝇
