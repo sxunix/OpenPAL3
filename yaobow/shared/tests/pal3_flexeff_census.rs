@@ -19,6 +19,7 @@ use fileformats::pal3::flexeff::{
     name_crc,
 };
 use shared::openpal3::loaders::sce_loader::sce_load_from_file;
+use shared::openpal3::scene::flexeff_quad::{QuadDef, QuadEffect};
 
 fn load() -> Option<FlexEff> {
     let assets = std::env::var("YAOBOW_PAL3_ASSETS").ok()?;
@@ -236,4 +237,75 @@ fn every_group_the_scripts_play_resolves() {
         }
     }
     assert!(bad.is_empty(), "解析不了: {bad:?}");
+}
+
+/// 脚本会播的每一个 `quad`，都得能建成模型并在有限时间内收尾。
+///
+/// 这是 [`QuadEffect`] 真正跑在实机数据上的检查：定义记录里的静态量要合理
+/// （图集帧数和行列数对得上、大小为正、循环次数不离谱），子块给的节奏要能
+/// 让特效结束，跑的过程中不能出 NaN。
+#[test]
+fn every_quad_the_scripts_play_runs_to_completion() {
+    let Some(eff) = load() else { return };
+    let mut checked = 0;
+    for g in eff.groups() {
+        for (k, id) in g.ids().iter().enumerate() {
+            let Some(def) = eff.find(*id).and_then(|i| eff.definition(i)) else {
+                continue;
+            };
+            if def.class() != Some("quad") {
+                continue;
+            }
+            let qd = QuadDef::from_def(&def);
+            assert!(
+                qd.size > 0.,
+                "定义 {} 的 InitSize 是 {}",
+                def.index,
+                qd.size
+            );
+            // 帧数**不**受图集大小约束：定义 1237 是 1×1 的图集却写着 81
+            // 帧。这类单图 quad 的帧数起的是寿命的作用（帧数 ÷ fps × 循环
+            // 次数），`frame_uv` 在 1×1 下本来就恒取整张图。
+            assert!(qd.frame_count >= 1, "定义 {} 的帧数是 0", def.index);
+            assert!(qd.max_quads > 0, "定义 {} 的 MaxQuadCount 是 0", def.index);
+
+            for s in 0..GROUP_SUBS {
+                if !g.sub_enabled(k, s) {
+                    continue;
+                }
+                let sub = g.sub(k, s).unwrap();
+                let mut e = QuadEffect::new(qd, sub, [0., 0., 0.]);
+                let t = e.timing();
+                assert!(
+                    t.duration > 0. && t.duration < 600.,
+                    "组 {} 第 {k} 条子块 {s} 的时长是 {}",
+                    g.index,
+                    t.duration
+                );
+                // 延迟可以远大于时长——分阶段的特效会把某一份排到十几秒后。
+                assert!(t.delay >= 0. && t.delay < 600., "延迟 {}", t.delay);
+
+                // 一路跑到收尾。上界给足：延迟 + 时长再加一点。
+                let steps = (((t.delay + t.duration) / 0.05) as usize + 20).min(100_000);
+                for _ in 0..steps {
+                    e.step(0.05);
+                    for q in e.quads() {
+                        assert!(
+                            q.half_width.is_finite() && q.color.iter().all(|c| c.is_finite()),
+                            "组 {} 第 {k} 条跑出了 NaN",
+                            g.index
+                        );
+                    }
+                }
+                assert!(
+                    e.finished(),
+                    "组 {} 第 {k} 条子块 {s} 跑了 {steps} 步还没收尾",
+                    g.index
+                );
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 200, "只检查了 {checked} 个 quad，太少");
+    println!("跑完 {checked} 个 quad 子块");
 }

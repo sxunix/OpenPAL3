@@ -2,6 +2,7 @@ mod cvd_entity;
 mod effect;
 pub mod emoji;
 mod error;
+pub mod flexeff_quad;
 mod particles;
 mod role_controller;
 mod scene;
