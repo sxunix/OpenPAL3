@@ -21,6 +21,8 @@ fn main() {
             build_vulkan_shader("actor_lit.frag");
             build_vulkan_shader("terrain_splat.vert");
             build_vulkan_shader("terrain_splat.frag");
+            build_vulkan_shader("particle.vert");
+            build_vulkan_shader("particle.frag");
             build_vulkan_shader("grass.vert");
             build_vulkan_shader("grass.frag");
             build_vulkan_shader("shadow_depth.vert");

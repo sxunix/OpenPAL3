@@ -441,6 +441,9 @@ fn program_components(program: ShaderProgram) -> VertexComponents {
         ShaderProgram::GrassWind => {
             VertexComponents::POSITION | VertexComponents::TEXCOORD | VertexComponents::TEXCOORD2
         }
+        ShaderProgram::Particle => {
+            VertexComponents::POSITION | VertexComponents::TEXCOORD | VertexComponents::TEXCOORD2
+        }
         ShaderProgram::Pal3Actor => {
             VertexComponents::POSITION | VertexComponents::NORMAL | VertexComponents::TEXCOORD
         }

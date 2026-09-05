@@ -551,6 +551,32 @@ fn decode_texture_data(data: Option<Vec<u8>>) -> Option<image::RgbaImage> {
         .ok()
 }
 
+/// Builds a particle material ([`ShaderProgram::Particle`]) — a textured
+/// billboard whose colour and alpha come in per vertex through
+/// `TEXCOORD2` rather than from the material's tint.
+pub struct ParticleMaterialDef;
+
+impl ParticleMaterialDef {
+    /// `blend` is what the `.par` asks for: `p_add.gbf` is additive,
+    /// `p_alpha.gbf` is alpha.
+    pub fn create_with_image(
+        texture_name: &str,
+        image: Option<image::RgbaImage>,
+        blend: BlendMode,
+    ) -> MaterialDef {
+        let texture = TextureStore::get_or_update(texture_name, || image);
+        MaterialDef::builder(ShaderProgram::Particle)
+            .debug_name(texture_name)
+            .textures_with_samplers(vec![texture], vec![SamplerDef::default()])
+            .blend(blend)
+            .cull(CullMode::None)
+            // Particles never occlude each other; writing depth makes a
+            // cloud of additive quads erase the ones behind it.
+            .depth(DepthMode::TestOnly)
+            .build()
+    }
+}
+
 /// Builds a PAL5 grass-wind material ([`ShaderProgram::GrassWind`]). The vertex
 /// stage sways geometry by the second texcoord set (`inTexCoord2.x`: 0 root
 /// pinned, 1 tip moves) over the per-frame `time` uniform. `wind_strength` is

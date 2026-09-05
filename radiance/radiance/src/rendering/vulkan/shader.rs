@@ -170,6 +170,10 @@ static TERRAIN_SPLAT_FRAG: &'static [u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/terrain_splat.frag.spv"));
 static GRASS_VERT: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grass.vert.spv"));
 static GRASS_FRAG: &'static [u8] = include_bytes!(concat!(env!("OUT_DIR"), "/grass.frag.spv"));
+static PARTICLE_VERT: &'static [u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/particle.vert.spv"));
+static PARTICLE_FRAG: &'static [u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/particle.frag.spv"));
 static PAL3_ACTOR_VERT: &'static [u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/pal3_actor.vert.spv"));
 static PAL3_ACTOR_FRAG: &'static [u8] =
@@ -190,6 +194,12 @@ fn get_shader_proram_data(shader: ShaderProgram) -> ShaderProgramData {
             SIMPLE_TRIANGLE_VERT,
             SIMPLE_TRIANGLE_FRAG,
             VertexComponents::POSITION | VertexComponents::TEXCOORD,
+        ),
+        ShaderProgram::Particle => ShaderProgramData::new(
+            "particle",
+            PARTICLE_VERT,
+            PARTICLE_FRAG,
+            VertexComponents::POSITION | VertexComponents::TEXCOORD | VertexComponents::TEXCOORD2,
         ),
         ShaderProgram::TexturedLightmap => ShaderProgramData::new(
             "lightmap_texture",

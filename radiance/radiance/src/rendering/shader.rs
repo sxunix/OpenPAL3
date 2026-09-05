@@ -60,6 +60,16 @@ pub enum ShaderProgram {
     /// `MaterialParams.uv_xform.xy`. The grass billboard texture (real
     /// `cao###` color masked by a blade alpha) is baked CPU-side.
     GrassWind,
+
+    /// 粒子（`.par` 特效）。Textured billboards whose colour and alpha
+    /// vary per particle: `gbPartGroupParam`'s `RgbColor` and
+    /// `VertexAlpha` curves are sampled against each particle's own age,
+    /// so a material-wide tint cannot express them. The vertex layout has
+    /// no colour component, so the pair rides in `TEXCOORD2` — RGB packed
+    /// into the first float as `0xRRGGBB` (exact in an f32 up to 2^24),
+    /// alpha in the second. Requires
+    /// `POSITION | TEXCOORD | TEXCOORD2`.
+    Particle,
 }
 
 pub(crate) struct ShaderProgramData {
