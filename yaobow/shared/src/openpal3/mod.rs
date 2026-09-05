@@ -9,6 +9,7 @@ pub mod comdef {
     include!(concat!(env!("OUT_DIR"), "/shared_openpal3_comdef.rs"));
 }
 pub mod directors;
+pub mod encamp;
 pub mod loaders;
 pub mod scene;
 pub mod states;

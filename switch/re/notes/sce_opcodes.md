@@ -86,7 +86,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 
 ## 全表
 
-`处理函数`列是 exe 里的地址；`yaobow` 列 `✓` = 已实现，`桩` = 读掉参数后什么都不做。
+`处理函数`列是 exe 里的地址；`yaobow` 列 `✓` = 已实现，`桩` = 读掉参数后什么都不做，`跳过桩` = 有指令类但只是跳过子系统（`minigames.rs`），不算实现。
 `Pal3.Unity 类` 来自 `Pal3.Core/Command/SceCommands/`（GPL-3.0，0x7c13），
 中文说明是它的原注释。
 
@@ -180,19 +180,19 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 90 | `004378e0` | int float float float float | SceneMoveObjectCommand | 桩 ObjectMove | 移动场景物体到某处， |
 | 91 | `004371f0` | （无） | CameraFadeInWhiteCommand | ✓ SceCommandFadeInWhite | 屏幕淡入(白色） |
 | 92 | `-` | （无） | — | —  |  |
-| 100 | `00436c00` | string | UIShowDealerMenuCommand | ✓ SceCommandDealerMenu | 调用买卖系统， |
+| 100 | `00436c00` | string | UIShowDealerMenuCommand | 跳过桩 SceCommandDealerMenu | 调用买卖系统， |
 | 101 | `00436cb0` | int | ScriptVarSetPawnshopLevelCommand | ✓ SceCommandGetPawnshopLevel | 取出当前当铺经营游戏的当铺等级并赋值给变量， |
 | 102 | `00436f90` | int | GameSwitchRenderingStateCommand | 桩 SwitchRS | **实为 `SwitchMode(n)` 全局模式切换**，不是渲染状态；13 = 大地图、0 = 回冒险、15 = 回标题。见 [`bigmap.md`](bigmap.md) |
-| 103 | `00436c60` | int | MiniGameStartPawnshopCommand | ✓ SceCommandMiniGamePawnshop | 进入当铺经营游戏， |
-| 104 | `00437080` | （无） | MiniGameStartAppraisalsCommand | 桩 APPREntry | 进入签定游戏 |
-| 105 | `004370e0` | （无） | MiniGameStartSwatAFlyCommand | ✓ SceCommandMiniGameSwatAFly | 进入打苍蝇游戏 |
-| 106 | `00437120` | int | MiniGameStartEncampCommand | 桩 ENCAMP_Entry | 进入宿营游戏 |
-| 107 | `00436f40` | int | MiniGameStartSkiCommand | ✓ SceCommandMiniGameSki | 进入滑雪游戏， |
+| 103 | `00436c60` | int | MiniGameStartPawnshopCommand | 跳过桩 SceCommandMiniGamePawnshop | 进入当铺经营游戏， |
+| 104 | `00437080` | （无） | MiniGameStartAppraisalsCommand | ✓ SceCommandAppraise | 进入鉴定游戏。见 [`appraise_minigame.md`](appraise_minigame.md) |
+| 105 | `004370e0` | （无） | MiniGameStartSwatAFlyCommand | 跳过桩 SceCommandMiniGameSwatAFly | 进入打苍蝇游戏 |
+| 106 | `00437120` | int | MiniGameStartEncampCommand | ✓ SceCommandEncamp | 进入宿营游戏，参数是四方象枢方位号 0–3。见 [`encamp.md`](encamp.md) |
+| 107 | `00436f40` | int | MiniGameStartSkiCommand | 跳过桩 SceCommandMiniGameSki | 进入滑雪游戏， |
 | 108 | `004370c0` | int | ScriptVarSetAppraisalsResultCommand | ✓ SceCommandGetAppr | 取出鉴定小游戏的结果并设置给变量 |
 | 109 | `00436fb0` | int | FeatureEnableSwordPurifyingCommand | ✓ SceCommandEnableFeature | 打开或关闭魔剑养成功能， |
 | 110 | `00436fe0` | int | FeatureEnableJusticeBookCommand | ✓ SceCommandEnableFeature | 打开或关闭降妖谱功能， |
 | 111 | `00437040` | int | PlayerLearnComposeCommand | ✓ SceCommandLearnCompose | 学会合成术， |
-| 112 | `00437c20` | （无） | MiniGameStartCaveExperienceCommand | ✓ SceCommandMiniGameCaveExperience | 进入山洞初体验游戏 |
+| 112 | `00437c20` | （无） | MiniGameStartCaveExperienceCommand | 跳过桩 SceCommandMiniGameCaveExperience | 进入山洞初体验游戏 |
 | 113 | `00437c30` | （无） | MiniGameStartHideFightCommand | ✓ SceCommandStartHideFight | 使当前场景进入<当铺&刺使府夜间特殊战斗关>状态 |
 | 114 | `00437c40` | （无） | — | —  |  |
 | 115 | `00437c50` | string | PlayVideoCommand | ✓ SceCommandMovie | 播放动画 |
@@ -226,7 +226,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 143 | `004389a0` | int | EffectPlayCommand | 桩 CEft | 播放VFX特效， |
 | 144 | `004389d0` | int | EffectAttachToActorCommand | ✓ SceCommandEffectAtRole | 在角色位置播放特效， |
 | 145 | `00438840` | int int | PlayerSetActorLevelCommand | ✓ SceCommandAverageLevel | 设置目标角色等级（所有当前角色等级的平均值+增加值）， |
-| 146 | `00436a10` | int | UIShowSmeltingMenuCommand | ✓ SceCommandSmeltingMenu | 打开冶炼菜单 |
+| 146 | `00436a10` | int | UIShowSmeltingMenuCommand | 跳过桩 SceCommandSmeltingMenu | 打开冶炼菜单 |
 | 147 | `00438a20` | （无） | GameSwitchToMainMenuCommand | 桩 Switch2Menu | 退出游戏到主菜单 |
 | 148 | `00438980` | int | EffectPreLoadCommand | 桩 CEft_Load | 预加载VFX特效Group， |
 | 149 | `00438a30` | int | ScriptVarSetLongKuiDressIdCommand | ✓ SceCommandGiveCloth | 把背包里所获的的服装给龙葵， |

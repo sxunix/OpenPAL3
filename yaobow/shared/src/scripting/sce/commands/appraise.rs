@@ -51,11 +51,11 @@ const SPIN_SPEED: f32 = 0.8;
 /// 拖动转模型：每像素多少弧度 `[推断]`。
 const DRAG_SPEED: f32 = 0.012;
 
-const WHITE: [f32; 4] = [1., 1., 1., 1.];
+pub(crate) const WHITE: [f32; 4] = [1., 1., 1., 1.];
 /// 对话框文字色 0x1ffbff（原版 `FUN_00525841` 一带的 0xfffb1f/0x1ffbff）。
-const TEXT_COLOR: [f32; 4] = [1., 0.98, 0.12, 1.];
-const PANEL_COLOR: [f32; 4] = [0.05, 0.05, 0.1, 0.9];
-const HIGHLIGHT: [f32; 4] = [1., 0.92, 0.45, 1.];
+pub(crate) const TEXT_COLOR: [f32; 4] = [1., 0.98, 0.12, 1.];
+pub(crate) const PANEL_COLOR: [f32; 4] = [0.05, 0.05, 0.1, 0.9];
+pub(crate) const HIGHLIGHT: [f32; 4] = [1., 0.92, 0.45, 1.];
 
 pub struct SceCommandAppraise {
     game: Option<Box<AppraiseGame>>,
@@ -1087,7 +1087,7 @@ impl AppraiseGame {
 }
 
 /// 鼠标在 800×600 虚拟屏幕里的位置。
-fn virtual_mouse(ui: &Ui) -> (f32, f32) {
+pub(crate) fn virtual_mouse(ui: &Ui) -> (f32, f32) {
     let [sw, sh] = ui.io().display_size;
     let scale = (sw / layout::SCREEN_W as f32).min(sh / layout::SCREEN_H as f32);
     if scale <= 0. {
@@ -1101,7 +1101,11 @@ fn virtual_mouse(ui: &Ui) -> (f32, f32) {
 
 /// 一个铺满屏幕、不吃输入的 imgui 窗口；回调拿到「虚拟坐标 → 屏幕坐标」和
 /// 缩放比。
-fn overlay<F: FnOnce(&Ui, &dyn Fn(i32, i32) -> [f32; 2], f32)>(ui: &Ui, name: &str, draw: F) {
+pub(crate) fn overlay<F: FnOnce(&Ui, &dyn Fn(i32, i32) -> [f32; 2], f32)>(
+    ui: &Ui,
+    name: &str,
+    draw: F,
+) {
     let [sw, sh] = ui.io().display_size;
     let scale = (sw / layout::SCREEN_W as f32).min(sh / layout::SCREEN_H as f32);
     let ox = (sw - layout::SCREEN_W as f32 * scale) * 0.5;
@@ -1124,7 +1128,7 @@ fn overlay<F: FnOnce(&Ui, &dyn Fn(i32, i32) -> [f32; 2], f32)>(ui: &Ui, name: &s
 }
 
 /// 按像素宽度折行（中文没有空格，按字折）。
-fn wrap_lines(ui: &Ui, text: &str, width: f32) -> Vec<String> {
+pub(crate) fn wrap_lines(ui: &Ui, text: &str, width: f32) -> Vec<String> {
     let mut lines = vec![];
     let mut cur = String::new();
     for c in text.chars() {
@@ -1141,7 +1145,7 @@ fn wrap_lines(ui: &Ui, text: &str, width: f32) -> Vec<String> {
     lines
 }
 
-fn play_sfx(state: &mut SceState, name: &str) {
+pub(crate) fn play_sfx(state: &mut SceState, name: &str) {
     let data = state.asset_mgr().load_snd_data(name);
     match data {
         Ok(d) => {

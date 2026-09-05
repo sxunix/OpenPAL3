@@ -719,8 +719,8 @@ impl SceProcContext {
                 command!(self, SceCommandMiniGameSwatAFly)
             }
             106 => {
-                // ENCAMP_Entry
-                nop_command!(self, ENCAMP_Entry, i32)
+                // ENCAMP_Entry —— 宿营小游戏，参数是四方象枢的方位号
+                command!(self, SceCommandEncamp, site: i32)
             }
             107 => {
                 // MiniGame: 滑雪
