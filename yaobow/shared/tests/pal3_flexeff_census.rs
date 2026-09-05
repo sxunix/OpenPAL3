@@ -10,10 +10,14 @@
 //! YAOBOW_PAL3_ASSETS=/path/to/PAL3 cargo test -p shared --test pal3_flexeff_census
 //! ```
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use common::store_ext::StoreExt2;
-use fileformats::pal3::flexeff::{DEF_COUNT, FlexEff, GROUP_COUNT, GROUP_MAX_ENTRIES, GROUP_SUBS};
+use fileformats::pal3::flexeff::{
+    DEF_COUNT, EFFECT_CLASSES, FlexEff, GROUP_COUNT, GROUP_MAX_ENTRIES, GROUP_SUB_USED, GROUP_SUBS,
+    name_crc,
+};
 
 fn load() -> Option<FlexEff> {
     let assets = std::env::var("YAOBOW_PAL3_ASSETS").ok()?;
@@ -83,15 +87,26 @@ fn unused_slots_are_zeroed_and_names_decode() {
                 g.index
             );
         }
-        // 子块的启用标志只取 0/1。
+        // 子块的四个标志字节只取 0/1，最后一个从来没被用过；`+96` 往后的
+        // 28 字节也一直是零。
         for k in 0..c {
             for s in 0..GROUP_SUBS {
                 let b = g.sub(k, s).unwrap();
+                let flags = g.sub_flags(k, s).unwrap();
                 assert!(
-                    b[0x58] <= 1,
-                    "组 {} 槽 {k} 子块 {s} 的启用标志是 {}",
-                    g.index,
-                    b[0x58]
+                    flags.iter().all(|f| *f <= 1),
+                    "组 {} 槽 {k} 子块 {s} 的标志字节是 {flags:?}",
+                    g.index
+                );
+                assert_eq!(
+                    flags[3], 0,
+                    "组 {} 槽 {k} 子块 {s} 用上了第 4 个标志",
+                    g.index
+                );
+                assert!(
+                    b[GROUP_SUB_USED..].iter().all(|x| *x == 0),
+                    "组 {} 槽 {k} 子块 {s} 的尾部 28 字节非零",
+                    g.index
                 );
             }
         }
@@ -112,5 +127,52 @@ fn unused_slots_are_zeroed_and_names_decode() {
             d.index,
             d.asset()
         );
+    }
+}
+
+#[test]
+fn every_definition_names_a_registered_class() {
+    let Some(eff) = load() else { return };
+
+    // 我这份 CRC 表是现算的，跟 packfs 给 cpk 文件名用的那份必须一致——
+    // `FUN_004d58d0` 和 cpk 的校验和本来就是同一套。
+    for n in EFFECT_CLASSES {
+        assert_eq!(
+            name_crc(n.as_bytes()),
+            packfs::cpk::crc_checksum(n.as_bytes()),
+            "类名 {n} 的 CRC 两边算不一样"
+        );
+    }
+
+    // 1263 条有效定义的 +0 全都是这 15 个类之一，没有漏网的。
+    let mut per_class: BTreeMap<&str, usize> = BTreeMap::new();
+    for d in eff.definitions() {
+        let class = d.class().unwrap_or_else(|| {
+            panic!(
+                "定义 {} 的类 CRC 0x{:08x} 不在注册表里",
+                d.index,
+                d.class_crc()
+            )
+        });
+        *per_class.entry(class).or_insert(0) += 1;
+    }
+    assert_eq!(
+        per_class.len(),
+        EFFECT_CLASSES.len(),
+        "只用到了 {} 个类: {per_class:?}",
+        per_class.len()
+    );
+
+    // 类和资源类型要对得上：particle 一定是 .par，model 一定是模型。
+    for d in eff.definitions() {
+        let a = d.asset().to_lowercase();
+        match d.class().unwrap() {
+            "particle" => assert!(a.ends_with(".par"), "particle 却指向 {a:?}"),
+            "model" => assert!(
+                a.ends_with(".cvd") || a.ends_with(".pol"),
+                "model 却指向 {a:?}"
+            ),
+            _ => {}
+        }
     }
 }

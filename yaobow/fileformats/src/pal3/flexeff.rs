@@ -114,8 +114,24 @@ pub const GROUP_SUBS: usize = 8;
 /// 子块字节数，内层的 `add esi, 0x7c`。
 pub const GROUP_SUB_SIZE: usize = 0x7C;
 
-/// 子块里的启用标志，`mov al, byte ptr [esi + 0x58]`。
+/// 子块里的启用标志，`mov al, byte ptr [esi + 0x58]`。它同时也是 `+0x58`
+/// 起那四个标志字节的头一个。
 pub const GROUP_SUB_ENABLED: usize = 0x58;
+
+/// 子块里实际用到的字节数。`+96` 往后那 28 字节在全部 5647 个启用子块里恒
+/// 为零。
+pub const GROUP_SUB_USED: usize = 96;
+
+/// 跨全部 15 个类都恒非零的那个浮点字段。取值集中在 0.2 / 0.5 / 1.0 / 2.0。
+/// 语义未定 `[推断]`。
+pub const GROUP_SUB_COMMON_F32: usize = 76;
+
+/// 特效实例记录的字节数——`vfunc+0x30` 里搜空槽的步长。
+pub const EFFECT_INSTANCE_SIZE: usize = 0x98;
+
+/// 子块被整块拷进实例的哪个偏移：`lea edi,[ecx+ebp+0x18]; mov ecx,0x1f;
+/// rep movsd`（0x1f 个 dword 正好 124 字节）。
+pub const EFFECT_INSTANCE_PARAMS: usize = 0x18;
 
 /// 并行数组相对组头的偏移，`lea esi, [ebx + 0xec9eb4]`。
 pub const GROUP_SLOTS: usize = 0x44;
@@ -154,6 +170,73 @@ pub const DEF_TOP_RISE_SPEED: usize = 260;
 pub const DEF_BOTTOM_RISE_SPEED: usize = 264;
 pub const DEF_TEXTURE_REPEAT: usize = 268;
 pub const DEF_PARAM: usize = 272;
+
+/// `FUN_004cded0` 注册的 15 个特效类，按注册顺序。定义记录 `+0` 存的是类名
+/// 的 CRC，[`class_of`] 拿它换回名字。
+pub const EFFECT_CLASSES: [&str; 15] = [
+    "particle",
+    "quad",
+    "action",
+    "camera",
+    "time",
+    "cylinder",
+    "model",
+    "callback",
+    "grid",
+    "explosive",
+    "meteor",
+    "audio",
+    "shock",
+    "bink",
+    "quake",
+];
+
+/// `FUN_004d58d0` 用的表，就是多项式 0x04C11DB7 的 MSB-first CRC-32 表。
+const CRC_TABLE: [u32; 256] = {
+    let mut t = [0u32; 256];
+    let mut i = 0;
+    while i < 256 {
+        let mut c = (i as u32) << 24;
+        let mut k = 0;
+        while k < 8 {
+            c = if c & 0x8000_0000 != 0 {
+                (c << 1) ^ 0x04C1_1DB7
+            } else {
+                c << 1
+            };
+            k += 1;
+        }
+        t[i] = c;
+        i += 1;
+    }
+    t
+};
+
+/// `FUN_004d58d0`：头 4 个字节（不足补零）大端拼成初值，取反，然后逐字节
+/// `table[v >> 24] ^ (b | v << 8)`，最后再取反。空串返回 0。cpk 给文件名算
+/// 校验和用的是同一套。
+pub fn name_crc(name: &[u8]) -> u32 {
+    if name.is_empty() {
+        return 0;
+    }
+    let mut init = 0u32;
+    for i in 0..4 {
+        init = (init << 8) | *name.get(i).unwrap_or(&0) as u32;
+    }
+    let mut v = !init;
+    for b in name.iter().skip(4) {
+        v = CRC_TABLE[(v >> 24) as usize] ^ (*b as u32 | (v << 8));
+    }
+    !v
+}
+
+/// 类 CRC 换回 [`EFFECT_CLASSES`] 里的名字。表里 1263 条有效定义全部命中。
+pub fn class_of(crc: u32) -> Option<&'static str> {
+    EFFECT_CLASSES
+        .iter()
+        .copied()
+        .find(|n| name_crc(n.as_bytes()) == crc)
+}
 
 /// 解压后的两张表。切片按 exe 的两次 memcpy 划分。
 pub struct FlexEff {
@@ -279,9 +362,15 @@ impl<'a> EffectDef<'a> {
         u32_at(self.bytes, DEF_KEY)
     }
 
-    /// `[推断]` 类名的 CRC。
+    /// 类名的 CRC——`FUN_004cdca0` 把它交给 `FUN_004cdfd0` 去查那张 32 条的
+    /// 类注册表。
     pub fn class_crc(&self) -> u32 {
         u32_at(self.bytes, DEF_CLASS_CRC)
+    }
+
+    /// 这条定义属于哪个特效类。
+    pub fn class(&self) -> Option<&'static str> {
+        class_of(self.class_crc())
     }
 
     /// 类型名，GBK。表里出现的是「景天」「镜头」「雪」这一类。
@@ -383,6 +472,15 @@ impl<'a> EffectGroup<'a> {
         self.sub(entry, sub)
             .is_some_and(|b| b[GROUP_SUB_ENABLED] != 0)
     }
+
+    /// `+0x58` 起那四个标志字节。第 0 个是启用位，第 3 个从来没被用过。
+    pub fn sub_flags(&self, entry: usize, sub: usize) -> Option<[u8; 4]> {
+        self.sub(entry, sub).map(|b| {
+            b[GROUP_SUB_ENABLED..GROUP_SUB_ENABLED + 4]
+                .try_into()
+                .unwrap()
+        })
+    }
 }
 
 #[cfg(test)]
@@ -405,6 +503,32 @@ mod tests {
         assert_eq!(DEF_BLOCK, 0x5A820);
         assert_eq!(GROUP_BLOCK, 0x8834C0);
         assert_eq!(PAYLOAD_SIZE, 0x8DDCE0);
+    }
+
+    #[test]
+    fn four_letter_class_names_hash_to_their_own_bytes() {
+        // 名字不超过 4 个字符时循环体一次都不跑，两次取反抵消，CRC 就等于
+        // 名字本身的大端字节。表里这四个类正是这样，算个免费的自检。
+        assert_eq!(name_crc(b"quad"), 0x7175_6164);
+        assert_eq!(name_crc(b"grid"), 0x6772_6964);
+        assert_eq!(name_crc(b"time"), 0x7469_6d65);
+        assert_eq!(name_crc(b"bink"), 0x6269_6e6b);
+        assert_eq!(name_crc(b""), 0);
+    }
+
+    #[test]
+    fn the_crc_table_is_the_standard_one() {
+        assert_eq!(CRC_TABLE[0], 0);
+        assert_eq!(CRC_TABLE[1], 0x04C1_1DB7);
+        assert_eq!(CRC_TABLE[255], 2985771188);
+    }
+
+    #[test]
+    fn every_class_name_maps_back() {
+        for n in EFFECT_CLASSES {
+            assert_eq!(class_of(name_crc(n.as_bytes())), Some(n));
+        }
+        assert_eq!(class_of(0), None);
     }
 
     #[test]
