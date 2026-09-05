@@ -78,6 +78,8 @@ impl AdventureDirector {
                 water_magic_failed: false,
                 flexeff: vec![],
                 flexeff_cyl: vec![],
+                flexeff_audio: vec![],
+                flexeff_pending: vec![],
                 flexeff_seq: 0,
             }),
         }
@@ -175,6 +177,8 @@ impl AdventureDirector {
                 water_magic_failed: false,
                 flexeff: vec![],
                 flexeff_cyl: vec![],
+                flexeff_audio: vec![],
+                flexeff_pending: vec![],
                 flexeff_seq: 0,
             }),
         })
@@ -426,9 +430,16 @@ struct AdventureDirectorProps {
         crate::openpal3::scene::flexeff_cylinder::CylinderEffect,
         ComRc<radiance::comdef::IEntity>,
     )>,
+    /// `audio` 那一支——没有画面，只是到点放几个 wav。
+    flexeff_audio: Vec<crate::openpal3::scene::flexeff_audio::AudioEffect>,
+    /// `callback` 排下来、还在等延迟的特效组：`(组号, 位置, 还差几秒, 深度)`。
+    flexeff_pending: Vec<(i32, Vec3, f32, u8)>,
     /// 实体名的流水号，免得同名。
     flexeff_seq: usize,
 }
+
+/// `callback` 链的展开深度上限。实机最深 3 层且无环，留一点余量。
+const FLEXEFF_MAX_DEPTH: u8 = 5;
 
 impl AdventureDirectorProps {
     /// 152 的水特效：跟着玩家走的一组 `.par` 粒子。
@@ -527,6 +538,24 @@ impl AdventureDirectorProps {
         }
     }
 
+    /// 放一个特效音，和表情音效同一条路：读 `/snd/<名>.wav`，起一个一次性
+    /// 音源挂在全局状态上。
+    fn play_effect_sound(&mut self, name: &str) {
+        match self.sce_vm.state().asset_mgr().load_snd_data(name) {
+            Ok(data) => {
+                let mut source = self.sce_vm.state().audio_engine().create_source();
+                source.set_data(data, radiance::audio::Codec::Wav);
+                source.play(false);
+                self.sce_vm
+                    .state_mut()
+                    .global_state_mut()
+                    .add_sound_source(std::rc::Rc::new(std::cell::RefCell::new(source)));
+            }
+            // 实机里有一个号码是 14200000 的垃圾值，原版同样找不到文件。
+            Err(e) => log::warn!("CEft: 特效音 {name} 读不到: {e:?}"),
+        }
+    }
+
     /// 143 CEft 排下的战斗特效。
     ///
     /// 每帧先把脚本排的请求接进来：查 `flexeff` 的特效组，对其中 `quad` 类
@@ -534,6 +563,7 @@ impl AdventureDirectorProps {
     /// `switch/re/notes/flexeff_format.md`），再逐个推进、写网格、收掉跑完
     /// 的。别的类还没做，`combat_effect.rs` 那边会把它们记进日志。
     fn step_flexeff(&mut self, delta_sec: f32) {
+        use crate::openpal3::scene::flexeff_audio::{AudioEffect, sound_names};
         use crate::openpal3::scene::flexeff_cylinder::{
             CylinderDef, CylinderEffect, build_cylinder_entity, write_cylinder_mesh,
         };
@@ -543,12 +573,32 @@ impl AdventureDirectorProps {
         use fileformats::pal3::flexeff::GROUP_SUBS;
         use radiance::comdef::ISceneExt;
 
-        let requests = self.sce_vm.state_mut().take_effect_requests();
+        let mut requests: Vec<(i32, Vec3, u8)> = self
+            .sce_vm
+            .state_mut()
+            .take_effect_requests()
+            .into_iter()
+            .map(|(g, p)| (g, p, 0u8))
+            .collect();
+        // `callback` 排下来的，延迟到点了就展开。
+        for entry in self.flexeff_pending.iter_mut() {
+            entry.2 -= delta_sec;
+        }
+        let mut still = vec![];
+        for (g, p, left, depth) in std::mem::take(&mut self.flexeff_pending) {
+            if left <= 0. {
+                requests.push((g, p, depth));
+            } else {
+                still.push((g, p, left, depth));
+            }
+        }
+        self.flexeff_pending = still;
+
         let Some(scene) = self.scene_manager.scene() else {
             return;
         };
 
-        for (group_id, position) in requests {
+        for (group_id, position, depth) in requests {
             let asset_mgr = self.sce_vm.state().asset_mgr();
             let Some(eff) = asset_mgr.flexeff() else {
                 continue;
@@ -564,6 +614,44 @@ impl AdventureDirectorProps {
                     continue;
                 };
                 let class = def.class();
+                // `callback` 是「再播另一个特效组」：子块 +0 和 +32 是组号，
+                // 预载那一支（0x4c2ba0）就是拿它们去调 FUN_004ce460——和指令
+                // 148 同一个函数。实机 492 次引用全部有效，链最深 3 层、无环。
+                if class == Some("callback") {
+                    if depth < FLEXEFF_MAX_DEPTH {
+                        for sidx in 0..GROUP_SUBS {
+                            if !group.sub_enabled(k, sidx) {
+                                continue;
+                            }
+                            let sub = group.sub(k, sidx).unwrap();
+                            let delay = f32::from_le_bytes(sub[72..76].try_into().unwrap()).max(0.);
+                            for o in [0usize, 32] {
+                                let v =
+                                    f32::from_le_bytes(sub[o..o + 4].try_into().unwrap()) as i32;
+                                if v > 0 {
+                                    self.flexeff_pending.push((v, position, delay, depth + 1));
+                                }
+                            }
+                        }
+                    } else {
+                        log::warn!("CEft: 特效组 {group_id} 的 callback 链太深，停在这里");
+                    }
+                    continue;
+                }
+                // `audio` 没有贴图也没有网格，先单独处理掉。
+                if class == Some("audio") {
+                    for sidx in 0..GROUP_SUBS {
+                        if !group.sub_enabled(k, sidx) {
+                            continue;
+                        }
+                        let sub = group.sub(k, sidx).unwrap();
+                        let names = sound_names(&def, sub);
+                        if !names.is_empty() {
+                            self.flexeff_audio.push(AudioEffect::new(names, sub));
+                        }
+                    }
+                    continue;
+                }
                 if class != Some("quad") && class != Some("cylinder") {
                     continue;
                 }
@@ -601,6 +689,20 @@ impl AdventureDirectorProps {
                             .push((CylinderEffect::new(cd, sub, origin), entity));
                     }
                 }
+            }
+        }
+
+        // 声音先处理，它不依赖场景也不依赖相机。
+        if !self.flexeff_audio.is_empty() {
+            let mut due: Vec<String> = vec![];
+            for a in self.flexeff_audio.iter_mut() {
+                if let Some(names) = a.step(delta_sec) {
+                    due.extend(names.iter().cloned());
+                }
+            }
+            self.flexeff_audio.retain(|a| !a.finished());
+            for name in due {
+                self.play_effect_sound(&name);
             }
         }
 

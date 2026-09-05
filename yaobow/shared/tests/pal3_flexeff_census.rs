@@ -19,6 +19,7 @@ use fileformats::pal3::flexeff::{
     name_crc,
 };
 use shared::openpal3::loaders::sce_loader::sce_load_from_file;
+use shared::openpal3::scene::flexeff_audio::sound_names;
 use shared::openpal3::scene::flexeff_cylinder::{CylinderDef, CylinderEffect};
 use shared::openpal3::scene::flexeff_quad::{QuadDef, QuadEffect};
 
@@ -430,4 +431,116 @@ fn every_cylinder_the_scripts_play_runs_to_completion() {
     }
     assert!(checked > 50, "只跑了 {checked} 个 cylinder 子块");
     println!("跑完 {checked} 个 cylinder 子块");
+}
+
+/// `audio` 特效拼出来的声音名，绝大多数要能在 `/snd` 找到。
+///
+/// 这条钉的是「号码在子块 +0/+8/+32/+44」这个读法：偏移错了，命中率会立刻
+/// 塌掉。实机里只有一个号码是没清干净的垃圾值（14200000），原版拼出来同样
+/// 找不到文件，所以留一个的余量。
+#[test]
+fn audio_effects_name_sounds_that_exist() {
+    let Some(eff) = load() else { return };
+    let assets = std::env::var("YAOBOW_PAL3_ASSETS").unwrap();
+    let vfs = packfs::init_virtual_fs(&assets, None);
+
+    let mut names = std::collections::BTreeSet::new();
+    for g in eff.groups() {
+        for (k, id) in g.ids().iter().enumerate() {
+            let Some(def) = eff.find(*id).and_then(|i| eff.definition(i)) else {
+                continue;
+            };
+            if def.class() != Some("audio") {
+                continue;
+            }
+            for s in 0..GROUP_SUBS {
+                if !g.sub_enabled(k, s) {
+                    continue;
+                }
+                names.extend(sound_names(&def, g.sub(k, s).unwrap()));
+            }
+        }
+    }
+    assert!(names.len() > 100, "只拼出 {} 个声音名", names.len());
+
+    let missing: Vec<&String> = names
+        .iter()
+        .filter(|n| {
+            vfs.read_to_end(PathBuf::from(format!("/snd/{n}.wav")))
+                .is_err()
+        })
+        .collect();
+    assert!(
+        missing.len() <= 1,
+        "{} 个声音名里有 {} 个找不到: {missing:?}",
+        names.len(),
+        missing.len()
+    );
+}
+
+/// `callback` 引到的特效组必须都存在，而且这张图不能成环。
+///
+/// 这条钉的是「子块 +0 和 +32 是组号」这个读法（`callback` 的预载 0x4c2ba0
+/// 拿它们去调 `FUN_004ce460`，和指令 148 同一个函数），也保证
+/// `AdventureDirector` 展开这条链时不会打转。
+#[test]
+fn the_callback_chain_is_a_finite_dag() {
+    let Some(eff) = load() else { return };
+    let mut edges: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    let mut refs = 0;
+    for g in eff.groups() {
+        for (k, id) in g.ids().iter().enumerate() {
+            let Some(def) = eff.find(*id).and_then(|i| eff.definition(i)) else {
+                continue;
+            };
+            if def.class() != Some("callback") {
+                continue;
+            }
+            for s in 0..GROUP_SUBS {
+                if !g.sub_enabled(k, s) {
+                    continue;
+                }
+                let sub = g.sub(k, s).unwrap();
+                for o in [0usize, 32] {
+                    let v = f32::from_le_bytes(sub[o..o + 4].try_into().unwrap()) as i32;
+                    if v == 0 {
+                        continue;
+                    }
+                    refs += 1;
+                    let target = eff.group(v.max(0) as usize);
+                    assert!(
+                        target.map(|t| t.is_valid()).unwrap_or(false),
+                        "组 {} 的 callback 指向无效组 {v}",
+                        g.index
+                    );
+                    edges.entry(g.index).or_default().push(v as usize);
+                }
+            }
+        }
+    }
+    assert!(refs > 300, "只找到 {refs} 处 callback 引用");
+
+    // 深度优先走一遍，路径上不能重复出现同一个组。
+    fn walk(
+        edges: &BTreeMap<usize, Vec<usize>>,
+        at: usize,
+        path: &mut Vec<usize>,
+        deepest: &mut usize,
+    ) {
+        assert!(!path.contains(&at), "callback 成环: {path:?} -> {at}");
+        path.push(at);
+        *deepest = (*deepest).max(path.len());
+        if let Some(next) = edges.get(&at) {
+            for &n in next {
+                walk(edges, n, path, deepest);
+            }
+        }
+        path.pop();
+    }
+    let mut deepest = 0;
+    for &start in edges.keys() {
+        walk(&edges, start, &mut vec![], &mut deepest);
+    }
+    assert!(deepest <= 8, "callback 链深 {deepest} 层，超出预期");
+    println!("callback: {refs} 处引用，链最深 {deepest} 层");
 }

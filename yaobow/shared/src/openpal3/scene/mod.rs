@@ -2,6 +2,7 @@ mod cvd_entity;
 mod effect;
 pub mod emoji;
 mod error;
+pub mod flexeff_audio;
 pub mod flexeff_cylinder;
 pub mod flexeff_quad;
 mod particles;
