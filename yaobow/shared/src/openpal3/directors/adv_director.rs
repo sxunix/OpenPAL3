@@ -77,6 +77,7 @@ impl AdventureDirector {
                 water_magic: None,
                 water_magic_failed: false,
                 flexeff: vec![],
+                flexeff_cyl: vec![],
                 flexeff_seq: 0,
             }),
         }
@@ -173,6 +174,7 @@ impl AdventureDirector {
                 water_magic: None,
                 water_magic_failed: false,
                 flexeff: vec![],
+                flexeff_cyl: vec![],
                 flexeff_seq: 0,
             }),
         })
@@ -413,10 +415,15 @@ struct AdventureDirectorProps {
         Vec<ComRc<radiance::comdef::IEntity>>,
     )>,
     water_magic_failed: bool,
-    /// 143 播出去的战斗特效：`quad` 类那一支的模型加它画成的实体。
-    /// 其余类（cylinder / meteor / audio / callback …）还没做。
+    /// 143 播出去的战斗特效：`quad` 那一支的模型加它画成的实体。
+    /// 其余类（meteor / audio / callback …）还没做。
     flexeff: Vec<(
         crate::openpal3::scene::flexeff_quad::QuadEffect,
+        ComRc<radiance::comdef::IEntity>,
+    )>,
+    /// `cylinder` 那一支。
+    flexeff_cyl: Vec<(
+        crate::openpal3::scene::flexeff_cylinder::CylinderEffect,
         ComRc<radiance::comdef::IEntity>,
     )>,
     /// 实体名的流水号，免得同名。
@@ -527,6 +534,9 @@ impl AdventureDirectorProps {
     /// `switch/re/notes/flexeff_format.md`），再逐个推进、写网格、收掉跑完
     /// 的。别的类还没做，`combat_effect.rs` 那边会把它们记进日志。
     fn step_flexeff(&mut self, delta_sec: f32) {
+        use crate::openpal3::scene::flexeff_cylinder::{
+            CylinderDef, CylinderEffect, build_cylinder_entity, write_cylinder_mesh,
+        };
         use crate::openpal3::scene::flexeff_quad::{
             MAX_QUADS, QuadDef, QuadEffect, build_quad_entity, write_quad_mesh,
         };
@@ -553,10 +563,10 @@ impl AdventureDirectorProps {
                 let Some(def) = eff.find(*id).and_then(|i| eff.definition(i)) else {
                     continue;
                 };
-                if def.class() != Some("quad") {
+                let class = def.class();
+                if class != Some("quad") && class != Some("cylinder") {
                     continue;
                 }
-                let qd = QuadDef::from_def(&def);
                 // 资源名是 `effect\xxx.tga` 这样的反斜杠相对路径。
                 let texture_path = asset_mgr
                     .basedata_path()
@@ -565,29 +575,36 @@ impl AdventureDirectorProps {
                     log::warn!("CEft: 读不到特效贴图 {}", texture_path.display());
                     continue;
                 };
+                let name = texture_path.to_str().unwrap_or("flexeff");
+                let origin = [position.x, position.y, position.z];
                 for sidx in 0..GROUP_SUBS {
                     if !group.sub_enabled(k, sidx) {
                         continue;
                     }
                     let sub = group.sub(k, sidx).unwrap();
                     self.flexeff_seq += 1;
-                    let entity = build_quad_entity(
-                        &asset_mgr.component_factory(),
-                        self.flexeff_seq,
-                        texture_path.to_str().unwrap_or("flexeff"),
-                        image.clone(),
-                        qd.additive,
-                    );
-                    scene.add_entity(entity.clone());
-                    self.flexeff.push((
-                        QuadEffect::new(qd, sub, [position.x, position.y, position.z]),
-                        entity,
-                    ));
+                    let seq = self.flexeff_seq;
+                    let factory = asset_mgr.component_factory();
+                    if class == Some("quad") {
+                        let qd = QuadDef::from_def(&def);
+                        let entity =
+                            build_quad_entity(&factory, seq, name, image.clone(), qd.additive);
+                        scene.add_entity(entity.clone());
+                        self.flexeff
+                            .push((QuadEffect::new(qd, sub, origin), entity));
+                    } else {
+                        let cd = CylinderDef::from_def(&def);
+                        let entity =
+                            build_cylinder_entity(&factory, seq, name, image.clone(), cd.additive);
+                        scene.add_entity(entity.clone());
+                        self.flexeff_cyl
+                            .push((CylinderEffect::new(cd, sub, origin), entity));
+                    }
                 }
             }
         }
 
-        if self.flexeff.is_empty() {
+        if self.flexeff.is_empty() && self.flexeff_cyl.is_empty() {
             return;
         }
         let (right, up) = {
@@ -611,6 +628,23 @@ impl AdventureDirectorProps {
         // 跑完的收掉。
         let mut done = vec![];
         self.flexeff.retain(|(effect, entity)| {
+            if effect.finished() {
+                done.push(entity.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for entity in done {
+            entity.set_visible(false);
+        }
+
+        for (effect, entity) in self.flexeff_cyl.iter_mut() {
+            effect.step(delta_sec);
+            write_cylinder_mesh(entity, effect);
+        }
+        let mut done = vec![];
+        self.flexeff_cyl.retain(|(effect, entity)| {
             if effect.finished() {
                 done.push(entity.clone());
                 false

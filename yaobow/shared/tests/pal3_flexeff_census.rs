@@ -19,6 +19,7 @@ use fileformats::pal3::flexeff::{
     name_crc,
 };
 use shared::openpal3::loaders::sce_loader::sce_load_from_file;
+use shared::openpal3::scene::flexeff_cylinder::{CylinderDef, CylinderEffect};
 use shared::openpal3::scene::flexeff_quad::{QuadDef, QuadEffect};
 
 fn load() -> Option<FlexEff> {
@@ -351,4 +352,82 @@ fn quad_textures_resolve_under_basedata() {
     }
     assert!(seen.len() > 100, "只解析到 {} 张 quad 贴图", seen.len());
     assert!(missing.is_empty(), "找不到的 quad 贴图: {missing:?}");
+}
+
+/// 每一条 `cylinder` 定义都要能建成模型，几何和补间都得说得通。
+///
+/// 定义记录 224..268 那一批只有这个类在读，所以这条同时也是那批字段名的
+/// 交叉验证：段数、扫角、半径、柱高全都得落在能画出东西的范围里。
+#[test]
+fn every_cylinder_definition_makes_a_drawable_ring() {
+    let Some(eff) = load() else { return };
+    let mut n = 0;
+    for d in eff.definitions() {
+        if d.class() != Some("cylinder") {
+            continue;
+        }
+        n += 1;
+        let c = CylinderDef::from_def(&d);
+        assert!(
+            (1..=512).contains(&c.divisions),
+            "定义 {} 的段数是 {}",
+            d.index,
+            c.divisions
+        );
+        assert!(
+            c.sweep_deg > 0. && c.sweep_deg <= 3600.,
+            "定义 {} 的扫角是 {}",
+            d.index,
+            c.sweep_deg
+        );
+        assert!(
+            c.top_radius >= 0. && c.bottom_radius >= 0.,
+            "定义 {} 的半径是负的",
+            d.index
+        );
+        assert!(c.height.is_finite(), "定义 {} 的柱高不是有限值", d.index);
+    }
+    assert!(n > 100, "只找到 {n} 条 cylinder");
+    println!("检查了 {n} 条 cylinder 定义");
+}
+
+/// 脚本会播的 `cylinder` 都要能跑到收尾，环的顶点不能出 NaN。
+#[test]
+fn every_cylinder_the_scripts_play_runs_to_completion() {
+    let Some(eff) = load() else { return };
+    let mut checked = 0;
+    for g in eff.groups() {
+        for (k, id) in g.ids().iter().enumerate() {
+            let Some(def) = eff.find(*id).and_then(|i| eff.definition(i)) else {
+                continue;
+            };
+            if def.class() != Some("cylinder") {
+                continue;
+            }
+            let cd = CylinderDef::from_def(&def);
+            for s in 0..GROUP_SUBS {
+                if !g.sub_enabled(k, s) {
+                    continue;
+                }
+                let sub = g.sub(k, s).unwrap();
+                let mut e = CylinderEffect::new(cd, sub, [0., 0., 0.]);
+                assert!(e.duration > 0. && e.duration < 600., "时长 {}", e.duration);
+                let steps = (((e.delay + e.duration) / 0.05) as usize + 20).min(100_000);
+                for _ in 0..steps {
+                    e.step(0.05);
+                    for (lo, hi, u) in e.rings() {
+                        assert!(
+                            lo.iter().chain(hi.iter()).all(|v| v.is_finite()) && u.is_finite(),
+                            "组 {} 第 {k} 条的环出了 NaN",
+                            g.index
+                        );
+                    }
+                }
+                assert!(e.finished(), "组 {} 第 {k} 条没收尾", g.index);
+                checked += 1;
+            }
+        }
+    }
+    assert!(checked > 50, "只跑了 {checked} 个 cylinder 子块");
+    println!("跑完 {checked} 个 cylinder 子块");
 }
