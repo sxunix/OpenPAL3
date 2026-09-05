@@ -13,8 +13,8 @@ use std::path::PathBuf;
 
 use common::store_ext::StoreExt2;
 use fileformats::pal3::par::{
-    GROUP_PARAM_TRACKS, ParBlend, TRACK_LABELS, group_param_blend, group_param_name,
-    group_param_texture, read_par, track_curve, track_label,
+    EMITTER_TRACK_LABELS, EMITTER_TRACKS, GROUP_PARAM_TRACKS, ParBlend, TRACK_LABELS, emitter_name,
+    group_param_blend, group_param_name, group_param_texture, read_par, track_curve, track_label,
 };
 use mini_fs::StoreExt;
 
@@ -95,7 +95,7 @@ fn every_shipped_par_parses_exactly() {
             for (t, track) in GROUP_PARAM_TRACKS.iter().enumerate() {
                 let label = track_label(record, *track);
                 assert!(
-                    label.is_empty() || label == TRACK_LABELS[t],
+                    label.is_empty() || TRACK_LABELS[t].starts_with(&label),
                     "{name}「{name_in_record}」轨道 {t} 的标签是 {label:?}，本该是 {:?}",
                     TRACK_LABELS[t]
                 );
@@ -130,6 +130,35 @@ fn every_shipped_par_parses_exactly() {
                     );
                 }
             }
+        }
+
+        // 发射器：名字、六条轨道的标签、发射率曲线。
+        for record in &par.emitters {
+            let emitter = emitter_name(record);
+            assert!(
+                emitter.is_ascii(),
+                "{name} 的 emitter 名字不像字符串: {emitter:?}"
+            );
+            for (t, track) in EMITTER_TRACKS.iter().enumerate() {
+                let label = track_label(record, *track);
+                // 标签字段是 char[0x20]，长过 32 字节的会被截断。
+                assert!(
+                    label.is_empty() || EMITTER_TRACK_LABELS[t].starts_with(&label),
+                    "{name}「{emitter}」发射器轨道 {t} 的标签是 {label:?}，本该是 {:?}",
+                    EMITTER_TRACK_LABELS[t]
+                );
+            }
+
+            // EmissionRate 是第三条，每秒发射几颗，必须有值。
+            let rate = track_curve(record, EMITTER_TRACKS[2], 0);
+            assert!(
+                !rate.is_empty() && rate[0].0 == 0.0,
+                "{name}「{emitter}」发射率曲线不对: {rate:?}"
+            );
+            assert!(
+                rate.iter().all(|(_, v)| *v >= 0.0),
+                "{name}「{emitter}」发射率有负值: {rate:?}"
+            );
         }
 
         parsed += 1;

@@ -186,23 +186,74 @@ unit+0x4b（alpha）= (int)(unit+0x44 * 255.0)                      // 即轨道
 ## gbPartEmitter（32008 字节）
 
 ```text
-0x00  byte[0x40]   头
+0x00  char[0x40]   名字         "fire Emitter" / "Snow Emitter"
 0x40  f32 × 3      发射原点
-0x4c  f32 × 3      张角/朝向    // InitVel 用 rand(-[0x4c], [0x4c]) 做扩散
-0x58  char[0x40]   名字
+0x4c  f32 × 3      方向扩散      // InitVel 用 rand(-[0x4c], [0x4c])
+0x5c  char[0x40]   形状网格      "csf\star.csf" / "csf\yuan.CSF"，不用时为空
 0x98  u32          形状
+0x9c, 0xa0  f32    周期的两端    // 归一化进度 = 已过时间 / (0x9c - 0xa0)
+0xa4  u32          是否循环发射   // SetLoopEmit 写的就是它
 0xac..0xc0        形状 0（盒）的三轴 min/max：x rand(0xac,0xb8)、
                    y rand(0xb0,0xbc)、z rand(0xb4,0xc0)
 0xc4, 0xc8        形状 1 用的两个半径
 0xcc              形状 ≥2：一张点表，随机挑一个点（步长 12），
                    再用 0xd8 处的矩阵变换
+0x0d0  5300 字节   轨道 0  DirectionEmitter graph: x,y,z/t
+0x1584 5300 字节   轨道 1  ElementRandomVelocity graph: m/s/t
+0x2a38 5300 字节   轨道 2  EmissionRate Graph: rate/t
+0x3eec 5300 字节   轨道 3  ElementLifeTime Graph: t/t
+0x53a0 5300 字节   轨道 4  SizeMultiplier Graph: */t
+0x6854 5300 字节   轨道 5  RotationMultiplier Graph: */t
 ```
 
-`ComputeParticleInitPos`（0x1002a400）按 `0x98` 分三种形状，最后都加上
-发射原点。`ComputeParticleInitVel`（0x1002a590）从发射器数据的
-`[0x0c], [0x10]` 取速率区间，再用 `±[0x4c]` 做方向扩散。
+发射器一样自带标签（`轨道 + 8`），六条轨道把发射行为全说清楚了。
+轨道 0 后面还跟一句注释 `Red:X,Green:y,Blue:z`，说明它的三个分量是
+xyz 而不是颜色。
 
-后面同样跟四段轨道（起点 0xac 一带、0x1304、0x24e8、0x36cc 是内存偏移）。
+`ComputeParticleInitPos`（0x1002a400）按 `0x98` 分三种形状，最后都加上
+发射原点。`ComputeParticleInitVel`（0x1002a590）从发射器数据取速率区间，
+再用 `±[0x4c]` 做方向扩散。
+
+## 发射率
+
+`gbParticleGroup::Update(dt)`（0x1002b6a0）：
+
+```text
+group+0x40 (double) += dt                       // 发射器活了多久
+n = ComputeEmitterData(&group+0x48, 已过时间, dt)
+重复 n 次 CreateOneParticle(&group+0x48)
+再逐颗 UpdateOneParticle
+```
+
+`ComputeEmitterData`（0x1002a2c0）先算本周期内的归一化进度：
+
+```text
+周期 = emitter[0x9c] - emitter[0xa0]
+n = (int)(已过时间 / 周期)
+若 n > 1 且 emitter[0xa4] == 0（不循环）-> 返回 0，不再发射
+t = (已过时间 - n·周期) / 周期
+```
+
+再按 `t` 取四条轨道，两两取小大填进 `gbEmitterData`：
+
+| 发射器轨道 | 落到 | 用途 |
+|---|---|---|
+| 0 `DirectionEmitter` | data+0x00..0x08 | 发射方向（三分量 xyz） |
+| 1 `ElementRandomVelocity` | data+0x0c / +0x10 | 初速区间（m/s） |
+| 2 `EmissionRate` | data+0x14 / +0x18 | **每秒发射个数的区间** |
+| 3 `ElementLifeTime` | data+0x1c / +0x20 | 寿命区间（秒） |
+
+最后一步就是发射率本身：
+
+```text
+n_float = rand(data[0x14], data[0x18]) · dt + data[0x28]
+n       = (int)n_float
+data[0x28] = n_float - n        // 小数留到下一帧
+return n
+```
+
+`data+0x28` 是个 double 累加器，和 `gbDropGroup::CreateUnit` 里那套一个
+思路，保证帧率变化时每秒的发射数不变。
 
 ## gbParticleGroup（76 字节）
 
@@ -244,9 +295,14 @@ Pal3.Unity 在这个问题上帮不上忙：它根本不读 `.par`，而是
 
 ## 还差什么
 
-1. 发射率——每秒生成多少颗，应该在发射器数据或 `gbParticleGroup::Update`
-   里。
-2. `0x020`、`0x02c`、`0x034` 和 `0x138` 起那几个 dword 还没对上名字。
+group param 里还有三个 dword 没对上名字：`0x020`、`0x02c`、`0x034`
+（出厂值分别多为 0、0/1、0.4~16）。读它们的地方还没找到，`Update` /
+`Render` / `ComputeAirResist` / `ComputeParticleParam` 四条路径里都没有。
+
+Pal3.Unity 帮不上这个格式的任何忙：它的 DataReader 只有 Bmp/Cpk/Cvd/
+Dat/Dxt/Gdb/Ini/Lgt/Mov/Msh/Mtl/Mv3/Nav/Pol/Sce/Scn/Tga/Txt，**没有
+Par**；特效走的是 `EffectManager` → `GetVfxEffectPrefab` →
+`Resources.Load(预制体)`，每个特效在 Unity 里手工重做了一遍。
 
 代码侧的解析器在 `yaobow/fileformats/src/pal3/par.rs`，测试在
 `yaobow/shared/tests/pal3_par_census.rs`。

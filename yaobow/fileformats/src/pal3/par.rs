@@ -67,8 +67,13 @@
 //! name and the texture are exposed here so far — those two hold across
 //! all 55 shipped files.
 //!
-//! An emitter has the same flavour: a 0x40 header, a `char[0x40]` at
-//! 0x58, and four of the same 4580-byte blocks.
+//! An emitter is the same idea with six tracks, and it labels them too:
+//! `DirectionEmitter graph: x,y,z/t`, `ElementRandomVelocity graph:
+//! m/s/t`, `EmissionRate Graph: rate/t`, `ElementLifeTime Graph: t/t`,
+//! `SizeMultiplier Graph: */t` and `RotationMultiplier Graph: */t`.
+//! `gbPartEmitter::ComputeEmitterData` samples the first four over the
+//! emitter's own period and hands them to `gbParticleGroup::Update`,
+//! which is where the emission rate comes from — see [`EMITTER_TRACKS`].
 
 use std::io::{Error, ErrorKind, Read, Result};
 
@@ -274,6 +279,60 @@ pub const TRACK_COMPONENT_STRIDE: usize = 0xf0;
 /// Keys a component holds in the file.
 pub const TRACK_MAX_KEYS: usize = 20;
 
+/// Where the emitter's six tracks start in the file, 5300 apart like the
+/// group param's. In memory they sit at 0x120, 0x1304, 0x24e8, 0x36cc, …
+/// — the offsets `ComputeEmitterData` uses.
+pub const EMITTER_TRACKS: [usize; 6] = [0xd0, 0x1584, 0x2a38, 0x3eec, 0x53a0, 0x6854];
+
+/// The emitter's own labels, in the file's words.
+pub const EMITTER_TRACK_LABELS: [&str; 6] = [
+    "DirectionEmitter graph: x,y,z/t",
+    "ElementRandomVelocity graph: m/s/t",
+    "EmissionRate Graph: rate/t",
+    "ElementLifeTime Graph: t/t",
+    "SizeMultiplier Graph: */t",
+    "RotationMultiplier Graph: */t",
+];
+
+/// `emitter+0x00` — its name, e.g. `fire Emitter`.
+pub const EMITTER_NAME: (usize, usize) = (0x00, 0x40);
+
+/// `emitter+0x5c` — the `.csf` mesh a point-cloud emitter scatters over
+/// (`csf\star.csf`, `csf\yuan.CSF`). Empty for the box and radius
+/// shapes.
+pub const EMITTER_MESH: (usize, usize) = (0x5c, 0x40);
+
+/// `emitter+0x40` — where the emitter sits, added to every particle's
+/// start position by `ComputeParticleInitPos`.
+pub const EMITTER_ORIGIN: usize = 0x40;
+
+/// `emitter+0x4c` — the spread `ComputeParticleInitVel` randomises the
+/// direction within, as `rand(-v, v)` per axis.
+pub const EMITTER_SPREAD: usize = 0x4c;
+
+/// `emitter+0x98` — 0 is a box (the three `rand` ranges at 0xac..0xc0),
+/// 1 uses the radii at 0xc4/0xc8, anything else scatters over the mesh
+/// point list at 0xcc.
+pub const EMITTER_SHAPE: usize = 0x98;
+
+/// `emitter+0x9c` and `+0xa0` — `ComputeEmitterData` divides the elapsed
+/// time by their difference to get the emitter's normalised progress.
+pub const EMITTER_PERIOD: (usize, usize) = (0x9c, 0xa0);
+
+/// `emitter+0xa4` — keep emitting after the first period. This is what
+/// `gbPartEmitter::SetLoopEmit` writes.
+pub const EMITTER_LOOP: usize = 0xa4;
+
+/// The emitter's name.
+pub fn emitter_name(record: &[u8]) -> String {
+    c_string(record, EMITTER_NAME)
+}
+
+/// The emitter's shape mesh, empty when it does not use one.
+pub fn emitter_mesh(record: &[u8]) -> String {
+    c_string(record, EMITTER_MESH)
+}
+
 /// How a group's particles are blended into the frame.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParBlend {
@@ -297,7 +356,9 @@ pub fn group_param_blend(record: &[u8]) -> ParBlend {
     }
 }
 
-/// A track's label, which says what it drives.
+/// A track's label, which says what it drives. The field is
+/// `char[0x20]`, so the longer labels come back truncated —
+/// `ElementRandomVelocity graph: m/s/t` loses its last two characters.
 pub fn track_label(record: &[u8], track: usize) -> String {
     c_string(record, (track + TRACK_LABEL, 0x20))
 }
