@@ -12,7 +12,9 @@
 use std::path::PathBuf;
 
 use common::store_ext::StoreExt2;
-use fileformats::pal3::par::{group_param_name, group_param_texture, read_par};
+use fileformats::pal3::par::{
+    GROUP_PARAM_TRACKS, group_param_name, group_param_texture, read_par, track_curve,
+};
 use mini_fs::StoreExt;
 
 #[test]
@@ -76,6 +78,30 @@ fn every_shipped_par_parses_exactly() {
             assert!(
                 texture.starts_with("partexture\\"),
                 "{name} 的 group param 贴图不像路径: {texture:?}"
+            );
+
+            // 轨道 0 是尺寸曲线，每个 group param 都得有；时间从 0 起、
+            // 递增、收在 1.0。
+            let size = track_curve(record, GROUP_PARAM_TRACKS[0], 0);
+            assert!(
+                !size.is_empty(),
+                "{name} 的 group param「{name_in_record}」尺寸曲线是空的"
+            );
+            assert!(
+                size[0].0 == 0.0,
+                "{name}「{name_in_record}」尺寸曲线不从 0 开始: {:?}",
+                size[0]
+            );
+            for pair in size.windows(2) {
+                assert!(
+                    pair[1].0 > pair[0].0,
+                    "{name}「{name_in_record}」尺寸曲线时间没递增: {pair:?}"
+                );
+            }
+            assert!(
+                (size.last().unwrap().0 - 1.0).abs() < 1e-6,
+                "{name}「{name_in_record}」尺寸曲线没收在 1.0: {:?}",
+                size.last()
             );
         }
 

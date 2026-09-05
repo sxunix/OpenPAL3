@@ -60,7 +60,8 @@
 //! together with the random range at 0x148/0x14c, and the dword at
 //! 0x160 is the texture's frame count (`frame = (int)(count * t)`).
 //! A track is a three-component curve of up to 100 keys, linearly
-//! interpolated by the sampler at 0x100299b0.
+//! interpolated by the sampler at 0x100299b0; see [`track_curve`] for
+//! the key layout.
 //!
 //! See `switch/re/notes/par_format.md` for the full write-up. Only the
 //! name and the texture are exposed here so far — those two hold across
@@ -202,6 +203,56 @@ pub const GROUP_PARAM_FRAME_COUNT: usize = 0x160;
 
 /// Where the four keyframed tracks start inside a group param.
 pub const GROUP_PARAM_TRACKS: [usize; 4] = [0x168, 0x134c, 0x2530, 0x3714];
+
+/// A track's first key, relative to the track's own start.
+///
+/// The sampler at 0x100299b0 reads key `i`'s time at `0x3b0 + 12i` and
+/// key `i-1`'s at `0x3a4 + 12i`, and the matching values four bytes
+/// further along (`0x3b4 + 12i`, `0x3a8 + 12i`), so a key is twelve
+/// bytes and the run starts here.
+pub const TRACK_FIRST_KEY: usize = 0x3b0;
+
+/// One key: `{ f32 time, f32 value, f32 unused }`.
+pub const TRACK_KEY_SIZE: usize = 12;
+
+/// Distance between a track's three components. The out-of-range branch
+/// of the sampler falls back to `0x3b4`, `0x870` and `0xd2c`, which are
+/// the three components' first values.
+pub const TRACK_COMPONENT_STRIDE: usize = 0x4bc;
+
+/// The search loop gives up after 100 (`cmp edx, 0x64`), so a component
+/// holds at most this many keys.
+pub const TRACK_MAX_KEYS: usize = 101;
+
+/// One component of one track, as `(time, value)` pairs.
+///
+/// Times are normalised to the particle's life and ascend; the shipped
+/// curves end at exactly 1.0. Unused slots after the last key are zero
+/// (or MSVC's `0xCC` fill in a few files), so the run stops as soon as
+/// the time stops advancing.
+pub fn track_curve(record: &[u8], track: usize, component: usize) -> Vec<(f32, f32)> {
+    let base = track + TRACK_FIRST_KEY + component * TRACK_COMPONENT_STRIDE;
+    let mut keys: Vec<(f32, f32)> = Vec::new();
+    for i in 0..TRACK_MAX_KEYS {
+        let offset = base + i * TRACK_KEY_SIZE;
+        if offset + 8 > record.len() {
+            break;
+        }
+        let time = f32::from_le_bytes(record[offset..offset + 4].try_into().unwrap());
+        let value = f32::from_le_bytes(record[offset + 4..offset + 8].try_into().unwrap());
+        if !time.is_finite() || !value.is_finite() {
+            break;
+        }
+        if i > 0 && time <= keys[i - 1].0 {
+            break;
+        }
+        keys.push((time, value));
+        if time >= 1.0 {
+            break;
+        }
+    }
+    keys
+}
 
 /// Offset and length of a group param's name — the 0x20 bytes the
 /// loader reads first (0x1002a80a).
