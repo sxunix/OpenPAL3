@@ -897,7 +897,7 @@ impl SceProcContext {
             }
             152 => {
                 // WaterMagic
-                nop_command!(self, WaterMagic, i32)
+                command!(self, SceCommandWaterMagic, on: i32)
             }
             153 => {
                 // FullTeamAtt

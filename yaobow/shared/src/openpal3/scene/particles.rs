@@ -23,9 +23,15 @@
 //! that is what the mesh below does.
 
 use std::cell::RefCell;
+use std::rc::Rc;
 
+use crosscom::ComRc;
 use fileformats::pal3::par::{ParBlend, ParEffect, ParGroupDef, sample};
-use radiance::math::Vec3;
+use radiance::comdef::{IEntity, IEntityExt};
+use radiance::components::mesh::{Geometry, TexCoord};
+use radiance::math::{Vec2, Vec3};
+use radiance::rendering::{BlendMode, ComponentFactory, ParticleMaterialDef, VertexComponents};
+use radiance::scene::CoreEntity;
 
 /// How many particles one group may have alive at once. The original
 /// pools 0x6c78 bytes per emitter and drops the oldest when it runs out
@@ -314,6 +320,139 @@ impl ParticleEffect {
     }
 }
 
+/// Name of the entity one group is drawn as.
+pub fn particle_entity_name(group: usize) -> String {
+    format!("PARTICLE_{group}")
+}
+
+/// Pack a particle's colour the way `particle.vert` unpacks it: RGB as
+/// `0xRRGGBB` in one float, alpha in the other.
+pub fn pack_color(color: [f32; 4]) -> (f32, f32) {
+    let byte = |v: f32| (v.clamp(0., 1.) * 255.).round();
+    let packed = byte(color[0]) * 65536. + byte(color[1]) * 256. + byte(color[2]);
+    (packed, color[3].clamp(0., 1.))
+}
+
+/// Build the mesh one group draws through: `MAX_PARTICLES` quads whose
+/// vertices are rewritten every frame, host-dynamic like the snow's.
+pub fn build_particle_entity(
+    factory: &Rc<dyn ComponentFactory>,
+    group: usize,
+    texture_name: &str,
+    texture: image::RgbaImage,
+    blend: ParBlend,
+) -> ComRc<IEntity> {
+    let mut verts = Vec::with_capacity(MAX_PARTICLES * 4);
+    let mut uv = Vec::with_capacity(MAX_PARTICLES * 4);
+    let mut packed = Vec::with_capacity(MAX_PARTICLES * 4);
+    let mut indices = Vec::with_capacity(MAX_PARTICLES * 6);
+    for i in 0..MAX_PARTICLES as u32 {
+        for _ in 0..4 {
+            verts.push(Vec3::new(0., 0., 0.));
+            uv.push(TexCoord::new(0., 0.));
+            packed.push(TexCoord::new(0., 0.));
+        }
+        let b = i * 4;
+        indices.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
+    }
+
+    let material = ParticleMaterialDef::create_with_image(
+        texture_name,
+        Some(texture),
+        match blend {
+            ParBlend::Additive => BlendMode::Additive,
+            ParBlend::Alpha => BlendMode::AlphaBlend,
+        },
+    );
+    let geometry = Geometry::new(&verts, None, &[uv, packed], indices, material);
+
+    let object = factory.create_render_object(
+        geometry.vertices.clone(),
+        geometry.indices.clone(),
+        &geometry.material,
+        true,
+    );
+    let component = factory.create_rendering_component(vec![object]);
+    let entity = CoreEntity::create(particle_entity_name(group), true);
+    entity.set_rendering_component(Some(Rc::new(component)));
+    entity
+}
+
+/// Lay this frame's particles out as camera-facing quads.
+///
+/// `right` and `up` are the camera's axes; the quad corners are the
+/// particle's position offset along them by half its size, turned by its
+/// accumulated rotation. The texture is a horizontal strip of
+/// `frames` cells, so the UV picks the particle's current cell.
+pub fn write_particle_mesh(
+    entity: &ComRc<IEntity>,
+    particles: &[Particle],
+    frames: u32,
+    right: &Vec3,
+    up: &Vec3,
+) {
+    let Some(rc) = entity.get_rendering_component() else {
+        return;
+    };
+    let cell = 1. / frames.max(1) as f32;
+    for object in rc.render_objects() {
+        object.as_dyn().update_vertices(&|mut buffer| {
+            for i in 0..MAX_PARTICLES {
+                let quad = particles.get(i);
+                let (corners, uvs, color) = match quad {
+                    None => ([Vec3::new(0., 0., 0.); 4], [(0., 0.); 4], (0., 0.)),
+                    Some(p) => {
+                        let half = p.size / 2.;
+                        let (sin, cos) = p.rotation.to_radians().sin_cos();
+                        // 面片在相机平面里自转。
+                        let axis_x = Vec3::add(
+                            &Vec3::scalar_mul(cos * half, right),
+                            &Vec3::scalar_mul(sin * half, up),
+                        );
+                        let axis_y = Vec3::add(
+                            &Vec3::scalar_mul(-sin * half, right),
+                            &Vec3::scalar_mul(cos * half, up),
+                        );
+                        let corner = |sx: f32, sy: f32| {
+                            Vec3::add(
+                                &p.position,
+                                &Vec3::add(
+                                    &Vec3::scalar_mul(sx, &axis_x),
+                                    &Vec3::scalar_mul(sy, &axis_y),
+                                ),
+                            )
+                        };
+                        let u0 = p.frame as f32 * cell;
+                        (
+                            [
+                                corner(-1., -1.),
+                                corner(1., -1.),
+                                corner(1., 1.),
+                                corner(-1., 1.),
+                            ],
+                            [(u0, 1.), (u0 + cell, 1.), (u0 + cell, 0.), (u0, 0.)],
+                            pack_color(p.color),
+                        )
+                    }
+                };
+                for k in 0..4 {
+                    let position = corners[k];
+                    let (u, v) = uvs[k];
+                    buffer.set_component(i * 4 + k, VertexComponents::POSITION, |p: &mut Vec3| {
+                        *p = position
+                    });
+                    buffer.set_component(i * 4 + k, VertexComponents::TEXCOORD, |t: &mut Vec2| {
+                        *t = Vec2::new(u, v)
+                    });
+                    buffer.set_component(i * 4 + k, VertexComponents::TEXCOORD2, |t: &mut Vec2| {
+                        *t = Vec2::new(color.0, color.1)
+                    });
+                }
+            }
+        });
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,6 +491,8 @@ mod tests {
                 speed: (constant(1.), constant(1.)),
                 rate: (constant(rate), constant(rate)),
                 life: (constant(life), constant(life)),
+                size_mul: constant(1.),
+                rotation_mul: constant(1.),
             },
         }
     }

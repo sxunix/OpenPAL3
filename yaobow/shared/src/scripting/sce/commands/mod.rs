@@ -75,6 +75,7 @@ mod team;
 mod testgoto;
 mod text_ui;
 pub mod vars;
+mod water_magic;
 mod world_rotate;
 mod xj_pic;
 
@@ -183,6 +184,7 @@ pub use team::{
 };
 pub use testgoto::SceCommandTestGoto;
 pub use text_ui::{SceCommandCaption, SceCommandNote};
+pub use water_magic::{SceCommandWaterMagic, WATER_MAGIC_PAR};
 pub use world_rotate::{SceCommandRotateWorld, SceCommandRotateWorldBack};
 pub use xj_pic::SceCommandShowXueJianPicture;
 

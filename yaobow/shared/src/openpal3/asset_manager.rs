@@ -37,6 +37,7 @@ fn format_of(path: &Path) -> image::ImageFormat {
         .as_deref()
     {
         Some("dds") => image::ImageFormat::Dds,
+        Some("jpg") | Some("jpeg") => image::ImageFormat::Jpeg,
         Some("bmp") => image::ImageFormat::Bmp,
         Some("png") => image::ImageFormat::Png,
         _ => image::ImageFormat::Tga,
@@ -468,6 +469,12 @@ impl AssetManager {
     /// `basedata\\effect`, where the weather textures live.
     pub fn effect_root(&self) -> PathBuf {
         self.basedata_path.join("effect")
+    }
+
+    /// `basedata\\effect\\gbParticle`, where the `.par` particle effects
+    /// and their `partexture\\` textures live.
+    pub fn particle_root(&self) -> PathBuf {
+        self.effect_root().join("gbParticle")
     }
 
     /// A file under `EffectScn`, e.g. the 141 screen effect's

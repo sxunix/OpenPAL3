@@ -74,6 +74,8 @@ impl AdventureDirector {
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
+                water_magic: None,
+                water_magic_failed: false,
             }),
         }
     }
@@ -166,6 +168,8 @@ impl AdventureDirector {
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
+                water_magic: None,
+                water_magic_failed: false,
             }),
         })
     }
@@ -284,6 +288,16 @@ impl AdventureDirector {
 
     /// Set a script global, the way the debug overlay's "Main Story"
     /// box does. Negative indices are globals; see `commands::vars`.
+    /// Flip 152's water effect, for checking it without playing the
+    /// cutscene that turns it on.
+    pub fn set_water_magic(&self, on: bool) {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .state_mut()
+            .set_water_magic(on);
+    }
+
     /// Write an actor's tint alpha, for checking the 135/136 fades.
     /// Returns how many render objects it reached, or `None` if the scene
     /// has no such role.
@@ -389,9 +403,111 @@ struct AdventureDirectorProps {
     snow: crate::openpal3::scene::Snow,
     snow_entity: Option<ComRc<radiance::comdef::IEntity>>,
     snow_failed: bool,
+    /// 152 水特效：`.par` 跑起来的模拟和它每个 group 的网格。
+    water_magic: Option<(
+        crate::openpal3::scene::ParticleEffect,
+        Vec<ComRc<radiance::comdef::IEntity>>,
+    )>,
+    water_magic_failed: bool,
 }
 
 impl AdventureDirectorProps {
+    /// 152 的水特效：跟着玩家走的一组 `.par` 粒子。
+    fn step_water_magic(&mut self, delta_sec: f32) {
+        use crate::openpal3::scene::{ParticleEffect, build_particle_entity, write_particle_mesh};
+        use fileformats::pal3::par::{ParEffect, read_par};
+        use radiance::comdef::ISceneExt;
+
+        let wanted = self.sce_vm.state().water_magic();
+        let Some(scene) = self.scene_manager.scene() else {
+            return;
+        };
+
+        if wanted && self.water_magic.is_none() && !self.water_magic_failed {
+            self.water_magic_failed = true;
+            let asset_mgr = self.sce_vm.state().asset_mgr();
+            let path = asset_mgr
+                .particle_root()
+                .join(crate::scripting::sce::commands::WATER_MAGIC_PAR);
+            let Some(effect) = common::store_ext::StoreExt2::read_to_end(asset_mgr.vfs(), &path)
+                .ok()
+                .and_then(|data| read_par(&mut data.as_slice()).ok())
+                .map(|file| ParEffect::decode(&file))
+            else {
+                log::warn!("WaterMagic: 读不到 {}", path.display());
+                return;
+            };
+
+            let mut entities = vec![];
+            for (i, group) in effect.groups.iter().enumerate() {
+                // `.par` 里的贴图路径是相对 effect 目录的反斜杠写法。
+                // 贴图路径是相对 gbParticle 目录的反斜杠写法。
+                let texture_path = asset_mgr
+                    .particle_root()
+                    .join(group.param.texture.replace('\\', "/"));
+                let Some(image) = asset_mgr.read_picture(&texture_path) else {
+                    log::warn!("WaterMagic: 读不到贴图 {}", texture_path.display());
+                    continue;
+                };
+                let entity = build_particle_entity(
+                    &asset_mgr.component_factory(),
+                    i,
+                    texture_path.to_str().unwrap_or("particle"),
+                    image,
+                    group.param.blend,
+                );
+                scene.add_entity(entity.clone());
+                entities.push(entity);
+            }
+            if entities.is_empty() {
+                return;
+            }
+            self.water_magic_failed = false;
+            self.water_magic = Some((ParticleEffect::new(&effect), entities));
+        }
+
+        let Some((effect, entities)) = self.water_magic.as_ref() else {
+            return;
+        };
+        for entity in entities {
+            entity.set_visible(wanted);
+        }
+        if !wanted {
+            return;
+        }
+
+        // 特效跟着玩家：原版把它挂在角色身上。
+        let anchor = crate::openpal3::directors::SceneManagerExtensions::get_resolved_role(
+            &self.scene_manager,
+            self.sce_vm.state(),
+            -1,
+        )
+        .map(|role| role.transform().borrow().position())
+        .unwrap_or(Vec3::new(0., 0., 0.));
+
+        let (right, up) = {
+            let camera = scene.camera();
+            let f = camera.transform().matrix().floats();
+            (
+                Vec3::new(f[0][0], f[1][0], f[2][0]),
+                Vec3::new(f[0][1], f[1][1], f[2][1]),
+            )
+        };
+
+        effect.step(delta_sec);
+        for (entity, group) in entities.iter().zip(effect.groups()) {
+            let particles: Vec<_> = group
+                .particles()
+                .into_iter()
+                .map(|mut p| {
+                    p.position = Vec3::add(&anchor, &p.position);
+                    p
+                })
+                .collect();
+            write_particle_mesh(entity, &particles, group.def().param.frames, &right, &up);
+        }
+    }
+
     /// Step the weather and lay its quads out for this frame.
     ///
     /// `gbSnow` keeps its drops in camera space and `gbSnow::Draw`
@@ -697,6 +813,7 @@ impl AdventureDirectorProps {
         // Weather is drawn over the whole frame in the original, after
         // the scene graph ends, so it keeps running through cutscenes.
         self.step_snow(delta_sec);
+        self.step_water_magic(delta_sec);
 
         if !adv_enabled {
             return None;

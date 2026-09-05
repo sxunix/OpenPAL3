@@ -515,6 +515,10 @@ pub struct ParEmitter {
     pub rate: (Curve, Curve),
     /// `ElementLifeTime Graph: t/t`, seconds.
     pub life: (Curve, Curve),
+    /// `SizeMultiplier Graph: */t` — scales the group's own size curve.
+    pub size_mul: Curve,
+    /// `RotationMultiplier Graph: */t`.
+    pub rotation_mul: Curve,
 }
 
 /// One playable group: its particles' look and where they come from.
@@ -603,6 +607,8 @@ impl ParEffect {
                             track_curve(emitter, EMITTER_TRACKS[3], 0),
                             track_curve(emitter, EMITTER_TRACKS[3], 1),
                         ),
+                        size_mul: track_curve(emitter, EMITTER_TRACKS[4], 0),
+                        rotation_mul: track_curve(emitter, EMITTER_TRACKS[5], 0),
                     },
                 })
             })

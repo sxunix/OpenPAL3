@@ -100,6 +100,8 @@ pub struct SceState {
     /// back, and an automation driver has no other way to tell "waiting
     /// for the player to advance text" from "stuck".
     dialog: Option<DialogState>,
+    /// 152 玩家周身的水特效开关。
+    water_magic: bool,
     /// 140 开关下雪 — the flag at `0xbfda40` the frame loop tests
     /// before `gbDropGroup::Render`.
     snow: bool,
@@ -160,6 +162,7 @@ impl SceState {
             note: None,
             dialog: None,
             snow: false,
+            water_magic: false,
             screen_effect: None,
             title_requested: false,
         }
@@ -264,6 +267,15 @@ impl SceState {
 
     pub fn close_dialog(&mut self) {
         self.dialog = None;
+    }
+
+    /// 152: whether the water effect is on the player.
+    pub fn water_magic(&self) -> bool {
+        self.water_magic
+    }
+
+    pub fn set_water_magic(&mut self, on: bool) {
+        self.water_magic = on;
     }
 
     /// 140: whether it is snowing.

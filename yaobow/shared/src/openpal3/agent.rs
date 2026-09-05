@@ -341,7 +341,10 @@ fn handle_teleport(ctx: &Pal3DispatchCtx, params: TeleportParams) -> AgentRespon
 /// * `{"function": "set_role_alpha", "args": [<role id>, <alpha>]}` writes
 ///   an actor's tint alpha, the value the 135/136 fades ramp. Reaching
 ///   those two through a proc means playing a whole cutscene first, and
-///   every proc that fades also walks and talks its way there.
+///   every proc that fades also walks and talks its way there;
+/// * `{"function": "set_water_magic", "args": [0|1]}` flips 152's水特效
+///   for the same reason — the only two procs that use it sit at the end
+///   of long 熔岩地狱 cutscenes.
 ///
 /// Both exist so an automation driver can reach a scripted beat without
 /// playing up to it; commands whose only effect is on screen cannot be
@@ -378,6 +381,14 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 return AgentResponse::err(AgentError::bad_request("var must fit in i16"));
             }
             director.set_script_global(var as i16, value as i32);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "set_water_magic" => {
+            let on = int_arg(0).unwrap_or(0) != 0;
+            director.set_water_magic(on);
             AgentResponse::Script(ScriptEvalResponse {
                 function: params.function,
                 result: None,
