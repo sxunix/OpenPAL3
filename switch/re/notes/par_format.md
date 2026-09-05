@@ -81,6 +81,7 @@ gbParticleGroup[group 数]           // 每条 76 字节
 0x138  u32 × 8                 // 其中 0x148、0x14c 是自转的随机区间
 0x15c  u32          初始帧的随机上界  // CreateOneParticle 取 rand(0, 这个-1)
 0x160  u32          贴图帧数
+0x164  u32          混合模式  // 0 = p_add.gbf 加法，非 0 = p_alpha.gbf
 0x168  5300 字节    轨道 0  Size graph: m/t
 0x161c 5300 字节    轨道 1  Rotation graph: d/t
 0x2ad0 5300 字节    轨道 2  VertexAlpha graph: d/t
@@ -212,15 +213,40 @@ unit+0x4b（alpha）= (int)(unit+0x44 * 255.0)                      // 即轨道
 0x48  u32          读进 this+0x84 后立刻被 effect+0xb0 覆盖，是死值
 ```
 
+## 混合模式
+
+`param+0x164` 决定用哪个渲染效果，0x1002ad40 处：
+
+```text
+mov eax, [ebx + 0x164]
+test eax, eax
+jne  -> push "gfxscript\p_alpha.gbf"
+     -> push "gfxscript\p_add.gbf"
+call 取渲染效果
+mov [ebx + 0x493c], eax          // GetRenderEffect 返回的就是它
+```
+
+两个 `.gbf` 在 `basedata\gfxscript\` 下都在。出厂数据里 68 个 group
+param 有 **65 个走加法**，走 alpha 的只有三个，而且全叫 `Snow`
+（`snow.par`、`xue.par`、`kuzhilanye.par`）——雪片用 alpha、火和烟用
+加法，语义上完全说得通。
+
+`gbDropGroup`（140 下雪用的那套，和 .par 是两个系统）在构造里直接
+`push "gfxscript\p_add.gbf"`（0x10031ed3），所以**飘雪也是加法混合**。
+
+绕过的弯路记一笔：`0x30` 一度看着像加法混合的开关（snow 是 0、火和
+泡泡是 1，方向正好对），但 `ComputeAirResist` 在读它，这个猜测是错的。
+真正的字段是 0x164。
+
+Pal3.Unity 在这个问题上帮不上忙：它根本不读 `.par`，而是
+`Resources.Load(prefab)`，每个特效在 Unity 里手工重做了一遍
+（`EffectManager.Execute(EffectPlayCommand)` → `GetVfxEffectPrefab`）。
+
 ## 还差什么
 
-1. **混合模式**。`GetTexture` / `GetRenderEffect` 只是返回 param+0x48f8
-   和 +0x493c 两个运行时指针，文件里哪个字段决定用哪种 gbRenderEffect
-   还没找到。0x30 一度看着像加法混合的开关（snow 是 0、火和泡泡是 1），
-   但 `ComputeAirResist` 在用它，这个猜测已经排除。
-2. 发射率——每秒生成多少颗，应该在发射器数据或 `gbParticleGroup::Update`
+1. 发射率——每秒生成多少颗，应该在发射器数据或 `gbParticleGroup::Update`
    里。
-3. `0x020`、`0x02c`、`0x034` 和 `0x138` 起那几个 dword 还没对上名字。
+2. `0x020`、`0x02c`、`0x034` 和 `0x138` 起那几个 dword 还没对上名字。
 
 代码侧的解析器在 `yaobow/fileformats/src/pal3/par.rs`，测试在
 `yaobow/shared/tests/pal3_par_census.rs`。

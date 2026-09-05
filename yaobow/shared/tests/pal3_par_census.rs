@@ -13,8 +13,8 @@ use std::path::PathBuf;
 
 use common::store_ext::StoreExt2;
 use fileformats::pal3::par::{
-    GROUP_PARAM_TRACKS, TRACK_LABELS, group_param_name, group_param_texture, read_par, track_curve,
-    track_label,
+    GROUP_PARAM_TRACKS, ParBlend, TRACK_LABELS, group_param_blend, group_param_name,
+    group_param_texture, read_par, track_curve, track_label,
 };
 use mini_fs::StoreExt;
 
@@ -80,6 +80,15 @@ fn every_shipped_par_parses_exactly() {
                 texture.starts_with("partexture\\"),
                 "{name} 的 group param 贴图不像路径: {texture:?}"
             );
+
+            // 混合模式：出厂数据里只有雪走 alpha，其余一律加法。
+            let blend = group_param_blend(record);
+            if blend == ParBlend::Alpha {
+                assert_eq!(
+                    name_in_record, "Snow",
+                    "{name}「{name_in_record}」不是雪却用了 alpha 混合"
+                );
+            }
 
             // 四条轨道、每条三个分量：文件自带的标签要对得上，曲线要
             // 从时间 0 起、严格递增、正好收在 1.0。

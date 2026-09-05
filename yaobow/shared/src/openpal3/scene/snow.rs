@@ -249,8 +249,10 @@ pub fn build_snow_entity(
         indices.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
     }
 
+    // `gbDropGroup` 的构造把渲染效果设成 `gfxscript\p_add.gbf`
+    // （0x10031ed3 处 push 0x10120210），也就是加法混合。
     let material = SimpleMaterialDef::create_with_image("snow", Some(texture))
-        .with_blend(BlendMode::AlphaBlend)
+        .with_blend(BlendMode::Additive)
         .make_unique();
     let geometry = Geometry::new(
         &verts,

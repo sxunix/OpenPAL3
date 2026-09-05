@@ -214,6 +214,19 @@ pub const GROUP_PARAM_DRAG_MODE: usize = 0x30;
 /// frame in `[0, this - 1]` (0x1002b3bb).
 pub const GROUP_PARAM_FIRST_FRAME_RANGE: usize = 0x15c;
 
+/// `param+0x164` — which of the engine's two particle render effects
+/// this group draws with. `gbPartGroupParam` picks the file by it at
+/// 0x1002ad40:
+///
+/// ```text
+/// 0   -> gfxscript\p_add.gbf     加法混合
+/// !=0 -> gfxscript\p_alpha.gbf   alpha 混合
+/// ```
+///
+/// 65 of the 68 shipped group params take the additive path; the three
+/// that do not are all named `Snow`.
+pub const GROUP_PARAM_BLEND: usize = 0x164;
+
 /// The dword at 0x160: how many frames the group's texture has.
 /// `ComputeParticleParam` picks the particle's frame with
 /// `clamp((int)(count * t), 0, count - 1)`.
@@ -260,6 +273,29 @@ pub const TRACK_COMPONENT_STRIDE: usize = 0xf0;
 
 /// Keys a component holds in the file.
 pub const TRACK_MAX_KEYS: usize = 20;
+
+/// How a group's particles are blended into the frame.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ParBlend {
+    /// `gfxscript\p_add.gbf`.
+    Additive,
+    /// `gfxscript\p_alpha.gbf`.
+    Alpha,
+}
+
+/// Read [`GROUP_PARAM_BLEND`].
+pub fn group_param_blend(record: &[u8]) -> ParBlend {
+    let raw = u32::from_le_bytes(
+        record[GROUP_PARAM_BLEND..GROUP_PARAM_BLEND + 4]
+            .try_into()
+            .unwrap_or([0; 4]),
+    );
+    if raw == 0 {
+        ParBlend::Additive
+    } else {
+        ParBlend::Alpha
+    }
+}
 
 /// A track's label, which says what it drives.
 pub fn track_label(record: &[u8], track: usize) -> String {
