@@ -269,7 +269,18 @@ impl SceCommandCombat {
                 .take(PARTY_SLOTS)
                 .collect();
             self.party_actor_ids = team.clone();
-            for (slot, actor_id) in team.iter().copied().enumerate() {
+            // 战斗位是**按角色定的，不是按入队顺序**。原版
+            // `FUN_004eea70` 里那张写死的表把战斗 actor id 映到位号
+            // （0x65→0, 0x68→1, 0x69/0x6a→2, 0x6b→3, 0x66→4），而
+            // `PLAYER_COMBAT_IDS` 的排法正好让**队伍下标 == 位号**。
+            // 先前这里用的是 `team` 的枚举下标，队长换人整队站位就跟着
+            // 移位了。
+            for actor_id in team.iter().copied() {
+                let slot = actor_id as usize;
+                if slot >= PARTY_SLOTS {
+                    log::warn!("Combat: 队伍里有下标 {slot}，超出五个战斗位");
+                    continue;
+                }
                 let Some(role) = persistent.role(actor_id) else {
                     continue;
                 };
