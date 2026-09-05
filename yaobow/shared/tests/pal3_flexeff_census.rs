@@ -309,3 +309,46 @@ fn every_quad_the_scripts_play_runs_to_completion() {
     assert!(checked > 200, "只检查了 {checked} 个 quad，太少");
     println!("跑完 {checked} 个 quad 子块");
 }
+
+/// `quad` 引用的贴图要能按 `basedata + 资源名` 找到。
+///
+/// 这条钉的是 `AdventureDirector::step_flexeff` 的取图路径：定义里的资源名是
+/// `effect\xxx.tga` 这样的反斜杠相对路径，实机常常只有 `.dds`。
+#[test]
+fn quad_textures_resolve_under_basedata() {
+    let Some(eff) = load() else { return };
+    let assets = std::env::var("YAOBOW_PAL3_ASSETS").unwrap();
+    let vfs = packfs::init_virtual_fs(&assets, None);
+
+    // 这两张只在定义表里被引用，包里没有——像是编辑器留下的。
+    const KNOWN_MISSING: [&str; 2] = ["effect/Flare5.bmp", "effect/FlareBrightOrange2.bmp"];
+
+    let mut seen = std::collections::BTreeSet::new();
+    let mut missing = std::collections::BTreeSet::new();
+    for g in eff.groups() {
+        for id in g.ids() {
+            let Some(d) = eff.find(id).and_then(|i| eff.definition(i)) else {
+                continue;
+            };
+            if d.class() != Some("quad") {
+                continue;
+            }
+            let rel = d.asset().replace('\\', "/");
+            let base = format!("/basedata/basedata/{rel}");
+            let found = [
+                base.clone(),
+                base.replace(".tga", ".dds"),
+                base.replace(".TGA", ".dds"),
+            ]
+            .iter()
+            .any(|p| vfs.read_to_end(PathBuf::from(p)).is_ok());
+            if found {
+                seen.insert(rel);
+            } else if !KNOWN_MISSING.contains(&rel.as_str()) {
+                missing.insert(rel);
+            }
+        }
+    }
+    assert!(seen.len() > 100, "只解析到 {} 张 quad 贴图", seen.len());
+    assert!(missing.is_empty(), "找不到的 quad 贴图: {missing:?}");
+}

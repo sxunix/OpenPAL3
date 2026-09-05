@@ -118,6 +118,7 @@ impl SceCommand for SceCommandPlayCombatEffect {
             position.z
         );
         describe(state, self.group_id, "CEft");
+        state.play_effect(self.group_id, position);
         // 原版这条不阻塞脚本——`FUN_004ce340` 建完实例就返回。
         true
     }

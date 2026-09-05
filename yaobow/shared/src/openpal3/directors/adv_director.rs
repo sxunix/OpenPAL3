@@ -76,6 +76,8 @@ impl AdventureDirector {
                 snow_failed: false,
                 water_magic: None,
                 water_magic_failed: false,
+                flexeff: vec![],
+                flexeff_seq: 0,
             }),
         }
     }
@@ -170,6 +172,8 @@ impl AdventureDirector {
                 snow_failed: false,
                 water_magic: None,
                 water_magic_failed: false,
+                flexeff: vec![],
+                flexeff_seq: 0,
             }),
         })
     }
@@ -409,6 +413,14 @@ struct AdventureDirectorProps {
         Vec<ComRc<radiance::comdef::IEntity>>,
     )>,
     water_magic_failed: bool,
+    /// 143 播出去的战斗特效：`quad` 类那一支的模型加它画成的实体。
+    /// 其余类（cylinder / meteor / audio / callback …）还没做。
+    flexeff: Vec<(
+        crate::openpal3::scene::flexeff_quad::QuadEffect,
+        ComRc<radiance::comdef::IEntity>,
+    )>,
+    /// 实体名的流水号，免得同名。
+    flexeff_seq: usize,
 }
 
 impl AdventureDirectorProps {
@@ -505,6 +517,109 @@ impl AdventureDirectorProps {
                 })
                 .collect();
             write_particle_mesh(entity, &particles, group.def().param.frames, &right, &up);
+        }
+    }
+
+    /// 143 CEft 排下的战斗特效。
+    ///
+    /// 每帧先把脚本排的请求接进来：查 `flexeff` 的特效组，对其中 `quad` 类
+    /// 的条目按每个启用的子块建一个 [`QuadEffect`]（逆向见
+    /// `switch/re/notes/flexeff_format.md`），再逐个推进、写网格、收掉跑完
+    /// 的。别的类还没做，`combat_effect.rs` 那边会把它们记进日志。
+    fn step_flexeff(&mut self, delta_sec: f32) {
+        use crate::openpal3::scene::flexeff_quad::{
+            MAX_QUADS, QuadDef, QuadEffect, build_quad_entity, write_quad_mesh,
+        };
+        use fileformats::pal3::flexeff::GROUP_SUBS;
+        use radiance::comdef::ISceneExt;
+
+        let requests = self.sce_vm.state_mut().take_effect_requests();
+        let Some(scene) = self.scene_manager.scene() else {
+            return;
+        };
+
+        for (group_id, position) in requests {
+            let asset_mgr = self.sce_vm.state().asset_mgr();
+            let Some(eff) = asset_mgr.flexeff() else {
+                continue;
+            };
+            let Some(group) = eff.group(group_id.max(0) as usize) else {
+                continue;
+            };
+            if !group.is_valid() {
+                continue;
+            }
+            for (k, id) in group.ids().iter().enumerate() {
+                let Some(def) = eff.find(*id).and_then(|i| eff.definition(i)) else {
+                    continue;
+                };
+                if def.class() != Some("quad") {
+                    continue;
+                }
+                let qd = QuadDef::from_def(&def);
+                // 资源名是 `effect\xxx.tga` 这样的反斜杠相对路径。
+                let texture_path = asset_mgr
+                    .basedata_path()
+                    .join(def.asset().replace('\\', "/"));
+                let Some(image) = asset_mgr.read_picture(&texture_path) else {
+                    log::warn!("CEft: 读不到特效贴图 {}", texture_path.display());
+                    continue;
+                };
+                for sidx in 0..GROUP_SUBS {
+                    if !group.sub_enabled(k, sidx) {
+                        continue;
+                    }
+                    let sub = group.sub(k, sidx).unwrap();
+                    self.flexeff_seq += 1;
+                    let entity = build_quad_entity(
+                        &asset_mgr.component_factory(),
+                        self.flexeff_seq,
+                        texture_path.to_str().unwrap_or("flexeff"),
+                        image.clone(),
+                        qd.additive,
+                    );
+                    scene.add_entity(entity.clone());
+                    self.flexeff.push((
+                        QuadEffect::new(qd, sub, [position.x, position.y, position.z]),
+                        entity,
+                    ));
+                }
+            }
+        }
+
+        if self.flexeff.is_empty() {
+            return;
+        }
+        let (right, up) = {
+            let camera = scene.camera();
+            let f = camera.transform().matrix().floats();
+            (
+                Vec3::new(f[0][0], f[1][0], f[2][0]),
+                Vec3::new(f[0][1], f[1][1], f[2][1]),
+            )
+        };
+        for (effect, entity) in self.flexeff.iter_mut() {
+            effect.step(delta_sec);
+            if effect.quads().len() > MAX_QUADS {
+                log::warn!(
+                    "CEft: 一个特效画了 {} 个面片，超出上限",
+                    effect.quads().len()
+                );
+            }
+            write_quad_mesh(entity, effect, &right, &up);
+        }
+        // 跑完的收掉。
+        let mut done = vec![];
+        self.flexeff.retain(|(effect, entity)| {
+            if effect.finished() {
+                done.push(entity.clone());
+                false
+            } else {
+                true
+            }
+        });
+        for entity in done {
+            entity.set_visible(false);
         }
     }
 
@@ -814,6 +929,7 @@ impl AdventureDirectorProps {
         // the scene graph ends, so it keeps running through cutscenes.
         self.step_snow(delta_sec);
         self.step_water_magic(delta_sec);
+        self.step_flexeff(delta_sec);
 
         if !adv_enabled {
             return None;

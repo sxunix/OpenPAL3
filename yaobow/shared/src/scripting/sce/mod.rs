@@ -112,6 +112,9 @@ pub struct SceState {
     /// swaps the game's whole state object; here the host has to build
     /// the title director, so the request is parked until it looks.
     title_requested: bool,
+    /// 143 CEft 排下的战斗特效：`(特效组号, 播放位置)`。指令本身不阻塞，
+    /// 由 `AdventureDirector` 每帧取走并接进场景。
+    effect_requests: Vec<(i32, radiance::math::Vec3)>,
 }
 
 /// The dialog box's readable state — mirrors the agent contract's
@@ -165,6 +168,7 @@ impl SceState {
             water_magic: false,
             screen_effect: None,
             title_requested: false,
+            effect_requests: vec![],
         }
     }
 
@@ -328,6 +332,15 @@ impl SceState {
     /// from inside one would alias its own update.
     pub fn take_title_request(&mut self) -> bool {
         std::mem::take(&mut self.title_requested)
+    }
+
+    /// 143 CEft：排一个特效组，位置是 142/144 刚设的那个。
+    pub fn play_effect(&mut self, group_id: i32, position: radiance::math::Vec3) {
+        self.effect_requests.push((group_id, position));
+    }
+
+    pub fn take_effect_requests(&mut self) -> Vec<(i32, radiance::math::Vec3)> {
+        std::mem::take(&mut self.effect_requests)
     }
 
     pub fn show_note(&mut self, text: String) {

@@ -34,7 +34,17 @@
 //!
 //! 两支的 `w`/`h` 都是**半长**。
 
+use std::rc::Rc;
+
+use crosscom::ComRc;
 use fileformats::pal3::flexeff::EffectDef;
+use radiance::comdef::{IEntity, IEntityExt};
+use radiance::components::mesh::{Geometry, TexCoord};
+use radiance::math::{Vec2, Vec3};
+use radiance::rendering::{BlendMode, ComponentFactory, ParticleMaterialDef, VertexComponents};
+use radiance::scene::CoreEntity;
+
+use super::particles::pack_color;
 
 /// 子块里那组每秒变化率，`FUN_004d22f0` 逐个 `+= dt × 速率` 累到四边形上。
 /// 括号里是它落到每四边形 80 字节记录的哪个偏移。
@@ -565,5 +575,134 @@ mod tests {
         assert_eq!(q.frame(d.fps, d.frame_count), 0);
         // 单帧的特效不动。
         assert_eq!(q.frame(0., 1), 0);
+    }
+}
+
+/// 一个特效实体最多画多少个四边形。定义里的 `MaxQuadCount` 实测都很小，
+/// 这个上限只是给顶点缓冲一个固定容量。
+pub const MAX_QUADS: usize = 64;
+
+/// 这个特效画成的实体叫什么。
+pub fn quad_entity_name(seq: usize) -> String {
+    format!("FLEXEFF_QUAD_{seq}")
+}
+
+/// 建一个特效实体：`MAX_QUADS` 个四边形，顶点每帧重写，和粒子一样走
+/// host-dynamic 缓冲。
+pub fn build_quad_entity(
+    factory: &Rc<dyn ComponentFactory>,
+    seq: usize,
+    texture_name: &str,
+    texture: image::RgbaImage,
+    additive: bool,
+) -> ComRc<IEntity> {
+    let mut verts = Vec::with_capacity(MAX_QUADS * 4);
+    let mut uv = Vec::with_capacity(MAX_QUADS * 4);
+    let mut packed = Vec::with_capacity(MAX_QUADS * 4);
+    let mut indices = Vec::with_capacity(MAX_QUADS * 6);
+    for i in 0..MAX_QUADS as u32 {
+        for _ in 0..4 {
+            verts.push(Vec3::new(0., 0., 0.));
+            uv.push(TexCoord::new(0., 0.));
+            packed.push(TexCoord::new(0., 0.));
+        }
+        let b = i * 4;
+        indices.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
+    }
+
+    let material = ParticleMaterialDef::create_with_image(
+        texture_name,
+        Some(texture),
+        if additive {
+            BlendMode::Additive
+        } else {
+            BlendMode::AlphaBlend
+        },
+    );
+    let geometry = Geometry::new(&verts, None, &[uv, packed], indices, material);
+    let object = factory.create_render_object(
+        geometry.vertices.clone(),
+        geometry.indices.clone(),
+        &geometry.material,
+        true,
+    );
+    let component = factory.create_rendering_component(vec![object]);
+    let entity = CoreEntity::create(quad_entity_name(seq), true);
+    entity.set_rendering_component(Some(Rc::new(component)));
+    entity
+}
+
+/// 绕 X → Y → Z 依次转，和 `FUN_004d158e` 那一支的调用顺序一致。
+fn rotate_xyz(v: [f32; 3], pitch_deg: f32, yaw_deg: f32, roll_deg: f32) -> [f32; 3] {
+    let (sx, cx) = pitch_deg.to_radians().sin_cos();
+    let (sy, cy) = yaw_deg.to_radians().sin_cos();
+    let (sz, cz) = roll_deg.to_radians().sin_cos();
+    // 绕 X
+    let v = [v[0], v[1] * cx - v[2] * sx, v[1] * sx + v[2] * cx];
+    // 绕 Y
+    let v = [v[0] * cy + v[2] * sy, v[1], -v[0] * sy + v[2] * cy];
+    // 绕 Z
+    [v[0] * cz - v[1] * sz, v[0] * sz + v[1] * cz, v[2]]
+}
+
+/// 把这一帧的四边形写进网格。
+///
+/// `right` / `up` 是相机的两个轴，公告板那支用它们；非公告板那支在世界空间
+/// 里摆，用不到。
+pub fn write_quad_mesh(entity: &ComRc<IEntity>, effect: &QuadEffect, right: &Vec3, up: &Vec3) {
+    let Some(rc) = entity.get_rendering_component() else {
+        return;
+    };
+    let def = effect.def;
+    let quads = effect.quads();
+    for object in rc.render_objects() {
+        object.as_dyn().update_vertices(&|mut buffer| {
+            for i in 0..MAX_QUADS {
+                let (corners, uvs, color) = match quads.get(i) {
+                    None => ([Vec3::new(0., 0., 0.); 4], [(0., 0.); 4], (0., 0.)),
+                    Some(q) => {
+                        let c = Vec3::new(q.position[0], q.position[1], q.position[2]);
+                        let corners = if def.billboard {
+                            // 视图空间的 (±w, ±h)，按 yaw 在平面内转过。
+                            let plane = billboard_corners(q);
+                            plane.map(|p| {
+                                Vec3::add(
+                                    &c,
+                                    &Vec3::add(
+                                        &Vec3::scalar_mul(p[0], right),
+                                        &Vec3::scalar_mul(p[1], up),
+                                    ),
+                                )
+                            })
+                        } else {
+                            // 世界空间：躺在 XZ 面上，再绕 X/Y/Z 转。
+                            local_corners(q).map(|v| {
+                                let r = rotate_xyz(v, q.pitch, q.yaw, q.roll);
+                                Vec3::new(c.x + r[0], c.y + r[1], c.z + r[2])
+                            })
+                        };
+                        let (u0, v0, u1, v1) = def.frame_uv(q.frame(def.fps, def.frame_count));
+                        let rgba = q.rgba();
+                        (
+                            corners,
+                            [(u0, v0), (u1, v0), (u1, v1), (u0, v1)],
+                            pack_color(rgba),
+                        )
+                    }
+                };
+                for k in 0..4 {
+                    let v = i * 4 + k;
+                    buffer.set_component(v, VertexComponents::POSITION, |p: &mut Vec3| {
+                        *p = corners[k]
+                    });
+                    buffer.set_component(v, VertexComponents::TEXCOORD, |t: &mut Vec2| {
+                        *t = Vec2::new(uvs[k].0, uvs[k].1)
+                    });
+                    buffer.set_component(v, VertexComponents::TEXCOORD2, |t: &mut Vec2| {
+                        *t = Vec2::new(color.0, color.1)
+                    });
+                }
+            }
+        });
     }
 }
