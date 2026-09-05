@@ -13,7 +13,8 @@ use std::path::PathBuf;
 
 use common::store_ext::StoreExt2;
 use fileformats::pal3::par::{
-    GROUP_PARAM_TRACKS, group_param_name, group_param_texture, read_par, track_curve,
+    GROUP_PARAM_TRACKS, TRACK_LABELS, group_param_name, group_param_texture, read_par, track_curve,
+    track_label,
 };
 use mini_fs::StoreExt;
 
@@ -80,29 +81,46 @@ fn every_shipped_par_parses_exactly() {
                 "{name} 的 group param 贴图不像路径: {texture:?}"
             );
 
-            // 轨道 0 是尺寸曲线，每个 group param 都得有；时间从 0 起、
-            // 递增、收在 1.0。
-            let size = track_curve(record, GROUP_PARAM_TRACKS[0], 0);
-            assert!(
-                !size.is_empty(),
-                "{name} 的 group param「{name_in_record}」尺寸曲线是空的"
-            );
-            assert!(
-                size[0].0 == 0.0,
-                "{name}「{name_in_record}」尺寸曲线不从 0 开始: {:?}",
-                size[0]
-            );
-            for pair in size.windows(2) {
+            // 四条轨道、每条三个分量：文件自带的标签要对得上，曲线要
+            // 从时间 0 起、严格递增、正好收在 1.0。
+            for (t, track) in GROUP_PARAM_TRACKS.iter().enumerate() {
+                let label = track_label(record, *track);
                 assert!(
-                    pair[1].0 > pair[0].0,
-                    "{name}「{name_in_record}」尺寸曲线时间没递增: {pair:?}"
+                    label.is_empty() || label == TRACK_LABELS[t],
+                    "{name}「{name_in_record}」轨道 {t} 的标签是 {label:?}，本该是 {:?}",
+                    TRACK_LABELS[t]
                 );
+
+                // 前三条是标量曲线，ComputeParticleParam 只取 out[0]；
+                // 只有 RgbColor 那条把三个分量都用上（R/G/B）。
+                let components = if t == 3 { 3 } else { 1 };
+                for comp in 0..components {
+                    let curve = track_curve(record, *track, comp);
+                    assert!(
+                        !curve.is_empty(),
+                        "{name}「{name_in_record}」{} 分量 {comp} 是空的",
+                        TRACK_LABELS[t]
+                    );
+                    assert_eq!(
+                        curve[0].0, 0.0,
+                        "{name}「{name_in_record}」{} 分量 {comp} 不从 0 开始",
+                        TRACK_LABELS[t]
+                    );
+                    for pair in curve.windows(2) {
+                        assert!(
+                            pair[1].0 > pair[0].0,
+                            "{name}「{name_in_record}」{} 分量 {comp} 时间没递增: {pair:?}",
+                            TRACK_LABELS[t]
+                        );
+                    }
+                    assert!(
+                        (curve.last().unwrap().0 - 1.0).abs() < 1e-6,
+                        "{name}「{name_in_record}」{} 分量 {comp} 没收在 1.0: {:?}",
+                        TRACK_LABELS[t],
+                        curve.last()
+                    );
+                }
             }
-            assert!(
-                (size.last().unwrap().0 - 1.0).abs() < 1e-6,
-                "{name}「{name_in_record}」尺寸曲线没收在 1.0: {:?}",
-                size.last()
-            );
         }
 
         parsed += 1;

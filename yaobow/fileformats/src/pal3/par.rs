@@ -196,13 +196,50 @@ pub fn read_par<R: Read>(reader: &mut R) -> Result<ParFile> {
     })
 }
 
+/// `param+0x24` — the acceleration the velocity picks up each step
+/// (`UpdateOneParticle` multiplies it into the velocity at 0x1002b61f).
+/// `snow.par` and `huohuo.par` both carry **9.81** here, which is what
+/// makes the reading certain; flames use small negatives so they rise.
+pub const GROUP_PARAM_GRAVITY: usize = 0x24;
+
+/// `param+0x28` — a speed `ComputeAirResist` compares the particle's
+/// own speed against (0x1002adb6).
+pub const GROUP_PARAM_DRAG_SPEED: usize = 0x28;
+
+/// `param+0x30` — picks which branch `ComputeAirResist` takes
+/// (0x1002adc4). Not a blend mode, though it looks like a flag.
+pub const GROUP_PARAM_DRAG_MODE: usize = 0x30;
+
+/// `param+0x15c` — `CreateOneParticle` starts each particle on a random
+/// frame in `[0, this - 1]` (0x1002b3bb).
+pub const GROUP_PARAM_FIRST_FRAME_RANGE: usize = 0x15c;
+
 /// The dword at 0x160: how many frames the group's texture has.
 /// `ComputeParticleParam` picks the particle's frame with
 /// `clamp((int)(count * t), 0, count - 1)`.
 pub const GROUP_PARAM_FRAME_COUNT: usize = 0x160;
 
-/// Where the four keyframed tracks start inside a group param.
-pub const GROUP_PARAM_TRACKS: [usize; 4] = [0x168, 0x134c, 0x2530, 0x3714];
+/// Where the four keyframed tracks start inside a group param **in the
+/// file**. The in-memory bases the disassembly shows (0x168, 0x134c,
+/// 0x2530, 0x3714) are 720 bytes closer together per track, because the
+/// loader drops one 720-byte chunk of each track on the way in.
+///
+/// Each track carries its own label eight bytes in, and those labels are
+/// what the tracks are named after: `Size graph: m/t`,
+/// `Rotation graph: d/t`, `VertexAlpha graph: d/t`, `RgbColor graph: d/t`.
+pub const GROUP_PARAM_TRACKS: [usize; 4] = [0x168, 0x161c, 0x2ad0, 0x3f84];
+
+/// What each track drives, in the file's own words (the label at
+/// `track + 8`).
+pub const TRACK_LABELS: [&str; 4] = [
+    "Size graph: m/t",
+    "Rotation graph: d/t",
+    "VertexAlpha graph: d/t",
+    "RgbColor graph: d/t",
+];
+
+/// Where a track's label sits, relative to the track.
+pub const TRACK_LABEL: usize = 8;
 
 /// A track's first key, relative to the track's own start.
 ///
@@ -215,14 +252,19 @@ pub const TRACK_FIRST_KEY: usize = 0x3b0;
 /// One key: `{ f32 time, f32 value, f32 unused }`.
 pub const TRACK_KEY_SIZE: usize = 12;
 
-/// Distance between a track's three components. The out-of-range branch
-/// of the sampler falls back to `0x3b4`, `0x870` and `0xd2c`, which are
-/// the three components' first values.
-pub const TRACK_COMPONENT_STRIDE: usize = 0x4bc;
+/// Distance between a track's three components in the file: twenty keys
+/// each. (In memory they sit 0x4bc apart — the sampler's out-of-range
+/// branch falls back to `0x3b4`, `0x870` and `0xd2c` — because the
+/// loader expands each into a 101-slot array.)
+pub const TRACK_COMPONENT_STRIDE: usize = 0xf0;
 
-/// The search loop gives up after 100 (`cmp edx, 0x64`), so a component
-/// holds at most this many keys.
-pub const TRACK_MAX_KEYS: usize = 101;
+/// Keys a component holds in the file.
+pub const TRACK_MAX_KEYS: usize = 20;
+
+/// A track's label, which says what it drives.
+pub fn track_label(record: &[u8], track: usize) -> String {
+    c_string(record, (track + TRACK_LABEL, 0x20))
+}
 
 /// One component of one track, as `(time, value)` pairs.
 ///
