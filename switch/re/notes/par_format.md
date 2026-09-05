@@ -71,12 +71,12 @@ gbParticleGroup[group 数]           // 每条 76 字节
 0x000  char[0x20]   名字      "Liquid" / "fire" / "smoke" / "Fog" / "chengtu"
 0x020  u32 × 6
 0x038  char[0x100]  贴图      "partexture\smoke.jpg" / "partexture\huo3.jpg"
-0x020  f32          ?               // 多为 0
+0x020  ---          引擎不读          // 见下
 0x024  f32          重力/加速度      // snow 和 huohuo 都是 9.81，火焰是负值
-0x028  f32          空气阻力的速度阈值
-0x02c  u32          ?
-0x030  u32          空气阻力走哪个分支
-0x034  f32          ?               // snow 0.4，火 3~10
+0x028  f32          阻力的速度阈值    // 低于它不施加阻力
+0x02c  u32          没找到读它的地方   // 出厂值只有 0 和 1
+0x030  u32          阻力算法          // 非 0 按当前尺寸缩放，0 走线性
+0x034  f32          阻力系数          // snow 0.4，烟和火 3~16
 0x038  char[0x100]  贴图      "partexture\smoke.jpg" / "partexture\huo3.jpg"
 0x138  u32 × 8                 // 其中 0x148、0x14c 是自转的随机区间
 0x15c  u32          初始帧的随机上界  // CreateOneParticle 取 rand(0, 这个-1)
@@ -293,16 +293,49 @@ Pal3.Unity 在这个问题上帮不上忙：它根本不读 `.par`，而是
 `Resources.Load(prefab)`，每个特效在 Unity 里手工重做了一遍
 （`EffectManager.Execute(EffectPlayCommand)` → `GetVfxEffectPrefab`）。
 
-## 还差什么
+## 空气阻力
 
-group param 里还有三个 dword 没对上名字：`0x020`、`0x02c`、`0x034`
-（出厂值分别多为 0、0/1、0.4~16）。读它们的地方还没找到，`Update` /
-`Render` / `ComputeAirResist` / `ComputeParticleParam` 四条路径里都没有。
+`ComputeAirResist(unit, dt)`（0x1002ad80，`edi` 是 group param、
+`ebx` 是粒子）：先对速度取模归一化，拿速度和 `param[0x28]` 比，低于
+阈值就不施加阻力；再按 `param[0x30]` 分两种算法——
 
-Pal3.Unity 帮不上这个格式的任何忙：它的 DataReader 只有 Bmp/Cpk/Cvd/
-Dat/Dxt/Gdb/Ini/Lgt/Mov/Msh/Mtl/Mv3/Nav/Pol/Sce/Scn/Tga/Txt，**没有
-Par**；特效走的是 `EffectManager` → `GetVfxEffectPrefab` →
-`Resources.Load(预制体)`，每个特效在 Unity 里手工重做了一遍。
+* 非 0：阻力 = `unit[0x40]`（当前尺寸，也就是 Size 轨道的取值）×
+  `param[0x34]` × 归一化方向，粒子越大越受阻；
+* 0：直接 `param[0x34]` × 速度，线性阻力。
+
+所以 `param[0x34]` 是阻力系数：雪 0.4，烟和火 3~16。
+
+## 0x20 和 0x2c
+
+`0x20` **引擎根本不读**。两条独立证据：
+
+1. 把 gbengine.dll 里粒子相关的整段代码（约 4900 条指令，涵盖
+   `ComputeAirResist` / `ComputeParticleParam` / `InitParticleParam` /
+   `CreateOneParticle` / `UpdateOneParticle` / `Update` / `Render` /
+   `ComputeEmitterData` 及邻近函数）扫一遍，以 group param 为基址读
+   `+0x20` 的指令一条也没有，只有 `LoadFromFile` 自己往里写的那个 `lea`。
+2. 出厂数据自己作证：68 个 group param 里 **19 个在 0x20 处是
+   `0xCDCDCDCD`**，MSVC 的未初始化填充。真要拿这个值参与运算，那 19 个
+   特效早就不成样子了。
+
+`0x2c` 同样没找到读它的地方，但它的值一直是干净的 0 或 1（68 个里 8 个
+是 1），所以不能断言它是死字段，只能说粒子这套代码不看它。可能是编辑器
+自己留的开关。
+
+census 把这两条也钉住了：0x20 只允许是 0 或未初始化填充，0x2c 只允许
+0/1，出现别的值就说明这套读法有问题。
+
+## 查过但没用的路
+
+* **Pal3.Unity**：它的 DataReader 只有 Bmp/Cpk/Cvd/Dat/Dxt/Gdb/Ini/Lgt/
+  Mov/Msh/Mtl/Mv3/Nav/Pol/Sce/Scn/Tga/Txt，**没有 Par**。特效走
+  `EffectManager` → `GetVfxEffectPrefab` → `Resources.Load(预制体)`，
+  每个特效在 Unity 里手工重做了一遍，对这个格式帮不上忙。
+* **公开资料**：搜 `sgpar` / gbengine 粒子格式，中英文都没有人写过。
+* **`newPEdit.exe`**（就在 `effect\gbParticle\` 里，548 KB，做这些 .par
+  的编辑器）：确认那十条轨道标签就出自它，但对话框上的字段名是运行时
+  填的，资源段里只有控件框架，没拿到更多字段名。真要继续挖，得反它的
+  保存流程。
 
 代码侧的解析器在 `yaobow/fileformats/src/pal3/par.rs`，测试在
 `yaobow/shared/tests/pal3_par_census.rs`。

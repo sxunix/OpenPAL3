@@ -208,12 +208,30 @@ pub fn read_par<R: Read>(reader: &mut R) -> Result<ParFile> {
 pub const GROUP_PARAM_GRAVITY: usize = 0x24;
 
 /// `param+0x28` — a speed `ComputeAirResist` compares the particle's
-/// own speed against (0x1002adb6).
+/// own speed against (0x1002adb6), below which it does not drag.
 pub const GROUP_PARAM_DRAG_SPEED: usize = 0x28;
 
-/// `param+0x30` — picks which branch `ComputeAirResist` takes
-/// (0x1002adc4). Not a blend mode, though it looks like a flag.
+/// `param+0x30` — which drag `ComputeAirResist` applies (0x1002adc4):
+/// non-zero scales it by the particle's current size (`unit+0x40`, the
+/// Size track), zero uses plain linear drag.
 pub const GROUP_PARAM_DRAG_MODE: usize = 0x30;
+
+/// `param+0x34` — the drag coefficient both branches of
+/// `ComputeAirResist` multiply by (0x1002ade6, 0x1002ae31). Snow uses
+/// 0.4, smoke and flames 3 to 16.
+pub const GROUP_PARAM_DRAG: usize = 0x34;
+
+/// `param+0x20` — **written by the loader and never read.** A scan of
+/// the whole particle region of `gbengine.dll` finds no instruction
+/// that reads it off a group param, and the shipped data agrees: 19 of
+/// the 68 group params hold `0xCDCDCDCD` here, MSVC's uninitialised
+/// fill. An effect would not survive that value being used.
+pub const GROUP_PARAM_UNUSED: usize = 0x20;
+
+/// `param+0x2c` — no reader found either, though unlike
+/// [`GROUP_PARAM_UNUSED`] it is always a clean 0 or 1 (8 of 68 are 1).
+/// Possibly a flag the editor keeps for itself.
+pub const GROUP_PARAM_UNKNOWN_FLAG: usize = 0x2c;
 
 /// `param+0x15c` — `CreateOneParticle` starts each particle on a random
 /// frame in `[0, this - 1]` (0x1002b3bb).

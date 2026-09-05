@@ -13,8 +13,9 @@ use std::path::PathBuf;
 
 use common::store_ext::StoreExt2;
 use fileformats::pal3::par::{
-    EMITTER_TRACK_LABELS, EMITTER_TRACKS, GROUP_PARAM_TRACKS, ParBlend, TRACK_LABELS, emitter_name,
-    group_param_blend, group_param_name, group_param_texture, read_par, track_curve, track_label,
+    EMITTER_TRACK_LABELS, EMITTER_TRACKS, GROUP_PARAM_TRACKS, GROUP_PARAM_UNKNOWN_FLAG,
+    GROUP_PARAM_UNUSED, ParBlend, TRACK_LABELS, emitter_name, group_param_blend, group_param_name,
+    group_param_texture, read_par, track_curve, track_label,
 };
 use mini_fs::StoreExt;
 
@@ -79,6 +80,20 @@ fn every_shipped_par_parses_exactly() {
             assert!(
                 texture.starts_with("partexture\\"),
                 "{name} 的 group param 贴图不像路径: {texture:?}"
+            );
+
+            // 0x20 引擎不读：出厂数据里有一批就是未初始化填充，正好
+            // 反过来证明没人用它。0x2c 没找到读的地方，但值一直干净。
+            let raw = |o: usize| u32::from_le_bytes(record[o..o + 4].try_into().unwrap());
+            assert!(
+                raw(GROUP_PARAM_UNUSED) == 0 || raw(GROUP_PARAM_UNUSED) == 0xCDCD_CDCD,
+                "{name}「{name_in_record}」0x20 出现了没见过的值 {:#x}",
+                raw(GROUP_PARAM_UNUSED)
+            );
+            assert!(
+                raw(GROUP_PARAM_UNKNOWN_FLAG) <= 1,
+                "{name}「{name_in_record}」0x2c 出现了没见过的值 {:#x}",
+                raw(GROUP_PARAM_UNKNOWN_FLAG)
             );
 
             // 混合模式：出厂数据里只有雪走 alpha，其余一律加法。
