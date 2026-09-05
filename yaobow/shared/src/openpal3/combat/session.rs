@@ -288,17 +288,29 @@ impl CombatSession {
                 let confused = actor.has_state(K_CONFUSED);
                 let asleep = actor.has_state(K_SLEEP);
 
-                if asleep {
+                if confused {
+                    // 乱（状态 0x11）**这一回合什么都不做**。主调度
+                    // `LAB_00513840` 在 0x513925 查到它就跳去 0x513ab8，
+                    // 那里只有一句 `FUN_004db750(k, 0, 0, 0)`（两条行动条
+                    // 清零、回蓄力段），随后直接落到循环递增——没有出手，
+                    // 也不是交给 AI。封（0x0e）走同一支，移植还没建模。
+                    //
+                    // 交给 AI 代打的是另一支（0x513a36）：狂（0x12）、镜
+                    // （0x13）和 `+0x345`，先调战斗对白再走 `FUN_004d86d0`。
+                    // 那三个状态移植都还没建模，所以这里只改「乱」。
+                    self.push_log(format!("{} 心神已乱", self.name(slot)));
+                    self.battle.finish_turn(slot);
+                } else if asleep {
                     self.push_log(format!("{} 睡着了", self.name(slot)));
                     self.battle.finish_turn(slot);
-                } else if side == Side::Party && !confused {
+                } else if side == Side::Party {
                     self.turn = Some(PlayerTurn {
                         slot,
                         menu: Menu::Main { index: 0 },
                     });
                     return None;
                 } else {
-                    self.act_by_ai(slot, confused);
+                    self.act_by_ai(slot, false);
                 }
             }
         }
@@ -659,7 +671,8 @@ impl CombatSession {
 mod tests {
     use super::*;
     use crate::openpal3::combat::actions::ATTRIBUTE_SLOTS;
-    use crate::openpal3::combat::state::Combatant;
+    use crate::openpal3::combat::formulas;
+    use crate::openpal3::combat::state::{Combatant, Phase};
 
     fn fighter(side: Side, hp: i32, speed: i32) -> Combatant {
         let mut c = Combatant::new(1, side);
@@ -842,5 +855,47 @@ mod tests {
         s.auto_play();
         assert!(s.turn.is_none());
         assert!(!s.log.is_empty());
+    }
+
+    #[test]
+    fn a_confused_unit_loses_the_turn_instead_of_acting() {
+        // 主调度 0x513925 查到状态 0x11 就跳去 0x513ab8，那里只有
+        // `FUN_004db750(k,0,0,0)`，随后直接落到循环递增——不出手、也不是
+        // 交给 AI。
+        let mut s = session();
+        run_until_turn(&mut s);
+        let slot = s.turn.as_ref().unwrap().slot;
+        s.turn = None;
+        s.battle
+            .get_mut(slot)
+            .unwrap()
+            .apply_state(K_CONFUSED, 0, 5);
+        // 让它重新轮到。
+        s.battle.get_mut(slot).unwrap().gauge = formulas::GAUGE_FULL;
+        s.battle.get_mut(slot).unwrap().phase = Phase::Ready;
+
+        let before = s.battle.get(5).map(|c| c.hp);
+        for _ in 0..40 {
+            s.tick(0.05);
+            if s.log
+                .back()
+                .map(|l| l.contains("心神已乱"))
+                .unwrap_or(false)
+            {
+                break;
+            }
+        }
+        assert!(
+            s.log.back().unwrap().contains("心神已乱"),
+            "乱的单位应当空过一回合，日志是 {:?}",
+            s.log.back()
+        );
+        assert!(s.pending.is_none(), "空过不该登记行动");
+        assert_eq!(s.battle.get(5).map(|c| c.hp), before, "不该打到人");
+        assert_eq!(
+            s.battle.get(slot).unwrap().phase,
+            Phase::Charging,
+            "行动条应当清零回蓄力段"
+        );
     }
 }

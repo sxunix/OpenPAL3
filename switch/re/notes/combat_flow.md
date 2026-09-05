@@ -402,6 +402,40 @@ for (k = 0; k < 11; k++) {
 `gdb_database.md` 的 `ActorCombatStateType`（0x0e = 14 封，0x11 = 17 乱，
 0x12 = 18 狂，0x13 = 19 镜）。
 
+### 4.1 分支 A / B 之后做什么
+
+**分支 A（乱 `0x11` / 封 `0x0e`）→ 0x513ab8：这一回合什么都不做。**
+
+```text
+0x513925  if (FUN_004f3d90(k, 0x11)) goto 0x513ab8;   // 乱
+0x513938  if (FUN_004f3d90(k, 0x0e)) goto 0x513ab8;   // 封
+...
+0x513ab8  FUN_004db750(k, 0, 0, 0);                   // 两条行动条清零、回蓄力段
+0x513ac7  （落到循环递增：edi += 0x37c, esi++）
+```
+
+没有出手，**也不是交给 AI**。这就是笔记别处提到的那处 `FUN_004db750(k,0,0,0)`
+（0x513ac2）。
+
+**分支 B（`+0x345` / 狂 `0x12` / 镜 `0x13`）→ 0x513a36：交给 AI 代打。**
+
+```text
+0x513a36  FUN_004f7fc0(k);      // 战斗对白
+0x513a3a  FUN_004d86d0(this, k) // ← 自动出手
+```
+
+`FUN_004d86d0(k)` 先过三道门（`+0x241` 在场、`FUN_004ed010` 存活参战、
+`FUN_004ee870(k)->+0x24` 非零），把舞台角色的 `+0x19ec` 复制到 `+0x19e8`，
+然后若 `+0x56c` 非零就调 `FUN_004d8760`，失败再退到 `FUN_004d8af0`。
+`FUN_004d8760` 遍历战斗位挑目标，候选判定是
+`FUN_004dab70` / `FUN_004daa40` / `FUN_004daca0` 三个。
+
+> **移植对照**：先前 `CombatSession` 把「乱」当成 AI 代打
+> （`side == Party && !confused` 才开菜单，否则 `act_by_ai(slot, confused)`），
+> 和原版不符——原版是**空过一回合**。已改成空过，并加了回归测试。
+> 封（0x0e）、狂（0x12）、镜（0x13）和 `+0x345` 这四个条件移植都还没建模，
+> 所以 AI 代打那一支目前只有敌方在走。
+
 ### 战斗对白（`FUN_004f7fc0`，读 combat.ini）
 
 节名 `[<角色英文名>-CombatDialog]`，触发条件与键名：
@@ -526,12 +560,15 @@ swap(this->+0x80..+0x88, this->+0x8c..+0x94);
 > 第 9 节已补完其中四项：行动条速率换算、行动代价、逃跑、合击技。
 > 以下是**仍然开着**的。
 
-- 移植里战败 game over 的去处：原版 `SwitchMode(0xf)` 回标题，引擎目前没有
-  从冒险 director 回到标题的通路，暂以"游戏结束"覆盖层 + 退出进程代替。
+- ~~移植里战败 game over 的去处~~ —— 通路已经有了：`SceState::request_title`
+  → `AdventureDirector::take_title_request` → `Pal3Service::take_title_request`
+  → `YaobowApplicationLoader::on_updating` 装标题 director，和 147 Switch2Menu
+  以及 102 `SwitchMode(15)` 走同一条。**仍然不同的是演出**：原版战败走
+  phase 7 的失败演出，移植只画一个"游戏结束"占位覆盖层。
 - ~~战后倒下的队员回到多少精~~ —— 原版**没有**这一步，见第 9.8 节。
 - 我方的 `+0x470`（五灵阵位）**在整个二进制里找不到写入者**，见第 9.7 节。
 - ~~`FUN_004ed0a0` / `FUN_004ed100` 的确切语义~~ —— 见第 9.8 节。
-- 主调度任务 `LAB_00513840` 里分支 A/B（乱、封、狂、镜）之后的具体行为。
+- ~~主调度任务 `LAB_00513840` 里分支 A/B 之后的具体行为~~ —— 见第 4.1 节。
 - `flexeff.data` 的两张表、15 个特效类的注册表和类 CRC 映射都已解，见
   [`flexeff_format.md`](flexeff_format.md)；还差槽位子块那 124 字节里各类
   自己的字段语义（要逐个类跟 update）。
