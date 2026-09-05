@@ -438,6 +438,179 @@ pub fn group_param_texture(record: &[u8]) -> String {
     c_string(record, GROUP_PARAM_TEXTURE)
 }
 
+/// A keyframed curve: `(time, value)` with time normalised to whatever
+/// the track measures against, always ending at 1.0.
+pub type Curve = Vec<(f32, f32)>;
+
+/// Sample a curve the way `0x100299b0` does: hold the ends, linearly
+/// interpolate between the bracketing keys.
+pub fn sample(curve: &Curve, t: f32) -> f32 {
+    match curve.len() {
+        0 => 0.,
+        1 => curve[0].1,
+        _ => {
+            if t <= curve[0].0 {
+                return curve[0].1;
+            }
+            for pair in curve.windows(2) {
+                let (t0, v0) = pair[0];
+                let (t1, v1) = pair[1];
+                if t < t1 {
+                    let span = t1 - t0;
+                    let u = if span > 0. { (t - t0) / span } else { 0. };
+                    return v0 + (v1 - v0) * u;
+                }
+            }
+            curve.last().unwrap().1
+        }
+    }
+}
+
+/// What one `gbPartGroupParam` says about the particles it owns.
+#[derive(Debug, Clone)]
+pub struct ParGroupParam {
+    pub name: String,
+    /// As written in the file, e.g. `partexture\huo3.jpg`.
+    pub texture: String,
+    pub blend: ParBlend,
+    /// How many frames the texture is split into.
+    pub frames: u32,
+    /// A new particle starts on `rand(0, this - 1)`.
+    pub first_frame_range: u32,
+    /// Added to the velocity each step; `snow.par` has 9.81 here.
+    pub gravity: f32,
+    /// Below this speed `ComputeAirResist` leaves the particle alone.
+    pub drag_speed: f32,
+    /// Drag scales with the particle's current size rather than being
+    /// linear.
+    pub drag_by_size: bool,
+    pub drag: f32,
+    /// `Size graph: m/t`.
+    pub size: Curve,
+    /// `Rotation graph: d/t`.
+    pub rotation: Curve,
+    /// `VertexAlpha graph: d/t`, 0..1 — the colour's alpha is this × 255.
+    pub alpha: Curve,
+    /// `RgbColor graph: d/t`, three 0..255 curves.
+    pub color: [Curve; 3],
+}
+
+/// What one `gbPartEmitter` says about where particles come from.
+#[derive(Debug, Clone)]
+pub struct ParEmitter {
+    pub name: String,
+    /// The `.csf` a point-cloud emitter scatters over, when it uses one.
+    pub mesh: String,
+    pub origin: [f32; 3],
+    pub spread: [f32; 3],
+    pub shape: u32,
+    /// How long one emission cycle lasts.
+    pub period: f32,
+    pub looping: bool,
+    /// `DirectionEmitter graph: x,y,z/t`.
+    pub direction: [Curve; 3],
+    /// `ElementRandomVelocity graph: m/s/t`, as (min, max) curves.
+    pub speed: (Curve, Curve),
+    /// `EmissionRate Graph: rate/t`, particles a second.
+    pub rate: (Curve, Curve),
+    /// `ElementLifeTime Graph: t/t`, seconds.
+    pub life: (Curve, Curve),
+}
+
+/// One playable group: its particles' look and where they come from.
+#[derive(Debug, Clone)]
+pub struct ParGroupDef {
+    pub param: ParGroupParam,
+    pub emitter: ParEmitter,
+}
+
+/// Everything a `.par` says, decoded.
+#[derive(Debug, Clone)]
+pub struct ParEffect {
+    pub groups: Vec<ParGroupDef>,
+}
+
+fn f32_at(record: &[u8], offset: usize) -> f32 {
+    f32::from_le_bytes(record[offset..offset + 4].try_into().unwrap_or([0; 4]))
+}
+
+fn u32_at(record: &[u8], offset: usize) -> u32 {
+    u32::from_le_bytes(record[offset..offset + 4].try_into().unwrap_or([0; 4]))
+}
+
+fn vec3_at(record: &[u8], offset: usize) -> [f32; 3] {
+    [
+        f32_at(record, offset),
+        f32_at(record, offset + 4),
+        f32_at(record, offset + 8),
+    ]
+}
+
+impl ParEffect {
+    /// Turn the raw records into the fields the runtime needs.
+    pub fn decode(file: &ParFile) -> Self {
+        let groups = file
+            .groups
+            .iter()
+            .filter_map(|group| {
+                let param = file.group_params.get(group.group_param as usize)?;
+                let emitter = file.emitters.get(group.emitter as usize)?;
+                Some(ParGroupDef {
+                    param: ParGroupParam {
+                        name: group_param_name(param),
+                        texture: group_param_texture(param),
+                        blend: group_param_blend(param),
+                        frames: u32_at(param, GROUP_PARAM_FRAME_COUNT).max(1),
+                        first_frame_range: u32_at(param, GROUP_PARAM_FIRST_FRAME_RANGE).max(1),
+                        gravity: f32_at(param, GROUP_PARAM_GRAVITY),
+                        drag_speed: f32_at(param, GROUP_PARAM_DRAG_SPEED),
+                        drag_by_size: u32_at(param, GROUP_PARAM_DRAG_MODE) != 0,
+                        drag: f32_at(param, GROUP_PARAM_DRAG),
+                        size: track_curve(param, GROUP_PARAM_TRACKS[0], 0),
+                        rotation: track_curve(param, GROUP_PARAM_TRACKS[1], 0),
+                        alpha: track_curve(param, GROUP_PARAM_TRACKS[2], 0),
+                        color: [
+                            track_curve(param, GROUP_PARAM_TRACKS[3], 0),
+                            track_curve(param, GROUP_PARAM_TRACKS[3], 1),
+                            track_curve(param, GROUP_PARAM_TRACKS[3], 2),
+                        ],
+                    },
+                    emitter: ParEmitter {
+                        name: emitter_name(emitter),
+                        mesh: emitter_mesh(emitter),
+                        origin: vec3_at(emitter, EMITTER_ORIGIN),
+                        spread: vec3_at(emitter, EMITTER_SPREAD),
+                        shape: u32_at(emitter, EMITTER_SHAPE),
+                        period: (f32_at(emitter, EMITTER_PERIOD.0)
+                            - f32_at(emitter, EMITTER_PERIOD.1))
+                        .abs()
+                        .max(f32::EPSILON),
+                        looping: u32_at(emitter, EMITTER_LOOP) != 0,
+                        direction: [
+                            track_curve(emitter, EMITTER_TRACKS[0], 0),
+                            track_curve(emitter, EMITTER_TRACKS[0], 1),
+                            track_curve(emitter, EMITTER_TRACKS[0], 2),
+                        ],
+                        speed: (
+                            track_curve(emitter, EMITTER_TRACKS[1], 0),
+                            track_curve(emitter, EMITTER_TRACKS[1], 1),
+                        ),
+                        rate: (
+                            track_curve(emitter, EMITTER_TRACKS[2], 0),
+                            track_curve(emitter, EMITTER_TRACKS[2], 1),
+                        ),
+                        life: (
+                            track_curve(emitter, EMITTER_TRACKS[3], 0),
+                            track_curve(emitter, EMITTER_TRACKS[3], 1),
+                        ),
+                    },
+                })
+            })
+            .collect();
+        Self { groups }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
