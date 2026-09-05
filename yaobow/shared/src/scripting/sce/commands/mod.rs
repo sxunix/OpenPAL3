@@ -9,6 +9,7 @@ mod camera_set;
 mod climb;
 mod cmp;
 mod combat;
+mod combat_effect;
 mod dlg;
 mod dlg_face;
 mod dlg_sel;
@@ -102,6 +103,7 @@ pub use combat::{
     SceCommandCombat, SceCommandCombatMaxRound, SceCommandCombatMustFail,
     SceCommandCombatNotGameOver,
 };
+pub use combat_effect::{SceCommandPlayCombatEffect, SceCommandPreloadCombatEffect};
 pub use dlg::SceCommandDlg;
 pub use dlg_face::SceCommandDlgFace;
 pub use dlg_sel::SceCommandDlgSel;

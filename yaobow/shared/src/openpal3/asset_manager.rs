@@ -13,6 +13,8 @@ use std::io::BufReader;
 use std::path::{Path, PathBuf};
 use std::{io, rc::Rc};
 
+use fileformats::pal3::flexeff::FlexEff;
+
 use crate::GameType;
 
 use super::comdef::IScnSceneComponent;
@@ -55,6 +57,9 @@ pub struct AssetManager {
     snd_path: PathBuf,
     basedata_path: PathBuf,
     vfs: Rc<MiniFs>,
+    /// `cbdata\flexeff.data` 的两张表，第一次要用时才解。整个包 9.3 MB，
+    /// 解出来也是 9.3 MB，所以只解一次。`None` 表示试过但读不到。
+    flexeff: std::cell::RefCell<Option<Option<Rc<FlexEff>>>>,
 }
 
 impl AssetManager {
@@ -74,6 +79,7 @@ impl AssetManager {
             factory,
             game,
             basedata_path: PathBuf::from("/basedata/basedata"),
+            flexeff: std::cell::RefCell::new(None),
             scene_path: PathBuf::from("/scene"),
             music_path: PathBuf::from("/music/music/music"),
             movie_path: PathBuf::from("/movie/movie/movie"),
@@ -203,6 +209,28 @@ impl AssetManager {
                 .with_extension("sce"),
         };
         sce_load_from_file(&self.vfs, sce_path)
+    }
+
+    /// `cbdata\flexeff.data` —— 战斗特效的定义表和特效组表，143/148 用。
+    /// 解析和那个「只读前 0x2c047 字节再 LZO 解压」的坑写在
+    /// `fileformats::pal3::flexeff` 和 `switch/re/notes/flexeff_format.md`。
+    pub fn flexeff(&self) -> Option<Rc<FlexEff>> {
+        let mut slot = self.flexeff.borrow_mut();
+        if slot.is_none() {
+            let path = self.basedata_path.join("cbdata/flexeff.data");
+            *slot = Some(
+                common::store_ext::StoreExt2::read_to_end(self.vfs.as_ref(), &path)
+                    .ok()
+                    .and_then(|raw| match FlexEff::decode(&raw) {
+                        Ok(eff) => Some(Rc::new(eff)),
+                        Err(e) => {
+                            log::warn!("flexeff.data 解不开: {e}");
+                            None
+                        }
+                    }),
+            );
+        }
+        slot.as_ref().and_then(|o| o.clone())
     }
 
     pub fn load_init_sce(&self) -> SceFile {

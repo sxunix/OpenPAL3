@@ -18,6 +18,7 @@ use fileformats::pal3::flexeff::{
     DEF_COUNT, EFFECT_CLASSES, FlexEff, GROUP_COUNT, GROUP_MAX_ENTRIES, GROUP_SUB_USED, GROUP_SUBS,
     name_crc,
 };
+use shared::openpal3::loaders::sce_loader::sce_load_from_file;
 
 fn load() -> Option<FlexEff> {
     let assets = std::env::var("YAOBOW_PAL3_ASSETS").ok()?;
@@ -175,4 +176,64 @@ fn every_definition_names_a_registered_class() {
             _ => {}
         }
     }
+}
+
+/// 脚本里 143/148 引用的每个特效组，都得能在表里解析出来。
+///
+/// 这是 `SceCommandPlayCombatEffect` 真正依赖的东西：组号越界、组是空的、
+/// 或者组里的 id 查不到定义，指令就只能报错跳过。
+#[test]
+fn every_group_the_scripts_play_resolves() {
+    let Some(eff) = load() else { return };
+    let assets = std::env::var("YAOBOW_PAL3_ASSETS").unwrap();
+    let vfs = packfs::init_virtual_fs(&assets, None);
+
+    let mut files = vec![PathBuf::from("/basedata/basedata/init.sce")];
+    for entry in std::fs::read_dir(PathBuf::from(&assets).join("scene")).unwrap() {
+        let name = entry.unwrap().file_name().to_string_lossy().to_string();
+        let Some(stem) = name.strip_suffix(".cpk") else {
+            continue;
+        };
+        files.push(PathBuf::from(format!("/scene/{stem}/{stem}.sce")));
+    }
+
+    let mut ids: BTreeMap<i32, usize> = BTreeMap::new();
+    for path in files {
+        let sce = sce_load_from_file(&vfs, &path);
+        for proc in sce.procs.values() {
+            let inst = &proc.inst;
+            let mut pos = 0usize;
+            // 143 和 148 都是单 int：opcode 2 + mask 2 + i32 4 = 8 字节。
+            while pos + 8 <= inst.len() {
+                let op = u16::from_le_bytes(inst[pos..pos + 2].try_into().unwrap());
+                if op == 143 || op == 148 {
+                    let g = i32::from_le_bytes(inst[pos + 4..pos + 8].try_into().unwrap());
+                    // 逐字节扫会撞上巧合，只收落在合理区间的。
+                    if (0..GROUP_COUNT as i32).contains(&g) {
+                        *ids.entry(g).or_insert(0) += 1;
+                    }
+                }
+                pos += 2;
+            }
+        }
+    }
+
+    assert!(ids.len() > 20, "只找到 {} 个特效组，扫漏了", ids.len());
+    let mut bad = vec![];
+    for (&g, _) in &ids {
+        let Some(group) = eff.group(g as usize) else {
+            bad.push(format!("组 {g} 越界"));
+            continue;
+        };
+        if !group.is_valid() {
+            // 空组是合法的：`FUN_004ce3a0` 的 `jle` 直接跳过整组。
+            continue;
+        }
+        for (k, id) in group.ids().iter().enumerate() {
+            if eff.find(*id).is_none() {
+                bad.push(format!("组 {g} 第 {k} 条 id 0x{id:08x} 查不到定义"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "解析不了: {bad:?}");
 }

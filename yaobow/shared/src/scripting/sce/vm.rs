@@ -865,8 +865,8 @@ impl SceProcContext {
                 command!(self, SceCommandEffectPosition, x: f32, y: f32, z: f32)
             }
             143 => {
-                // CEft
-                nop_command!(self, CEft, i32)
+                // CEft —— 在 142/144 的位置播一个战斗特效组
+                command!(self, SceCommandPlayCombatEffect, group_id: i32)
             }
             144 => {
                 // CEft_Role — 特效对准角色（只记位置）
@@ -885,8 +885,8 @@ impl SceProcContext {
                 command!(self, SceCommandSwitchToMainMenu)
             }
             148 => {
-                // CEft_Load
-                nop_command!(self, CEft_Load, i32)
+                // CEft_Load —— 预载特效组
+                command!(self, SceCommandPreloadCombatEffect, group_id: i32)
             }
             149 => {
                 // GiveCloth — 把背包里的服装给龙葵
