@@ -12,7 +12,7 @@
 use std::path::PathBuf;
 
 use common::store_ext::StoreExt2;
-use fileformats::pal3::par::{group_param_name, read_par};
+use fileformats::pal3::par::{group_param_name, group_param_texture, read_par};
 use mini_fs::StoreExt;
 
 #[test]
@@ -65,12 +65,17 @@ fn every_shipped_par_parses_exactly() {
             );
         }
 
-        // The group params open with a name.
+        // The group params open with a name and carry a texture path.
         for record in &par.group_params {
             let name_in_record = group_param_name(record);
             assert!(
-                name_in_record.is_ascii(),
+                name_in_record.is_ascii() && !name_in_record.is_empty(),
                 "{name} 的 group param 名字不像字符串: {name_in_record:?}"
+            );
+            let texture = group_param_texture(record);
+            assert!(
+                texture.starts_with("partexture\\"),
+                "{name} 的 group param 贴图不像路径: {texture:?}"
             );
         }
 

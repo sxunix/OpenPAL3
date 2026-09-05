@@ -37,8 +37,29 @@
 //! exactly, and the group's 76 comes out matching the disassembly. See
 //! [`GROUP_PARAM_SIZE`] and friends.
 //!
-//! This module only cuts the file into its records; what the bytes
-//! inside a group param or an emitter mean is still open.
+//! Inside a group param the reads land on the struct's own offsets, so
+//! the file layout mirrors the object's. Walking
+//! `gbPartGroupParam::LoadFromFile` gives:
+//!
+//! ```text
+//! 0x000  char[0x20]   名字        "Liquid" / "fire" / "smoke" / …
+//! 0x020  u32 × 6
+//! 0x038  char[0x100]  贴图        "partexture\\smoke.jpg" / …
+//! 0x138  u32 × 13
+//! 0x168  4580 字节    轨道 0      {u32, 64, 128, 12, 12, 720, 3636}
+//! 0x134c 4580 字节    轨道 1
+//! 0x2530 4580 字节    轨道 2
+//! 0x3714 4580 字节    轨道 3
+//! …      char[0x100] × 2
+//! ```
+//!
+//! The four blocks are identical in shape — keyframed tracks of some
+//! kind. What they drive, and what the dwords around them mean, is not
+//! read yet; the two fields that are certain are the name and the
+//! texture, and those hold across all 55 shipped files.
+//!
+//! An emitter has the same flavour: a 0x40 header, a `char[0x40]` at
+//! 0x58, and four of the same 4580-byte blocks.
 
 use std::io::{Error, ErrorKind, Read, Result};
 
@@ -166,15 +187,31 @@ pub fn read_par<R: Read>(reader: &mut R) -> Result<ParFile> {
     })
 }
 
-/// The name a group param opens with: `gbPartGroupParam::LoadFromFile`
-/// reads 0x100 bytes first, and every shipped record starts with a
-/// NUL-terminated string there (`shenshu Particle`, …).
+/// Offset and length of a group param's name — the 0x20 bytes the
+/// loader reads first (0x1002a80a).
+pub const GROUP_PARAM_NAME: (usize, usize) = (0x00, 0x20);
+
+/// Offset and length of a group param's texture, the `char[0x100]` at
+/// 0x38 (0x1002a888). Always a `partexture\…` path in the shipped
+/// files.
+pub const GROUP_PARAM_TEXTURE: (usize, usize) = (0x38, 0x100);
+
+fn c_string(record: &[u8], (offset, len): (usize, usize)) -> String {
+    let end = (offset + len).min(record.len());
+    let field = &record[offset.min(end)..end];
+    let stop = field.iter().position(|b| *b == 0).unwrap_or(field.len());
+    String::from_utf8_lossy(&field[..stop]).to_string()
+}
+
+/// The group param's name.
 pub fn group_param_name(record: &[u8]) -> String {
-    let end = record[..0x100.min(record.len())]
-        .iter()
-        .position(|b| *b == 0)
-        .unwrap_or(0);
-    String::from_utf8_lossy(&record[..end]).to_string()
+    c_string(record, GROUP_PARAM_NAME)
+}
+
+/// The texture the group's particles are drawn with, as written in the
+/// file (a backslash path relative to `basedata`'s effect folder).
+pub fn group_param_texture(record: &[u8]) -> String {
+    c_string(record, GROUP_PARAM_TEXTURE)
 }
 
 #[cfg(test)]
