@@ -137,6 +137,13 @@ pub struct Combatant {
     /// 土毒's escalating damage carries between rounds.
     pub earth_poison_acc: f32,
 
+    /// 五灵阵位（原版战斗位的 `+0x470`），1 水 2 火 3 风 4 雷 5 土；0 = 没设。
+    ///
+    /// 我方的值由 `FUN_004ed250`（把冒险侧角色表整块拷进战斗位那一步）从冒险
+    /// 记录的 `+0x29a` 搬过来，也就是阵法页存的那个位；敌方是 `槽号 − 4`，
+    /// 只是序号。合击技的位置要求（`ComboSkillInfo::element_position_requirements`）
+    /// 拿它比对——见 `combat_flow.md` 第 9.7 节。
+    pub element_position: u8,
     /// 蓄力条（原版 `+0x20`）。
     pub gauge: f32,
     /// 出手条（原版 `+0x24`）。原版是两条独立的条，不是一条复用。
@@ -168,6 +175,7 @@ impl Combatant {
             retired: false,
             states: [StateTimer::default(); STATE_SLOTS],
             earth_poison_acc: 0.,
+            element_position: 0,
             gauge: 0.,
             cast_gauge: 0.,
             cast_rate: 0,
@@ -1122,5 +1130,13 @@ mod tests {
         // 这里只是确认钳位本身。
         assert_eq!(c.cast_rate_for(4), 255);
         assert_eq!(c.cast_rate_for(0), 70, "倍率 0 当 1 用");
+    }
+
+    #[test]
+    fn the_element_position_defaults_to_unset() {
+        // 敌方在原版里是「槽号 − 4」，只是序号；我方要靠阵法页填。没填过的
+        // 是 0，任何 1..6 的合击技位置要求都过不去——和原版一致。
+        let c = Combatant::new(0, Side::Party);
+        assert_eq!(c.element_position, 0);
     }
 }

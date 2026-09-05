@@ -307,6 +307,9 @@ impl SceCommandCombat {
                 for (i, v) in eff.elements.iter().enumerate() {
                     c.elements[i + 1] = *v > 0;
                 }
+                // 五灵阵位：原版 `FUN_004ed250` 从冒险侧记录的 `+0x29a`
+                // 搬进战斗位的 `+0x470`，那就是阵法页存的位。
+                c.element_position = persistent.lineup_position(actor_id).unwrap_or(0);
                 if c.hp <= 0 {
                     c.alive = false;
                 }
