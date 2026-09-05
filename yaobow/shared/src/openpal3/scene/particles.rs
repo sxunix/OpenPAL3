@@ -222,15 +222,43 @@ impl ParticleGroup {
         }
     }
 
-    /// `ComputeParticleInitPos`. The three shapes need the box ranges at
-    /// `emitter+0xac..0xc0`, the radii at `0xc4`/`0xc8` and the point
-    /// list at `0xcc`; [`ParEmitter`] does not carry them yet, so every
-    /// shape starts at the emitter's origin for now.
+    /// `gbPartEmitter::ComputeParticleInitPos`（gbengine.dll 0x1002a400）。
+    /// 三个分支，每个都把发射器原点加在最后：
     ///
-    /// [`ParEmitter`]: fileformats::pal3::par::ParEmitter
-    fn spawn_position(&self, _rand: &mut Rand) -> Vec3 {
-        let o = self.def.emitter.origin;
-        Vec3::new(o[0], o[1], o[2])
+    /// * 形状 0，盒：三个轴各自在 `[min, max]` 里取一个数。
+    /// * 形状 1，球壳：先抛硬币决定半径上界取第一个半径还是两个半径之和
+    ///   （0x1002a479 的 `test al,1`），在 `[0, 上界]` 里取半径，再取
+    ///   `θ ∈ [0,180°]`、`φ ∈ [0,360°]`，按
+    ///   `(r·sinφ·sinθ, r·cosθ, r·cosφ·sinθ)` 摆开——θ 是从 +y 量的极角。
+    /// * 其余（形状 2）：在 `.csf` 网格的点云里随机挑一个点再过一次矩阵。
+    ///   `.csf` 还没有读者，所以这一支暂时落在原点 `[推断]`；实机 65 个发射
+    ///   器里有 27 个是它。
+    fn spawn_position(&self, rand: &mut Rand) -> Vec3 {
+        let e = &self.def.emitter;
+        let o = Vec3::new(e.origin[0], e.origin[1], e.origin[2]);
+        match e.shape {
+            0 => Vec3::new(
+                o.x + rand.range(e.box_min[0], e.box_max[0]),
+                o.y + rand.range(e.box_min[1], e.box_max[1]),
+                o.z + rand.range(e.box_min[2], e.box_max[2]),
+            ),
+            1 => {
+                let bound = if rand.next() < 0.5 {
+                    e.radii.0
+                } else {
+                    e.radii.0 + e.radii.1
+                };
+                let r = rand.range(0., bound);
+                let theta = rand.range(0., 180f32).to_radians();
+                let phi = rand.range(0., 360f32).to_radians();
+                Vec3::new(
+                    o.x + r * phi.sin() * theta.sin(),
+                    o.y + r * theta.cos(),
+                    o.z + r * phi.cos() * theta.sin(),
+                )
+            }
+            _ => o,
+        }
     }
 
     /// `UpdateOneParticle`.
@@ -485,6 +513,9 @@ mod tests {
                 origin: [0., 0., 0.],
                 spread: [0., 0., 0.],
                 shape: 0,
+                box_min: [0., 0., 0.],
+                box_max: [0., 0., 0.],
+                radii: (0., 0.),
                 period: 1.,
                 looping: true,
                 direction: [constant(0.), constant(1.), constant(0.)],

@@ -185,34 +185,76 @@ unit+0x4b（alpha）= (int)(unit+0x44 * 255.0)                      // 即轨道
 
 ## gbPartEmitter（32008 字节）
 
-```text
-0x00  char[0x40]   名字         "fire Emitter" / "Snow Emitter"
-0x40  f32 × 3      发射原点
-0x4c  f32 × 3      方向扩散      // InitVel 用 rand(-[0x4c], [0x4c])
-0x5c  char[0x40]   形状网格      "csf\star.csf" / "csf\yuan.CSF"，不用时为空
-0x98  u32          形状
-0x9c, 0xa0  f32    周期的两端    // 归一化进度 = 已过时间 / (0x9c - 0xa0)
-0xa4  u32          是否循环发射   // SetLoopEmit 写的就是它
-0xac..0xc0        形状 0（盒）的三轴 min/max：x rand(0xac,0xb8)、
-                   y rand(0xb0,0xbc)、z rand(0xb4,0xc0)
-0xc4, 0xc8        形状 1 用的两个半径
-0xcc              形状 ≥2：一张点表，随机挑一个点（步长 12），
-                   再用 0xd8 处的矩阵变换
-0x0d0  5300 字节   轨道 0  DirectionEmitter graph: x,y,z/t
-0x1584 5300 字节   轨道 1  ElementRandomVelocity graph: m/s/t
-0x2a38 5300 字节   轨道 2  EmissionRate Graph: rate/t
-0x3eec 5300 字节   轨道 3  ElementLifeTime Graph: t/t
-0x53a0 5300 字节   轨道 4  SizeMultiplier Graph: */t
-0x6854 5300 字节   轨道 5  RotationMultiplier Graph: */t
-```
+这一段我先前写错过：`gbPartEmitter::LoadFromFile`（gbengine.dll
+0x10029cf0）是一连串 `Read(&this->字段, 长度)`，**读入顺序和对象里的排列不
+一致**，所以文件偏移 ≠ 对象偏移。把读入长度累起来才是文件布局：
+
+| 文件偏移 | 长度 | 对象偏移 | 内容 |
+|---|---|---|---|
+| 0x00 | 0x40 | +0x00 | 名字 `"fire Emitter"` / `"Snow Emitter"` |
+| 0x40 | 0x0c | +0x40 | 发射原点 |
+| 0x4c | 0x0c | +0x4c | 方向扩散（InitVel 用 `rand(-v, v)`） |
+| **0x58** | 4 | +0x98 | **形状** |
+| 0x5c | 0x40 | +0x58 | 形状网格 `csf\star.csf` / `csf\yuan.CSF` |
+| 0x9c | 4 | +0x118 | ? 取值 1.0 / 1.5 / 2.0 / 4.5 |
+| **0xa0** | 4 | +0x9c | **周期的前一端** |
+| **0xa4** | 4 | +0xa0 | 周期的后一端（实机恒为 0） |
+| **0xa8** | 4 | +0xa4 | **是否循环发射**，`SetLoopEmit` 写的就是它 |
+| 0xac | 4 | +0xa8 | ? 恒为 0 或 0xCDCDCDCD |
+| **0xb0** | 8 | +0xc4 | 形状 1 的两个半径 |
+| **0xb8** | 0x18 | +0xac | 形状 0 的盒：三轴下界 + 三轴上界 |
+| 0xd0 | 5300 | +0x120 | 轨道 0 `DirectionEmitter graph: x,y,z/t` |
+| 0x1584 | 5300 | +0x1304 | 轨道 1 `ElementRandomVelocity graph: m/s/t` |
+| 0x2a38 | 5300 | +0x24e8 | 轨道 2 `EmissionRate Graph: rate/t` |
+| 0x3eec | 5300 | +0x36cc | 轨道 3 `ElementLifeTime Graph: t/t` |
+| 0x53a0 | 5300 | | 轨道 4 `SizeMultiplier Graph: */t` |
+| 0x6854 | 5300 | | 轨道 5 `RotationMultiplier Graph: */t` |
 
 发射器一样自带标签（`轨道 + 8`），六条轨道把发射行为全说清楚了。
 轨道 0 后面还跟一句注释 `Red:X,Green:y,Blue:z`，说明它的三个分量是
 xyz 而不是颜色。
 
-`ComputeParticleInitPos`（0x1002a400）按 `0x98` 分三种形状，最后都加上
-发射原点。`ComputeParticleInitVel`（0x1002a590）从发射器数据取速率区间，
-再用 `±[0x4c]` 做方向扩散。
+早先我把形状写成文件 0x98、周期写成 0x9c/0xa0、循环位写成 0xa4——那三个都是
+对象偏移。后果是：形状读到的恒为 0（于是"55 个 `.par` 全是盒"这个结论也是
+错的），循环位读到的是恒为 0 的那个 dword，**每个发射器都被当成单次发射**。
+按文件偏移重读之后，65 个发射器的形状是**盒 26 / 球壳 12 / 点云 27**，循环位
+取值干净的 0/1，周期落在 0.2..8.5 秒。
+
+## ComputeParticleInitPos 的三种形状
+
+`gbPartEmitter::ComputeParticleInitPos`（0x1002a400）按形状分三支，最后都加
+上发射原点：
+
+```text
+形状 0（盒）
+  x = 原点.x + rand(min.x, max.x)      // min 在文件 0xb8，max 在 0xc4
+  y = 原点.y + rand(min.y, max.y)
+  z = 原点.z + rand(min.z, max.z)
+
+形状 1（球壳）
+  上界 = (rand() & 1) ? r0 : r0 + r1   // 0x1002a479 的 test al,1
+  r = rand(0, 上界)
+  θ = rand(0, 180°),  φ = rand(0, 360°)
+  x = 原点.x + r·sinφ·sinθ
+  y = 原点.y + r·cosθ                   // θ 是从 +y 量的极角
+  z = 原点.z + r·cosφ·sinθ
+
+形状 2（点云）
+  i = rand_int(0, 点数-1)               // 点数在对象 +0xd4
+  p = 点表[i]                           // 对象 +0xcc，步长 12
+  位置 = 矩阵(对象+0xd8) · p + 原点
+```
+
+点表和矩阵不在 `.par` 里，是加载 `+0x58` 那个 `.csf` 网格时填的。`.csf` 还没
+有读者，所以移植里形状 2 暂时落在原点。
+
+三个随机数包装都在 gbengine.dll 里，底下是同一个 LCG：
+`s = s * 214013 + 2531011`，取 `(s >> 16) & 0x7fff`，也就是 MSVC 的 `rand()`。
+`0x100275b0` 返回原始 15 位，`0x100275e0(lo, hi)` 是整数区间，
+`0x10027620(lo, hi)` 是浮点区间 `lo + (hi - lo) * u`。
+
+`ComputeParticleInitVel`（0x1002a590）从发射器数据取速率区间，再用 `±扩散`
+做方向扩散。
 
 ## 发射率
 
@@ -228,9 +270,9 @@ n = ComputeEmitterData(&group+0x48, 已过时间, dt)
 `ComputeEmitterData`（0x1002a2c0）先算本周期内的归一化进度：
 
 ```text
-周期 = emitter[0x9c] - emitter[0xa0]
+周期 = 文件[0xa0] - 文件[0xa4]（对象 +0x9c - +0xa0）
 n = (int)(已过时间 / 周期)
-若 n > 1 且 emitter[0xa4] == 0（不循环）-> 返回 0，不再发射
+若 n > 1 且 文件[0xa8] == 0（不循环）-> 返回 0，不再发射
 t = (已过时间 - n·周期) / 周期
 ```
 

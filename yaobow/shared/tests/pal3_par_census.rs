@@ -13,9 +13,10 @@ use std::path::PathBuf;
 
 use common::store_ext::StoreExt2;
 use fileformats::pal3::par::{
-    EMITTER_TRACK_LABELS, EMITTER_TRACKS, GROUP_PARAM_TRACKS, GROUP_PARAM_UNKNOWN_FLAG,
-    GROUP_PARAM_UNUSED, ParBlend, TRACK_LABELS, emitter_name, group_param_blend, group_param_name,
-    group_param_texture, read_par, track_curve, track_label,
+    EMITTER_LOOP, EMITTER_PERIOD, EMITTER_SHAPE, EMITTER_TRACK_LABELS, EMITTER_TRACKS,
+    GROUP_PARAM_TRACKS, GROUP_PARAM_UNKNOWN_FLAG, GROUP_PARAM_UNUSED, ParBlend, TRACK_LABELS,
+    emitter_mesh, emitter_name, group_param_blend, group_param_name, group_param_texture, read_par,
+    track_curve, track_label,
 };
 use mini_fs::StoreExt;
 
@@ -165,6 +166,34 @@ fn every_shipped_par_parses_exactly() {
             }
 
             // EmissionRate 是第三条，每秒发射几颗，必须有值。
+            // 发射形状只有三种；用点云的那一支一定带 `.csf` 网格名。
+            let shape =
+                u32::from_le_bytes(record[EMITTER_SHAPE..EMITTER_SHAPE + 4].try_into().unwrap());
+            assert!(shape <= 2, "{name}「{emitter}」的形状是 {shape}");
+            if shape == 2 {
+                assert!(
+                    emitter_mesh(record).to_lowercase().ends_with(".csf"),
+                    "{name}「{emitter}」是点云却没有网格名"
+                );
+            }
+            // 循环位是布尔，周期是正数。两个都曾按对象偏移读错过。
+            let looping =
+                u32::from_le_bytes(record[EMITTER_LOOP..EMITTER_LOOP + 4].try_into().unwrap());
+            assert!(looping <= 1, "{name}「{emitter}」的循环位是 {looping}");
+            let period = f32::from_le_bytes(
+                record[EMITTER_PERIOD.0..EMITTER_PERIOD.0 + 4]
+                    .try_into()
+                    .unwrap(),
+            ) - f32::from_le_bytes(
+                record[EMITTER_PERIOD.1..EMITTER_PERIOD.1 + 4]
+                    .try_into()
+                    .unwrap(),
+            );
+            assert!(
+                period > 0.0 && period < 1000.0,
+                "{name}「{emitter}」的发射周期是 {period}"
+            );
+
             let rate = track_curve(record, EMITTER_TRACKS[2], 0);
             assert!(
                 !rate.is_empty() && rate[0].0 == 0.0,

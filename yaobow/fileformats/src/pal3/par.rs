@@ -328,18 +328,37 @@ pub const EMITTER_ORIGIN: usize = 0x40;
 /// direction within, as `rand(-v, v)` per axis.
 pub const EMITTER_SPREAD: usize = 0x4c;
 
-/// `emitter+0x98` — 0 is a box (the three `rand` ranges at 0xac..0xc0),
-/// 1 uses the radii at 0xc4/0xc8, anything else scatters over the mesh
-/// point list at 0xcc.
-pub const EMITTER_SHAPE: usize = 0x98;
+/// 文件 `0x58` — 发射形状，`ComputeParticleInitPos` 的三个分支：0 是盒
+/// （[`EMITTER_BOX_MIN`] / [`EMITTER_BOX_MAX`]），1 是球壳
+/// （[`EMITTER_RADII`]），其余按 [`EMITTER_MESH`] 那个 `.csf` 的点云撒。
+/// 实机 65 个发射器里三种分别是 26 / 12 / 27 个。
+///
+/// 注意这里给的是**文件**偏移，不是对象偏移。`gbPartEmitter::LoadFromFile`
+/// 是一连串 `Read(&this->field, size)`，读入顺序和对象里的排列并不一致：
+/// 形状在对象里是 `+0x98`，在文件里排在网格名前面，落在 `0x58`。
+pub const EMITTER_SHAPE: usize = 0x58;
 
-/// `emitter+0x9c` and `+0xa0` — `ComputeEmitterData` divides the elapsed
-/// time by their difference to get the emitter's normalised progress.
-pub const EMITTER_PERIOD: (usize, usize) = (0x9c, 0xa0);
+/// 文件 `0xa0` 和 `0xa4`（对象 `+0x9c` / `+0xa0`）——`ComputeEmitterData`
+/// 拿它们的差当一个发射周期，再用经过的时间除出归一化进度。实机里后一个
+/// 恒为 0，所以周期就是前一个。
+pub const EMITTER_PERIOD: (usize, usize) = (0xa0, 0xa4);
 
-/// `emitter+0xa4` — keep emitting after the first period. This is what
-/// `gbPartEmitter::SetLoopEmit` writes.
-pub const EMITTER_LOOP: usize = 0xa4;
+/// 文件 `0xa8`（对象 `+0xa4`）——过了一个周期还继续发。
+/// `ComputeEmitterData` 在 `n > 1` 时看它，为 0 就整个停掉；
+/// `gbPartEmitter::SetLoopEmit` 写的也是它。
+pub const EMITTER_LOOP: usize = 0xa8;
+
+/// 文件 `0xb0`（对象 `+0xc4`/`+0xc8`）——球壳形状的两个半径。
+/// `ComputeParticleInitPos` 抛一次硬币，一半用第一个当上界，一半用两个的
+/// 和，然后在 `[0, 上界]` 里取半径。
+pub const EMITTER_RADII: usize = 0xb0;
+
+/// 文件 `0xb8`（对象 `+0xac`）——盒形状三个轴的下界。
+pub const EMITTER_BOX_MIN: usize = 0xb8;
+
+/// 文件 `0xc4`（对象 `+0xb8`）——盒形状三个轴的上界。上下界连在一起是
+/// `LoadFromFile` 的一次 `Read(&this->0xac, 0x18)`，六个浮点。
+pub const EMITTER_BOX_MAX: usize = 0xc4;
 
 /// The emitter's name.
 pub fn emitter_name(record: &[u8]) -> String {
@@ -504,6 +523,11 @@ pub struct ParEmitter {
     pub origin: [f32; 3],
     pub spread: [f32; 3],
     pub shape: u32,
+    /// 盒形状的下界与上界，`shape == 0` 时用。
+    pub box_min: [f32; 3],
+    pub box_max: [f32; 3],
+    /// 球壳形状的两个半径，`shape == 1` 时用。
+    pub radii: (f32, f32),
     /// How long one emission cycle lasts.
     pub period: f32,
     pub looping: bool,
@@ -585,6 +609,12 @@ impl ParEffect {
                         origin: vec3_at(emitter, EMITTER_ORIGIN),
                         spread: vec3_at(emitter, EMITTER_SPREAD),
                         shape: u32_at(emitter, EMITTER_SHAPE),
+                        box_min: vec3_at(emitter, EMITTER_BOX_MIN),
+                        box_max: vec3_at(emitter, EMITTER_BOX_MAX),
+                        radii: (
+                            f32_at(emitter, EMITTER_RADII),
+                            f32_at(emitter, EMITTER_RADII + 4),
+                        ),
                         period: (f32_at(emitter, EMITTER_PERIOD.0)
                             - f32_at(emitter, EMITTER_PERIOD.1))
                         .abs()
