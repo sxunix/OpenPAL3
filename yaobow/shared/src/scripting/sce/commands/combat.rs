@@ -138,6 +138,9 @@ pub struct SceCommandCombat {
     kind: Kind,
     session: Option<CombatSession>,
     /// Party actor id per battle slot 0..5.
+    /// 在场的我方成员，**存的是队伍下标，而下标就是战斗位号**
+    /// （见 `game_db::PLAYER_COMBAT_IDS` 的注释和 `combat_flow.md` 第 9.7
+    /// 节）。所以拿它当槽位用，不要再枚举一次。
     party_actor_ids: Vec<u32>,
     /// Whether we switched the BGM to the battle theme and owe the scene
     /// its own back.
@@ -392,14 +395,23 @@ impl SceCommandCombat {
 
         {
             let mut persistent = state.global_state_mut().persistent_state_mut();
-            for (slot, actor_id) in self.party_actor_ids.iter().copied().enumerate() {
-                let Some(c) = session.battle.get(slot) else {
+            for actor_id in self.party_actor_ids.iter().copied() {
+                // 队伍下标就是战斗位号。
+                let Some(c) = session.battle.get(actor_id as usize) else {
                     continue;
                 };
                 if let Some(role) = persistent.role_mut(actor_id) {
-                    // [推断] a member who went down comes back with 1 精;
-                    // the original's post-battle HP floor has not been read.
-                    role.hp = c.hp.max(1);
+                    // 战后**没有**回血这一步。从 6328 个函数入口逐个反汇编扫
+                    // 过（线性扫会失步，不可信），对战斗位 `+0x24c`（精）的
+                    // 写只有三处：`FUN_004f2c70`（受伤/治疗）、`FUN_004f3e20`
+                    // 的复活分支（置 0）、`FUN_004f8bb0`（敌方建位）。我方的
+                    // 战斗精就是持久精——存读档直接读写它（0x530440 一带）。
+                    // 所以倒下的人留在 0 精，要靠道具复活；先前这里 `.max(1)`
+                    // 是标了 [推断] 的猜测，已按二进制改回。
+                    //
+                    // 代价：移植目前**没有用道具的通路**，所以倒下的成员会一直
+                    // 躺到脚本调 FullTeamAtt 为止。见 combat_flow.md 第 9.8 节。
+                    role.hp = c.hp;
                     role.sp = c.sp;
                     role.mp = c.mp;
                 }
@@ -409,14 +421,23 @@ impl SceCommandCombat {
                 let spoils = session.spoils();
                 if let Some(db) = db.as_ref() {
                     for (slot, amount) in spoils.experience {
-                        if let Some(actor_id) = self.party_actor_ids.get(slot).copied() {
+                        if let Some(actor_id) = self
+                            .party_actor_ids
+                            .iter()
+                            .copied()
+                            .find(|a| *a as usize == slot)
+                        {
                             persistent.award_experience(actor_id, db, amount);
                         }
                     }
                     for (slot, skill_id) in session.casts.iter().copied() {
-                        let (Some(actor_id), Some(row)) =
-                            (self.party_actor_ids.get(slot).copied(), db.skill(skill_id))
-                        else {
+                        let (Some(actor_id), Some(row)) = (
+                            self.party_actor_ids
+                                .iter()
+                                .copied()
+                                .find(|a| *a as usize == slot),
+                            db.skill(skill_id),
+                        ) else {
                             continue;
                         };
                         persistent.use_skill(actor_id, skill_id, &row.times_before_level_up);
