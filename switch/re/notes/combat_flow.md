@@ -536,7 +536,9 @@ swap(this->+0x80..+0x88, this->+0x8c..+0x94);
   存档值到 `+0x470` 的写入路径没跟。
 - `FUN_004ed0a0` / `FUN_004ed100` 的确切语义。
 - 主调度任务 `LAB_00513840` 里分支 A/B（乱、封、狂、镜）之后的具体行为。
-- `flexcam.dat` / `flexeff.dat` / `efflinker.dat` 三个二进制表未解析。
+- `flexeff.data` 的两张表已解，见 [`flexeff_format.md`](flexeff_format.md)；
+  槽位子块的 124 字节布局和 class CRC → 特效类的映射还没做。
+- `flexcam.dat` / `efflinker.dat` 两个二进制表未解析。
 - 升级成长曲线本身（入口见第 9.6 节，未展开）。
 
 

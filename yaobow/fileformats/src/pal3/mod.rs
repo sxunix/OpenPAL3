@@ -10,6 +10,7 @@
 //! See `generated/pal3_scn.md` for the reverse-engineering write-up.
 
 pub mod cvd;
+pub mod flexeff;
 pub mod gdb;
 pub mod lgt;
 pub mod par;
