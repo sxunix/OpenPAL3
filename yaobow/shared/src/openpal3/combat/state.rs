@@ -137,6 +137,13 @@ pub struct Combatant {
     /// 土毒's escalating damage carries between rounds.
     pub earth_poison_acc: f32,
 
+    /// 防御中：受到的伤害减半（原版战斗位的 `+0x474`）。
+    ///
+    /// 置位在防御任务 `FUN_0050eda0` 的动画收尾处（`FUN_004f3a30(slot, 1)`，
+    /// 0x50ee64），清零在 0x5158bf 的 `FUN_004f3a30(slot, 0)`——条件是该单位
+    /// 的行动条又满了或战斗阶段不再是 2。**所以减半一直持续到防御者下一次
+    /// 轮到自己。**扣血时的用法见 `FUN_004f2c70`：`delta < -1` 才折半。
+    pub defending: bool,
     /// 五灵阵位（原版战斗位的 `+0x470`），1 水 2 火 3 风 4 雷 5 土；0 = 没设。
     ///
     /// 我方的值由 `FUN_004ed250`（把冒险侧角色表整块拷进战斗位那一步）从冒险
@@ -175,6 +182,7 @@ impl Combatant {
             retired: false,
             states: [StateTimer::default(); STATE_SLOTS],
             earth_poison_acc: 0.,
+            defending: false,
             element_position: 0,
             gauge: 0.,
             cast_gauge: 0.,
@@ -276,6 +284,13 @@ impl Combatant {
         if self.has_state(K_INVISIBLE) {
             return 0;
         }
+
+        // 防御减半：原版 `delta < -1` 才折半（刚好 −1 的不折）。
+        let delta = if delta < -1 && self.defending {
+            delta / 2
+        } else {
+            delta
+        };
 
         let before = self.hp;
         let mut hp = before + delta;
@@ -505,6 +520,8 @@ impl Battle {
                     if c.gauge > formulas::GAUGE_FULL - 1.0 {
                         c.gauge = formulas::GAUGE_FULL;
                         c.phase = Phase::Ready;
+                        // 行动条一满就解除防御，和 0x515893 的判据一致。
+                        c.defending = false;
                     }
                 }
                 Phase::Executing => {
@@ -1138,5 +1155,35 @@ mod tests {
         // 是 0，任何 1..6 的合击技位置要求都过不去——和原版一致。
         let c = Combatant::new(0, Side::Party);
         assert_eq!(c.element_position, 0);
+    }
+
+    #[test]
+    fn defending_halves_incoming_damage_until_the_next_turn() {
+        let mut b = Battle::new(1);
+        let mut c = Combatant::new(0, Side::Party);
+        c.hp = 100;
+        c.max_hp = 100;
+        c.speed = 10;
+        b.place(0, c);
+
+        // 没防御：全额。
+        assert_eq!(b.get_mut(0).unwrap().change_hp(-40), -40);
+        assert_eq!(b.get(0).unwrap().hp, 60);
+
+        // 防御中：折半（原版 `delta < -1` 才折）。
+        b.defend(0);
+        assert!(b.get(0).unwrap().defending);
+        assert_eq!(b.get_mut(0).unwrap().change_hp(-40), -20);
+        assert_eq!(b.get_mut(0).unwrap().change_hp(-1), -1, "刚好 −1 的不折");
+
+        // 行动条一满就解除，和 0x515893 的判据一致。
+        for _ in 0..400 {
+            b.update(0.05);
+            if b.get(0).unwrap().phase == Phase::Ready {
+                break;
+            }
+        }
+        assert_eq!(b.get(0).unwrap().phase, Phase::Ready);
+        assert!(!b.get(0).unwrap().defending, "轮到自己就该解除防御");
     }
 }

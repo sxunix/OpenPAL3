@@ -236,12 +236,16 @@ impl Battle {
         result
     }
 
-    /// 防御 — the combatant simply ends its turn. The original has no
-    /// defence bonus state to set; the value of defending is that the
-    /// gauge resets without the combatant having exposed itself to an
-    /// interrupt mid-action.
+    /// 防御 —— 置上「受伤减半」，然后结束这一回合。
+    ///
+    /// 原版的防御任务是 `FUN_0050eda0`（从 `FUN_005014e0` 注册进任务表）：
+    /// 播完动画后 `FUN_004f3a30(slot, 1)` 把战斗位的 `+0x474` 置 1
+    /// （0x50ee64）。清零在 0x5158bf 的 `FUN_004f3a30(slot, 0)`，条件是该单位
+    /// 行动条又满了或战斗阶段不再是 2——**所以减半持续到防御者下次轮到自己**。
+    /// 扣血时 `FUN_004f2c70` 对 `delta < -1` 折半。
     pub fn defend(&mut self, slot: usize) {
         if let Some(c) = self.get_mut(slot) {
+            c.defending = true;
             c.phase = Phase::Charging;
             c.gauge = 0.;
         }
