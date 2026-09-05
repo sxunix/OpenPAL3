@@ -195,6 +195,12 @@ pub struct PersistentState {
     /// move, except in the nine scenes listed at 0x437997–0x437a67.
     #[serde(default)]
     scene_object_positions: BTreeMap<String, [f32; 3]>,
+    /// 大地图上每个目的地的状态——指令 125 写的那张表。原版是
+    /// `i32 状态[38] @0xdba014` 加 `u8 可见[38] @0xdba0ac`，后者恒等于
+    /// `状态 > 0`；绘制只看可见位，i32 那份只进存档，所以这里只留一份。
+    /// 见 `switch/re/notes/bigmap.md`。
+    #[serde(default)]
+    bigmap_elements: BTreeMap<i32, i32>,
 }
 
 /// `city/scene/objectId` — `city` is the scene's cpk name (the original's
@@ -244,11 +250,26 @@ impl PersistentState {
             scene_object_states: BTreeMap::new(),
             objects_not_from_save: BTreeSet::new(),
             scene_object_positions: BTreeMap::new(),
+            bigmap_elements: BTreeMap::new(),
         }
     }
 
     /// A scene object's switch state, or 0 when the story has not
     /// touched it. The original returns the raw byte, not a bool.
+    /// 指令 125 给目的地 `id` 设的状态。没设过的算 0（不显示）。
+    pub fn bigmap_element(&self, id: i32) -> i32 {
+        self.bigmap_elements.get(&id).copied().unwrap_or(0)
+    }
+
+    pub fn set_bigmap_element(&mut self, id: i32, option: i32) {
+        self.bigmap_elements.insert(id, option);
+    }
+
+    /// 目的地 `id` 是否画在地图上——原版的 `可见[id] = (option > 0)`。
+    pub fn bigmap_element_visible(&self, id: i32) -> bool {
+        self.bigmap_element(id) > 0
+    }
+
     pub fn scene_object_state(&self, city: &str, scene: &str, object_id: i32) -> i32 {
         self.scene_object_states
             .get(&scene_object_key(city, scene, object_id))

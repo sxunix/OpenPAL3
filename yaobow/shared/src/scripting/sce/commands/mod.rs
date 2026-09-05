@@ -71,6 +71,7 @@ mod snow;
 mod start_hidefight;
 mod stop_music;
 mod story_flags;
+mod switch_mode;
 mod team;
 mod testgoto;
 mod text_ui;
@@ -178,6 +179,7 @@ pub use story_flags::{
     SceCommandLearnCompose, SceCommandLoadAction, SceCommandLongKuiMode, SceCommandRoleOverlap,
     SceCommandRoleScale, SceCommandSetRoleTexture, SceCommandVarDistract,
 };
+pub use switch_mode::SceCommandSwitchMode;
 pub use team::{
     SceCommandTeamClose, SceCommandTeamCloseOnSceneChange, SceCommandTeamOpen,
     SceCommandTeamOpenOnSceneChange,

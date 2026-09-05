@@ -1,5 +1,6 @@
 pub mod agent;
 pub mod asset_manager;
+pub mod bigmap;
 pub mod combat;
 #[macro_use]
 pub mod comdef {

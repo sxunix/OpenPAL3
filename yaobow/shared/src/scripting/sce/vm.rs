@@ -702,8 +702,9 @@ impl SceProcContext {
                 command!(self, SceCommandGetPawnshopLevel, var: i16)
             }
             102 => {
-                // SwitchRS
-                nop_command!(self, SwitchRS, i32)
+                // SwitchMode —— 指令表里记的「选择渲染状态」不对，
+                // LAB_00436f90 是全局模式切换，13 = 大地图。
+                command!(self, SceCommandSwitchMode, mode: i32)
             }
             103 => {
                 // MiniGame: 当铺经营
@@ -1118,6 +1119,26 @@ impl SceExecutionContext {
         };
         self.proc_stack.push(context);
         self.proc_begin(proc_id, global_state);
+    }
+
+    /// 压一个**别的 `.sce`** 里的过程。大地图用得着：`FUN_00432170` 的第二
+    /// 个上下文就是 `ui\\bigmap\\bigmap.sce`，选中目的地后跑的是那个文件里
+    /// 的过程，而当前场景的脚本还在栈上。`SceProcContext` 自带一份
+    /// `Rc<SceFile>`，所以混栈是安全的。
+    pub fn call_proc_in(
+        &mut self,
+        sce: Rc<SceFile>,
+        sce_name: &str,
+        proc_id: u32,
+        global_state: &mut GlobalState,
+    ) -> bool {
+        let Some(context) = SceProcContext::new_from_id(sce, proc_id) else {
+            log::warn!("{sce_name} 里没有 proc {proc_id}");
+            return false;
+        };
+        self.proc_stack.push(context);
+        self.proc_begin(proc_id, global_state);
+        true
     }
 
     pub fn try_call_proc_by_name(&mut self, proc_name: &str, global_state: &mut GlobalState) {

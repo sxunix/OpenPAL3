@@ -381,6 +381,13 @@ impl SceState {
         self.context.call_proc(proc_id, &mut self.global_state);
     }
 
+    /// 跑另一个 `.sce` 里的过程——大地图选完目的地要跑
+    /// `ui\\bigmap\\bigmap.sce` 的过程。
+    pub fn call_proc_in(&mut self, sce: Rc<SceFile>, sce_name: &str, proc_id: u32) -> bool {
+        self.context
+            .call_proc_in(sce, sce_name, proc_id, &mut self.global_state)
+    }
+
     pub fn try_call_proc_by_name(&mut self, proc_name: &str) {
         self.context
             .try_call_proc_by_name(proc_name, &mut self.global_state);
