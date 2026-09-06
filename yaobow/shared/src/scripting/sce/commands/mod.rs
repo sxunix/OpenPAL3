@@ -7,6 +7,7 @@ mod camera_default;
 mod camera_focus;
 mod camera_move;
 mod camera_set;
+mod cave_wolf;
 mod climb;
 mod cmp;
 mod combat;
@@ -99,6 +100,7 @@ pub use camera_focus::{
 };
 pub use camera_move::SceCommandCameraMove;
 pub use camera_set::SceCommandCameraSet;
+pub use cave_wolf::{SceCommandMiniGameCaveExperience, take_start_request as take_cave_wolf_start};
 pub use climb::SceCommandClimb;
 pub use cmp::{
     SceCommandEq, SceCommandGeq, SceCommandGeq2, SceCommandGt, SceCommandLeq, SceCommandLs,
@@ -138,9 +140,8 @@ pub use main_menu::SceCommandSwitchToMainMenu;
 pub use minigames::{
     SceCommandEffectAtRole, SceCommandEffectPosition, SceCommandGetPawnshopAccrual,
     SceCommandGetPawnshopLevel, SceCommandGetPawnshopManage, SceCommandGetPawnshopPeriod,
-    SceCommandGetPawnshopUnHock, SceCommandMiniGameCaveExperience, SceCommandMiniGamePawnshop,
-    SceCommandMiniGamePawnshopNote, SceCommandMiniGameSki, SceCommandMiniGameSwatAFly,
-    SceCommandNavigationBeeFlyTo,
+    SceCommandGetPawnshopUnHock, SceCommandMiniGamePawnshop, SceCommandMiniGamePawnshopNote,
+    SceCommandMiniGameSki, SceCommandMiniGameSwatAFly, SceCommandNavigationBeeFlyTo,
 };
 pub use movie::SceCommandMovie;
 pub use music::SceCommandMusic;

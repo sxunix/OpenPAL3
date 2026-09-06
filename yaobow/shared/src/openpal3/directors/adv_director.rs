@@ -74,6 +74,7 @@ impl AdventureDirector {
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
+                cave_wolf: None,
                 water_magic: None,
                 water_magic_failed: false,
                 flexeff: vec![],
@@ -179,6 +180,7 @@ impl AdventureDirector {
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
+                cave_wolf: None,
                 water_magic: None,
                 water_magic_failed: false,
                 flexeff: vec![],
@@ -419,6 +421,8 @@ struct AdventureDirectorProps {
     snow: crate::openpal3::scene::Snow,
     snow_entity: Option<ComRc<radiance::comdef::IEntity>>,
     snow_failed: bool,
+    /// 112 山洞之狼：正在进行的那一局，没在玩就是 `None`。
+    cave_wolf: Option<crate::openpal3::states::cave_wolf::CaveWolf>,
     /// 152 水特效：`.par` 跑起来的模拟和它每个 group 的网格。
     water_magic: Option<(
         crate::openpal3::scene::ParticleEffect,
@@ -900,6 +904,88 @@ impl AdventureDirectorProps {
             .save(save_slot);
     }
 
+    /// 山洞之狼（SCE 112）。原版把它做成主循环的游戏状态 7
+    /// （`DAT_00bfda6c`，`0x405690` 起）：每帧加时间，满 60 秒算时间到，
+    /// 否则扫一遍角色表，活着的角色离主角不到 24 就算抓到。规则和常数在
+    /// `states::cave_wolf`。
+    fn step_cave_wolf(&mut self, delta_sec: f32) {
+        use crate::openpal3::states::cave_wolf::{self, CaveWolf, Outcome};
+        use crate::scripting::sce::commands::take_cave_wolf_start;
+
+        if take_cave_wolf_start(self.sce_vm.state_mut()) {
+            self.cave_wolf = Some(CaveWolf::new());
+        }
+        if self.cave_wolf.is_none() {
+            return;
+        }
+
+        // 主角到最近一个「活着的」角色有多远。原版看的是角色记录的
+        // `+0x278`，那一位是从 `.scn` 角色记录的 `+0x54` 抄来的，也就是
+        // 移植版 `RoleController::is_active()`。
+        let nearest = self.nearest_active_role_distance();
+
+        let outcome = self
+            .cave_wolf
+            .as_mut()
+            .and_then(|g| g.tick(delta_sec, nearest));
+        let Some(outcome) = outcome else {
+            return;
+        };
+        self.cave_wolf = None;
+
+        let proc = match outcome {
+            Outcome::Caught => {
+                let wins = {
+                    let mut p = self.sce_vm.global_state_mut().persistent_state_mut();
+                    let wins = p.cave_wolf_wins();
+                    p.record_cave_wolf_win();
+                    // 前四次各发一件奖品（`DAT_00bfda44 < 4`）。
+                    if let Some(item) = cave_wolf::reward_for(wins) {
+                        p.add_item(item, 1);
+                    }
+                    wins
+                };
+                log::info!("CaveWolf: 抓到了，这是第 {} 次", wins + 1);
+                cave_wolf::WIN_PROC
+            }
+            Outcome::TimedOut => {
+                log::info!("CaveWolf: 时间到");
+                cave_wolf::LOSE_PROC
+            }
+        };
+
+        let init = Rc::new(self.sce_vm.state().asset_mgr().load_init_sce());
+        if !self.sce_vm.state_mut().call_proc_in(init, "init", proc) {
+            log::warn!("CaveWolf: init.sce 里没有 proc {proc}");
+        }
+    }
+
+    /// 场上活着的角色里离主角最近的那个有多远。没有别人就是 `None`。
+    fn nearest_active_role_distance(&self) -> Option<f32> {
+        let player = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)?;
+        let here = player.transform().borrow().position();
+        let scene = self.scene_manager.scene()?;
+
+        scene
+            .entities()
+            .iter()
+            .filter(|e| e.name().starts_with("ROLE_") && e.name() != player.name())
+            .filter(|e| {
+                RoleController::get_role_controller((*e).clone())
+                    .map(|rc| rc.inner::<RoleController>().is_active())
+                    .unwrap_or(false)
+            })
+            .map(|e| {
+                let p = e.transform().borrow().position();
+                Vec3::sub(&p, &here).norm()
+            })
+            .fold(None, |acc: Option<f32>, d| {
+                Some(acc.map_or(d, |best| best.min(d)))
+            })
+    }
+
     fn move_role(
         &mut self,
         scene_manager: ComRc<ISceneManager>,
@@ -1090,6 +1176,7 @@ impl AdventureDirectorProps {
             return None;
         }
 
+        self.step_cave_wolf(delta_sec);
         self.test_save();
 
         let moving_direction = get_moving_direction(

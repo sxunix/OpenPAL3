@@ -452,8 +452,11 @@ fn dump_one_proc() {
     let id: u32 = id.trim().parse().unwrap();
 
     let vfs = packfs::init_virtual_fs(&assets, None);
-    // 带斜杠的当成 vfs 路径，比如 ui/bigmap/bigmap —— 大地图有自己的脚本。
-    let path = if scene.contains('/') {
+    // `@` 开头的当成完整 vfs 路径（`@/basedata/basedata/init.sce`），带斜杠
+    // 的按 basedata 下的相对路径算（`ui/bigmap/bigmap`），其余按场景名。
+    let path = if let Some(raw) = scene.strip_prefix('@') {
+        PathBuf::from(raw.to_string())
+    } else if scene.contains('/') {
         PathBuf::from(format!("/basedata/basedata/{scene}.sce"))
     } else {
         PathBuf::from(format!("/scene/{scene}/{scene}.sce"))

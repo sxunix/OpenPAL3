@@ -192,6 +192,10 @@ pub struct PersistentState {
     /// 合成术 recipes the party has learnt — opcode 111.
     #[serde(default)]
     compose_recipes: BTreeSet<u32>,
+    /// 山洞之狼（SCE 112）赢过几次。原版是 `DAT_00bfda44`，前四次各发一件
+    /// 奖品，之后就只有对白。
+    #[serde(default)]
+    cave_wolf_wins: u32,
     /// Per-scene-object state the story writes and later reads back —
     /// mazes remember which switches have been thrown. The original
     /// keeps a table in the save-state store at `DAT_017b1550`, looked up
@@ -302,6 +306,7 @@ impl PersistentState {
             longkui_mode: 0,
             huaying_mode: 0,
             compose_recipes: BTreeSet::new(),
+            cave_wolf_wins: 0,
             scene_object_states: BTreeMap::new(),
             objects_not_from_save: BTreeSet::new(),
             scene_object_positions: BTreeMap::new(),
@@ -377,6 +382,15 @@ impl PersistentState {
         } else {
             self.features.remove(&feature);
         }
+    }
+
+    /// 山洞之狼赢过几次（`DAT_00bfda44`）。
+    pub fn cave_wolf_wins(&self) -> u32 {
+        self.cave_wolf_wins
+    }
+
+    pub fn record_cave_wolf_win(&mut self) {
+        self.cave_wolf_wins += 1;
     }
 
     pub fn longkui_mode(&self) -> i32 {

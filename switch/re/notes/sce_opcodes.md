@@ -192,7 +192,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 109 | `00436fb0` | int | FeatureEnableSwordPurifyingCommand | ✓ SceCommandEnableFeature | 打开或关闭魔剑养成功能， |
 | 110 | `00436fe0` | int | FeatureEnableJusticeBookCommand | ✓ SceCommandEnableFeature | 打开或关闭降妖谱功能， |
 | 111 | `00437040` | int | PlayerLearnComposeCommand | ✓ SceCommandLearnCompose | 学会合成术， |
-| 112 | `00437c20` | （无） | MiniGameStartCaveExperienceCommand | 跳过桩 SceCommandMiniGameCaveExperience | 进入山洞初体验游戏 |
+| 112 | `00437c20` | （无） | MiniGameStartCaveExperienceCommand | ✓ SceCommandMiniGameCaveExperience（导演里跑计时与抓人）| 进入山洞初体验游戏（山洞之狼）|
 | 113 | `00437c30` | （无） | MiniGameStartHideFightCommand | ✓ SceCommandStartHideFight | 使当前场景进入<当铺&刺使府夜间特殊战斗关>状态 |
 | 114 | `00437c40` | （无） | — | —  |  |
 | 115 | `00437c50` | string | PlayVideoCommand | ✓ SceCommandMovie | 播放动画 |

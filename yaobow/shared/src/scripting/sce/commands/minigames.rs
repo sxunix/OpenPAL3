@@ -74,11 +74,6 @@ skipped!(
     "打苍蝇游戏尚未实现，已跳过"
 );
 skipped!(
-    SceCommandMiniGameCaveExperience,
-    "112 进入山洞初体验游戏 — `LAB_00437c20`.（无参数）",
-    "山洞初体验尚未实现，已跳过"
-);
-skipped!(
     SceCommandMiniGamePawnshopNote,
     "157 当铺经营游戏显示信息 — `LAB_00438f10`.",
     ""
