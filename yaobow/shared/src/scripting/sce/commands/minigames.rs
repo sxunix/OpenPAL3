@@ -86,12 +86,6 @@ skipped!(
     text: String
 );
 skipped!(
-    SceCommandSmeltingMenu,
-    "146 打开冶炼菜单 — `LAB_00436a10`.",
-    "冶炼界面尚未实现",
-    kind: i32
-);
-skipped!(
     SceCommandNavigationBeeFlyTo,
     "154 控制引路蜂飞向指定位置 — `LAB_00438ba0`，参数是 nav 层与 \
      tile 坐标。引路蜂是纯提示性的装饰，跳过不影响可玩性。",

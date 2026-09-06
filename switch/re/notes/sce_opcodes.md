@@ -226,7 +226,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 143 | `004389a0` | int | EffectPlayCommand | 桩 CEft | 播放VFX特效， |
 | 144 | `004389d0` | int | EffectAttachToActorCommand | ✓ SceCommandEffectAtRole | 在角色位置播放特效， |
 | 145 | `00438840` | int int | PlayerSetActorLevelCommand | ✓ SceCommandAverageLevel | 设置目标角色等级（所有当前角色等级的平均值+增加值）， |
-| 146 | `00436a10` | int | UIShowSmeltingMenuCommand | 跳过桩 SceCommandSmeltingMenu | 打开冶炼菜单 |
+| 146 | `00436a10` | int | UIShowSmeltingMenuCommand | ✓ SceCommandSmeltingMenu（界面是文字浮层）| 打开冶炼菜单，参数是**过程号** |
 | 147 | `00438a20` | （无） | GameSwitchToMainMenuCommand | 桩 Switch2Menu | 退出游戏到主菜单 |
 | 148 | `00438980` | int | EffectPreLoadCommand | 桩 CEft_Load | 预加载VFX特效Group， |
 | 149 | `00438a30` | int | ScriptVarSetLongKuiDressIdCommand | ✓ SceCommandGiveCloth | 把背包里所获的的服装给龙葵， |

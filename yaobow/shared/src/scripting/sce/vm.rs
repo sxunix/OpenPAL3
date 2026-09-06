@@ -877,8 +877,9 @@ impl SceProcContext {
                 command!(self, SceCommandAverageLevel, actor_id: i32, delta: i32)
             }
             146 => {
-                // 冶炼菜单
-                command!(self, SceCommandSmeltingMenu, kind: i32)
+                // 冶炼菜单。参数是**过程号**（原版存进 DAT_00dba240，确认
+                // 时当脚本跑），不是「种类」。
+                command!(self, SceCommandSmeltingMenu, end_proc: i32)
             }
             147 => {
                 // Switch2Menu

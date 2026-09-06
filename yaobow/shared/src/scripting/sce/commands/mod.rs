@@ -71,6 +71,7 @@ mod screen_effect;
 mod script_run_mode;
 mod set_bigmap_element;
 mod show_chat_rest;
+mod smelting;
 mod snow;
 mod start_hidefight;
 mod stop_music;
@@ -139,7 +140,7 @@ pub use minigames::{
     SceCommandGetPawnshopLevel, SceCommandGetPawnshopManage, SceCommandGetPawnshopPeriod,
     SceCommandGetPawnshopUnHock, SceCommandMiniGameCaveExperience, SceCommandMiniGamePawnshop,
     SceCommandMiniGamePawnshopNote, SceCommandMiniGameSki, SceCommandMiniGameSwatAFly,
-    SceCommandNavigationBeeFlyTo, SceCommandSmeltingMenu,
+    SceCommandNavigationBeeFlyTo,
 };
 pub use movie::SceCommandMovie;
 pub use music::SceCommandMusic;
@@ -179,6 +180,7 @@ pub use screen_effect::SceCommandScreenEffect;
 pub use script_run_mode::SceCommandScriptRunMode;
 pub use set_bigmap_element::SceCommandSetBigMapElement;
 pub use show_chat_rest::SceCommandShowChatRest;
+pub use smelting::SceCommandSmeltingMenu;
 pub use snow::SceCommandSnow;
 pub use start_hidefight::SceCommandStartHideFight;
 pub use stop_music::SceCommandStopMusic;

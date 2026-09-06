@@ -8,3 +8,4 @@ pub mod item_use;
 pub mod persistent_state;
 pub mod shop;
 pub mod skills;
+pub mod smelting;
