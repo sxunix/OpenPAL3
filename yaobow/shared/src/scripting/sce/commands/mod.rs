@@ -11,6 +11,7 @@ mod climb;
 mod cmp;
 mod combat;
 mod combat_effect;
+mod dealer;
 mod dlg;
 mod dlg_face;
 mod dlg_sel;
@@ -107,6 +108,7 @@ pub use combat::{
     SceCommandCombatNotGameOver,
 };
 pub use combat_effect::{SceCommandPlayCombatEffect, SceCommandPreloadCombatEffect};
+pub use dealer::SceCommandDealerMenu;
 pub use dlg::SceCommandDlg;
 pub use dlg_face::SceCommandDlgFace;
 pub use dlg_sel::SceCommandDlgSel;
@@ -133,11 +135,11 @@ pub use inventory::{SceCommandAddItem, SceCommandAddMoney, SceCommandRemoveItem}
 pub use load_scene::SceCommandLoadScene;
 pub use main_menu::SceCommandSwitchToMainMenu;
 pub use minigames::{
-    SceCommandDealerMenu, SceCommandEffectAtRole, SceCommandEffectPosition,
-    SceCommandGetPawnshopAccrual, SceCommandGetPawnshopLevel, SceCommandGetPawnshopManage,
-    SceCommandGetPawnshopPeriod, SceCommandGetPawnshopUnHock, SceCommandMiniGameCaveExperience,
-    SceCommandMiniGamePawnshop, SceCommandMiniGamePawnshopNote, SceCommandMiniGameSki,
-    SceCommandMiniGameSwatAFly, SceCommandNavigationBeeFlyTo, SceCommandSmeltingMenu,
+    SceCommandEffectAtRole, SceCommandEffectPosition, SceCommandGetPawnshopAccrual,
+    SceCommandGetPawnshopLevel, SceCommandGetPawnshopManage, SceCommandGetPawnshopPeriod,
+    SceCommandGetPawnshopUnHock, SceCommandMiniGameCaveExperience, SceCommandMiniGamePawnshop,
+    SceCommandMiniGamePawnshopNote, SceCommandMiniGameSki, SceCommandMiniGameSwatAFly,
+    SceCommandNavigationBeeFlyTo, SceCommandSmeltingMenu,
 };
 pub use movie::SceCommandMovie;
 pub use music::SceCommandMusic;

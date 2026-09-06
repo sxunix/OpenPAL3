@@ -86,13 +86,6 @@ skipped!(
     text: String
 );
 skipped!(
-    SceCommandDealerMenu,
-    "100 调用买卖系统 — `LAB_00436c00`，参数是商店的数据文件名。\
-     买卖界面本身还没有；跳过等于该商人不卖东西。",
-    "买卖界面尚未实现",
-    shop: String
-);
-skipped!(
     SceCommandSmeltingMenu,
     "146 打开冶炼菜单 — `LAB_00436a10`.",
     "冶炼界面尚未实现",
