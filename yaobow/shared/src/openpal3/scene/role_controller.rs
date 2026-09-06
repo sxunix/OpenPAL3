@@ -16,7 +16,7 @@ use radiance::components::mesh::{
 use radiance::math::Vec3;
 use radiance::rendering::{ComponentFactory, MaterialDef, Pal3ActorMaterialDef};
 use radiance::scene::CoreEntity;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::io::Cursor;
 use std::path::Path;
@@ -73,7 +73,9 @@ pub fn create_mv3_entity(
 
 pub struct RoleController {
     entity: ComRc<IEntity>,
-    model_name: String,
+    /// 42 设置龙葵形象要在场上换模型，所以它是可变的（原版改的是角色记录
+    /// 里 +0xae/+0x2a8 那两份模型名）。
+    model_name: RefCell<String>,
     asset_mgr: Rc<AssetManager>,
     animations: DashMap<String, ComRc<IAnimatedMeshComponent>>,
     active_anim_name: RefCell<String>,
@@ -106,7 +108,7 @@ pub struct RoleController {
     /// idle animation's first frame. Anything that has to sit above an
     /// actor's head (the 72 emoji bubble) needs it, and it differs a lot
     /// between characters: 景天 is 76, 龙葵 63, 花盈 28.
-    model_height: f32,
+    model_height: Cell<f32>,
 }
 
 ComObject_RoleController!(super::RoleController);
@@ -160,7 +162,7 @@ impl RoleController {
 
         Self {
             entity,
-            model_name: role_name.to_string(),
+            model_name: RefCell::new(role_name.to_string()),
             asset_mgr: asset_mgr.clone(),
             animations,
             active_anim_name: RefCell::new(idle_anim_name.to_string()),
@@ -180,7 +182,7 @@ impl RoleController {
             patrol_speed: RefCell::new(0.),
             overlap: RefCell::new(0),
             texture_override: RefCell::new(None),
-            model_height,
+            model_height: Cell::new(model_height),
         }
     }
 
@@ -219,6 +221,32 @@ impl RoleController {
         }
         *self.texture_override.borrow_mut() = texture;
         self.animations.clear();
+        if self.is_active() {
+            let anim_name = { self.active_anim_name.borrow().clone() };
+            let mode = *self.anim_repeat_mode.borrow();
+            self.play_anim(&anim_name, mode);
+        }
+    }
+
+    /// 换掉这个角色用的模型，当场生效——42 设置龙葵形象走的就是这条。
+    ///
+    /// 原版 `FUN_00436b40` 把角色记录里的两份模型名（`+0xae` 和 `+0x2a8`）
+    /// 改成 `"105"`（蓝）或 `"106"`（红），再调 `FUN_00412710` 按当前的动作
+    /// 码重新加载一次，所以换装是立刻看得见的。这里照做：清掉动作缓存
+    /// （里面的网格是按旧模型建的）、重新量一次身高，还在场上就把当前动作
+    /// 重播一遍。
+    ///
+    /// 动作名不重算——原版也是拿同一个动作码去新模型上找。
+    pub fn set_model_name(&self, model_name: &str) {
+        if *self.model_name.borrow() == model_name {
+            return;
+        }
+        *self.model_name.borrow_mut() = model_name.to_string();
+        self.animations.clear();
+        self.model_height.set(
+            mv3_model_height(&self.asset_mgr, model_name, &self.idle_anim_name)
+                .unwrap_or(DEFAULT_MODEL_HEIGHT),
+        );
         if self.is_active() {
             let anim_name = { self.active_anim_name.borrow().clone() };
             let mode = *self.anim_repeat_mode.borrow();
@@ -267,7 +295,7 @@ impl RoleController {
                     .asset_mgr
                     .load_role_anim_with_texture(
                         self.entity.clone(),
-                        &self.model_name,
+                        &self.model_name.borrow(),
                         &anim_name,
                         override_name.as_deref(),
                     )
@@ -278,13 +306,13 @@ impl RoleController {
                         if let Some(name) = &override_name {
                             log::warn!(
                                 "SetRoleTexture: role\\{}\\{}.tga 读不到，用原贴图",
-                                self.model_name,
+                                self.model_name.borrow(),
                                 name
                             );
                         }
                         self.asset_mgr.load_role_anim(
                             self.entity.clone(),
-                            &self.model_name,
+                            &self.model_name.borrow(),
                             &anim_name,
                         )
                     });
@@ -296,7 +324,7 @@ impl RoleController {
                         true
                     }
                     None => {
-                        log::warn!("角色 {} 没有动作 {}", self.model_name, anim_name);
+                        log::warn!("角色 {} 没有动作 {}", self.model_name.borrow(), anim_name);
                         false
                     }
                 }
@@ -397,11 +425,11 @@ impl RoleController {
     /// The model's height in world units; see [`Self::model_height`]'s
     /// field docs.
     pub fn model_height(&self) -> f32 {
-        self.model_height
+        self.model_height.get()
     }
 
     pub fn model_name(&self) -> String {
-        (*self.model_name).to_string()
+        self.model_name.borrow().clone()
     }
 
     pub fn switch_nav_layer(&self) -> usize {

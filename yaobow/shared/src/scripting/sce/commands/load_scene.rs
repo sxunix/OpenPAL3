@@ -1,6 +1,6 @@
 use crate::{
     openpal3::{directors::SceneManagerExtensions, scene::RoleController},
-    scripting::sce::{SceCommand, SceState},
+    scripting::sce::{SceCommand, SceState, commands::story_flags},
 };
 use crosscom::ComRc;
 use imgui::Ui;
@@ -69,6 +69,14 @@ impl SceCommandLoadScene {
         }
     }
 
+    /// 新场景把 `ROLE_2` 一律建成蓝龙葵（`ScnScene::map_role_id` 把 2 映到
+    /// 105），所以剧情里换成红龙葵之后，每次换场景都要照存档里记的形象再换
+    /// 一次——原版的模型名跟着角色记录走，不随场景重建。
+    fn restore_longkui_model(&self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
+        let mode = state.global_state().persistent_state().longkui_mode();
+        story_flags::apply_longkui_model(&scene_manager, mode);
+    }
+
     /// Same swap as [`Self::load`], for the agent server's debug
     /// scene jump.
     pub fn load_for_debug(&self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
@@ -98,6 +106,7 @@ impl SceCommandLoadScene {
             .set_scene_name(self.name.clone(), self.sub_name.clone());
 
         self.restore_moved_objects(scene_manager.clone(), state);
+        self.restore_longkui_model(scene_manager.clone(), state);
         if cpk_changed {
             let sce = Rc::new(state.asset_mgr().load_sce(&self.name));
             state.context_mut().set_sce(sce, self.name.clone());

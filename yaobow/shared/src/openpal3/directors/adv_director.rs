@@ -116,6 +116,12 @@ impl AdventureDirector {
 
         scene_manager.push_scene(scene);
 
+        // 存档里记着红龙葵的话，场景刚建好的蓝龙葵要换回来。
+        crate::scripting::sce::commands::apply_longkui_model(
+            &scene_manager,
+            p_state.longkui_mode(),
+        );
+
         let mut global_state = GlobalState::new(
             asset_mgr.clone(),
             audio_engine.clone(),

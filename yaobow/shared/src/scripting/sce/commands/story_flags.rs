@@ -223,9 +223,48 @@ impl SceCommandLearnCompose {
     }
 }
 
-/// 42 设置龙葵形象 — `FUN_00436b40`: model `"105"` for blue (0x436b80),
-/// `"106"` for red (0x436b63), then the current action is re-applied so
-/// the swap shows at once.
+/// 龙葵是 `ROLE_2`（`ScnScene::map_role_id` 把 2 映到模型 105）。
+pub const LONGKUI_ROLE_ID: i32 = 2;
+/// 蓝龙葵（0x586194）。
+pub const LONGKUI_MODEL_BLUE: &str = "105";
+/// 红龙葵（0x596200）。
+pub const LONGKUI_MODEL_RED: &str = "106";
+
+/// 参数 0 是蓝、非 0 是红——`FUN_00436b40` 的 `je 0x436b80` 那一支。
+pub fn longkui_model(mode: i32) -> &'static str {
+    if mode == 0 {
+        LONGKUI_MODEL_BLUE
+    } else {
+        LONGKUI_MODEL_RED
+    }
+}
+
+/// 把存档里记着的龙葵形象贴到刚建好的场景上。
+///
+/// 场景一律把 `ROLE_2` 建成蓝龙葵（`ScnScene::map_role_id` 2 → 105），而原版
+/// 的模型名跟着角色记录走、不随场景重建，所以换过场景（或读了档）之后要照
+/// 存档再换一次。
+pub fn apply_longkui_model(scene_manager: &ComRc<ISceneManager>, mode: i32) {
+    if mode == 0 {
+        return;
+    }
+    let Some(scene) = scene_manager.scn_scene() else {
+        return;
+    };
+    let scene = scene.inner::<crate::openpal3::scene::ScnScene>();
+    let Some(entity) = scene.get_role_entity(LONGKUI_ROLE_ID) else {
+        return;
+    };
+    let Some(role) = crate::openpal3::scene::RoleController::get_role_controller(entity) else {
+        return;
+    };
+    role.inner::<crate::openpal3::scene::RoleController>()
+        .set_model_name(longkui_model(mode));
+}
+
+/// 42 设置龙葵形象 — `FUN_00436b40`：把角色记录里的模型名换成 `"105"`（蓝，
+/// 0x436b80）或 `"106"`（红，0x436b63），再走 `FUN_00412710` 用当前动作码
+/// 重新加载，所以换装当场就看得见。
 #[derive(Debug, Clone)]
 pub struct SceCommandLongKuiMode {
     mode: i32,
@@ -234,7 +273,7 @@ pub struct SceCommandLongKuiMode {
 impl SceCommand for SceCommandLongKuiMode {
     fn update(
         &mut self,
-        _scene_manager: ComRc<ISceneManager>,
+        scene_manager: ComRc<ISceneManager>,
         _ui: &Ui,
         state: &mut SceState,
         _delta_sec: f32,
@@ -243,10 +282,11 @@ impl SceCommand for SceCommandLongKuiMode {
             .global_state_mut()
             .persistent_state_mut()
             .set_longkui_mode(self.mode);
-        // Swapping the loaded model needs a reload of ROLE_2 that the
-        // scene does not offer yet; the mode is recorded so the right
-        // model can be chosen the next time the scene builds her.
-        log::warn!("LongKuiMode: 记下形象 {}，模型热替换未实现", self.mode);
+
+        let model = longkui_model(self.mode);
+        scene_manager.resolve_role_mut_do(state, LONGKUI_ROLE_ID, |_e, role| {
+            role.set_model_name(model)
+        });
         true
     }
 }
@@ -296,13 +336,21 @@ impl SceCommandHuaYingMode {
 
 #[cfg(test)]
 mod tests {
-    use super::LONGKUI_DRESSES;
+    use super::*;
 
     #[test]
     fn the_dress_order_is_the_one_the_binary_searches() {
         // 0x18a4 / 0x18a5 / 0x18a6, in that order — the index of the
         // first match is what the script reads back.
         assert_eq!(LONGKUI_DRESSES, [0x18a4, 0x18a5, 0x18a6]);
+    }
+
+    #[test]
+    fn zero_is_blue_and_anything_else_is_red() {
+        // `FUN_00436b40`: `je 0x436b80` 走 "105"，否则 "106"。
+        assert_eq!(longkui_model(0), LONGKUI_MODEL_BLUE);
+        assert_eq!(longkui_model(1), LONGKUI_MODEL_RED);
+        assert_eq!(longkui_model(2), LONGKUI_MODEL_RED);
     }
 }
 

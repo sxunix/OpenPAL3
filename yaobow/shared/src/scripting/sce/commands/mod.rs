@@ -183,7 +183,7 @@ pub use stop_music::SceCommandStopMusic;
 pub use story_flags::{
     SceCommandAverageLevel, SceCommandEnableFeature, SceCommandGiveCloth, SceCommandHuaYingMode,
     SceCommandLearnCompose, SceCommandLoadAction, SceCommandLongKuiMode, SceCommandRoleOverlap,
-    SceCommandRoleScale, SceCommandSetRoleTexture, SceCommandVarDistract,
+    SceCommandRoleScale, SceCommandSetRoleTexture, SceCommandVarDistract, apply_longkui_model,
 };
 pub use switch_mode::SceCommandSwitchMode;
 pub use team::{
