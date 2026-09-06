@@ -1141,6 +1141,11 @@ impl SceExecutionContext {
         true
     }
 
+    /// 当前 `.sce` 里有没有这个过程（`FUN_00432600`）。
+    pub fn has_proc(&self, proc_id: u32) -> bool {
+        self.sce.proc_headers.iter().any(|h| h.id == proc_id)
+    }
+
     pub fn try_call_proc_by_name(&mut self, proc_name: &str, global_state: &mut GlobalState) {
         let context = SceProcContext::new_from_name(self.sce.clone(), proc_name);
         if let Some(c) = context {

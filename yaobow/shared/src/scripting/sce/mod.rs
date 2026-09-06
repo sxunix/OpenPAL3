@@ -406,6 +406,10 @@ impl SceState {
             .try_call_proc_by_name(proc_name, &mut self.global_state);
     }
 
+    pub fn has_proc(&self, proc_id: u32) -> bool {
+        self.context.has_proc(proc_id)
+    }
+
     /// Compose the scripted dialog panel for this frame: drive the p7
     /// `render_dialog` with the markup-bearing `text` inside a mid-frame
     /// imgui scope. Mirrors the legacy `DialogBox::draw`.

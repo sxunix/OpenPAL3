@@ -366,6 +366,36 @@ impl ScnScene {
             .map(|n| n.ladder_nav_coord1.0)
     }
 
+    /// 场景类型，`.scn` 头 +114 的那个 dword。实机拿它分迷宫和别的场景，
+    /// 2 = 迷宫 `[推断]`：抽查过的 M01/M06/M11/M22 都是 2，Q01/Q02 是 0。
+    pub fn scene_type(&self) -> u32 {
+        self.scn_file.global_scene_index
+    }
+
+    /// 搜宝鼠（仙宝 6407）扫出来的东西在不在。
+    ///
+    /// `FUN_00421ea0` 遍历场景对象表（表在 scene+0xe0，步长 0x380，个数在
+    /// scene+0xdc），三个字段同时成立才算命中：
+    ///
+    /// * `record+0xad != 0` —— 对象活着。这个字节是加载时从记录里抄进来的
+    ///   （`FUN_0041fa90` 里 `in_ECX[iVar3 * 0x380 + 0x18d] = *(char *)(iVar2 + 4)`），
+    ///   脚本命令 ObjectActive 改的也是它，所以这里对应移植版的实体可见性。
+    /// * `record+0xf4 == 0x18` —— 节点类型 24。
+    /// * `*(int *)(record+0xfc) == 1` —— 参数块的第二个 dword（`.scn` 记录
+    ///   0x50，移植版的 `ladder_nav_coord1.1`）。
+    ///
+    /// 命中就放特效 `FUN_00424c20(DAT_00c116ec, 0xb, 0, 0.001)`，否则放音效
+    /// "XMouse"。
+    pub fn treasure_object_present(&self) -> bool {
+        self.scn_file.nodes.iter().any(|n| {
+            n.node_type == 0x18
+                && n.ladder_nav_coord1.1 == 1
+                && self
+                    .get_root_object(n.object_id())
+                    .map_or(false, |e| e.visible())
+        })
+    }
+
     pub fn object_placement(&self, id: i32) -> Option<(Vec3, f32)> {
         self.scn_file
             .nodes

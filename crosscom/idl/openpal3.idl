@@ -176,6 +176,33 @@ interface IPal3Service: IUnknown {
     void draw_item_stat_line(IUiHost ui, int item_id, float x, float y,
         float size, float r, float g, float b, float a);
 
+    // ---- 用道具，for the 道具 page ----
+    //
+    // The rules live in `shared`'s `states::item_use`, one function per
+    // original: `FUN_0049ca70` (可用) · `FUN_0049c660` (默认目标) ·
+    // `FUN_0049cf80` (施用). The scene-side facts they need — 迷宫与否、
+    // 当前城市是不是 M22、当前 `.sce` 有没有过程 2101、场景里有没有搜宝鼠
+    // 找得到的东西 — are cached once a frame by the service, since the
+    // menu paints from inside the director's update and can't reach the
+    // scene itself.
+
+    // Whether this character can take this item right now.
+    bool item_usable(int item_id, int actor_id);
+
+    // Who the arrow lands on when a row is clicked: >= 0 一个角色 id ·
+    // -1 全体（range 2）· -2 队里没人需要 · -3 这件东西不能这么用。
+    int item_use_target(int item_id);
+
+    // Whether `NeedArrow` belongs over this character's head plate.
+    bool item_use_arrow(int item_id, int actor_id);
+
+    // Use one. Returns: 0 没用成 · 1 用了，菜单留着 · 2 用了并且要关菜单
+    // （引路蜂/土灵珠跑过程、搜宝鼠）· 3 学会了仙术 · 4 升了一级.
+    int use_item(int item_id, int actor_id);
+
+    // 连用: stock left and someone in the party still needs it.
+    bool item_use_can_continue(int item_id);
+
     // ---- Equipment, for the 装备 page ----
     //
     // Six slots per character: 0 帽 · 1 衣 · 2 鞋 · 3 饰品一 ·

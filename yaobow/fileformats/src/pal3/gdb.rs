@@ -56,7 +56,7 @@ pub const PLAYER_ACTOR_COUNT: usize = 5;
 pub const ELEMENT_COUNT: usize = 5;
 
 /// The parsed database.
-#[derive(Debug, BinRead, Serialize)]
+#[derive(Debug, Default, BinRead, Serialize)]
 #[brw(little)]
 pub struct GdbFile {
     #[brw(args(128))]
@@ -160,7 +160,10 @@ pub struct CombatActorInfo {
 }
 
 /// A skill / 仙术. 760 bytes.
-#[derive(Debug, BinRead, Serialize)]
+///
+/// `Default` is derived for the same reason as on [`GameItemInfo`]: tests
+/// build rows without naming the padding.
+#[derive(Debug, Default, BinRead, Serialize)]
 #[brw(little)]
 pub struct SkillInfo {
     pub id: u32,
@@ -221,6 +224,16 @@ pub struct SkillInfo {
     _pad_6: [u8; 2],
 }
 
+impl SkillInfo {
+    /// A zeroed row carrying only an id.
+    pub fn blank(id: u32) -> Self {
+        Self {
+            id,
+            ..Default::default()
+        }
+    }
+}
+
 /// An item. 800 bytes (PAL3 layout).
 ///
 /// `Default` is derived so callers (tests, editors) can build a blank row
@@ -257,9 +270,16 @@ pub struct GameItemInfo {
     pub attribute_impact_type: [u8; ATTRIBUTE_COUNT],
     _pad_0: u8,
     pub attribute_impact_value: [i16; ATTRIBUTE_COUNT],
-    /// Per-[`ActorCombatStateType`] [`CombatStateImpactType`].
+    /// Per-[`ActorCombatStateType`] [`CombatStateImpactType`]. Every
+    /// shipped row is zero and no code reads it — the codes live in
+    /// [`Self::combat_state_impact_value`].
     pub combat_state_impact_types: [u8; COMBAT_STATE_COUNT],
     _pad_1: u8,
+    /// Per-[`ActorCombatStateType`], what using the item does to that
+    /// state: **1 = 加上，2 = 解掉**, 0 = leave alone. Indexed by the
+    /// state *enum* (the combat flag array numbers the same states from
+    /// 1, i.e. `k = index + 1`). Both paths that use an item read it:
+    /// `FUN_0049cf80` out of combat and `FUN_004ef4a0` in it.
     pub combat_state_impact_value: [i16; COMBAT_STATE_COUNT],
     _pad_2: [u8; 2],
 

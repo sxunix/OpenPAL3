@@ -95,7 +95,11 @@ pub let TO_ARRAY: int = -7;
 pub let TO_BOOK: int = -8;
 
 // The page's whole state packed into one int, because the script bridge
-// hands screens a single value: tab * 10000 + scroll * 100 + selection.
+// hands screens a single value: tab * 10000 + scroll * 100 + selection,
+// plus 100000 while the page is in 选人 mode (a row has been clicked and
+// the head plates are waiting for the target — the original's `+0x28e`).
+pub let USE_FLAG: int = 100000;
+
 pub fn pack(tab: int, scroll: int, sel: int) -> int {
     return tab * 10000 + scroll * 100 + sel;
 }
@@ -126,19 +130,19 @@ pub fn paint_item_menu(
 
     ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
 
-    let mut tab = tab_of(state);
+    let mut using = false;
+    let mut packed = state;
+    if packed >= USE_FLAG { using = true; packed = packed - USE_FLAG; }
+
+    let mut tab = tab_of(packed);
     if tab < 0 || tab > 5 { tab = 0; }
-    let mut scroll = scroll_of(state);
-    let mut sel = sel_of(state);
+    let mut scroll = scroll_of(packed);
+    let mut sel = sel_of(packed);
 
     // ---- Panels ----------------------------------------------------------
     chrome.sprite(ui, atlas, SPR_INFO, ox + INFO_X * s, oy + INFO_Y * s, s);
     chrome.sprite(ui, atlas, SPR_LISTFRAME, ox + LF_X * s, oy + LF_Y * s, s);
     chrome.paint_frame(ui, atlas, pal3, SPR_FRAME, ox, oy, s);
-
-    // The party column down the right edge — the original's 道具 page
-    // arranges it exactly like the 状态 page's (`FUN_0049aaf0`).
-    let _ = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, false, false);
 
     // ---- Category tabs ---------------------------------------------------
     let mut new_tab = tab;
@@ -158,6 +162,7 @@ pub fn paint_item_menu(
         tab = new_tab;
         scroll = 0;
         sel = 0;
+        using = false;
     }
 
     // ---- List ------------------------------------------------------------
@@ -177,6 +182,29 @@ pub fn paint_item_menu(
     if wheel > 0.0 { if scroll > 0 { scroll = scroll - 1; } }
     if wheel < 0.0 { if scroll < max_scroll { scroll = scroll + 1; } }
 
+    // The party column down the right edge — the original's 道具 page
+    // arranges it exactly like the 状态 page's (`FUN_0049aaf0`). In 选人
+    // mode the plates are the click target, and the ones the original
+    // would light up carry a NeedArrow.
+    let mut sel_item = -1;
+    if count > 0 { sel_item = pal3.inventory_item_id(mask, sel); }
+    if sel_item < 0 { using = false; }
+    let plate = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, click, using);
+    if using {
+        chrome.paint_head_arrows(ui, atlas, pal3, ox, oy, s, sel_item);
+        // 右键退出选人 [推断: 原版的取消键没定位]。
+        if ui.mouse_down(1) { using = false; }
+        if plate >= 0 {
+            let outcome = pal3.use_item(sel_item, chrome.role_at(pal3, plate));
+            // 2 = 引路蜂/土灵珠跑过程、搜宝鼠 —— 三支原版都关菜单。
+            if outcome == 2 { return CLOSE; }
+            if outcome == 1 {
+                // 连用：还有存货、队里还有人需要，就留在选人态。
+                if !pal3.item_use_can_continue(sel_item) { using = false; }
+            } else if outcome != 0 { using = false; }
+        }
+    }
+
     let grid_x0 = ox + GRID_X * s;
     for k in Range(0, ROWS) {
         let ry0 = oy + (GRID_Y0 + (k as float) * ROW_H) * s;
@@ -191,7 +219,12 @@ pub fn paint_item_menu(
                 if index == sel {
                     chrome.sprite(ui, atlas, SPR_SELECTED, grid_x0, ry0, s);
                 }
-                if hover && click { sel = index; }
+                if hover && click {
+                    sel = index;
+                    // 点行就进选人态（`FUN_0049c2c0`）；只有恢复和仙宝两页
+                    // 的东西能这么用。
+                    if can_enter_use(pal3, tab, item_id) { using = true; }
+                }
 
                 pal3.draw_item_name(ui,
                     item_id,
@@ -268,7 +301,20 @@ pub fn paint_item_menu(
     if hit == chrome.PAGE_BOOK { return TO_BOOK; }
     if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
 
+    if using { return pack(tab, scroll, sel) + USE_FLAG; }
     return pack(tab, scroll, sel);
+}
+
+// 点一行能不能进选人态。原版的 `FUN_0049c2c0` 只放行恢复（页签 0）和仙宝
+// （页签 1）两页，恢复页的条件是「队内任一人可用」。仙宝页原版对 special
+// 7–11（仙术书）判的是**当前选中的头像**，这里没有「当前选中的头像」这个
+// 概念，改判「队里有人能学」`[推断]`；另外多要一条默认目标不是 −2/−3，
+// 免得进了选人态却谁也点不动 `[推断]`。
+fn can_enter_use(pal3: box<openpal3.IPal3Service>, tab: int, item_id: int) -> bool {
+    if item_id < 0 { return false; }
+    if tab != 0 && tab != 1 { return false; }
+    if !pal3.item_use_can_continue(item_id) { return false; }
+    return pal3.item_use_target(item_id) >= -1;
 }
 
 // Scroll arrows use three consecutive sprites from `base`: normal, hover,

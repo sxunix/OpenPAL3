@@ -7,7 +7,7 @@
 //! that surprised me — see [`element_modifier`].
 
 use super::formulas::{self, CombatRng};
-use super::state::{Battle, Combatant, Phase, Side};
+use super::state::{Battle, Combatant, K_POISON_IMMUNE, Phase, Side};
 
 /// The twelve `ActorAttributeType` slots a skill or item can address.
 /// Only the first three do anything in combat: `FUN_004eef20` sends
@@ -174,6 +174,53 @@ pub fn apply_impact(target: &mut Combatant, slot: usize, kind: ImpactKind, value
     }
 }
 
+/// 战斗里一件道具的效果，从数据库那一行抽出来，和 [`SkillEffect`] 一样只留
+/// 战斗算式要用的部分。
+#[derive(Debug, Clone)]
+pub struct ItemEffect {
+    pub id: u32,
+    /// `ItemSpecialType`：1 蛊、2 鬼遁水（强制撤离）。
+    pub special: u8,
+    /// `TargetRangeType`：1 我方单体 2 我方全体 3 敌单体 4 敌全体。
+    pub target_range: u8,
+    /// 每个属性槽的（影响类型，原始值）。
+    pub impacts: [(u8, i16); ATTRIBUTE_SLOTS],
+    /// 状态码，按状态**枚举**下标（战斗位的 `k = 下标 + 1`）：1 加、2 解。
+    pub state_codes: [i16; ITEM_STATE_CODES],
+}
+
+impl Default for ItemEffect {
+    fn default() -> Self {
+        Self {
+            id: 0,
+            special: 0,
+            target_range: 0,
+            impacts: [(0, 0); ATTRIBUTE_SLOTS],
+            state_codes: [0; ITEM_STATE_CODES],
+        }
+    }
+}
+
+/// `combat_state_impact_value` 的长度。
+pub const ITEM_STATE_CODES: usize = 31;
+/// 蛊：随机上一种毒（`ItemSpecialType` 1）。
+pub const ITEM_SPECIAL_GU: u8 = 1;
+/// 鬼遁水：强制撤离（`ItemSpecialType` 2）。
+pub const ITEM_SPECIAL_FLEE: u8 = 2;
+/// 毒龙胆。打在没中毒的目标上是即死。
+pub const POISON_DRAGON_GALL: u32 = 0x1856;
+
+/// 用一件道具的结果。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ItemResult {
+    /// 每个属性槽实际动了多少。
+    pub deltas: [i32; ATTRIBUTE_SLOTS],
+    /// 毒龙胆打在没中毒的目标上：直接打死。
+    pub instant_kill: bool,
+    /// 鬼遁水：这一队强制撤离。
+    pub flee: bool,
+}
+
 /// What one cast did, for logging and for the UI to replay later.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CastResult {
@@ -270,6 +317,84 @@ impl Battle {
         result
     }
 
+    /// 用一件道具打在 `target` 身上（`FUN_004f2750`）。
+    ///
+    /// 顺序照原版：毒龙胆的即死支 → special（`FUN_004f1fa0`）→ 状态
+    /// （`FUN_004ef4a0`）→ 属性（`FUN_004eef20`）。属性用的是数据库里的
+    /// **原始值**，不像技能那样按施术者等级放大、也不过五灵修正；原版只在
+    /// 我方使用者身上多加 `round(v × 使用者的 +0x2b4 × 0.01)`（装备特殊 0x16
+    /// 「道具效果增强」，且只对 v>0 生效），移植还没有那条装备位，按 0 算
+    /// `[推断]`——也就是和原版无该装备时一致。
+    ///
+    /// 扣数量不在这里：战斗里用掉的记在会话上，散场时一起写回。
+    pub fn use_item(&mut self, user: usize, target: usize, item: &ItemEffect) -> ItemResult {
+        let mut result = ItemResult::default();
+        let Some(t) = self.get(target) else {
+            return result;
+        };
+
+        // 毒龙胆打在**没中毒**的目标上 → `FUN_004f2c70(target, −99,999,999, …)`。
+        if item.id == POISON_DRAGON_GALL {
+            let poisoned = (1..=5).any(|k| t.has_state(k));
+            if !poisoned {
+                if let Some(t) = self.get_mut(target) {
+                    result.deltas[ATTR_HP] = t.change_hp(-99_999_999);
+                }
+                result.instant_kill = true;
+                return result;
+            }
+        }
+
+        match item.special {
+            // 蛊（`FUN_004f3d10`）：避毒挡住；已中毒的不再上；否则随机一种。
+            ITEM_SPECIAL_GU => {
+                let (immune, poisoned) = self
+                    .get(target)
+                    .map(|t| {
+                        (
+                            t.has_state(K_POISON_IMMUNE),
+                            (1..=5).any(|k| t.has_state(k)),
+                        )
+                    })
+                    .unwrap_or((true, true));
+                if !immune && !poisoned {
+                    let k = (self.rng.rand15() % 5 + 1) as usize;
+                    self.set_state(target, k, true);
+                }
+            }
+            // 鬼遁水：强制撤离，禁止逃跑时不行。调用方负责让全队离场。
+            ITEM_SPECIAL_FLEE => result.flee = !self.escape_forbidden,
+            _ => {}
+        }
+
+        // 状态：码 1 加、2 解，下标是状态枚举，战斗位的 k 要 +1。
+        for (i, code) in item.state_codes.iter().copied().enumerate() {
+            match code {
+                1 => self.set_state(target, i + 1, true),
+                2 => self.set_state(target, i + 1, false),
+                _ => {}
+            }
+        }
+
+        // 属性。
+        for slot in 0..FIRST_DEAD_ATTRIBUTE {
+            let (kind, raw) = item.impacts[slot];
+            if raw == 0 {
+                continue;
+            }
+            let _ = user;
+            if let Some(t) = self.get_mut(target) {
+                result.deltas[slot] = apply_impact(t, slot, ImpactKind::from_u8(kind), raw as i32);
+            }
+        }
+
+        // 掉了血的活目标要被打断（`FUN_004f1a30` 收尾那一步）。
+        if result.deltas[ATTR_HP] < 0 && self.get(target).map(|t| t.alive).unwrap_or(false) {
+            self.interrupt(target, None);
+        }
+        result
+    }
+
     /// 防御 —— 置上「受伤减半」，然后结束这一回合。
     ///
     /// 原版的防御任务是 `FUN_0050eda0`（从 `FUN_005014e0` 注册进任务表）：
@@ -289,7 +414,7 @@ impl Battle {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::openpal3::combat::state::{Combatant, Side};
+    use crate::openpal3::combat::state::{Combatant, K_POISON_FIRE, K_POISON_WATER, K_SLEEP, Side};
 
     fn caster() -> Combatant {
         let mut c = Combatant::new(0, Side::Party);
@@ -484,6 +609,95 @@ mod tests {
         assert!(result.deltas[ATTR_HP] < 0, "应当扣血");
         assert!(b.get(5).unwrap().hp < 500);
         assert_eq!(b.get(5).unwrap().phase, Phase::Charging, "被打断");
+    }
+
+    fn item(id: u32) -> ItemEffect {
+        ItemEffect {
+            id,
+            target_range: 1,
+            ..Default::default()
+        }
+    }
+
+    fn two_sides() -> Battle {
+        let mut b = Battle::new(9);
+        b.place(0, caster());
+        let mut enemy = Combatant::new(100, Side::Enemy);
+        enemy.hp = 300;
+        enemy.max_hp = 300;
+        b.place(5, enemy);
+        b
+    }
+
+    #[test]
+    fn an_items_value_is_used_raw() {
+        // 技能按施术者等级放大，道具不放大：10 级用一瓶「精 +40」还是 40。
+        let mut b = two_sides();
+        b.get_mut(0).unwrap().hp = 20;
+        let mut it = item(6201);
+        it.impacts[ATTR_HP] = (0, 40);
+        let r = b.use_item(0, 0, &it);
+        assert_eq!(r.deltas[ATTR_HP], 40);
+        assert_eq!(b.get(0).unwrap().hp, 60);
+    }
+
+    #[test]
+    fn the_gall_kills_a_clean_target_and_only_hurts_a_poisoned_one() {
+        let mut b = two_sides();
+        let mut gall = item(POISON_DRAGON_GALL);
+        gall.target_range = 3;
+        gall.impacts[ATTR_HP] = (0, -10);
+
+        let r = b.use_item(0, 5, &gall);
+        assert!(r.instant_kill);
+        assert!(!b.get(5).unwrap().alive, "没中毒的直接打死");
+
+        // 中了毒的走普通那一支。
+        let mut b = two_sides();
+        b.set_state(5, K_POISON_FIRE, true);
+        let r = b.use_item(0, 5, &gall);
+        assert!(!r.instant_kill);
+        assert_eq!(b.get(5).unwrap().hp, 290);
+    }
+
+    #[test]
+    fn state_codes_add_and_clear() {
+        let mut b = two_sides();
+        let mut incense = item(6214);
+        // 码[2] = 1 上水毒；码[16] = 2 解眠。
+        incense.state_codes[2] = 1;
+        incense.state_codes[16] = 2;
+        b.set_state(0, K_SLEEP, true);
+        b.use_item(0, 0, &incense);
+        assert!(b.get(0).unwrap().has_state(K_POISON_WATER));
+        assert!(!b.get(0).unwrap().has_state(K_SLEEP));
+    }
+
+    #[test]
+    fn a_revival_item_stands_the_target_back_up_before_healing_it() {
+        let mut b = two_sides();
+        let mut pill = item(6231);
+        // 码[24] = 2：解「死亡」。
+        pill.state_codes[24] = 2;
+        pill.impacts[ATTR_HP] = (0, 30);
+        b.get_mut(0).unwrap().die();
+
+        b.use_item(0, 0, &pill);
+        assert!(b.get(0).unwrap().alive, "先复活");
+        assert_eq!(b.get(0).unwrap().hp, 30, "复活是 0 精，再由属性抬起来");
+    }
+
+    #[test]
+    fn ghost_water_takes_the_party_off_the_field() {
+        let mut b = two_sides();
+        let mut water = item(6222);
+        water.special = ITEM_SPECIAL_FLEE;
+        assert!(b.use_item(0, 0, &water).flee);
+
+        // 禁止逃跑的战斗里不行。
+        let mut b = two_sides();
+        b.escape_forbidden = true;
+        assert!(!b.use_item(0, 0, &water).flee);
     }
 
     #[test]

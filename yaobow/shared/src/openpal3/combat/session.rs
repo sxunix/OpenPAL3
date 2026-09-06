@@ -7,13 +7,14 @@
 //! per-frame `FUN_004db7a0` / `FUN_004f7910` pair) is: fill gauges, let
 //! whoever is ready act, test the outcome after every action. The menu
 //! is `FUN_00500d50`. Only the entries that have a rules-side
-//! implementation are offered: 攻击 / 仙术 / 防御 / 逃跑. 道具 and 合击
-//! are not yet ported and are simply absent from the list — a
-//! placeholder, not a claim about the original's menu.
+//! implementation are offered: 攻击 / 仙术 / 道具 / 防御 / 逃跑. 合击 is
+//! not yet ported and is simply absent from the list — a placeholder,
+//! not a claim about the original's menu. The order the five sit in is
+//! not read off the original either `[推断]`.
 
 use std::collections::VecDeque;
 
-use super::actions::{ATTR_HP, SPECIAL_COST_GU, SPECIAL_COST_MONEY, SkillEffect};
+use super::actions::{ATTR_HP, ItemEffect, SPECIAL_COST_GU, SPECIAL_COST_MONEY, SkillEffect};
 use super::ai::{self, Decision, SkillOption};
 use super::formulas::CombatRng;
 use super::settlement::{self, DefeatedEnemy, Spoils, Survivor};
@@ -30,6 +31,35 @@ impl SkillChoice {
     /// A positive 精 impact is a heal and is aimed at one's own side.
     pub fn heals(&self) -> bool {
         self.effect.impacts[ATTR_HP].1 > 0
+    }
+}
+
+/// A stack of items as the combat menu offers it (`FUN_004f95f0`).
+#[derive(Debug, Clone)]
+pub struct ItemChoice {
+    pub name: String,
+    /// How many are left to use this battle. 五灵珠 count their charges
+    /// instead (`FUN_004f7140` spends a byte out of `DAT_00bfdb70..77`),
+    /// which is what `pearl` marks.
+    pub count: u32,
+    pub pearl: bool,
+    pub effect: ItemEffect,
+}
+
+impl ItemChoice {
+    /// 我方的东西（`target_range_type` 1/2）打自己人，3/4 打对面。
+    pub fn targets_own_side(&self) -> bool {
+        matches!(self.effect.target_range, 1 | 2)
+    }
+
+    /// 全体（2 我方全体 / 4 敌方全体）。
+    pub fn hits_everyone(&self) -> bool {
+        matches!(self.effect.target_range, 2 | 4)
+    }
+
+    /// 解「死亡」（状态枚举 24）的就是复活药。
+    pub fn revives(&self) -> bool {
+        self.effect.state_codes[24] == 2
     }
 }
 
@@ -67,14 +97,16 @@ pub enum Input {
 pub enum MenuEntry {
     Attack,
     Skill,
+    Item,
     Defend,
     Escape,
 }
 
 impl MenuEntry {
-    pub const ALL: [MenuEntry; 4] = [
+    pub const ALL: [MenuEntry; 5] = [
         MenuEntry::Attack,
         MenuEntry::Skill,
+        MenuEntry::Item,
         MenuEntry::Defend,
         MenuEntry::Escape,
     ];
@@ -83,6 +115,7 @@ impl MenuEntry {
         match self {
             MenuEntry::Attack => "攻击",
             MenuEntry::Skill => "仙术",
+            MenuEntry::Item => "道具",
             MenuEntry::Defend => "防御",
             MenuEntry::Escape => "逃跑",
         }
@@ -95,6 +128,8 @@ pub enum Action {
     Attack,
     /// Index into the actor's skill list.
     Cast(usize),
+    /// Index into [`CombatSession::items`].
+    UseItem(usize),
 }
 
 /// Where the cursor is.
@@ -104,6 +139,10 @@ pub enum Menu {
         index: usize,
     },
     Skills {
+        index: usize,
+    },
+    /// `index` is into [`CombatSession::items`].
+    Items {
         index: usize,
     },
     /// `index` is into [`CombatSession::targets`].
@@ -139,6 +178,11 @@ pub enum Pending {
         target: usize,
         skill: usize,
     },
+    Item {
+        slot: usize,
+        target: usize,
+        item: usize,
+    },
     Escape {
         slot: usize,
     },
@@ -149,6 +193,7 @@ impl Pending {
         match self {
             Pending::Attack { slot, .. }
             | Pending::Cast { slot, .. }
+            | Pending::Item { slot, .. }
             | Pending::Escape { slot } => *slot,
         }
     }
@@ -169,6 +214,10 @@ pub struct CombatSession {
     /// Every skill the party cast, `(slot, skill id)`, for the use
     /// counters the settlement levels skills with.
     pub casts: Vec<(usize, u32)>,
+    /// 战斗菜单里的道具，开战时从背包抓的一份快照。
+    items: Vec<ItemChoice>,
+    /// 用掉的道具 id，散场时写回背包（五灵珠扣充能，其余扣数量）。
+    pub used_items: Vec<u32>,
     /// 选好了但还在出手段的那个行动，见 [`Pending`]。同一时刻只可能有一个
     /// ——调度器一次只排一个行动任务。
     pub pending: Option<Pending>,
@@ -192,8 +241,26 @@ impl CombatSession {
             pending: None,
             defeated: Vec::new(),
             casts: Vec::new(),
+            items: Vec::new(),
+            used_items: Vec::new(),
             finished: None,
         }
+    }
+
+    /// Hand the session the party's usable items — what the 道具 menu
+    /// lists. Built by the caller from the inventory because the rules
+    /// layer doesn't know the item database.
+    pub fn set_items(&mut self, items: Vec<ItemChoice>) {
+        self.items = items;
+    }
+
+    pub fn items(&self) -> &[ItemChoice] {
+        &self.items
+    }
+
+    /// 还有没有得用（`FUN_004f6fb0`：拿着就行，五灵珠看充能）。
+    pub fn item_available(&self, i: usize) -> bool {
+        self.items.get(i).map(|it| it.count > 0).unwrap_or(false)
     }
 
     pub fn name(&self, slot: usize) -> &str {
@@ -220,6 +287,19 @@ impl CombatSession {
             .collect()
     }
 
+    /// Slots on `side` that are on the field at all, standing or not —
+    /// what a 复活 item may be aimed at.
+    pub fn placed(&self, side: Side) -> Vec<usize> {
+        (0..SLOTS)
+            .filter(|s| {
+                self.battle
+                    .get(*s)
+                    .map(|c| c.side == side && !c.retired)
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
     /// Who the current target cursor may land on.
     pub fn targets(&self) -> Vec<usize> {
         let Some(PlayerTurn {
@@ -229,9 +309,27 @@ impl CombatSession {
         else {
             return Vec::new();
         };
+        // 道具看的是 `target_range_type`，不是效果的正负；能复活的那些还要
+        // 把倒下的人算进来（`FUN_004f1a30` 的复活支）。
+        if let Action::UseItem(i) = action {
+            let Some(item) = self.items.get(i) else {
+                return Vec::new();
+            };
+            let side = if item.targets_own_side() {
+                Side::Party
+            } else {
+                Side::Enemy
+            };
+            return if item.revives() {
+                self.placed(side)
+            } else {
+                self.standing(side)
+            };
+        }
         let own_side = match action {
             Action::Attack => false,
             Action::Cast(i) => self.skills(slot).get(i).map(|s| s.heals()).unwrap_or(false),
+            Action::UseItem(_) => unreachable!("道具在上面单独处理"),
         };
         if own_side {
             self.standing(Side::Party)
@@ -351,6 +449,7 @@ impl CombatSession {
                 target,
                 skill,
             } => self.cast(slot, target, skill),
+            Pending::Item { slot, target, item } => self.use_item(slot, target, item),
             Pending::Escape { slot } => {
                 let ok = self.battle.try_escape(slot);
                 self.push_log(format!(
@@ -425,6 +524,13 @@ impl CombatSession {
                             turn.menu = Menu::Skills { index: 0 };
                         }
                     }
+                    MenuEntry::Item => {
+                        if self.items.is_empty() {
+                            self.notice("没有可用的道具");
+                        } else {
+                            turn.menu = Menu::Items { index: 0 };
+                        }
+                    }
                     MenuEntry::Defend => {
                         self.turn = None;
                         self.battle.defend(slot);
@@ -471,6 +577,34 @@ impl CombatSession {
                     }
                 }
             }
+            Menu::Items { index } => {
+                let n = self.items.len();
+                match input {
+                    Input::Up | Input::Left => {
+                        turn.menu = Menu::Items {
+                            index: (index + n - 1) % n,
+                        };
+                    }
+                    Input::Down | Input::Right => {
+                        turn.menu = Menu::Items {
+                            index: (index + 1) % n,
+                        };
+                    }
+                    Input::Confirm => {
+                        if self.item_available(index) {
+                            turn.menu = Menu::Target {
+                                action: Action::UseItem(index),
+                                index: 0,
+                            };
+                        } else {
+                            self.notice("已经用完了");
+                        }
+                    }
+                    Input::Cancel => {
+                        turn.menu = Menu::Main { index: 2 };
+                    }
+                }
+            }
             Menu::Target { action, index } => {
                 let targets = self.targets();
                 let n = targets.len().max(1);
@@ -505,6 +639,14 @@ impl CombatSession {
                                     m,
                                 )
                             }
+                            Action::UseItem(i) => self.commit(
+                                Pending::Item {
+                                    slot,
+                                    target,
+                                    item: i,
+                                },
+                                1,
+                            ),
                         }
                         return;
                     }
@@ -512,6 +654,7 @@ impl CombatSession {
                         turn.menu = match action {
                             Action::Attack => Menu::Main { index: 0 },
                             Action::Cast(i) => Menu::Skills { index: i },
+                            Action::UseItem(i) => Menu::Items { index: i },
                         };
                     }
                 }
@@ -643,6 +786,68 @@ impl CombatSession {
             )
         };
         self.push_log(line);
+        self.note_deaths(slot);
+    }
+
+    /// 用一件道具（`FUN_004f2750` 那条链）。全体的（`target_range` 2/4）打
+    /// 一整边，单体的只打选中的那个。用掉的记在 [`Self::used_items`]，散场
+    /// 时才写回背包。
+    fn use_item(&mut self, slot: usize, target: usize, i: usize) {
+        let Some(item) = self.items.get(i).cloned() else {
+            return;
+        };
+        if item.count == 0 {
+            return;
+        }
+
+        let targets = if item.hits_everyone() {
+            let side = if item.targets_own_side() {
+                Side::Party
+            } else {
+                Side::Enemy
+            };
+            if item.revives() {
+                self.placed(side)
+            } else {
+                self.standing(side)
+            }
+        } else {
+            vec![target]
+        };
+
+        let mut flee = false;
+        for t in targets {
+            let r = self.battle.use_item(slot, t, &item.effect);
+            flee |= r.flee;
+            let line = if r.instant_kill {
+                format!(
+                    "{} 对 {} 用了 {}，一击毙命",
+                    self.name(slot),
+                    self.name(t),
+                    item.name
+                )
+            } else {
+                format!(
+                    "{} 对 {} 用了 {} 精{:+}",
+                    self.name(slot),
+                    self.name(t),
+                    item.name,
+                    r.deltas[ATTR_HP]
+                )
+            };
+            self.push_log(line);
+        }
+
+        // 鬼遁水（special 2）：全队直接撤离，和逃跑成功走同一条路。
+        if flee {
+            self.battle.retire_party();
+            self.push_log(format!("{} 用 {} 撤离", self.name(slot), item.name));
+        }
+
+        self.used_items.push(item.effect.id);
+        if let Some(it) = self.items.get_mut(i) {
+            it.count = it.count.saturating_sub(1);
+        }
         self.note_deaths(slot);
     }
 
@@ -847,6 +1052,7 @@ mod tests {
         run_until_turn(&mut s);
         s.input(Input::Down);
         s.input(Input::Down);
+        s.input(Input::Down);
         s.input(Input::Down); // 逃跑
         s.input(Input::Confirm);
         assert!(s.turn.is_none());
@@ -911,5 +1117,117 @@ mod tests {
             Phase::Charging,
             "行动条应当清零回蓄力段"
         );
+    }
+
+    /// 一件我方单体的疗伤药。
+    fn potion(id: u32, hp: i16, count: u32) -> ItemChoice {
+        let mut effect = ItemEffect {
+            id,
+            target_range: 1,
+            ..Default::default()
+        };
+        effect.impacts[ATTR_HP] = (0, hp);
+        ItemChoice {
+            name: "天香续命露".into(),
+            count,
+            pearl: false,
+            effect,
+        }
+    }
+
+    #[test]
+    fn an_item_heals_its_target_and_comes_off_the_stack() {
+        let mut s = session();
+        s.set_items(vec![potion(6201, 40, 2)]);
+        run_until_turn(&mut s);
+        s.battle.get_mut(0).unwrap().hp = 100;
+
+        s.input(Input::Down);
+        s.input(Input::Down); // 道具
+        s.input(Input::Confirm);
+        assert_eq!(s.turn.unwrap().menu, Menu::Items { index: 0 });
+        s.input(Input::Confirm);
+        assert_eq!(s.targets(), vec![0], "我方单体的药指向自己人");
+        s.input(Input::Confirm);
+        assert!(matches!(s.pending, Some(Pending::Item { .. })));
+
+        for _ in 0..400 {
+            s.tick(0.05);
+            if s.pending.is_none() {
+                break;
+            }
+        }
+        assert_eq!(
+            s.battle.get(0).unwrap().hp,
+            140,
+            "原始值直接加，不按等级放大"
+        );
+        assert_eq!(s.items()[0].count, 1);
+        assert_eq!(s.used_items, vec![6201]);
+    }
+
+    #[test]
+    fn cancel_walks_back_out_of_the_item_list() {
+        let mut s = session();
+        s.set_items(vec![potion(6201, 40, 1)]);
+        run_until_turn(&mut s);
+        s.input(Input::Down);
+        s.input(Input::Down);
+        s.input(Input::Confirm);
+        s.input(Input::Confirm);
+        s.input(Input::Cancel);
+        assert_eq!(s.turn.unwrap().menu, Menu::Items { index: 0 });
+        s.input(Input::Cancel);
+        assert_eq!(s.turn.unwrap().menu, Menu::Main { index: 2 });
+    }
+
+    #[test]
+    fn a_used_up_stack_cannot_be_chosen() {
+        let mut s = session();
+        s.set_items(vec![potion(6201, 40, 0)]);
+        run_until_turn(&mut s);
+        s.input(Input::Down);
+        s.input(Input::Down);
+        s.input(Input::Confirm);
+        s.input(Input::Confirm);
+        assert_eq!(
+            s.turn.unwrap().menu,
+            Menu::Items { index: 0 },
+            "用完的不该进选目标"
+        );
+        assert!(s.notice.is_some());
+    }
+
+    #[test]
+    fn a_whole_side_item_hits_everyone_standing() {
+        let mut s = session();
+        // 敌方全体（range 4）的投掷物。
+        let mut effect = ItemEffect {
+            id: 6301,
+            target_range: 4,
+            ..Default::default()
+        };
+        effect.impacts[ATTR_HP] = (0, -20);
+        s.set_items(vec![ItemChoice {
+            name: "飞蝗石".into(),
+            count: 1,
+            pearl: false,
+            effect,
+        }]);
+        run_until_turn(&mut s);
+        s.input(Input::Down);
+        s.input(Input::Down);
+        s.input(Input::Confirm);
+        s.input(Input::Confirm);
+        assert_eq!(s.targets(), vec![5], "打对面");
+        s.input(Input::Confirm);
+        for _ in 0..400 {
+            s.tick(0.05);
+            if s.pending.is_none() {
+                break;
+            }
+        }
+        assert_eq!(s.battle.get(5).unwrap().hp, 40);
+        assert_eq!(s.used_items, vec![6301]);
     }
 }

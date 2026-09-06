@@ -81,6 +81,20 @@ pub struct RoleState {
     /// 0 帽 · 1 衣 · 2 鞋 · 3 饰品一 · 4 饰品二 · 5 武器
     /// (see [`equipment_slots_for_type`]).
     pub equipment: [u32; EQUIPMENT_SLOTS],
+
+    /// 冒险侧的 31 个状态字节——原版角色记录 `+0x54` 起，下标是
+    /// `ActorCombatStateType`（0–4 五毒 … 27 辟邪 28 退魔 29 神眼 30 精进）。
+    /// 战斗外用道具时 `FUN_0049cf80` 直接往这里写（见
+    /// `switch/re/notes/item_use.md` §1.4）。
+    #[serde(default = "zero_states")]
+    pub states: [u8; STATE_BYTES],
+}
+
+/// 角色记录里的状态字节数（`COMBAT_STATE_COUNT`）。
+pub const STATE_BYTES: usize = 31;
+
+fn zero_states() -> [u8; STATE_BYTES] {
+    [0; STATE_BYTES]
 }
 
 impl RoleState {
@@ -120,6 +134,7 @@ impl RoleState {
                 .map(LearnedSkill::new)
                 .collect(),
             equipment: [0; EQUIPMENT_SLOTS],
+            states: [0; STATE_BYTES],
         })
     }
 }
@@ -201,6 +216,46 @@ pub struct PersistentState {
     /// 见 `switch/re/notes/bigmap.md`。
     #[serde(default)]
     bigmap_elements: BTreeMap<i32, i32>,
+    /// 紫幽粉在身——`DAT_00c10cc1`，`FUN_00410580(0x1f)` 置 1。和角色 0 的
+    /// 状态 27..30 一样受下面那个 60 秒计时器管。
+    #[serde(default)]
+    purple_powder: bool,
+    /// 迷宫仙宝的计时器 `DAT_00c10cd0`：每次用仙宝清零，累计到 60 秒把
+    /// 角色 0 的状态 27..30（辟邪/退魔/神眼/精进）和紫幽粉一起清掉
+    /// （decompiled.c ~8323）。
+    #[serde(default)]
+    maze_effect_timer: f32,
+    /// 五灵珠的充能 `DAT_00bfdb70..77`：新游戏全 3，战斗里用一次扣一格，
+    /// 物品本身不消耗。下标见 [`pearl_charge_index`]。
+    #[serde(default = "full_pearl_charges")]
+    pearl_charges: [u8; PEARL_SLOTS],
+}
+
+/// 五灵珠充能表的格数。原版存 8 字节，只用到 7 格。
+pub const PEARL_SLOTS: usize = 8;
+/// 新游戏时每颗珠子的充能。
+pub const PEARL_FULL_CHARGE: u8 = 3;
+/// 迷宫仙宝效果的持续时间（秒）。
+pub const MAZE_EFFECT_SECONDS: f32 = 60.0;
+
+fn full_pearl_charges() -> [u8; PEARL_SLOTS] {
+    [PEARL_FULL_CHARGE; PEARL_SLOTS]
+}
+
+/// 五灵珠物品号 → 充能表下标（`FUN_004f7140` 的 switch，基址 `DAT_00bfdb70`）：
+/// 0x17e7→+3、0x17e8→+4、0x17e9→+1、0x17ea→+2、0x17eb→+5、0x17ec→+7、
+/// 0x17ed→+6。不是五灵珠返回 `None`。
+pub fn pearl_charge_index(item_id: u32) -> Option<usize> {
+    Some(match item_id {
+        0x17e7 => 3,
+        0x17e8 => 4,
+        0x17e9 => 1,
+        0x17ea => 2,
+        0x17eb => 5,
+        0x17ec => 7,
+        0x17ed => 6,
+        _ => return None,
+    })
 }
 
 /// `city/scene/objectId` — `city` is the scene's cpk name (the original's
@@ -251,6 +306,9 @@ impl PersistentState {
             objects_not_from_save: BTreeSet::new(),
             scene_object_positions: BTreeMap::new(),
             bigmap_elements: BTreeMap::new(),
+            purple_powder: false,
+            maze_effect_timer: 0.,
+            pearl_charges: full_pearl_charges(),
         }
     }
 
@@ -442,6 +500,13 @@ impl PersistentState {
 
     pub fn role(&self, actor_id: u32) -> Option<&RoleState> {
         self.roles.get(&actor_id)
+    }
+
+    /// Put a character record in place, replacing any existing one.
+    /// New-game seeding goes through [`Self::seed_from_db`]; this is for
+    /// tools and tests that build a party by hand.
+    pub fn insert_role(&mut self, actor_id: u32, role: RoleState) {
+        self.roles.insert(actor_id, role);
     }
 
     pub fn role_mut(&mut self, actor_id: u32) -> Option<&mut RoleState> {
@@ -766,12 +831,64 @@ impl PersistentState {
 
     pub fn advance_play_time(&mut self, delta_sec: f32) {
         self.play_time += delta_sec;
+        self.tick_maze_effects(delta_sec);
+    }
+
+    /// 主循环里那段计时：`DAT_00c10cd0` 累计到 60 秒，把角色 0 的状态
+    /// 27..30 和紫幽粉一起清掉，然后计时器归零。
+    fn tick_maze_effects(&mut self, delta_sec: f32) {
+        self.maze_effect_timer += delta_sec;
+        if self.maze_effect_timer < MAZE_EFFECT_SECONDS {
+            return;
+        }
+        self.maze_effect_timer = 0.;
+        self.purple_powder = false;
+        if let Some(role) = self.roles.get_mut(&0) {
+            for k in 27..=30 {
+                role.states[k] = 0;
+            }
+        }
+    }
+
+    /// 紫幽粉是否生效（`DAT_00c10cc1`）。
+    pub fn purple_powder(&self) -> bool {
+        self.purple_powder
+    }
+
+    /// 撒紫幽粉——`FUN_00410580(0x1f)`：置位并把计时器归零。
+    pub fn set_purple_powder(&mut self) {
+        self.purple_powder = true;
+        self.maze_effect_timer = 0.;
+    }
+
+    /// `FUN_00410580(k)` 的另一支：角色 0 的状态字节 `k` 置 1，计时器归零。
+    pub fn set_leader_maze_state(&mut self, k: usize) {
+        if let Some(role) = self.roles.get_mut(&0) {
+            if k < STATE_BYTES {
+                role.states[k] = 1;
+            }
+        }
+        self.maze_effect_timer = 0.;
+    }
+
+    /// 一颗五灵珠还剩几格充能；不是五灵珠返回 0。
+    pub fn pearl_charge(&self, item_id: u32) -> u8 {
+        pearl_charge_index(item_id)
+            .map(|i| self.pearl_charges[i])
+            .unwrap_or(0)
+    }
+
+    /// `FUN_004f7140`：扣一格充能。到 0 就不再动。
+    pub fn spend_pearl_charge(&mut self, item_id: u32) {
+        if let Some(i) = pearl_charge_index(item_id) {
+            self.pearl_charges[i] = self.pearl_charges[i].saturating_sub(1);
+        }
     }
 }
 
 /// A level-1 景天 built off the curves, for tests in this module.
 #[cfg(test)]
-fn growth_test_role() -> RoleState {
+pub(super) fn growth_test_role() -> RoleState {
     let g = growth::at_level(0, 1);
     RoleState {
         level: 1,
@@ -789,6 +906,7 @@ fn growth_test_role() -> RoleState {
         elements: [3, 3, 6, 1, 2],
         skills: Vec::new(),
         equipment: [0; EQUIPMENT_SLOTS],
+        states: [0; STATE_BYTES],
     }
 }
 
@@ -883,6 +1001,7 @@ mod tests {
                 elements: [3, 3, 6, 1, 2],
                 skills: Vec::new(),
                 equipment: [0; EQUIPMENT_SLOTS],
+                states: [0; STATE_BYTES],
             },
         );
 

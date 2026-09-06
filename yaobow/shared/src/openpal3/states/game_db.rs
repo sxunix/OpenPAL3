@@ -81,14 +81,6 @@ impl GameDb {
             .map_err(|e| log::error!("Cannot parse pal3_softstar.gdb: {}", e))
             .ok()?;
 
-        let index = |ids: Vec<u32>| -> HashMap<u32, usize> {
-            ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect()
-        };
-
-        let combat_actors_by_id = index(gdb.combat_actors.iter().map(|a| a.id).collect());
-        let skills_by_id = index(gdb.skills.iter().map(|s| s.id).collect());
-        let items_by_id = index(gdb.items.iter().map(|i| i.id).collect());
-
         let combat_ini = Self::read_gbk(vfs, &basedata.join("datascript").join("combat.ini"));
         let combat_scn = Self::read_gbk(vfs, &basedata.join("datascript").join("combatScn.txt"));
         let level_exp = Self::parse_level_table(&combat_ini).unwrap_or_else(|| {
@@ -97,14 +89,36 @@ impl GameDb {
         });
         let combat = CombatData::parse(&combat_ini, &combat_scn);
 
-        Some(Rc::new(Self {
+        Some(Rc::new(Self::from_parts(gdb, level_exp, combat)))
+    }
+
+    fn from_parts(gdb: GdbFile, level_exp: Vec<i32>, combat: CombatData) -> Self {
+        let index = |ids: Vec<u32>| -> HashMap<u32, usize> {
+            ids.into_iter().enumerate().map(|(i, id)| (id, i)).collect()
+        };
+        let combat_actors_by_id = index(gdb.combat_actors.iter().map(|a| a.id).collect());
+        let skills_by_id = index(gdb.skills.iter().map(|s| s.id).collect());
+        let items_by_id = index(gdb.items.iter().map(|i| i.id).collect());
+        Self {
             gdb,
             combat_actors_by_id,
             skills_by_id,
             items_by_id,
             level_exp,
             combat,
-        }))
+        }
+    }
+
+    /// A database holding only the given item and skill rows — no
+    /// experience curve, no stage data. For tests and tools that exercise
+    /// item logic without a mounted game.
+    pub fn from_tables(items: Vec<GameItemInfo>, skills: Vec<SkillInfo>) -> Self {
+        let gdb = GdbFile {
+            items,
+            skills,
+            ..Default::default()
+        };
+        Self::from_parts(gdb, Vec::new(), CombatData::default())
     }
 
     /// Read a GBK text file, or an empty string when it is missing.

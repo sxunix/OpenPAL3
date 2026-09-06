@@ -738,9 +738,12 @@ if (desc->+0x50 != 0) ok = 0;                    // 禁止逃跑：掷完再否�
 成功时 `roleStates->+0x225 = 1`，排 `LAB_00515200`（动作码 `0x10b`）全队撤离，
 该任务在 0x51571c 写 `cbSystem.phase = 4` → 走胜利结算 → `result = 2`。
 
-**AI / 强制路径** `FUN_004f1fa0(param_1, param_2, kind)` 的 `case 2` 才是之前
+**强制路径** `FUN_004f1fa0(param_1, param_2, kind)` 的 `case 2` 才是之前
 记的"不掷骰子"：`+0x50 == 0` 直接置 `+0x225 = 1` 并排撤离任务，否则排
-`FleeFail` 提示。这是怪物或剧情驱动的逃跑，不是玩家菜单。
+`FleeFail` 提示。`kind` 是**道具的 `ItemSpecialType`**——case 2 就是鬼遁水
+那一类道具走的路（`FUN_004f2750` 施用道具时先过 `FUN_004f1fa0`，见
+`item_use.md` §2.3）。原先这里写"怪物或剧情驱动的逃跑，不是玩家菜单"是错的：
+它确实由玩家菜单触发，只是入口是道具而不是逃跑项。
 
 > 数据库里 `CombatActorInfo.escape_rate`（+0x2d4）在 0x4d0000–0x520000
 > 全段**没有任何读取者**（唯一命中是 `FUN_004fa930` 里对**仙术**记录

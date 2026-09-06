@@ -17,18 +17,21 @@
 //! Everything the overlay shows comes from the rules layer, so replacing
 //! it later is a rendering change only.
 
-use crate::openpal3::combat::actions::GU_ITEM_ID;
+use crate::openpal3::combat::actions::{ATTRIBUTE_SLOTS, GU_ITEM_ID, ITEM_STATE_CODES, ItemEffect};
 use crate::openpal3::combat::encounter::{CrtRand, Encounter, NO_ROUND_CAP, PendingFlags};
 use crate::openpal3::combat::session::{
-    Action, CombatSession, Input, Menu, MenuEntry, PlayerTurn, Profile, Reward, SkillChoice,
+    Action, CombatSession, Input, ItemChoice, Menu, MenuEntry, PlayerTurn, Profile, Reward,
+    SkillChoice,
 };
 use crate::openpal3::combat::state::{Battle, Combatant, Outcome, PARTY_SLOTS, SLOTS, Side};
 use crate::openpal3::directors::SceneManagerExtensions;
 use crate::openpal3::scene::RoleController;
 use crate::openpal3::states::game_db::{GameDb, combat_id_of_party_member};
+use crate::openpal3::states::persistent_state::pearl_charge_index;
 use crate::openpal3::states::{attributes, skills};
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
+use fileformats::pal3::gdb::GameItemInfo;
 use imgui::{Condition, Ui};
 use radiance::comdef::{IEntityExt, ISceneManager};
 use radiance::input::Key;
@@ -221,6 +224,52 @@ impl SceCommandCombat {
         })
     }
 
+    /// 战斗道具列表要不要收这一行（`FUN_0040d010` 的三个分支合起来）。
+    ///
+    /// 原版的道具指令下有三个子页，各调一次筛选：
+    ///
+    /// * case 0xe（治疗）：type 1 且「码[24]==2（复活）或前三项属性的影响
+    ///   类型是 2（回满）或值 > 0」；
+    /// * case 2（投掷）：type 2；
+    /// * case 0xf（解状态）：type 1 且存在 k∈0..25、k∉{23,24}，码[k]∈{1,2}。
+    ///
+    /// 移植的菜单只有一层，所以三支并起来去重、按 id 升序。
+    fn shows_in_combat(item: &GameItemInfo) -> bool {
+        match item.item_type {
+            2 => true,
+            1 => {
+                let heals = item.combat_state_impact_value[24] == 2
+                    || (0..3).any(|k| {
+                        item.attribute_impact_type[k] == 2 || item.attribute_impact_value[k] > 0
+                    });
+                let cures = (0..26)
+                    .filter(|k| *k != 23 && *k != 24)
+                    .any(|k| matches!(item.combat_state_impact_value[k], 1 | 2));
+                heals || cures
+            }
+            _ => false,
+        }
+    }
+
+    fn item_effect(item: &GameItemInfo) -> ItemEffect {
+        let mut impacts = [(0u8, 0i16); ATTRIBUTE_SLOTS];
+        for (i, slot) in impacts.iter_mut().enumerate() {
+            *slot = (
+                item.attribute_impact_type[i],
+                item.attribute_impact_value[i],
+            );
+        }
+        let mut state_codes = [0i16; ITEM_STATE_CODES];
+        state_codes.copy_from_slice(&item.combat_state_impact_value);
+        ItemEffect {
+            id: item.id,
+            special: item.item_special_type,
+            target_range: item.target_range_type,
+            impacts,
+            state_codes,
+        }
+    }
+
     /// Build the battle and the session from the party and the database.
     fn start(&mut self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
         let flags = take_pending_flags(state);
@@ -252,6 +301,7 @@ impl SceCommandCombat {
         battle.escape_forbidden = encounter.escape_forbidden;
 
         let mut profiles: Vec<Profile> = (0..SLOTS).map(|_| Profile::default()).collect();
+        let mut items: Vec<ItemChoice> = Vec::new();
 
         {
             let mut persistent = state.global_state_mut().persistent_state_mut();
@@ -379,17 +429,45 @@ impl SceCommandCombat {
                 };
                 persistent.mark_monster_seen(id);
             }
+
+            // ---- 道具 ----
+            // 背包是按 id 升序的 BTreeMap，正好就是原版列表的次序。五灵珠
+            // 用的是充能不是数量（`FUN_004f7140`）。
+            items = persistent
+                .inventory()
+                .iter()
+                .filter_map(|(id, count)| {
+                    let row = db.item(*id)?;
+                    if !Self::shows_in_combat(row) {
+                        return None;
+                    }
+                    let pearl = pearl_charge_index(*id).is_some();
+                    let count = if pearl {
+                        persistent.pearl_charge(*id) as u32
+                    } else {
+                        *count
+                    };
+                    Some(ItemChoice {
+                        name: row
+                            .name
+                            .as_str()
+                            .map(|n| n.to_string())
+                            .unwrap_or_else(|_| format!("道具#{id}")),
+                        count,
+                        pearl,
+                        effect: Self::item_effect(row),
+                    })
+                })
+                .collect();
         }
 
         if !encounter.keep_bgm {
             self.switched_bgm = state.global_state_mut().play_combat_bgm();
         }
 
-        self.session = Some(CombatSession::new(
-            battle,
-            profiles,
-            seed.rotate_left(13) ^ 0x5bd1_e995,
-        ));
+        let mut session = CombatSession::new(battle, profiles, seed.rotate_left(13) ^ 0x5bd1_e995);
+        session.set_items(items);
+        self.session = Some(session);
     }
 
     /// `FUN_004055d0` case 3: write the result and the party's state
@@ -438,6 +516,16 @@ impl SceCommandCombat {
             }
             if session.battle.spent_gu > 0 {
                 persistent.remove_item(GU_ITEM_ID, session.battle.spent_gu);
+            }
+
+            // 战斗里用掉的道具：五灵珠扣一格充能（物品本身不消耗），其余扣
+            // 一个。执行器 0x51514e–0x51519d 就是这么分的。
+            for id in session.used_items.iter().copied() {
+                if pearl_charge_index(id).is_some() {
+                    persistent.spend_pearl_charge(id);
+                } else {
+                    persistent.remove_item(id, 1);
+                }
             }
 
             if won {
@@ -623,6 +711,22 @@ impl SceCommandCombat {
                     }
                 }
             }
+            Menu::Items { index } => {
+                ui.text(format!("{who} 道具："));
+                for (i, it) in session.items().iter().enumerate() {
+                    let line = format!(
+                        "{}{} ×{}",
+                        if i == index { "▶" } else { " " },
+                        it.name,
+                        it.count
+                    );
+                    if session.item_available(i) {
+                        ui.text(line);
+                    } else {
+                        ui.text_disabled(line);
+                    }
+                }
+            }
             Menu::Target { action, .. } => {
                 let what = match action {
                     Action::Attack => "攻击".to_string(),
@@ -630,6 +734,11 @@ impl SceCommandCombat {
                         .skills(turn.slot)
                         .get(i)
                         .map(|s| s.name.clone())
+                        .unwrap_or_default(),
+                    Action::UseItem(i) => session
+                        .items()
+                        .get(i)
+                        .map(|it| it.name.clone())
                         .unwrap_or_default(),
                 };
                 ui.text(format!("{who} {what} → 选择目标（上下切换，确定）"));

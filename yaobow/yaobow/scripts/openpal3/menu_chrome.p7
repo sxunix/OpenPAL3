@@ -322,6 +322,30 @@ pub fn paint_head_plates(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiA
     return hit;
 }
 
+// 用道具时头像板上的 NeedArrow。原版 `FUN_0049c660` 只决定「哪些人亮箭头」，
+// 贴图是 ui\GameMainUI\Communal\NeedArrow.tga (25x27)；摆在头像左上角
+// [推断: 原版的摆放坐标没定位]。
+let SPR_NEEDARROW: string = "ui/GameMainUI/Communal/NeedArrow.tga";
+let ARROW_DX: float = 2.0; let ARROW_DY: float = 6.0;
+
+pub fn paint_head_arrows(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+                         pal3: box<openpal3.IPal3Service>,
+                         ox: float, oy: float, s: float, item_id: int) {
+    let mut present = pal3.party_size();
+    if present < 1 { present = 1; }
+    if present > 4 { present = 4; }
+
+    let mut h = 0;
+    while h < present {
+        let role = role_at(pal3, h);
+        if pal3.item_use_arrow(item_id, role) {
+            sprite(ui, atlas, SPR_NEEDARROW,
+                ox + (HB_X + ARROW_DX) * s, oy + (head_row(h) + ARROW_DY) * s, s);
+        }
+        h = h + 1;
+    }
+}
+
 pub fn digit(d: int) -> string {
     if d == 0 { return "0"; } if d == 1 { return "1"; }
     if d == 2 { return "2"; } if d == 3 { return "3"; }

@@ -23,6 +23,7 @@ use std::rc::Rc;
 
 use agent_server::{AgentCommand, AgentError, AgentResponse};
 use crosscom::ComRc;
+use fileformats::pal3::gdb::GameItemInfo;
 use packfs::init_virtual_fs;
 use radiance::audio::Codec as AudioCodec;
 use radiance::comdef::{
@@ -46,8 +47,12 @@ use shared::openpal3::comdef::{
     IAdventureDirector, IPal3DialogRenderer, IPal3ScriptFactory, IPal3Service, IPal3ServiceImpl,
     IPal3StatusRenderer, IPal3UiAtlas,
 };
-use shared::openpal3::directors::AdventureDirector;
+use shared::openpal3::directors::{AdventureDirector, SceneManagerExtensions};
+use shared::openpal3::scene::ScnScene;
 use shared::openpal3::states::game_db::GameDb;
+use shared::openpal3::states::item_use::{
+    self, EARTH_PEARL_PROC, TargetPick, UseContext, UseOutcome,
+};
 use shared::openpal3::states::persistent_state::{PAL3_APP_NAME, PersistentState};
 use shared::openpal3::ui_atlas::{AtlasManifest, Pal3UiAtlas};
 use shared::scripting::sce::vm::SceExecutionOptions;
@@ -226,11 +231,27 @@ pub struct Pal3Service {
     /// return `None` so re-entry into the start menu (e.g. exit-to-menu
     /// from a future Adventure flow) skips the intro.
     intro_played: Cell<bool>,
+    /// The scene-side facts 道具页 needs to judge a use, refreshed once
+    /// a frame by [`Self::pump_pre_update`]. The menu paints from inside
+    /// the director's update and can't reach the scene from there.
+    item_use_ctx: Cell<UseContext>,
+    /// The SCE procedure a just-used 引路蜂 / 土灵珠 asks for. Queued
+    /// rather than run on the spot for the same reason saves are: the
+    /// menu is painting inside the director's own update.
+    pending_item_proc: RefCell<Option<PendingItemProc>>,
     /// Agent-server bridge. `None` when no `--agent-port` flag was
     /// passed; `Some(_)` enables [`Self::pump_agent`] and makes
     /// every fresh `AdventureDirector` honor pause/step + see
     /// synthetic input.
     agent_bridge: RefCell<Option<Rc<AgentBridge>>>,
+}
+
+/// What a used 仙宝 asks the SCE VM to run next.
+enum PendingItemProc {
+    /// 引路蜂 —— `_ylf_<城市>_<场景>`.
+    ByName(String),
+    /// 土灵珠 —— proc 2101.
+    Id(u32),
 }
 
 ComObject_Pal3Service!(super::Pal3Service);
@@ -253,6 +274,8 @@ impl Pal3Service {
             debug_layer_installed: Cell::new(false),
             debug_layer_handle: RefCell::new(None),
             intro_played: Cell::new(false),
+            item_use_ctx: Cell::new(UseContext::default()),
+            pending_item_proc: RefCell::new(None),
             agent_bridge: RefCell::new(None),
         })
     }
@@ -463,6 +486,20 @@ impl Pal3Service {
             }
         }
 
+        self.refresh_item_use_context();
+
+        let pending_proc = self.pending_item_proc.borrow_mut().take();
+        if let Some(proc) = pending_proc {
+            if let Some(adv) = self.active_adventure_director_owned() {
+                let director = adv.inner::<AdventureDirector>();
+                let mut vm = director.sce_vm_mut();
+                match proc {
+                    PendingItemProc::ByName(name) => vm.state_mut().try_call_proc_by_name(&name),
+                    PendingItemProc::Id(id) => vm.call_proc(id),
+                }
+            }
+        }
+
         let load_slot = self.pending_load_slot.replace(-1);
         if load_slot > 0 {
             let asset_path = self.last_asset_path.borrow().clone();
@@ -629,6 +666,33 @@ impl Pal3Service {
         Self::active_adventure_director(&sm)
     }
 
+    /// Re-read the four scene-side facts 道具页 judges a use against
+    /// (`states::item_use::UseContext`). Runs before the engine tick, so
+    /// the director and the scene are both free to borrow here; the menu
+    /// itself only ever reads the cached copy.
+    fn refresh_item_use_context(&self) {
+        let sm = self.app.engine().borrow().scene_manager().clone();
+        let Some(adv) = Self::active_adventure_director(&sm) else {
+            self.item_use_ctx.set(UseContext::default());
+            return;
+        };
+
+        let mut ctx = UseContext::default();
+        if let Some(scene) = sm.scn_scene() {
+            let scene = scene.inner::<ScnScene>();
+            // `DAT_00d8bbec == 2`——场景类型 2 是迷宫。
+            ctx.in_maze = scene.scene_type() == 2;
+            ctx.city_is_m22 = scene.name().eq_ignore_ascii_case("M22");
+            ctx.treasure_present = scene.treasure_object_present();
+        }
+        ctx.proc_2101_exists = adv
+            .inner::<AdventureDirector>()
+            .sce_vm()
+            .state()
+            .has_proc(EARTH_PEARL_PROC);
+        self.item_use_ctx.set(ctx);
+    }
+
     /// Remember the new adventure's save state so the status screens can
     /// read it without borrowing the director. Called while `adv` is
     /// still a plain object, before it is wrapped as a `ComRc`.
@@ -712,6 +776,31 @@ impl Pal3Service {
         };
         match state.try_borrow() {
             Ok(state) => f(&state),
+            Err(_) => default,
+        }
+    }
+
+    /// Run `f` against an item row, the save state and the database at
+    /// once — what every read-only 用道具 query needs. `default` when no
+    /// adventure is running, the item is unknown, or the state is
+    /// already borrowed (this is called mid-paint).
+    fn with_item_and_state<T>(
+        &self,
+        item_id: i32,
+        default: T,
+        f: impl FnOnce(&GameItemInfo, &PersistentState, &GameDb) -> T,
+    ) -> T {
+        let db = self.active_game_db.borrow().clone();
+        let Some(db) = db else { return default };
+        let Some(item) = db.item(item_id as u32) else {
+            return default;
+        };
+        let handle = self.active_persistent_state.borrow();
+        let Some(state) = handle.as_ref() else {
+            return default;
+        };
+        match state.try_borrow() {
+            Ok(state) => f(item, &state, &db),
             Err(_) => default,
         }
     }
@@ -1038,6 +1127,99 @@ impl IPal3ServiceImpl for Pal3Service {
             return;
         }
         ui.text_at_sized(x, y, size, r, g, b, a, stats);
+    }
+
+    fn item_usable(&self, item_id: i32, actor_id: i32) -> bool {
+        if item_id < 0 || actor_id < 0 {
+            return false;
+        }
+        let ctx = self.item_use_ctx.get();
+        self.with_item_and_state(item_id, false, |item, state, db| {
+            item_use::usable(item, state, actor_id as u32, db, &ctx)
+        })
+    }
+
+    fn item_use_target(&self, item_id: i32) -> i32 {
+        if item_id < 0 {
+            return -3;
+        }
+        let ctx = self.item_use_ctx.get();
+        self.with_item_and_state(
+            item_id,
+            -3,
+            |item, state, db| match item_use::default_target(item, state, db, &ctx) {
+                TargetPick::Single { actor_id, .. } => actor_id as i32,
+                TargetPick::All { .. } => -1,
+                TargetPick::None => -2,
+                TargetPick::Invalid => -3,
+            },
+        )
+    }
+
+    fn item_use_arrow(&self, item_id: i32, actor_id: i32) -> bool {
+        if item_id < 0 || actor_id < 0 {
+            return false;
+        }
+        let ctx = self.item_use_ctx.get();
+        self.with_item_and_state(item_id, false, |item, state, db| {
+            // range 1 只在默认目标头上画箭头，range 2 全队都画——两支的
+            // 条件都是「被查的那个人可用」（`FUN_0049c660`）。
+            match item_use::default_target(item, state, db, &ctx) {
+                TargetPick::Single {
+                    actor_id: target,
+                    arrow,
+                } => arrow && target == actor_id as u32,
+                TargetPick::All { arrow, .. } => arrow && state.is_in_team(actor_id as u32),
+                _ => false,
+            }
+        })
+    }
+
+    fn use_item(&self, item_id: i32, actor_id: i32) -> i32 {
+        if item_id < 0 || actor_id < 0 {
+            return 0;
+        }
+        let ctx = self.item_use_ctx.get();
+        let db = self.active_game_db.borrow().clone();
+        let Some(db) = db else { return 0 };
+        let Some(item) = db.item(item_id as u32) else {
+            return 0;
+        };
+
+        let handle = self.active_persistent_state.borrow();
+        let Some(state) = handle.as_ref() else {
+            return 0;
+        };
+        let Ok(mut state) = state.try_borrow_mut() else {
+            return 0;
+        };
+
+        match item_use::apply(item, &mut state, actor_id as u32, &db, &ctx) {
+            UseOutcome::Rejected => 0,
+            UseOutcome::Applied => 1,
+            UseOutcome::RunProcByName(name) => {
+                *self.pending_item_proc.borrow_mut() = Some(PendingItemProc::ByName(name));
+                2
+            }
+            UseOutcome::RunProc(id) => {
+                *self.pending_item_proc.borrow_mut() = Some(PendingItemProc::Id(id));
+                2
+            }
+            // 特效和 "XMouse" 都还没有播放通路，先只关菜单。
+            UseOutcome::TreasureMouse { .. } => 2,
+            UseOutcome::LearnedSkill(_) => 3,
+            UseOutcome::LevelUp => 4,
+        }
+    }
+
+    fn item_use_can_continue(&self, item_id: i32) -> bool {
+        if item_id < 0 {
+            return false;
+        }
+        let ctx = self.item_use_ctx.get();
+        self.with_item_and_state(item_id, false, |item, state, db| {
+            item_use::can_continue(item, state, db, &ctx)
+        })
     }
 
     fn equipped_item(&self, actor_id: i32, slot: i32) -> i32 {

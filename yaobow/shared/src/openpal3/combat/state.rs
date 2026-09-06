@@ -62,6 +62,8 @@ pub const K_DYING: usize = 24;
 /// 即死（`case 0x19`）：精 > 0 就直接清零。
 pub const K_INSTANT_DEATH: usize = 25;
 pub const K_INVISIBLE: usize = 23;
+/// 避毒（`+0x48f`）：装备可赋予，挂着就加不上五毒。
+pub const K_POISON_IMMUNE: usize = 26;
 
 /// A permanent duration (`0x7fff`).
 pub const FOREVER: i16 = 0x7fff;
@@ -330,6 +332,23 @@ impl Combatant {
         self.hp = 0;
         self.states = [StateTimer::default(); STATE_SLOTS];
         self.earth_poison_acc = 0.;
+    }
+
+    /// `FUN_004f3e20(target, 0x19, 0, …)` 的那一支——**解**死亡就是复活
+    /// （0x4f4495 附近）：在场位置 1、精归零、状态和两条计时器全清。精是 0，
+    /// 起死回生的药随后靠自己的属性效果把它抬起来。已经在场的不再复活。
+    pub fn revive(&mut self) {
+        if self.alive {
+            return;
+        }
+        self.alive = true;
+        self.hp = 0;
+        self.states = [StateTimer::default(); STATE_SLOTS];
+        self.earth_poison_acc = 0.;
+        self.defending = false;
+        self.gauge = 0.;
+        self.cast_gauge = 0.;
+        self.phase = Phase::Charging;
     }
 
     pub fn apply_state(&mut self, k: usize, onset: i16, duration: i16) {
@@ -697,6 +716,111 @@ impl Battle {
         }
     }
 
+    /// `FUN_004f3e20(角色, k, 值, 播音效)`：给 `slot` 挂上或解掉状态 `k`
+    /// （`k = 状态枚举 + 1`），连同它的前置规则和持续回合数。音效那一路移植
+    /// 还没有通路，不做。
+    ///
+    /// 前置（0x4f3e20–0x4f3f5c）：
+    ///
+    /// * 目标有隐形（k23）且要设的不是隐形 → 什么都不做。
+    /// * k ∈ 1..=5（五毒）：先清掉五毒（互斥），已有避毒（k26）则不加。
+    ///   原版在这之前还查一次免疫 `FUN_004f3cc0`，那张免疫表移植还没有，
+    ///   按「不免疫」处理 `[推断]`。
+    /// * k ∈ 14..=23（定封禁眠乱狂镜避界隐形）：先把这十种全清掉。
+    /// * k ∈ 6..=13（武防运速的增减）：成对互斥，先清掉自己那一对。
+    ///
+    /// 解除时 k=25 是复活（见 [`Combatant::revive`]），其余就是清位。
+    pub fn set_state(&mut self, slot: usize, k: usize, on: bool) {
+        if k == 0 || k >= STATE_SLOTS {
+            return;
+        }
+        // 隐形免疫一切状态变化，自己那一位除外。
+        if k != K_INVISIBLE
+            && self
+                .get(slot)
+                .map(|c| c.has_state(K_INVISIBLE))
+                .unwrap_or(false)
+        {
+            return;
+        }
+
+        if !on {
+            if k == K_INSTANT_DEATH {
+                if let Some(c) = self.get_mut(slot) {
+                    c.revive();
+                }
+                return;
+            }
+            if let Some(c) = self.get_mut(slot) {
+                c.clear_state(k);
+            }
+            return;
+        }
+
+        if (1..=5).contains(&k) {
+            if let Some(c) = self.get_mut(slot) {
+                for p in 1..=5 {
+                    c.clear_state(p);
+                }
+            }
+            if self
+                .get(slot)
+                .map(|c| c.has_state(K_POISON_IMMUNE))
+                .unwrap_or(false)
+            {
+                return;
+            }
+        }
+        if (14..=23).contains(&k) {
+            if let Some(c) = self.get_mut(slot) {
+                for j in 14..=23 {
+                    c.clear_state(j);
+                }
+            }
+        }
+        if (6..=13).contains(&k) {
+            // 6/7 武±，8/9 防±，10/11 运±，12/13 速±.
+            let pair = if k % 2 == 0 { (k, k + 1) } else { (k - 1, k) };
+            if let Some(c) = self.get_mut(slot) {
+                c.clear_state(pair.0);
+                c.clear_state(pair.1);
+            }
+        }
+
+        let (onset, duration) = self.state_timer(slot, k);
+        if let Some(c) = self.get_mut(slot) {
+            c.apply_state(k, onset, duration);
+        }
+    }
+
+    /// 施加时写进 `+0x490`（延迟）和 `+0x4c6`（回合数）的那两个数，逐个 case
+    /// 抄自 `FUN_004f3e20` 的 switch（0x4f3ffc 起）。
+    fn state_timer(&mut self, slot: usize, k: usize) -> (i16, i16) {
+        match k {
+            1..=5 => POISON_TIMERS[k - 1],
+            6..=13 => (0, 5),
+            14 => (0, 4),
+            15 | 16 => (0, FOREVER),
+            // 眠：`rand15() % 7 + 2`。
+            17 => (0, (self.rng.below(7) + 2) as i16),
+            18 | 19 => (0, FOREVER),
+            // 镜：我方三回合，敌方五回合（原版按战斗位号 0..4 分）。
+            20 => (
+                0,
+                if slot < PARTY_SLOTS && self.get(slot).map(|c| c.side) == Some(Side::Party) {
+                    3
+                } else {
+                    5
+                },
+            ),
+            21 | 22 => (0, 4),
+            23 => (0, 5),
+            K_POISON_IMMUNE => (0, FOREVER),
+            // 24 濒死 / 25 即死不落状态槽，`apply_state` 里当场改精。
+            _ => (0, 0),
+        }
+    }
+
     /// Being hit knocks a target that is mid-action back to charging.
     /// A skill hit sets the gauge back by an eighth per skill level
     /// (`FUN_004f1070`), a physical hit halves it (`FUN_004f0a10`); both
@@ -748,14 +872,20 @@ impl Battle {
             ok = false;
         }
         if ok {
-            self.escaped = true;
-            for c in self.combatants.iter_mut().flatten() {
-                if c.side == Side::Party {
-                    c.retired = true;
-                }
-            }
+            self.retire_party();
         }
         ok
+    }
+
+    /// 全队离场，不掷骰子——鬼遁水（道具 special 2）走的就是这条：原版把
+    /// `+0x225` 置 1 再派任务 0x10b，和逃跑成功后的收尾同一路。
+    pub fn retire_party(&mut self) {
+        self.escaped = true;
+        for c in self.combatants.iter_mut().flatten() {
+            if c.side == Side::Party {
+                c.retired = true;
+            }
+        }
     }
 
     /// A plain physical attack from `attacker` onto `target`.
@@ -1252,5 +1382,63 @@ mod tests {
         c.apply_state(K_INSTANT_DEATH, 0, 5);
         assert_eq!(c.hp, 0);
         assert!(!c.has_state(K_INSTANT_DEATH));
+    }
+
+    #[test]
+    fn the_five_poisons_are_mutually_exclusive_and_poison_immunity_blocks_them() {
+        let mut b = two_sided_battle();
+        b.set_state(5, K_POISON_WIND, true);
+        b.set_state(5, K_POISON_FIRE, true);
+        assert!(!b.get(5).unwrap().has_state(K_POISON_WIND), "五毒互斥");
+        assert!(b.get(5).unwrap().has_state(K_POISON_FIRE));
+        assert_eq!(
+            b.get(5).unwrap().states[K_POISON_FIRE].remaining,
+            FOREVER,
+            "火毒是永久的"
+        );
+
+        b.set_state(5, K_POISON_IMMUNE, true);
+        b.set_state(5, K_POISON_WATER, true);
+        assert!(!b.get(5).unwrap().has_state(K_POISON_WATER), "避毒挡住五毒");
+        assert!(
+            !b.get(5).unwrap().has_state(K_POISON_FIRE),
+            "施加前先清五毒"
+        );
+    }
+
+    #[test]
+    fn invisibility_blocks_everything_and_the_ten_control_states_replace_each_other() {
+        let mut b = two_sided_battle();
+        b.set_state(5, K_SLEEP, true);
+        b.set_state(5, K_CONFUSED, true);
+        assert!(!b.get(5).unwrap().has_state(K_SLEEP), "14..23 十种互斥");
+        assert!(b.get(5).unwrap().has_state(K_CONFUSED));
+
+        b.set_state(5, K_INVISIBLE, true);
+        assert!(!b.get(5).unwrap().has_state(K_CONFUSED));
+        b.set_state(5, K_SLEEP, true);
+        assert!(!b.get(5).unwrap().has_state(K_SLEEP), "隐形挡住一切状态");
+    }
+
+    #[test]
+    fn clearing_death_is_a_revival() {
+        let mut b = two_sided_battle();
+        b.get_mut(0).unwrap().apply_state(K_ATTACK_UP, 0, 5);
+        b.get_mut(0).unwrap().die();
+        b.set_state(0, K_INSTANT_DEATH, false);
+        let c = b.get(0).unwrap();
+        assert!(c.alive);
+        assert_eq!(c.hp, 0, "复活是 0 精");
+        assert!(!c.has_state(K_ATTACK_UP), "状态和计时器全清");
+    }
+
+    #[test]
+    fn the_paired_buffs_cancel_each_other() {
+        let mut b = two_sided_battle();
+        b.set_state(0, K_ATTACK_UP, true);
+        b.set_state(0, K_ATTACK_DOWN, true);
+        assert!(!b.get(0).unwrap().has_state(K_ATTACK_UP));
+        assert!(b.get(0).unwrap().has_state(K_ATTACK_DOWN));
+        assert_eq!(b.get(0).unwrap().states[K_ATTACK_DOWN].remaining, 5);
     }
 }
