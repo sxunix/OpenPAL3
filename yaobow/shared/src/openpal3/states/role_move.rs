@@ -31,22 +31,54 @@ impl MoveMode {
         }
     }
 
-    /// 原版动作名表（`(&PTR_DAT_00570904)[id]`）里对应的那一条。
-    /// 走和跑是**同一个** `z3`，靠动画倍速区分。
-    pub fn action_name(self) -> &'static str {
-        match self {
-            MoveMode::Walk | MoveMode::Run => "z3",
-            MoveMode::Still => "z1",
+    /// 播哪条动画。取决于这个角色用哪套命名，见 [`ActionSet`]。
+    pub fn action_name(self, set: ActionSet) -> &'static str {
+        match set {
+            // `+0xae == '1'`：内部值直接当动作号查表，
+            // 1 → `c02`、2 → `c03`、3 → `c15`。
+            ActionSet::Cee => match self {
+                MoveMode::Walk => "c02",
+                MoveMode::Run => "c03",
+                MoveMode::Still => "c15",
+            },
+            // 经 `FUN_004126d0` 映射，走和跑落到同一个 `z3`。
+            ActionSet::Zed => match self {
+                MoveMode::Walk | MoveMode::Run => "z3",
+                MoveMode::Still => "z1",
+            },
         }
     }
 
-    /// 动画播放倍速（`FUN_00412940` 末尾：内部值 2 给 2.4，其余给 1.0）。
-    pub fn anim_scale(self) -> f32 {
-        match self {
-            MoveMode::Run => 2.4,
+    /// 动画播放倍速。
+    ///
+    /// z 系列走和跑是同一条 `z3`，只能靠倍速区分——`FUN_00412940` 末尾
+    /// `+0x504 == 2` 给 2.4、其余给 1.0。c 系列走 `FUN_00412a14` 那条路，
+    /// 跑有自己的 `c03`，倍速**恒为 1.0**。
+    pub fn anim_scale(self, set: ActionSet) -> f32 {
+        match (set, self) {
+            (ActionSet::Zed, MoveMode::Run) => 2.4,
             _ => 1.0,
         }
     }
+}
+
+/// 角色用哪一套动作命名。原版在 `FUN_00412940` 开头按 `+0xae` 分岔：
+///
+/// ```text
+/// if (+0xae == '1') { FUN_00412a14(内部值); return; }   // 直接当动作号
+/// iVar1 = FUN_004126d0(内部值, +0xad);                  // 映射到 z 系列
+/// ```
+///
+/// 动作名表 `(&PTR_DAT_00570904)[id]` 前几项是
+/// `c01 c02 c03 c15 c04 c05 …`，所以走 `FUN_00412a14` 的角色，内部值
+/// 1/2/3 直接落在 `c02`（走）/ `c03`（跑）/ `c15` 上，各有各的动画；
+/// `FUN_004126d0` 那条只会返回 `0x32`/`0x34`/`0x3a`，也就是 `z1`/`z3`/`z3`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ActionSet {
+    /// `+0xae == '1'`：主角那一类，有完整的 `c` 系列动画。
+    Cee,
+    /// 其余角色，只有 `z` 系列。
+    Zed,
 }
 
 /// `datascript\scene.txt` 的 `role` 一节。原版启动时读进 0x58b378 起那串槽位。
@@ -229,14 +261,25 @@ END\r
     }
 
     #[test]
-    fn walking_and_running_share_one_action() {
-        // 动作名表里 52 和 58 都是 z3，区分只在倍速上。
-        assert_eq!(MoveMode::Walk.action_name(), "z3");
-        assert_eq!(MoveMode::Run.action_name(), "z3");
-        assert_eq!(MoveMode::Still.action_name(), "z1");
-        assert_eq!(MoveMode::Walk.anim_scale(), 1.0);
-        assert_eq!(MoveMode::Run.anim_scale(), 2.4);
-        assert_eq!(MoveMode::Still.anim_scale(), 1.0);
+    fn the_c_set_has_its_own_run_animation() {
+        // 内部值直接当动作号：表的前四项是 c01 c02 c03 c15。
+        assert_eq!(MoveMode::Walk.action_name(ActionSet::Cee), "c02");
+        assert_eq!(MoveMode::Run.action_name(ActionSet::Cee), "c03");
+        assert_eq!(MoveMode::Still.action_name(ActionSet::Cee), "c15");
+        // 跑有自己的动画，就不需要加速播了。
+        assert_eq!(MoveMode::Run.anim_scale(ActionSet::Cee), 1.0);
+    }
+
+    #[test]
+    fn the_z_set_fakes_running_by_playing_walk_faster() {
+        // FUN_004126d0 只返回 0x32/0x34/0x3a，也就是 z1/z3/z3。
+        assert_eq!(MoveMode::Walk.action_name(ActionSet::Zed), "z3");
+        assert_eq!(MoveMode::Run.action_name(ActionSet::Zed), "z3");
+        assert_eq!(MoveMode::Still.action_name(ActionSet::Zed), "z1");
+        // 走跑同一条，只能靠倍速分。
+        assert_eq!(MoveMode::Walk.anim_scale(ActionSet::Zed), 1.0);
+        assert_eq!(MoveMode::Run.anim_scale(ActionSet::Zed), 2.4);
+        assert_eq!(MoveMode::Still.anim_scale(ActionSet::Zed), 1.0);
     }
 
     #[test]
