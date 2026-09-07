@@ -10,5 +10,6 @@ pub mod item_use;
 pub mod killflyer;
 pub mod persistent_state;
 pub mod shop;
+pub mod ski_path;
 pub mod skills;
 pub mod smelting;
