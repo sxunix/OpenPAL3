@@ -111,9 +111,9 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 17 | `00436410` | int int | ScriptVarSetRandomValueCommand | ✓ SceCommandRnd | 给变量随机赋值一个正整数， |
 | 18 | `00436740` | （无） | — | —  |  |
 | 19 | `00436810` | int int int | ScriptEvaluateVarIsInRangeCommand | ✓ SceCommandBetween | 判断变量值是否在给定区间范围内并与临时变量计算结果 |
-| 20 | `00434f90` | int int int int | ActorPathToCommand | —  | 查找一个到TileMap上（X，Y）的路径，并使角色按此路径移动， |
+| 20 | `00434f90` | int int int int | ActorPathToCommand | ✓ SceCommandRolePathTo | 查找一个到TileMap上（X，Y）的路径，并使角色按此路径移动，第四参数 0走/1跑/2站姿，见 `role_move.md` |
 | 21 | `00434d90` | int int int | ActorSetTilePositionCommand | ✓ SceCommandRoleSetPos | 瞬间移动角色到TileMap中该点， |
-| 22 | `00435080` | int string int | ActorPerformActionCommand | —  | 使角色执行一个动作， |
+| 22 | `00435080` | int string int | ActorPerformActionCommand | ✓ SceCommandRoleShowAction | 使角色执行一个动作，第三个参数是循环次数：>0 播几遍、−1 无限循环（不阻塞脚本）、−2 播完保持末帧 |
 | 23 | `00436190` | int int | ActorSetFacingDirectionCommand | ✓ SceCommandRoleSetFace | 瞬间使角色面向的方向改变， |
 | 24 | `00436280` | int int | ActorRotateFacingCommand | ✓ SceCommandRoleTurnFace | 转动角色面向的方向， |
 | 25 | `004365a0` | （无） | TeamOpenCommand | 桩 TeamOpen | 玩家队伍散开 |
@@ -283,7 +283,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 211 | `004365c0` | （无） | TeamOpenOnSceneChangeCommand | 桩 TeamOpenA | 进入情节关时队伍散开 |
 | 212 | `004365d0` | （无） | TeamCloseOnSceneChangeCommand | 桩 TeamCloseA | 出情节关时队伍合并 |
 | 213 | `004387d0` | int float float float | — | —  |  |
-| 214 | `00435010` | int int int int | ActorMoveToCommand | —  | 查找一个到TileMap上（X，Y）的路径，并使角色按此路径移动，移动中使用指定 |
+| 214 | `00435010` | int int int int | ActorMoveToCommand | ✓ SceCommandRoleMoveTo | 直线移动到TileMap上（X，Y），第四参数 0走/1跑/2站姿，见 `role_move.md`。原文「移动中使用指定 |
 | 215 | `-` | （无） | — | —  |  |
 | 216 | `—` | （无） | UnknownCommand216 | —  | ??? |
 | 221 | `00435130` | int | ActorStopActionCommand | ✓ SceCommandRoleEndAction | ActorPerformActionCommand的循环次数为-1或-2时需要用 |

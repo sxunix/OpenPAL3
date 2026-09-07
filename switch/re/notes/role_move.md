@@ -131,7 +131,19 @@ GForce       392    ;重力加速度,9.8*40
 `monster` 一节另有 `FreeRange*` / `FreeSpeed*` / `FindFov` /
 `FindRadius*` / `AttackSpeed*` / `AttackRange`，是怪物 AI 用的。
 
-## 3. 移植
+## 3. 最小移动距离
+
+`FUN_00412b60` 一进来先量一次距离：
+
+```text
+fVar1 = gbVec3D::Length(目标 − 当前);
+if (fVar1 < 12.0) { +0x4f4 = 0; return; }    // 连移动状态都不进
++0x4f4 = 4;                                   // 否则才开始走
+```
+
+**不到 12 个世界单位就当已经到了**，一步都不迈，也不播走路动作。
+
+## 4. 移植
 
 - 规则：`states/role_move.rs`——`MoveMode` 三态、`RoleConstants` 解析
   `scene.txt` 的 `role` 节、`speed()` 照 §1 的表挑速度，单测覆盖。

@@ -1,7 +1,7 @@
 use crate::openpal3::directors::SceneManagerExtensions;
 use crate::openpal3::scene::RoleController;
 use crate::openpal3::states::game_db::PLAYER_ACTOR_IDS;
-use crate::openpal3::states::role_move::MoveMode;
+use crate::openpal3::states::role_move::{MIN_MOVE_DISTANCE, MoveMode};
 use crate::scripting::sce::{SceCommand, SceState};
 
 use crosscom::ComRc;
@@ -80,7 +80,9 @@ impl SceCommand for SceCommandRoleMoveTo {
         let position = role.transform().borrow().position();
         let step = speed * delta_sec;
         let remain = Vec3::sub(&to, &position);
-        let completed = state.fast_forward() || remain.norm() < step;
+        // 原版 `FUN_00412b60` 一进来就量距离，不到 12 就当已经到了。
+        let completed =
+            state.fast_forward() || remain.norm() < step || remain.norm() < MIN_MOVE_DISTANCE;
         let new_position = if completed {
             to
         } else {

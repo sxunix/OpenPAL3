@@ -475,3 +475,47 @@ fn dump_one_proc() {
         println!("  走不通: {e}");
     }
 }
+
+/// 按用量给指令排个序，看哪些命令最该做对。
+///
+/// ```sh
+/// YAOBOW_PAL3_ASSETS=... cargo test -p shared --test pal3_sce_opcode_census \
+///     opcode_usage_histogram -- --ignored --nocapture
+/// ```
+#[test]
+#[ignore]
+fn opcode_usage_histogram() {
+    let Ok(assets) = std::env::var("YAOBOW_PAL3_ASSETS") else {
+        eprintln!("set YAOBOW_PAL3_ASSETS");
+        return;
+    };
+    let vfs = packfs::init_virtual_fs(&assets, None);
+    let mut files: Vec<PathBuf> = vec![PathBuf::from("/basedata/basedata/init.sce")];
+    for entry in std::fs::read_dir(PathBuf::from(&assets).join("scene")).unwrap() {
+        let entry = entry.unwrap();
+        let name = entry.file_name().to_string_lossy().to_string();
+        if let Some(stem) = name.strip_suffix(".cpk") {
+            files.push(PathBuf::from(format!("/scene/{stem}/{stem}.sce")));
+        }
+    }
+
+    let mut counts: BTreeMap<u16, usize> = BTreeMap::new();
+    for path in &files {
+        let Ok(sce) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            sce_load_from_file(&vfs, path)
+        })) else {
+            continue;
+        };
+        for proc in sce.procs.values() {
+            let _ = walk(&proc.inst, |op| *counts.entry(op).or_default() += 1);
+        }
+    }
+
+    let mut rows: Vec<_> = counts.into_iter().collect();
+    rows.sort_by(|a, b| b.1.cmp(&a.1));
+    let total: usize = rows.iter().map(|(_, n)| n).sum();
+    println!("共 {total} 条指令，{} 个指令号", rows.len());
+    for (op, n) in &rows {
+        println!("{op:>3}  {n:>6}  {:>5.2}%", *n as f64 * 100. / total as f64);
+    }
+}

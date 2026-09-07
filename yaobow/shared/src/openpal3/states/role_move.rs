@@ -175,6 +175,17 @@ impl RoleConstants {
     }
 }
 
+/// 目标离得比这还近就当作已经到了，一步都不迈。
+///
+/// `FUN_00412b60` 一进来就量一次距离：
+///
+/// ```text
+/// fVar1 = gbVec3D::Length(目标 − 当前);
+/// if (fVar1 < 12.0) { +0x4f4 = 0; return; }    // 连移动状态都不进
+/// +0x4f4 = 4;                                   // 否则才开始走
+/// ```
+pub const MIN_MOVE_DISTANCE: f32 = 12.0;
+
 /// exe 里写死的路径。
 pub const SCENE_TXT: &str = "/basedata/basedata/datascript/scene.txt";
 
@@ -256,6 +267,12 @@ END\r
             RoleConstants::parse(";只有注释\n"),
             RoleConstants::default()
         );
+    }
+
+    #[test]
+    fn a_target_within_twelve_units_is_already_reached() {
+        // FUN_00412b60 的第一道闸：比这近就不进移动状态。
+        assert_eq!(MIN_MOVE_DISTANCE, 12.0);
     }
 
     #[test]
