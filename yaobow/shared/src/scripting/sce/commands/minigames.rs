@@ -62,19 +62,72 @@ macro_rules! skipped {
     };
 }
 
-skipped!(
-    SceCommandMiniGamePawnshop,
-    "103 进入当铺经营游戏 — `LAB_00436c60`.",
-    "当铺经营游戏尚未实现，已跳过",
-    flag: i32
-);
-skipped!(
-    SceCommandMiniGamePawnshopNote,
-    "157 当铺经营游戏显示信息 — `LAB_00438f10`.",
-    ""
-    ,
-    text: String
-);
+/// 103 进入当铺经营游戏 — `LAB_00436c60`。
+///
+/// 参数是**过程号**，不是标志位：原版把它存进 `DAT_00dba244`，玩家从当铺
+/// 出来时（`FUN_0051f1b0` 的按钮 0xa01b05）`FUN_00432170(DAT_00dba244, 0)`
+/// 当脚本跑。实机唯一一处是 Q01 的 proc 1326「当铺投资」，传 1297。
+///
+/// 经营那一套还没移植（见 `switch/re/notes/hockshop.md`），所以这里只把
+/// 那个过程跑起来，让剧情接得上。
+#[derive(Debug, Clone)]
+pub struct SceCommandMiniGamePawnshop {
+    end_proc: i32,
+}
+
+impl SceCommandMiniGamePawnshop {
+    pub fn new(end_proc: i32) -> Self {
+        Self { end_proc }
+    }
+}
+
+impl SceCommand for SceCommandMiniGamePawnshop {
+    fn update(
+        &mut self,
+        _scene_manager: ComRc<ISceneManager>,
+        _ui: &Ui,
+        state: &mut SceState,
+        _delta_sec: f32,
+    ) -> bool {
+        log::warn!("当铺经营还没做，直接跑收尾过程 {}", self.end_proc);
+        state.show_note("当铺经营尚未实现，已跳过".to_string());
+        if self.end_proc > 0 {
+            state.call_proc(self.end_proc as u32);
+        }
+        true
+    }
+}
+
+/// 157 显示一条提示 — `LAB_00438f10` → `FUN_00410360(文本)`。
+///
+/// 名字里的「当铺经营游戏」是误会：`FUN_00410360` 就是提示框那一路
+/// （加减钱的 `FUN_0040fc90` 也拿它弹「获得 %d 文」），和 opcode 68 同一个
+/// 控件。实机只有 Q12 的 proc 1302 用它，弹的是「景天精减少到1」这种话。
+#[derive(Debug, Clone)]
+pub struct SceCommandMiniGamePawnshopNote {
+    text: String,
+}
+
+impl SceCommandMiniGamePawnshopNote {
+    pub fn new(text: String) -> Self {
+        Self { text }
+    }
+}
+
+impl SceCommand for SceCommandMiniGamePawnshopNote {
+    fn update(
+        &mut self,
+        _scene_manager: ComRc<ISceneManager>,
+        _ui: &Ui,
+        state: &mut SceState,
+        _delta_sec: f32,
+    ) -> bool {
+        if !self.text.trim().is_empty() {
+            state.show_note(self.text.clone());
+        }
+        true
+    }
+}
 skipped!(
     SceCommandNavigationBeeFlyTo,
     "154 控制引路蜂飞向指定位置 — `LAB_00438ba0`，参数是 nav 层与 \

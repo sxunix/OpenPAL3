@@ -707,8 +707,9 @@ impl SceProcContext {
                 command!(self, SceCommandSwitchMode, mode: i32)
             }
             103 => {
-                // MiniGame: 当铺经营
-                command!(self, SceCommandMiniGamePawnshop, flag: i32)
+                // MiniGame: 当铺经营。参数是**过程号**（原版存进
+                // DAT_00dba244，离开当铺时当脚本跑），不是标志位。
+                command!(self, SceCommandMiniGamePawnshop, end_proc: i32)
             }
             104 => {
                 // APPREntry —— 鉴定小游戏，脚本停在这里等它结束
@@ -918,7 +919,7 @@ impl SceProcContext {
                 command!(self, SceCommandShowXueJianPicture)
             }
             157 => {
-                // 当铺信息
+                // 显示一条提示（和 68 同一个控件，名字里的「当铺」是误会）
                 command!(self, SceCommandMiniGamePawnshopNote, text: string)
             }
             158 => {

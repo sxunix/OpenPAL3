@@ -183,7 +183,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 100 | `00436c00` | string | UIShowDealerMenuCommand | ✓ SceCommandDealerMenu（只买不卖，界面是文字浮层） | 调用买卖系统， |
 | 101 | `00436cb0` | int | ScriptVarSetPawnshopLevelCommand | ✓ SceCommandGetPawnshopLevel | 取出当前当铺经营游戏的当铺等级并赋值给变量， |
 | 102 | `00436f90` | int | GameSwitchRenderingStateCommand | 桩 SwitchRS | **实为 `SwitchMode(n)` 全局模式切换**，不是渲染状态；13 = 大地图、0 = 回冒险、15 = 回标题。见 [`bigmap.md`](bigmap.md) |
-| 103 | `00436c60` | int | MiniGameStartPawnshopCommand | 跳过桩 SceCommandMiniGamePawnshop | 进入当铺经营游戏， |
+| 103 | `00436c60` | int | MiniGameStartPawnshopCommand | 半桩 SceCommandMiniGamePawnshop（只跑收尾过程）| 进入当铺经营游戏，参数是**过程号** |
 | 104 | `00437080` | （无） | MiniGameStartAppraisalsCommand | ✓ SceCommandAppraise | 进入鉴定游戏。见 [`appraise_minigame.md`](appraise_minigame.md) |
 | 105 | `004370e0` | （无） | MiniGameStartSwatAFlyCommand | ✓ SceCommandMiniGameSwatAFly（方块占位，没接贴图）| 进入打苍蝇游戏 |
 | 106 | `00437120` | int | MiniGameStartEncampCommand | ✓ SceCommandEncamp | 进入宿营游戏，参数是四方象枢方位号 0–3。见 [`encamp.md`](encamp.md) |
@@ -237,7 +237,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 154 | `00438ba0` | int int int | NavigationBeeFlyToCommand | ✓ SceCommandNavigationBeeFlyTo | 控制引路蜂飞向指定位置 |
 | 155 | `00438d00` | float | CameraSetYawCommand | 桩 CameraYaw | 相机设置Yaw角度 |
 | 156 | `00438d20` | （无） | UIDisplayXueJianPictureCommand | 桩 XJ_Pic | UI展示雪见图片 |
-| 157 | `00438f10` | string | MiniGamePawnshopShowNoteCommand | ✓ SceCommandMiniGamePawnshopNote | 当铺经营游戏显示信息， |
+| 157 | `00438f10` | string | MiniGamePawnshopShowNoteCommand | ✓ SceCommandMiniGamePawnshopNote | 显示一条提示（`FUN_00410360`，和 68 同一个控件；名字里的「当铺」是误会）|
 | 158 | `00438f30` | int | SceneObjectDoNotLoadFromSaveStateCommand | ✓ SceCommandObjectNotFromSave | 设置某个物件出场时候的不从存档里拿状态， |
 | 159 | `00438f50` | （无） | SceneInitDivineTreeFlowerCommand | ✓ SceCommandInitFlower | 初始化神树之花 |
 | 160 | `-` | （无） | MiniGameStartGhostHuntingCommand | —  | PAL3A捉鬼（龙葵）游戏 |
