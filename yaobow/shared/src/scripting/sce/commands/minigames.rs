@@ -69,11 +69,6 @@ skipped!(
     flag: i32
 );
 skipped!(
-    SceCommandMiniGameSwatAFly,
-    "105 进入打苍蝇游戏 — `LAB_004370e0`.（无参数）",
-    "打苍蝇游戏尚未实现，已跳过"
-);
-skipped!(
     SceCommandMiniGamePawnshopNote,
     "157 当铺经营游戏显示信息 — `LAB_00438f10`.",
     ""

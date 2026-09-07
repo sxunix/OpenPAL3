@@ -185,7 +185,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 102 | `00436f90` | int | GameSwitchRenderingStateCommand | 桩 SwitchRS | **实为 `SwitchMode(n)` 全局模式切换**，不是渲染状态；13 = 大地图、0 = 回冒险、15 = 回标题。见 [`bigmap.md`](bigmap.md) |
 | 103 | `00436c60` | int | MiniGameStartPawnshopCommand | 跳过桩 SceCommandMiniGamePawnshop | 进入当铺经营游戏， |
 | 104 | `00437080` | （无） | MiniGameStartAppraisalsCommand | ✓ SceCommandAppraise | 进入鉴定游戏。见 [`appraise_minigame.md`](appraise_minigame.md) |
-| 105 | `004370e0` | （无） | MiniGameStartSwatAFlyCommand | 跳过桩 SceCommandMiniGameSwatAFly | 进入打苍蝇游戏 |
+| 105 | `004370e0` | （无） | MiniGameStartSwatAFlyCommand | ✓ SceCommandMiniGameSwatAFly（方块占位，没接贴图）| 进入打苍蝇游戏 |
 | 106 | `00437120` | int | MiniGameStartEncampCommand | ✓ SceCommandEncamp | 进入宿营游戏，参数是四方象枢方位号 0–3。见 [`encamp.md`](encamp.md) |
 | 107 | `00436f40` | int | MiniGameStartSkiCommand | 跳过桩 SceCommandMiniGameSki | 进入滑雪游戏， |
 | 108 | `004370c0` | int | ScriptVarSetAppraisalsResultCommand | ✓ SceCommandGetAppr | 取出鉴定小游戏的结果并设置给变量 |

@@ -36,6 +36,7 @@ mod idle;
 mod if_in_team;
 mod interact;
 mod inventory;
+mod killflyer;
 mod load_scene;
 mod main_menu;
 mod minigames;
@@ -135,13 +136,14 @@ pub use idle::SceCommandIdle;
 pub use if_in_team::SceCommandIfInTeam;
 pub use interact::SceCommandInteractWithObject;
 pub use inventory::{SceCommandAddItem, SceCommandAddMoney, SceCommandRemoveItem};
+pub use killflyer::SceCommandMiniGameSwatAFly;
 pub use load_scene::SceCommandLoadScene;
 pub use main_menu::SceCommandSwitchToMainMenu;
 pub use minigames::{
     SceCommandEffectAtRole, SceCommandEffectPosition, SceCommandGetPawnshopAccrual,
     SceCommandGetPawnshopLevel, SceCommandGetPawnshopManage, SceCommandGetPawnshopPeriod,
     SceCommandGetPawnshopUnHock, SceCommandMiniGamePawnshop, SceCommandMiniGamePawnshopNote,
-    SceCommandMiniGameSki, SceCommandMiniGameSwatAFly, SceCommandNavigationBeeFlyTo,
+    SceCommandMiniGameSki, SceCommandNavigationBeeFlyTo,
 };
 pub use movie::SceCommandMovie;
 pub use music::SceCommandMusic;
