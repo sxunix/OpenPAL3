@@ -5,10 +5,17 @@
 //! `GEOMOBJECT`，读它的 `*MESH_VERTEX` 列表，每个点摊成 **32 字节**一条：
 //!
 //! ```text
-//! +0x00 x    +0x04 y    +0x08 z      // z 取反（0x52da8c 那一步）
+//! +0x00 x    +0x04 y    +0x08 z
 //! +0x0c 从起点到这里的累计距离
 //! +0x10 到上一个点的距离（SQRT(dx²+dy²+dz²)）
+//! +0x14/18/1c 指向下一个点的单位方向（存在**上一个**点上）
 //! ```
+//!
+//! 读的时候三个数不是按 ASE 的顺序进去的——那句 `scanf` 是
+//! `"%f %f %f"` 配 `(基址, 基址+8, 基址+4)`：ASE 的第二个数进 `+0x08`、
+//! 第三个数进 `+0x04`，然后 `+0x08` 再取反。换句话说
+//! **`y = ASE 的 z`、`z = −ASE 的 y`**。写入的位置按文件里那个顶点下标走，
+//! 不是按出现顺序。
 //!
 //! 实机那条路 4950 个点，从 x ≈ −10220 铺到 x ≈ +9020。逆向记录在
 //! `switch/re/notes/ski.md`。
@@ -23,6 +30,9 @@ pub struct PathPoint {
     pub distance: f32,
     /// 到上一个点的距离（原版 `+0x10`），第一个点是 0。
     pub step: f32,
+    /// 指向下一个点的单位方向（原版 `+0x14/18/1c`，存在这个点上）。
+    /// 最后一个点没有下一段，留 0。
+    pub forward: (f32, f32, f32),
 }
 
 /// 整条雪道。
@@ -73,8 +83,9 @@ impl SkiPath {
         ))
     }
 
-    /// 解析 ASE。只取名为 `skee_path` 的那个物体的顶点列表；`z` 按原版取反，
-    /// 距离和累计距离照 `FUN_0052d7c0` 现算。
+    /// 解析 ASE。只取名为 `skee_path` 的那个物体的顶点列表；坐标按原版的
+    /// `y = ASE.z`、`z = −ASE.y` 摆，距离、累计距离和逐段方向照
+    /// `FUN_0052d7c0` 现算。
     pub fn parse(text: &str) -> Self {
         const NODE: &str = "skee_path";
         let mut in_node = false;
@@ -89,11 +100,12 @@ impl SkiPath {
             if !in_node {
                 continue;
             }
-            let Some(rest) = line.strip_prefix("*MESH_VERTEX") else {
+            // `*MESH_VERTEX <下标> <x> <y> <z>`。原版是 `%s` 读一个词再
+            // `strcmp`，所以 `*MESH_VERTEX_LIST` 这行不算。
+            let mut it = line.split_whitespace();
+            if it.next() != Some("*MESH_VERTEX") {
                 continue;
-            };
-            // `*MESH_VERTEX <下标> <x> <y> <z>`
-            let mut it = rest.split_whitespace();
+            }
             let (Some(_index), Some(x), Some(y), Some(z)) =
                 (it.next(), it.next(), it.next(), it.next())
             else {
@@ -105,16 +117,22 @@ impl SkiPath {
             };
             let mut p = PathPoint {
                 x,
-                y,
-                // 原版读完就把 z 取反。
-                z: -z,
+                // ASE 的第三个数进 `+0x04`，第二个数进 `+0x08` 再取反。
+                y: z,
+                z: -y,
                 distance: 0.,
                 step: 0.,
+                forward: (0., 0., 0.),
             };
-            if let Some(prev) = points.last() {
+            if let Some(prev) = points.last().copied() {
                 let (dx, dy, dz) = (p.x - prev.x, p.y - prev.y, p.z - prev.z);
                 p.step = (dx * dx + dy * dy + dz * dz).sqrt();
                 p.distance = prev.distance + p.step;
+                // 方向存在上一个点上。
+                if p.step > f32::EPSILON {
+                    let last = points.last_mut().unwrap();
+                    last.forward = (dx / p.step, dy / p.step, dz / p.step);
+                }
             }
             points.push(p);
         }
@@ -157,7 +175,9 @@ mod tests {
         let path = SkiPath::parse(SAMPLE);
         assert_eq!(path.points.len(), 3, "别的物体的顶点不能算进来");
         assert_eq!(path.points[0].x, 0.);
-        assert_eq!(path.points[0].z, -1., "z 要取反");
+        // `*MESH_VERTEX 0  0.0 0.0 1.0` → y 拿 ASE 的第三个数，z 拿第二个取反。
+        assert_eq!(path.points[0].y, 1., "y = ASE 的 z");
+        assert_eq!(path.points[1].z, -4., "z = −ASE 的 y");
     }
 
     #[test]
@@ -174,15 +194,27 @@ mod tests {
     #[test]
     fn walking_the_path_interpolates() {
         let path = SkiPath::parse(SAMPLE);
-        assert_eq!(path.at(0.), Some((0., 0., -1.)));
-        assert_eq!(path.at(5.), Some((3., 4., -1.)));
+        assert_eq!(path.at(0.), Some((0., 1., -0.)));
+        assert_eq!(path.at(5.), Some((3., 1., -4.)));
         // 走到一半的第二段。
         let (x, y, z) = path.at(7.5).unwrap();
-        assert!((x - 3.).abs() < 1e-5 && (y - 4.).abs() < 1e-5);
-        assert!((z - (-3.5)).abs() < 1e-5, "z = −1 到 −6 的中点");
+        assert!((x - 3.).abs() < 1e-5 && (z - (-4.)).abs() < 1e-5);
+        assert!((y - 3.5).abs() < 1e-5, "y = 1 到 6 的中点");
         // 超出去的夹在两头。
         assert_eq!(path.at(-10.), path.at(0.));
         assert_eq!(path.at(999.), path.at(10.));
+    }
+
+    #[test]
+    fn each_point_carries_the_direction_to_the_next() {
+        let path = SkiPath::parse(SAMPLE);
+        // 第一段是 (3, 0, −4)，长 5。
+        let f = path.points[0].forward;
+        assert!((f.0 - 0.6).abs() < 1e-5 && f.1.abs() < 1e-5 && (f.2 - -0.8).abs() < 1e-5);
+        // 第二段整段沿 +y。
+        assert_eq!(path.points[1].forward, (0., 1., 0.));
+        // 最后一个点没有下一段。
+        assert_eq!(path.points[2].forward, (0., 0., 0.));
     }
 
     #[test]

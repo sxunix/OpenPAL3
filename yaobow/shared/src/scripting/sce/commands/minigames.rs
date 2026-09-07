@@ -97,48 +97,6 @@ skipped!(
     tile_y: i32
 );
 
-/// 107 进入滑雪游戏 — `LAB_00436f40`，模式 11。见 `switch/re/notes/ski.md`。
-///
-/// 参数是过程号：原版存进 `DAT_00dba254`，滑完回到冒险模式时
-/// `FUN_00432170(DAT_00dba254, 0)` 当脚本跑（`FUN_0052f350` 收尾那一支）。
-/// 跳过游戏但不跑这个过程剧情就断了，所以这里直接跑它。
-///
-/// 滑道本身没做。原版滑的过程中最多能捡 **3 件**东西（`+0x50c` 三个槽，
-/// 背包里已经有的不捡），跑完 `FUN_00532410` 才塞进背包，分数是
-/// `件数 × 100 + (+0x11a0) × 30`。跳过这一段就等于这几件拿不到——不发是
-/// 因为发什么取决于玩家怎么滑，凭空发等于替原版编结果。除此之外滑雪不动
-/// 钱也不动精。
-#[derive(Debug, Clone)]
-pub struct SceCommandMiniGameSki {
-    end_game_proc: i32,
-}
-
-impl SceCommandMiniGameSki {
-    pub fn new(end_game_proc: i32) -> Self {
-        Self { end_game_proc }
-    }
-}
-
-impl SceCommand for SceCommandMiniGameSki {
-    fn update(
-        &mut self,
-        _scene_manager: ComRc<ISceneManager>,
-        _ui: &Ui,
-        state: &mut SceState,
-        _delta_sec: f32,
-    ) -> bool {
-        log::warn!(
-            "SceCommandMiniGameSki: 滑道没做（途中的收集品也就拿不到），\
-             直接跑收尾过程 {}",
-            self.end_game_proc
-        );
-        if self.end_game_proc > 0 {
-            state.call_proc(self.end_game_proc as u32);
-        }
-        true
-    }
-}
-
 /// 101 当铺等级 · 120 Manage 类型 · 121 Period 类型 · 122 Accrual 类型 ·
 /// 123 UnHock 类型 — `LAB_00436cb0` / `00436d30` / `00436db0` /
 /// `00436e10` / `00436e70`。

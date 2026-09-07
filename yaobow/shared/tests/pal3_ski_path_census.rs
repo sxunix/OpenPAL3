@@ -90,3 +90,51 @@ fn walking_the_whole_slope_stays_on_it() {
     }
     assert_eq!(path.at(len), Some(last), "走到底就是最后一个点");
 }
+
+#[test]
+fn the_slope_actually_goes_downhill() {
+    let Some(path) = path() else { return };
+    // 引擎里的 y 是高度，取的是 ASE 的第三个数。这条道要往下走。
+    let first = path.points[0];
+    let last = *path.points.last().unwrap();
+    assert!(
+        last.y < first.y,
+        "终点 y = {} 不比起点 y = {} 低，坐标轴又对错了",
+        last.y,
+        first.y
+    );
+    let lowest = path.points.iter().map(|p| p.y).fold(f32::MAX, f32::min);
+    let highest = path.points.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+    assert!(highest - lowest > 500., "落差只有 {}", highest - lowest);
+
+    // 每个点带的方向是单位向量（最后一个点没有下一段，留 0）。
+    for (i, p) in path.points.iter().take(path.points.len() - 1).enumerate() {
+        let (fx, fy, fz) = p.forward;
+        let len = (fx * fx + fy * fy + fz * fz).sqrt();
+        assert!((len - 1.).abs() < 1e-3, "第 {i} 个点的方向长 {len}");
+    }
+    assert_eq!(path.points.last().unwrap().forward, (0., 0., 0.));
+}
+
+#[test]
+fn the_shipped_slope_places_the_obstacles_where_the_exe_does() {
+    let Some(path) = path() else { return };
+    let n = path.points.len();
+    assert_eq!(
+        shared::openpal3::states::ski::obstacle_indices(n),
+        [300, 865, 1430, 1995, 2560, 3125],
+        "(N − 1560) / 6 从 300 起，实机 N = {n}"
+    );
+    // 六个障碍都落在道上，且沿路一路往后排。
+    let mut prev = -1f32;
+    for i in shared::openpal3::states::ski::obstacle_indices(n) {
+        let p = path.points[i];
+        assert!(p.distance > prev);
+        prev = p.distance;
+    }
+    assert!(
+        prev < path.length(),
+        "最后一个障碍在 {prev}，全长才 {}",
+        path.length()
+    );
+}
