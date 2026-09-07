@@ -22,8 +22,8 @@ use std::path::PathBuf;
 use crate::openpal3::assis_lang;
 use crate::openpal3::states::game_db::PLAYER_ACTOR_IDS;
 use crate::openpal3::states::inn::{
-    Answer, BLACKOUT_MILLIS, G_STORY, InnOutcome, MenuItem, Vitals, can_afford, cost_line, lang,
-    rest,
+    Answer, BLACKOUT_MILLIS, FADE_SECONDS, G_STORY, InnOutcome, MenuItem, Vitals, can_afford,
+    cost_line, lang, rest,
 };
 use crate::openpal3::states::shop::RestScript;
 use crate::scripting::sce::commands::appraise::overlay;
@@ -39,15 +39,6 @@ const LANG_SECTION: &str = "sec1";
 const TEXT: [f32; 4] = [1., 1., 1., 1.];
 const DIM: [f32; 4] = [0.7, 0.74, 0.8, 1.];
 const PICKED: [f32; 4] = [1., 0.86, 0.4, 1.];
-
-/// 淡出、淡入各用多久。原版的黑屏由引擎的淡入淡出对象做
-/// （`FUN_004be590(1)` / `(2)`），脚本侧只看得到「淡完了没有」，时长没读
-/// 出来——这个值是 **[推断]**。
-const FADE_SECONDS: f32 = 0.5;
-
-/// `M_Rest` 那句话在屏幕上停多久再弹确认框。原版是等对话系统播完，移植端
-/// 没有那套对话时序，给一个固定值 **[推断]**，按键可以跳过。
-const LINE_SECONDS: f32 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
@@ -388,9 +379,11 @@ impl SceCommand for SceCommandShowChatRest {
             }
 
             Phase::Line => {
+                // 原版是等对话系统把 `M_Rest` 播完，也就是等玩家按键
+                // （0x44b111 那个「对话系统忙不忙」的虚调用）。这里同样只
+                // 等按键，不加超时。
                 let k = keys(ui, state);
-                // 原版是等 `M_Rest` 那句话播完；这里给个时长，也允许跳过。
-                if k.confirm || k.cancel || self.spent >= LINE_SECONDS {
+                if k.confirm || k.cancel {
                     self.phase = Phase::Confirm;
                     self.spent = 0.;
                     self.answer = 0;
