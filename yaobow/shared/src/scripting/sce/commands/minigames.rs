@@ -57,42 +57,6 @@ macro_rules! skipped {
     };
 }
 
-/// 103 进入当铺经营游戏 — `LAB_00436c60`。
-///
-/// 参数是**过程号**，不是标志位：原版把它存进 `DAT_00dba244`，玩家从当铺
-/// 出来时（`FUN_0051f1b0` 的按钮 0xa01b05）`FUN_00432170(DAT_00dba244, 0)`
-/// 当脚本跑。实机唯一一处是 Q01 的 proc 1326「当铺投资」，传 1297。
-///
-/// 经营那一套还没移植（见 `switch/re/notes/hockshop.md`），所以这里只把
-/// 那个过程跑起来，让剧情接得上。
-#[derive(Debug, Clone)]
-pub struct SceCommandMiniGamePawnshop {
-    end_proc: i32,
-}
-
-impl SceCommandMiniGamePawnshop {
-    pub fn new(end_proc: i32) -> Self {
-        Self { end_proc }
-    }
-}
-
-impl SceCommand for SceCommandMiniGamePawnshop {
-    fn update(
-        &mut self,
-        _scene_manager: ComRc<ISceneManager>,
-        _ui: &Ui,
-        state: &mut SceState,
-        _delta_sec: f32,
-    ) -> bool {
-        log::warn!("当铺经营还没做，直接跑收尾过程 {}", self.end_proc);
-        state.show_note("当铺经营尚未实现，已跳过".to_string());
-        if self.end_proc > 0 {
-            state.call_proc(self.end_proc as u32);
-        }
-        true
-    }
-}
-
 /// 157 显示一条提示 — `LAB_00438f10` → `FUN_00410360(文本)`。
 ///
 /// 名字里的「当铺经营游戏」是误会：`FUN_00410360` 就是提示框那一路

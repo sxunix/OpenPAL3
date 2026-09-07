@@ -31,6 +31,7 @@ mod get_money;
 mod get_time_sel;
 mod goto;
 mod have_item;
+mod hockshop;
 mod hy_fly;
 mod idle;
 mod if_in_team;
@@ -131,6 +132,7 @@ pub use get_money::SceCommandGetMoney;
 pub use get_time_sel::SceCommandGetTimeSel;
 pub use goto::SceCommandGoto;
 pub use have_item::SceCommandHaveItem;
+pub use hockshop::SceCommandMiniGamePawnshop;
 pub use hy_fly::SceCommandHyFly;
 pub use idle::SceCommandIdle;
 pub use if_in_team::SceCommandIfInTeam;
@@ -142,8 +144,8 @@ pub use main_menu::SceCommandSwitchToMainMenu;
 pub use minigames::{
     SceCommandEffectAtRole, SceCommandEffectPosition, SceCommandGetPawnshopAccrual,
     SceCommandGetPawnshopLevel, SceCommandGetPawnshopManage, SceCommandGetPawnshopPeriod,
-    SceCommandGetPawnshopUnHock, SceCommandMiniGamePawnshop, SceCommandMiniGamePawnshopNote,
-    SceCommandMiniGameSki, SceCommandNavigationBeeFlyTo,
+    SceCommandGetPawnshopUnHock, SceCommandMiniGamePawnshopNote, SceCommandMiniGameSki,
+    SceCommandNavigationBeeFlyTo,
 };
 pub use movie::SceCommandMovie;
 pub use music::SceCommandMusic;

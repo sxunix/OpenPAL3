@@ -191,6 +191,12 @@ impl GameDb {
         self.items_by_id.get(&id).map(|i| &self.gdb.items[*i])
     }
 
+    /// 整张物品表，顺序就是数据库里的顺序——当铺按比例随机摸死当物时
+    /// （`source.txt` 的 `GDB_GetItemID(rand()%item_num)`）要的就是它。
+    pub fn items(&self) -> &[GameItemInfo] {
+        &self.gdb.items
+    }
+
     /// Every combat-actor row, playable characters first then monsters.
     pub fn combat_actors(&self) -> &[CombatActorInfo] {
         &self.gdb.combat_actors
