@@ -9,10 +9,12 @@
 //! `FUN_00459970` 里，是按控件基类算出来的相对矩形，还没逐字段读通；这里先
 //! 照战斗那样画一个文字浮层，把买卖跑通。换成像素级的界面是纯渲染改动。
 //!
-//! **卖**那一半没有：卖价算式还没在 exe 里定位（见 shop.md §5）。
+//! 买和卖两页都有：卖价是 `price / 2`、不还价、剧情物品不能卖（`shop.md`
+//! §5）。原版是三个子页对象，这里做成一个浮层上的两页，Tab 切换。
 
 use crate::openpal3::states::shop::{
-    DealScript, Haggle, ShopRng, TIERS, buyable, discounted, haggle, price_to_pay,
+    DealScript, Haggle, ShopRng, TIERS, buyable, discounted, haggle, price_to_pay, sell_price,
+    sellable,
 };
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
@@ -29,6 +31,13 @@ struct Good {
     price: i32,
     /// 背包里已经有几个——每种最多买到 99 个（`FUN_0045b7a0`）。
     owned: u32,
+}
+
+/// 在买还是在卖。原版是两个子页对象（`FUN_0045b990` / `FUN_00471590`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Buy,
+    Sell,
 }
 
 /// 光标在哪一层。
@@ -49,6 +58,8 @@ enum Input {
     Right,
     Confirm,
     Cancel,
+    /// 买卖两页之间来回（原版是点页签）。
+    Switch,
 }
 
 const TIER_LABELS: [&str; TIERS] = ["五折", "六折", "七折", "八折", "九折"];
@@ -57,7 +68,10 @@ const TIER_LABELS: [&str; TIERS] = ["五折", "六折", "七折", "八折", "九
 pub struct SceCommandDealerMenu {
     shop_file: String,
     shop: DealScript,
+    page: Page,
     goods: Vec<Good>,
+    /// 背包里能卖的东西，按 id 升序——原版卖页那六张表也是从背包按序抓的。
+    stock: Vec<Good>,
     cursor: usize,
     /// 这一单要买几个。
     quantity: i32,
@@ -77,7 +91,9 @@ impl SceCommandDealerMenu {
         Self {
             shop_file: shop,
             shop: DealScript::default(),
+            page: Page::Buy,
             goods: Vec::new(),
+            stock: Vec::new(),
             cursor: 0,
             quantity: 1,
             mode: Mode::Browse,
@@ -129,6 +145,9 @@ impl SceCommandDealerMenu {
             })
             .collect();
 
+        drop(p_state);
+        self.rebuild_stock(state);
+
         // 开场白，随后进买的页面（原版分别是 BeginTalk 和 EntryBuy）。
         self.talk = if self.shop.entry_buy.is_empty() {
             self.shop.begin_talk.clone()
@@ -140,28 +159,88 @@ impl SceCommandDealerMenu {
             ShopRng::new(state.global_state().persistent_state().money() as u32 ^ 0x5bd1_e995);
     }
 
+    /// 背包里能卖的东西。`FUN_0040d010` 的六张表并起来就是「除剧情之外的
+    /// 一切」，`BTreeMap` 的 id 升序也就是原版的列表顺序。
+    fn rebuild_stock(&mut self, state: &SceState) {
+        let db = state.global_state().game_db().cloned();
+        let p_state = state.global_state().persistent_state();
+        self.stock = p_state
+            .inventory()
+            .iter()
+            .filter(|(_, count)| **count > 0)
+            .filter_map(|(id, count)| {
+                let row = db.as_ref()?.item(*id)?;
+                if !sellable(row.item_type) {
+                    return None;
+                }
+                Some(Good {
+                    id: *id,
+                    name: row
+                        .name
+                        .as_str()
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|_| format!("道具#{id}")),
+                    price: row.price,
+                    owned: *count,
+                })
+            })
+            .collect();
+    }
+
+    fn rows(&self) -> &[Good] {
+        match self.page {
+            Page::Buy => &self.goods,
+            Page::Sell => &self.stock,
+        }
+    }
+
     fn current(&self) -> Option<&Good> {
-        self.goods.get(self.cursor)
+        self.rows().get(self.cursor)
     }
 
-    /// 这一件还能买几个。
-    fn buyable_now(&self) -> i32 {
-        self.current().map(|g| buyable(g.owned)).unwrap_or(0)
+    /// 这一行这一单最多能做几个：买是 `99 − 已持有`，卖是手上有几个。
+    fn quantity_cap(&self) -> i32 {
+        match self.page {
+            Page::Buy => self.current().map(|g| buyable(g.owned)).unwrap_or(0),
+            Page::Sell => self.current().map(|g| g.owned as i32).unwrap_or(0),
+        }
     }
 
+    /// 这一单的钱：买是原价合计，卖是 `price / 2` 合计。
     fn total(&self) -> i32 {
-        self.current()
-            .map(|g| g.price * self.quantity.max(0))
-            .unwrap_or(0)
+        let n = self.quantity.max(0);
+        match (self.page, self.current()) {
+            (Page::Buy, Some(g)) => g.price * n,
+            (Page::Sell, Some(g)) => sell_price(g.price) * n,
+            _ => 0,
+        }
     }
 
     fn clamp_quantity(&mut self) {
-        let max = self.buyable_now();
+        let max = self.quantity_cap();
         if max <= 0 {
             self.quantity = 0;
         } else {
             self.quantity = self.quantity.clamp(1, max);
         }
+    }
+
+    /// 换页：光标和数量都从头来。
+    fn switch_page(&mut self) {
+        self.page = match self.page {
+            Page::Buy => Page::Sell,
+            Page::Sell => Page::Buy,
+        };
+        self.mode = Mode::Browse;
+        self.cursor = 0;
+        self.quantity = 1;
+        self.clamp_quantity();
+        self.talk = match self.page {
+            Page::Buy => self.shop.entry_buy.clone(),
+            // 卖页对象读 `EntrySale` 的地方没在 exe 里找到，这里照数据文件的
+            // 字段意思用 `[推断]`。
+            Page::Sell => self.shop.entry_sale.clone(),
+        };
     }
 
     /// 两句里随机挑一句（原版 `(rand & 1) + tier*2` 那个下标）。
@@ -191,6 +270,39 @@ impl SceCommandDealerMenu {
         }
         self.clamp_quantity();
         true
+    }
+
+    /// 卖掉这一行的 `quantity` 个：钱 += `price / 2` × 个数，东西从背包扣掉
+    /// （`FUN_00474c80` 的六个同构分支）。卖不还价。
+    fn sell(&mut self, state: &mut SceState) {
+        let Some(good) = self.current().cloned() else {
+            return;
+        };
+        let count = self.quantity.max(0) as u32;
+        if count == 0 {
+            return;
+        }
+        let paid = sell_price(good.price) * count as i32;
+        {
+            let mut p_state = state.global_state_mut().persistent_state_mut();
+            let held = p_state.item_count(good.id);
+            if held < count {
+                return;
+            }
+            p_state.remove_item(good.id, count);
+            p_state.add_money(paid);
+        }
+        self.rebuild_stock(state);
+        if self.cursor >= self.stock.len() {
+            self.cursor = self.stock.len().saturating_sub(1);
+        }
+        self.quantity = 1;
+        self.clamp_quantity();
+        self.talk = if self.shop.normal_accept_talk.is_empty() {
+            format!("卖了 {} 个{}，得 {} 文", count, good.name, paid)
+        } else {
+            self.shop.normal_accept_talk.clone()
+        };
     }
 
     /// 不还价，照原价买（`DK == 0` 的店，或者还价页里选「照原价买」）。
@@ -281,6 +393,8 @@ impl SceCommandDealerMenu {
             Some(Input::Confirm)
         } else if pressed(Key::Escape) || pressed(Key::GamePadSouth) {
             Some(Input::Cancel)
+        } else if pressed(Key::Q) || pressed(Key::GamePadNorth) {
+            Some(Input::Switch)
         } else {
             None
         }
@@ -291,15 +405,17 @@ impl SceCommandDealerMenu {
         match self.mode {
             Mode::Browse => match input {
                 Input::Up => {
-                    if !self.goods.is_empty() {
-                        self.cursor = (self.cursor + self.goods.len() - 1) % self.goods.len();
+                    let n = self.rows().len();
+                    if n > 0 {
+                        self.cursor = (self.cursor + n - 1) % n;
                         self.quantity = 1;
                         self.clamp_quantity();
                     }
                 }
                 Input::Down => {
-                    if !self.goods.is_empty() {
-                        self.cursor = (self.cursor + 1) % self.goods.len();
+                    let n = self.rows().len();
+                    if n > 0 {
+                        self.cursor = (self.cursor + 1) % n;
                         self.quantity = 1;
                         self.clamp_quantity();
                     }
@@ -312,14 +428,21 @@ impl SceCommandDealerMenu {
                     self.quantity += 1;
                     self.clamp_quantity();
                 }
+                Input::Switch => self.switch_page(),
                 Input::Confirm => {
-                    if self.buyable_now() < 1 {
+                    if self.quantity_cap() < 1 {
                         return false;
                     }
-                    if self.shop.haggling {
-                        self.mode = Mode::Haggle { index: TIERS };
-                    } else {
-                        self.buy_at_full_price(state);
+                    match self.page {
+                        // 卖不还价，确认就成交。
+                        Page::Sell => self.sell(state),
+                        Page::Buy => {
+                            if self.shop.haggling {
+                                self.mode = Mode::Haggle { index: TIERS };
+                            } else {
+                                self.buy_at_full_price(state);
+                            }
+                        }
                     }
                 }
                 Input::Cancel => {
@@ -352,6 +475,7 @@ impl SceCommandDealerMenu {
                         self.talk = self.shop.normal_cancel_talk.clone();
                         self.mode = Mode::Browse;
                     }
+                    Input::Switch => {}
                 }
             }
         }
@@ -371,7 +495,14 @@ impl SceCommandDealerMenu {
                 let _font = radiance::imgui::game_font(radiance::imgui::GameFontSize::LARGE)
                     .map(|f| ui.push_font(f));
 
-                ui.text(format!("{}　　身上 {} 文", self.shop.merchant_name, money));
+                let tab = match self.page {
+                    Page::Buy => "［买］　卖 ",
+                    Page::Sell => " 买 　［卖］",
+                };
+                ui.text(format!(
+                    "{}　　{}　　身上 {} 文",
+                    self.shop.merchant_name, tab, money
+                ));
                 if !self.talk.is_empty() {
                     ui.separator();
                     for line in self.talk.lines() {
@@ -380,10 +511,30 @@ impl SceCommandDealerMenu {
                 }
 
                 ui.separator();
-                for (i, g) in self.goods.iter().enumerate() {
+                if self.rows().is_empty() {
+                    match self.page {
+                        Page::Buy => ui.text("这里没有东西卖。"),
+                        Page::Sell => ui.text("身上没有能卖的东西。"),
+                    }
+                }
+                for (i, g) in self.rows().iter().enumerate() {
                     let marker = if i == self.cursor { "▶" } else { "  " };
-                    let line = format!("{marker}{}　{} 文　已有 {}", g.name, g.price, g.owned);
-                    if buyable(g.owned) > 0 {
+                    let line = match self.page {
+                        Page::Buy => {
+                            format!("{marker}{}　{} 文　已有 {}", g.name, g.price, g.owned)
+                        }
+                        Page::Sell => format!(
+                            "{marker}{}　{} 文　有 {}",
+                            g.name,
+                            sell_price(g.price),
+                            g.owned
+                        ),
+                    };
+                    let usable = match self.page {
+                        Page::Buy => buyable(g.owned) > 0,
+                        Page::Sell => g.owned > 0,
+                    };
+                    if usable {
                         ui.text(line);
                     } else {
                         ui.text_disabled(line);
@@ -392,19 +543,25 @@ impl SceCommandDealerMenu {
 
                 ui.separator();
                 ui.text(format!(
-                    "数量 {}（左右调，最多 {}）　总价 {} 文",
+                    "数量 {}（左右调，最多 {}）　{} {} 文",
                     self.quantity,
-                    self.buyable_now(),
+                    self.quantity_cap(),
+                    if self.page == Page::Buy {
+                        "总价"
+                    } else {
+                        "可得"
+                    },
                     self.total()
                 ));
 
                 match self.mode {
                     Mode::Browse => {
-                        if self.shop.haggling {
-                            ui.text("确定：还价　取消：离开");
-                        } else {
-                            ui.text("确定：买下　取消：离开");
-                        }
+                        let confirm = match self.page {
+                            Page::Sell => "确定：卖出",
+                            Page::Buy if self.shop.haggling => "确定：还价",
+                            Page::Buy => "确定：买下",
+                        };
+                        ui.text(format!("{confirm}　Q：换买/卖　取消：离开"));
                     }
                     Mode::Haggle { index } => {
                         ui.separator();
@@ -435,9 +592,13 @@ impl SceCommand for SceCommandDealerMenu {
     ) -> bool {
         if !self.loaded {
             self.load(state);
-            if self.goods.is_empty() {
-                log::warn!("DealerMenu: {} 没有商品，直接跳过", self.shop_file);
+            // 读不到数据文件才跳过——店里没货也还能卖东西给他。
+            if self.shop.merchant_name.is_empty() && self.goods.is_empty() {
+                log::warn!("DealerMenu: {} 读不出来，直接跳过", self.shop_file);
                 return true;
+            }
+            if self.goods.is_empty() {
+                self.page = Page::Sell;
             }
             self.clamp_quantity();
         }

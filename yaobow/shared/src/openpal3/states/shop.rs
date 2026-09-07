@@ -4,7 +4,8 @@
 //! 是 `FUN_00457490`（关键字表 0x5b1a50），价格与还价在 `FUN_00461c50` /
 //! `FUN_00460a90`。
 //!
-//! **卖**那一半原版还没逆完（卖价怎么算没定位），所以这里只有买。
+//! 卖那一半在卖页那个子对象里（`FUN_00471590` 一支）：卖价是
+//! `price / 2`，不还价，剧情物品不能卖——见 `shop.md` §5。
 
 use std::collections::HashMap;
 
@@ -403,6 +404,22 @@ pub fn buyable(held: u32) -> i32 {
     (STOCK_CAP - held as i32).max(0)
 }
 
+/// 卖一件能拿多少：**`price / 2`，整数除法**（`FUN_004765f0` 里
+/// `(*(int *)(… + 0x260) / 2) * 个数`，列表每行显示的也是这个数）。
+///
+/// 古董不走 `ancient_value`——那一项（`+0x270`）在卖页那一段只用来排序。
+pub fn sell_price(price: i32) -> i32 {
+    price / 2
+}
+
+/// 这一类能不能卖（`FUN_0040d010` 的六个分支 0/1/2/3/4/6）。
+///
+/// 治疗 1 · 投掷 2 · 仙宝 3 · 古董 4 · 矿石 5 · 尸块 12 · 装备 7–11 都能卖；
+/// **剧情（6）不能**——卖页压根没建那张表。
+pub fn sellable(item_type: u8) -> bool {
+    matches!(item_type, 1..=5 | 7..=12)
+}
+
 /// 店里一件商品的单价就是数据库里的 `price`；这里只是把「id → 单价」摊平，
 /// 方便界面一次取完。
 pub fn unit_prices(goods: &[u32], price_of: impl Fn(u32) -> Option<i32>) -> HashMap<u32, i32> {
@@ -588,6 +605,26 @@ end
         assert_eq!(inn.price, 50);
         assert_eq!(inn.ask, "客栈掌柜：\n要不要住店？");
         assert_eq!(inn.rest_end, "客栈掌柜：\n一路顺风。");
+    }
+
+    #[test]
+    fn selling_pays_half_the_price_rounded_down() {
+        assert_eq!(sell_price(0), 0);
+        assert_eq!(sell_price(1), 0);
+        assert_eq!(sell_price(99), 49);
+        assert_eq!(sell_price(100), 50);
+    }
+
+    #[test]
+    fn everything_but_story_items_can_be_sold() {
+        // 卖页的六张表：治疗 1 · 投掷 2 · 仙宝 3 · 古董 4 · 矿石 5 ·
+        // 装备 7–11 · 尸块 12。剧情 6 没有表。
+        for t in [1u8, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12] {
+            assert!(sellable(t), "类型 {t} 该能卖");
+        }
+        assert!(!sellable(6), "剧情物品卖不掉");
+        assert!(!sellable(0));
+        assert!(!sellable(13));
     }
 
     #[test]
