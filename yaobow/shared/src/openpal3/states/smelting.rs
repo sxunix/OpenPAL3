@@ -5,12 +5,20 @@
 //! 先 `FUN_0040d010(10)` 取尸块（`ItemType::Corpse`），再
 //! `FUN_0040d010(3)` 取矿石和尸块（type 5 或 12），两两比
 //! `尸块.ore_id == 候选.id`，命中就是一条配方，产物是 `尸块.product_id`。
+//!
+//! 材料在「加入队列」那一步就扣（`FUN_0047aab0`），产物要等 5 秒才给
+//! （`FUN_0047b3b0`，见 `smelting.md` §4）。
 
 use std::collections::BTreeMap;
 
 use fileformats::pal3::gdb::ItemType;
 
 use super::game_db::GameDb;
+
+/// 炼一件要多久（`FUN_0047b3b0` 里 `cmp ecx, 0x1388`，毫秒）。
+pub const SMELT_MILLIS: u32 = 5000;
+/// 同上，秒。
+pub const SMELT_SECONDS: f32 = SMELT_MILLIS as f32 / 1000.;
 
 /// 一条配方：一块尸块 + 一份矿石 → 一件产物。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -135,6 +143,13 @@ mod tests {
         assert!(recipes(&db(), &bag(&[(6001, 1)])).is_empty());
         // 矿石在，但没有哪块尸块要它。
         assert!(recipes(&db(), &bag(&[(5001, 1), (6002, 1)])).is_empty());
+    }
+
+    #[test]
+    fn one_firing_takes_five_seconds() {
+        // `FUN_0047b3b0` 里 `cmp ecx, 0x1388` —— 5000 毫秒。
+        assert_eq!(SMELT_MILLIS, 5000);
+        assert_eq!(SMELT_SECONDS, 5.0);
     }
 
     #[test]

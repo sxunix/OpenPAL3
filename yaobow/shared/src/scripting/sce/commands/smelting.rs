@@ -6,9 +6,11 @@
 //! 过程——参数是**过程号**，原版存进 `DAT_00dba240`，确认键按下时
 //! `FUN_00432170(DAT_00dba240, 0)`。
 //!
-//! 界面是文字浮层，不是原版那一套。
+//! 界面是文字浮层，不是原版那一套。和原版的差别只在操作层：原版分「加入
+//! 队列」（当场扣材料）和「确认」（等 5 秒出一件）两步，这里并成一步——
+//! 确定就扣材料、等满 5 秒把产物给出来，扣什么发什么、数量和顺序都一样。
 
-use crate::openpal3::states::smelting::{Recipe, recipes};
+use crate::openpal3::states::smelting::{Recipe, SMELT_SECONDS, recipes};
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use imgui::{Condition, Ui};
@@ -32,12 +34,22 @@ enum Input {
     Cancel,
 }
 
+/// 正在炼的那一件：材料已经扣了，等满 [`SMELT_SECONDS`] 把产物给出来。
+#[derive(Debug, Clone)]
+struct Firing {
+    product: u32,
+    product_name: String,
+    elapsed: f32,
+}
+
 #[derive(Debug, Clone)]
 pub struct SceCommandSmeltingMenu {
     /// 关掉冶炼之后要跑的过程（原版 `DAT_00dba240`）。
     end_proc: i32,
     rows: Vec<Row>,
     cursor: usize,
+    /// 炉子里那一件，`None` 表示没在炼。
+    firing: Option<Firing>,
     /// 这一趟炼成了几件，退出时报一句。
     smelted: u32,
     notice: String,
@@ -50,6 +62,7 @@ impl SceCommandSmeltingMenu {
             end_proc,
             rows: Vec::new(),
             cursor: 0,
+            firing: None,
             smelted: 0,
             notice: String::new(),
             loaded: false,
@@ -81,11 +94,12 @@ impl SceCommandSmeltingMenu {
         }
     }
 
-    /// 炼一件：扣一块尸块、一份矿石，给一件产物。
-    ///
-    /// 扣材料是 `FUN_0047aab0` 逐字抄的；发产物那一步 `[推断]`——原版发货
-    /// 的位置没找到，见 `smelting.md` §4。
-    fn smelt(&mut self, state: &mut SceState) {
+    /// 开一炉：当场扣一块尸块、一份矿石（`FUN_0047aab0` 的「加入队列」就是
+    /// 当场扣的），产物要等 [`SMELT_SECONDS`] 秒。
+    fn start_firing(&mut self, state: &mut SceState) {
+        if self.firing.is_some() {
+            return;
+        }
         let Some(row) = self.rows.get(self.cursor).cloned() else {
             return;
         };
@@ -100,10 +114,33 @@ impl SceCommandSmeltingMenu {
             }
             p_state.remove_item(row.recipe.corpse, 1);
             p_state.remove_item(row.recipe.ore, 1);
-            p_state.add_item(row.recipe.product, 1);
         }
+        self.firing = Some(Firing {
+            product: row.recipe.product,
+            product_name: row.product_name.clone(),
+            elapsed: 0.,
+        });
+        self.notice = format!("正在炼 {}……", row.product_name);
+        self.rebuild(state);
+    }
+
+    /// 炉子走一帧。满 5 秒把产物放进背包——`FUN_0047b3b0` 就是这么发货的
+    /// （`cmp ecx, 0x1388` 之后 `FUN_0040ccf0`），一炉一件。
+    fn step_firing(&mut self, state: &mut SceState, delta_sec: f32) {
+        let Some(firing) = self.firing.as_mut() else {
+            return;
+        };
+        firing.elapsed += delta_sec;
+        if firing.elapsed < SMELT_SECONDS {
+            return;
+        }
+        let done = self.firing.take().expect("刚才还在");
+        state
+            .global_state_mut()
+            .persistent_state_mut()
+            .add_item(done.product, 1);
         self.smelted += 1;
-        self.notice = format!("炼出了 {}", row.product_name);
+        self.notice = format!("炼出了 {}", done.product_name);
         self.rebuild(state);
     }
 
@@ -165,7 +202,14 @@ impl SceCommandSmeltingMenu {
                 }
 
                 ui.separator();
-                ui.text("确定：炼一件　取消：离开");
+                match self.firing.as_ref() {
+                    Some(f) => ui.text(format!(
+                        "冶炼中……{:.0}/{:.0} 秒",
+                        f.elapsed.min(SMELT_SECONDS),
+                        SMELT_SECONDS
+                    )),
+                    None => ui.text("确定：炼一件　取消：离开"),
+                }
             });
     }
 }
@@ -176,7 +220,7 @@ impl SceCommand for SceCommandSmeltingMenu {
         _scene_manager: ComRc<ISceneManager>,
         ui: &Ui,
         state: &mut SceState,
-        _delta_sec: f32,
+        delta_sec: f32,
     ) -> bool {
         if !self.loaded {
             self.loaded = true;
@@ -188,6 +232,7 @@ impl SceCommand for SceCommandSmeltingMenu {
             return true;
         }
 
+        self.step_firing(state, delta_sec);
         self.draw(ui);
 
         match Self::poll_input(state) {
@@ -201,10 +246,13 @@ impl SceCommand for SceCommandSmeltingMenu {
                     self.cursor = (self.cursor + 1) % self.rows.len();
                 }
             }
-            Some(Input::Confirm) => self.smelt(state),
+            Some(Input::Confirm) => self.start_firing(state),
             Some(Input::Cancel) => {
-                self.finish(state);
-                return true;
+                // 炉子还在烧就先等着——原版这段时间界面也不放人。
+                if self.firing.is_none() {
+                    self.finish(state);
+                    return true;
+                }
             }
             None => {}
         }
