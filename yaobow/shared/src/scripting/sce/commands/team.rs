@@ -22,20 +22,37 @@
 //! For scale, 景天 is 76 world units tall, so the spread runs from about
 //! one to five body-heights out.
 //!
-//! What the original then does, and this does not: 211 first drops the
-//! member 12 units behind the leader and *walks* them out to the slot,
-//! and 212 places them at the doubled offset and walks them **into** the
-//! leader. Both wait for those walks. There is no follower pathing here,
-//! so each member is simply put at the endpoint. Neither opcode touches
-//! whether a member is active — that is opcode 28's job — so this only
-//! shows if the script has activated them.
+//! 全部四条都是「先摆起点、再走到终点、脚本等走完」——原版每个成员都
+//! 挂一个 `FUN_00434c40` 等待任务。走法取 `+0x504` 那个内部值
+//! （见 `openpal3::states::role_move`）：
+//!
+//! | opcode | 起点 | 终点 | 走法 |
+//! |---|---|---|---|
+//! | 25 | 主角 + 局部 −Z × 12 | 主角 + 表 × 1 | 走 |
+//! | 26 | 原地 | 主角位置 | 走 |
+//! | 211 | 主角 + 局部 −Z × 12 | 主角 + 表 × (−3) | 走 |
+//! | 212 | 瞬移到 主角 + 表 × 2 | 主角位置 | **跑** |
+//!
+//! 25/211 走 `FUN_00416fa0`、26 走 `FUN_00416fe0`，两者都以
+//! `FUN_00412b60(目标, 1)` 收尾——内部值 1 就是「走」。212 走
+//! `FUN_004198c0(主角位置, 2)`，那个 2 直接写进 `+0x504`，是「跑」。
+//!
+//! 这几条都不管成员是不是激活——那是 opcode 28 的事，所以只有脚本先
+//! 激活过才看得见。
 
 use crate::openpal3::directors::SceneManagerExtensions;
+use crate::openpal3::scene::RoleController;
+use crate::openpal3::states::role_move::{MIN_MOVE_DISTANCE, MoveMode};
+use crate::scripting::sce::commands::role_move_to::move_speed;
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use imgui::Ui;
 use radiance::comdef::{IEntityExt, ISceneManager};
 use radiance::math::{Transform, Vec3};
+
+/// 25 和 211 把成员先挪到这个偏移上再让他们走出去
+/// （`local_54 = 主角[+0x14] × -12.0`，和队形表用的是同一个基）。
+const NUDGE: f32 = -12.0;
 
 /// `DAT_00c042f8`, five rows of three floats.
 const FORMATION: [[f32; 3]; 5] = [
@@ -64,9 +81,80 @@ const OPEN: f32 = 1.0;
 /// entities the scene always builds.
 const PARTY_SLOTS: [i32; 5] = [0, 1, 2, 3, 4];
 
-fn place(scene_manager: &ComRc<ISceneManager>, state: &mut SceState, scale: f32) {
+/// 一次队形移动：每个成员一个目标点，走到为止。
+#[derive(Debug, Clone, Default)]
+struct FormationWalk {
+    /// (角色号, 目标点)。
+    targets: Vec<(i32, Vec3)>,
+    mode: Option<MoveMode>,
+}
+
+impl FormationWalk {
+    fn is_started(&self) -> bool {
+        self.mode.is_some()
+    }
+
+    /// 每帧把还没到位的成员往各自目标推一步；全部到位返回 `true`。
+    fn step(
+        &mut self,
+        scene_manager: &ComRc<ISceneManager>,
+        state: &mut SceState,
+        delta_sec: f32,
+    ) -> bool {
+        let Some(mode) = self.mode else {
+            return true;
+        };
+        if state.fast_forward() {
+            for (slot, target) in &self.targets {
+                if let Some(m) = scene_manager.get_resolved_role(state, *slot) {
+                    m.transform().borrow_mut().set_position(target);
+                }
+            }
+            self.targets.clear();
+        }
+
+        let mut done = true;
+        for (slot, target) in self.targets.clone() {
+            let Some(member) = scene_manager.get_resolved_role(state, slot) else {
+                continue;
+            };
+            let position = member.transform().borrow().position();
+            let remain = Vec3::sub(&target, &position);
+            let speed = move_speed(state, slot, mode);
+            let step = speed * delta_sec;
+
+            if remain.norm() < MIN_MOVE_DISTANCE || remain.norm() < step {
+                member.transform().borrow_mut().set_position(&target);
+                if let Some(rc) = RoleController::get_role_controller(member) {
+                    rc.inner::<RoleController>().idle();
+                }
+                continue;
+            }
+            done = false;
+            let next = Vec3::add(
+                &position,
+                &Vec3::scalar_mul(step, &Vec3::normalized(&remain)),
+            );
+            let look_at = Vec3::new(target.x, position.y, target.z);
+            member
+                .transform()
+                .borrow_mut()
+                .look_at(&look_at)
+                .set_position(&next);
+        }
+        done
+    }
+}
+
+/// 25 / 211 / 212 共用：按队形表算每个成员的落点。`scale` 是那三个乘数。
+fn formation_targets(
+    scene_manager: &ComRc<ISceneManager>,
+    state: &mut SceState,
+    scale: f32,
+) -> Vec<(i32, Vec3)> {
+    let mut out = vec![];
     let Some(leader) = scene_manager.get_resolved_role(state, -1) else {
-        return;
+        return out;
     };
     let leader_name = leader.name();
     let leader_matrix = *leader.transform().borrow().matrix();
@@ -100,16 +188,38 @@ fn place(scene_manager: &ComRc<ISceneManager>, state: &mut SceState, scale: f32)
             offset[1] * scale,
             offset[2] * scale,
         ));
-        let position = transform.position();
-        member.transform().borrow_mut().set_position(&position);
+        out.push((slot, transform.position()));
+    }
+    out
+}
+
+/// 25 / 211 起步：先把成员挪到主角局部 −Z 方向 12 单位处。
+fn nudge_to_start(scene_manager: &ComRc<ISceneManager>, state: &mut SceState) {
+    let Some(leader) = scene_manager.get_resolved_role(state, -1) else {
+        return;
+    };
+    let leader_name = leader.name();
+    let leader_matrix = *leader.transform().borrow().matrix();
+    let mut transform = Transform::from_matrix(leader_matrix);
+    transform.translate_local(&Vec3::new(0., 0., NUDGE));
+    let start = transform.position();
+
+    for slot in PARTY_SLOTS {
+        let Some(member) = scene_manager.get_resolved_role(state, slot) else {
+            continue;
+        };
+        if member.name() == leader_name {
+            continue;
+        }
+        member.transform().borrow_mut().set_position(&start);
     }
 }
 
-/// Both "gather" opcodes end with every member on the leader; the
-/// original walks them in and waits, which needs follower pathing.
-fn gather(scene_manager: &ComRc<ISceneManager>, state: &mut SceState) {
+/// 26 / 212 的终点：主角脚下。
+fn leader_targets(scene_manager: &ComRc<ISceneManager>, state: &mut SceState) -> Vec<(i32, Vec3)> {
+    let mut out = vec![];
     let Some(leader) = scene_manager.get_resolved_role(state, -1) else {
-        return;
+        return out;
     };
     let leader_name = leader.name();
     let position = leader.transform().borrow().position();
@@ -120,17 +230,26 @@ fn gather(scene_manager: &ComRc<ISceneManager>, state: &mut SceState) {
         if member.name() == leader_name {
             continue;
         }
-        member.transform().borrow_mut().set_position(&position);
+        out.push((slot, position));
+    }
+    out
+}
+
+/// 212 起步：把成员摆到两倍队形偏移处（原版是直接写坐标，不是走过去的）。
+fn place_at(scene_manager: &ComRc<ISceneManager>, state: &mut SceState, scale: f32) {
+    for (slot, position) in formation_targets(scene_manager, state, scale) {
+        if let Some(member) = scene_manager.get_resolved_role(state, slot) {
+            member.transform().borrow_mut().set_position(&position);
+        }
     }
 }
 
-/// 25 玩家队伍散开 — `LAB_004365a0` → `FUN_0040de10(1)`.
-///
-/// The original nudges each member 12 units along the leader's backward
-/// axis, then walks them out to their slot and waits. Without pathing
-/// they go straight to the slot, so the nudge has nothing to do.
-#[derive(Debug, Clone)]
-pub struct SceCommandTeamOpen {}
+/// 25 玩家队伍散开 — `LAB_004365a0` → `FUN_0040de10(1)`：先把成员挪到
+/// 主角局部 −Z 12 单位处，再让他们**走**到队形表原样的落点，脚本等走完。
+#[derive(Debug, Clone, Default)]
+pub struct SceCommandTeamOpen {
+    walk: FormationWalk,
+}
 
 impl SceCommand for SceCommandTeamOpen {
     fn update(
@@ -138,23 +257,28 @@ impl SceCommand for SceCommandTeamOpen {
         scene_manager: ComRc<ISceneManager>,
         _ui: &Ui,
         state: &mut SceState,
-        _delta_sec: f32,
+        delta_sec: f32,
     ) -> bool {
-        place(&scene_manager, state, OPEN);
-        true
+        if !self.walk.is_started() {
+            nudge_to_start(&scene_manager, state);
+            self.walk.targets = formation_targets(&scene_manager, state, OPEN);
+            self.walk.mode = Some(MoveMode::Walk);
+        }
+        self.walk.step(&scene_manager, state, delta_sec)
     }
 }
 
 impl SceCommandTeamOpen {
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 }
-
-/// 26 玩家队伍合并 — `LAB_004365b0` → `FUN_0040e0a0(1)`, which orders each
-/// member to the leader's position and waits for them to arrive.
-#[derive(Debug, Clone)]
-pub struct SceCommandTeamClose {}
+/// 26 玩家队伍合并 — `LAB_004365b0` → `FUN_0040e0a0(1)`：每个成员原地
+/// 起步，**走**向主角当前位置，脚本等走完。
+#[derive(Debug, Clone, Default)]
+pub struct SceCommandTeamClose {
+    walk: FormationWalk,
+}
 
 impl SceCommand for SceCommandTeamClose {
     fn update(
@@ -162,21 +286,27 @@ impl SceCommand for SceCommandTeamClose {
         scene_manager: ComRc<ISceneManager>,
         _ui: &Ui,
         state: &mut SceState,
-        _delta_sec: f32,
+        delta_sec: f32,
     ) -> bool {
-        gather(&scene_manager, state);
-        true
+        if !self.walk.is_started() {
+            self.walk.targets = leader_targets(&scene_manager, state);
+            self.walk.mode = Some(MoveMode::Walk);
+        }
+        self.walk.step(&scene_manager, state, delta_sec)
     }
 }
 
 impl SceCommandTeamClose {
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 }
-
-#[derive(Debug, Clone)]
-pub struct SceCommandTeamOpenOnSceneChange {}
+/// 211 进情节关散开 — `FUN_0040e110(1)`：和 25 一样先挪起点，只是队形表
+/// 乘 −3，成员落到主角另一侧。
+#[derive(Debug, Clone, Default)]
+pub struct SceCommandTeamOpenOnSceneChange {
+    walk: FormationWalk,
+}
 
 impl SceCommand for SceCommandTeamOpenOnSceneChange {
     fn update(
@@ -184,21 +314,29 @@ impl SceCommand for SceCommandTeamOpenOnSceneChange {
         scene_manager: ComRc<ISceneManager>,
         _ui: &Ui,
         state: &mut SceState,
-        _delta_sec: f32,
+        delta_sec: f32,
     ) -> bool {
-        place(&scene_manager, state, SPREAD);
-        true
+        if !self.walk.is_started() {
+            nudge_to_start(&scene_manager, state);
+            self.walk.targets = formation_targets(&scene_manager, state, SPREAD);
+            self.walk.mode = Some(MoveMode::Walk);
+        }
+        self.walk.step(&scene_manager, state, delta_sec)
     }
 }
 
 impl SceCommandTeamOpenOnSceneChange {
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 }
-
-#[derive(Debug, Clone)]
-pub struct SceCommandTeamCloseOnSceneChange {}
+/// 212 出情节关合并 — `FUN_0040e3c0(1)`：先把成员**瞬移**到两倍队形偏移
+/// 处，再让他们**跑**回主角身边（`FUN_004198c0(主角位置, 2)`，那个 2 直接
+/// 写进 `+0x504`）。
+#[derive(Debug, Clone, Default)]
+pub struct SceCommandTeamCloseOnSceneChange {
+    walk: FormationWalk,
+}
 
 impl SceCommand for SceCommandTeamCloseOnSceneChange {
     fn update(
@@ -206,23 +344,22 @@ impl SceCommand for SceCommandTeamCloseOnSceneChange {
         scene_manager: ComRc<ISceneManager>,
         _ui: &Ui,
         state: &mut SceState,
-        _delta_sec: f32,
+        delta_sec: f32,
     ) -> bool {
-        // The original puts each member at twice the offset and then
-        // walks them into the leader; with no pathing the endpoint is the
-        // leader's own position.
-        let _ = GATHER;
-        gather(&scene_manager, state);
-        true
+        if !self.walk.is_started() {
+            place_at(&scene_manager, state, GATHER);
+            self.walk.targets = leader_targets(&scene_manager, state);
+            self.walk.mode = Some(MoveMode::Run);
+        }
+        self.walk.step(&scene_manager, state, delta_sec)
     }
 }
 
 impl SceCommandTeamCloseOnSceneChange {
     pub fn new() -> Self {
-        Self {}
+        Self::default()
     }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -252,6 +389,34 @@ mod tests {
         let p = t.position();
         assert!(p.z > 9.9, "局部 +Z 应当指向身后，实得 {p:?}");
         assert!(p.x.abs() < 1e-3 && p.y.abs() < 1e-3);
+    }
+
+    #[test]
+    fn the_start_nudge_is_twelve_units_along_the_same_basis() {
+        // `local_54 = 主角[+0x14] × -12.0`，和队形表共用一个基。
+        assert_eq!(NUDGE, -12.0);
+        // 挪的这一下比最近的队形点还短，所以成员确实要往外走一段。
+        let nearest = FORMATION
+            .iter()
+            .map(|r| (r[0] * r[0] + r[2] * r[2]).sqrt())
+            .fold(f32::MAX, f32::min);
+        assert!(
+            NUDGE.abs() < nearest,
+            "起点 {} 该在 {nearest} 之内",
+            NUDGE.abs()
+        );
+    }
+
+    #[test]
+    fn a_fresh_walk_has_nothing_to_do() {
+        // 没起步的 FormationWalk 不该假装自己还在走。
+        let mut w = FormationWalk::default();
+        assert!(!w.is_started());
+        assert!(w.mode.is_none());
+        w.mode = Some(MoveMode::Walk);
+        assert!(w.is_started());
+        // 目标表空 = 全部到位。
+        assert!(w.targets.is_empty());
     }
 
     #[test]
