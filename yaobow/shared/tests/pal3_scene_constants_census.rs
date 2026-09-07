@@ -81,3 +81,28 @@ fn the_monster_section_is_left_alone() {
     assert_eq!(c.walk_speed, 80.);
     assert_ne!(c.walk_speed, 30., "这是 monster 节的 FreeSpeedS");
 }
+
+/// 八个脚步声都得在包里——四种地面 × 走/跑。
+#[test]
+fn every_footstep_variant_is_shipped() {
+    use mini_fs::StoreExt;
+    use shared::openpal3::states::footstep::{RUN_PREFIX, VARIANTS, WALK_PREFIX};
+
+    let Ok(assets) = std::env::var("YAOBOW_PAL3_ASSETS") else {
+        eprintln!("skipping: set YAOBOW_PAL3_ASSETS");
+        return;
+    };
+    let vfs = packfs::init_virtual_fs(&assets, None);
+
+    let mut found = 0;
+    for prefix in [WALK_PREFIX, RUN_PREFIX] {
+        for i in 0..VARIANTS {
+            let letter = (b'a' + i as u8) as char;
+            let path = PathBuf::from(format!("/snd/{prefix}{letter}.wav"));
+            assert!(vfs.open(&path).is_ok(), "{} 不在包里", path.display());
+            found += 1;
+        }
+    }
+    assert_eq!(found, VARIANTS * 2, "走和跑各四个");
+    println!("脚步声 {found} 个都在：{WALK_PREFIX}a–d / {RUN_PREFIX}a–d");
+}

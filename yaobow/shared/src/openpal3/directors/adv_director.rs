@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    openpal3::states::footstep,
     openpal3::states::role_move::{MoveMode, player_mode},
     openpal3::{
         asset_manager::AssetManager,
@@ -75,6 +76,7 @@ impl AdventureDirector {
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
+                footstep: None,
                 cave_wolf: None,
                 water_magic: None,
                 water_magic_failed: false,
@@ -181,6 +183,7 @@ impl AdventureDirector {
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
+                footstep: None,
                 cave_wolf: None,
                 water_magic: None,
                 water_magic_failed: false,
@@ -422,6 +425,12 @@ struct AdventureDirectorProps {
     snow: crate::openpal3::scene::Snow,
     snow_entity: Option<ComRc<radiance::comdef::IEntity>>,
     snow_failed: bool,
+    /// 脚步声：当前循环播着的那一条，和它的文件名。原版一次只有一条
+    /// （`DAT_00c116f4`），换了就 Stop 旧的 Play 新的。
+    footstep: Option<(
+        String,
+        Rc<RefCell<Box<dyn radiance::audio::AudioMemorySource>>>,
+    )>,
     /// 112 山洞之狼：正在进行的那一局，没在玩就是 `None`。
     cave_wolf: Option<crate::openpal3::states::cave_wolf::CaveWolf>,
     /// 152 水特效：`.par` 跑起来的模拟和它每个 group 的网格。
@@ -985,6 +994,65 @@ impl AdventureDirectorProps {
             .fold(None, |acc: Option<f32>, d| {
                 Some(acc.map_or(d, |best| best.min(d)))
             })
+    }
+
+    /// 脚步声。原版 `FUN_0041eb80`：按主角的移动模式挑走或跑那一套，
+    /// 再按脚下 nav 格的地面类型（第 5 字节）挑 a–d 里的一个，循环播；
+    /// 和上一帧同一条就不管，换了就停旧的播新的，停下来就停掉。
+    fn step_footstep(&mut self, moving_direction: &Vec3, throw: f32) {
+        // 只看有没有输入。原版挑的是角色的移动模式，撞墙走不动时模式
+        // 也还在「走」上，声音不停。
+        let mode = (moving_direction.norm() > 0.5).then(|| player_mode(throw));
+        let wanted = footstep::sound_name(mode, self.player_floor_type());
+
+        match (&self.footstep, &wanted) {
+            // 没换，继续循环播着。
+            (Some((playing, _)), Some(name)) if playing == name => return,
+            _ => {}
+        }
+        if let Some((_, source)) = self.footstep.take() {
+            source.borrow_mut().stop();
+            self.sce_vm.global_state_mut().remove_sound_source(source);
+        }
+        let Some(name) = wanted else { return };
+        let Ok(data) = self.sce_vm.state().asset_mgr().load_snd_data(&name) else {
+            // 缺这个音效就不再重试——每帧读一次盘不值当。
+            log::debug!("脚步声 {name} 读不到");
+            return;
+        };
+        let mut source = self.sce_vm.state().audio_engine().create_source();
+        source.set_data(data, radiance::audio::Codec::Wav);
+        source.play(true);
+        let source = Rc::new(RefCell::new(source));
+        self.sce_vm
+            .global_state_mut()
+            .add_sound_source(source.clone());
+        self.footstep = Some((name, source));
+    }
+
+    /// 主角脚下 nav 格的地面类型。越界原版填 2（`FUN_0041eb80` 开头）。
+    fn player_floor_type(&self) -> i32 {
+        const OUT_OF_RANGE: i32 = 2;
+        let Some(role) = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)
+        else {
+            return OUT_OF_RANGE;
+        };
+        let Some(scn) = self.scene_manager.scn_scene() else {
+            return OUT_OF_RANGE;
+        };
+        let Some(controller) = RoleController::get_role_controller(role.clone()) else {
+            return OUT_OF_RANGE;
+        };
+        let layer = controller.inner::<RoleController>().nav_layer();
+        let position = role.transform().borrow().position();
+        let s = scn.inner::<crate::openpal3::scene::ScnScene>();
+        let (nx, nz) = s.scene_coord_to_nav_coord(layer, &position);
+        s.nav()
+            .get(layer, nx.trunc() as i32, nz.trunc() as i32)
+            .map(|tile| ((tile.distance_to_border >> 8) & 0xff) as i32)
+            .unwrap_or(OUT_OF_RANGE)
     }
 
     fn move_role(
