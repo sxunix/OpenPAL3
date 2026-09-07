@@ -46,6 +46,12 @@ struct EffectSpec {
     width: f32,
     height: f32,
     base_y: f32,
+    /// Frames per second. **No binary source found**: `FUN_004b7980`
+    /// only pins the frame count (`while (i < 0x10)`), and the render
+    /// method at `0x4b7590` just indexes `+0x5c` — whoever advances it
+    /// was not located. Pal3.Unity uses 10
+    /// (`EffectConstants.AnimatedFireEffectFrameRate`); this 12 predates
+    /// that comparison and neither is backed by the exe.
     fps: f32,
     /// Whether this variant gets the `flare4` glow at all. See
     /// [`effect_spec`]'s table — ids 1 and 3 do not.
