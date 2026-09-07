@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::{
+    openpal3::states::role_move::{MoveMode, player_mode},
     openpal3::{
         asset_manager::AssetManager,
         directors::SceneManagerExtensions,
@@ -11,7 +12,7 @@ use crate::{
         states::{global_state::GlobalState, persistent_state::PersistentState},
     },
     scripting::sce::vm::{SceExecutionOptions, SceVm},
-    utils::{get_camera_rotation, get_moving_direction},
+    utils::{get_camera_rotation, get_moving_direction_and_throw},
 };
 
 use crosscom::ComRc;
@@ -991,6 +992,7 @@ impl AdventureDirectorProps {
         scene_manager: ComRc<ISceneManager>,
         delta_sec: f32,
         moving_direction: &Vec3,
+        throw: f32,
     ) {
         let role = scene_manager
             .get_resolved_role(self.sce_vm.state(), -1)
@@ -999,7 +1001,16 @@ impl AdventureDirectorProps {
         let mut position = role.transform().borrow().position();
 
         let nav_layer = role_controller.inner::<RoleController>().nav_layer();
-        let speed = 175.;
+
+        // 推力分走跑，速度取 `scene.txt` 的 PWalkSpeed / PRunSpeed
+        // （见 `switch/re/notes/role_move.md`）。原先这里无条件跑、
+        // 速度写死 175——那不是原版的任何一个值。
+        let mode = player_mode(throw);
+        let speed = self
+            .sce_vm
+            .global_state()
+            .role_constants()
+            .speed(mode, true, 0.);
         let mut target_position = Vec3::add(
             &position,
             &Vec3::scalar_mul(speed * delta_sec, &moving_direction),
@@ -1022,7 +1033,10 @@ impl AdventureDirectorProps {
             && (self.sce_vm.global_state().pass_through_wall()
                 || distance_to_border > std::f32::EPSILON)
         {
-            role_controller.inner::<RoleController>().run();
+            match mode {
+                MoveMode::Run => role_controller.inner::<RoleController>().run(),
+                _ => role_controller.inner::<RoleController>().walk(),
+            }
             let look_at = Vec3::new(target_position.x, position.y, target_position.z);
             role.transform()
                 .borrow_mut()
@@ -1179,11 +1193,16 @@ impl AdventureDirectorProps {
         self.step_cave_wolf(delta_sec);
         self.test_save();
 
-        let moving_direction = get_moving_direction(
+        let (moving_direction, throw) = get_moving_direction_and_throw(
             self.input_engine.clone(),
             self.scene_manager.scene().unwrap(),
         );
-        self.move_role(self.scene_manager.clone(), delta_sec, &moving_direction);
+        self.move_role(
+            self.scene_manager.clone(),
+            delta_sec,
+            &moving_direction,
+            throw,
+        );
 
         // Advance ambient NPC patrols (non-scripted townsfolk walking their
         // authored loop). Scripted roles are untouched.

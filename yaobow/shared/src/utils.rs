@@ -66,7 +66,13 @@ pub fn play_movie(
     show_video_window(ui, video_player, texture_id, window_size, target_size)
 }
 
-pub fn get_moving_direction(input: Rc<RefCell<dyn InputEngine>>, scene: ComRc<IScene>) -> Vec3 {
+/// 方向（世界系，已归一化）加上**推力**——摇杆推了多满，键盘按下就是 1。
+///
+/// 原版靠推力大小分走和跑，所以归一化之前得先把长度留下来。
+pub fn get_moving_direction_and_throw(
+    input: Rc<RefCell<dyn InputEngine>>,
+    scene: ComRc<IScene>,
+) -> (Vec3, f32) {
     let input = input.borrow_mut();
     let mut local_direction = Vec3::new(0., 0., 0.);
 
@@ -100,6 +106,9 @@ pub fn get_moving_direction(input: Rc<RefCell<dyn InputEngine>>, scene: ComRc<IS
     let left_x = if left_x.abs() < 0.1 { 0. } else { left_x };
 
     local_direction = Vec3::add(&local_direction, &Vec3::new(left_x, 0., 0.));
+    // 归一化会把摇杆推了多满这件事抹掉，先留一份。键盘同时按两个方向
+    // 会到 1.41，夹到 1。
+    let throw = local_direction.norm().min(1.);
     local_direction.normalize();
 
     let camera_mat = scene.camera().transform().matrix().clone();
@@ -111,7 +120,12 @@ pub fn get_moving_direction(input: Rc<RefCell<dyn InputEngine>>, scene: ComRc<IS
     let world_direction_mat = Mat44::multiplied(&camera_mat, &world_direction_mat);
 
     let world_direction = Vec3::new(world_direction_mat[0][3], 0., world_direction_mat[2][3]);
-    Vec3::normalized(&world_direction)
+    (Vec3::normalized(&world_direction), throw)
+}
+
+/// 只要方向的老接口。
+pub fn get_moving_direction(input: Rc<RefCell<dyn InputEngine>>, scene: ComRc<IScene>) -> Vec3 {
+    get_moving_direction_and_throw(input, scene).0
 }
 
 pub fn get_camera_rotation(

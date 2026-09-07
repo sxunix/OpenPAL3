@@ -230,13 +230,35 @@ if (fVar1 < 12.0) { +0x4f4 = 0; return; }    // 连移动状态都不进
   移动基本不会走到它。
 - 「是不是主角」原版看角色类型 `+0xad == -1`，移植端按角色号在
   `PLAYER_ACTOR_IDS` 里判。
-- **玩家自己在冒险模式的移动速度**还是 `adv_director::move_role` 里硬编码
-  的 175，而且无条件 `run()`。175 不是 `scene.txt` 里的任何一个值
-  （走 100、跑 200）。**追了两轮没拿下**，见下一节的排查记录。
+- 玩家在冒险模式的移动速度已经接上（跑 `PRunSpeed` 200 / 走
+  `PWalkSpeed` 100，按摇杆推力分），见 §6。
 - 冒险模式下队友**不跟着队长走**——原版也不跟：PAL3 平时只显示队长，
   队友是靠 25/211 散开时才摆出来的。
 
-## 6. 玩家行走速度：排查到哪了
+## 6. 玩家行走速度
+
+**结论**：推力 ≥ 0.7 是跑，取 `PRunSpeed` = 200；不到就是走，取
+`PWalkSpeed` = 100。键盘按方向键推力恒为 1，所以键盘走路就是跑。
+
+这一条是**从 Pal3.Unity 拿到的**，不是从 exe 逆出来的：
+
+- `PlayerGamePlayManager.Movement.cs`：
+  `MovementMode movementMode = movement.magnitude < 0.7f ? Walk : Run;`
+- `GameActor.GetMovementSpeed(mode)` 的分流和 §1 逆出来的一模一样——
+  先看角色自带的 `Info.GameBoxMoveSpeed`（就是 `+0x1fc`），再按
+  `Info.Type == MainActor` 分主角和 NPC，最后按 mode 分走跑。
+- `ActorConstants.PlayerActorRunSpeed = 10f`，而它的 1 单位 = 20 GameBox
+  单位（`UnityPrimitivesConvertor.GameBoxUnitToUnityUnit`），换算回来
+  **正好 200 = `scene.txt` 的 `PRunSpeed`**。两个独立来源对上了。
+
+一处没跟它：Unity 的 `PlayerActorWalkSpeed = 4f` 换算是 80，而
+`scene.txt` 写的 `PWalkSpeed` 是 100。移植端用 100——那是原版数据，
+Unity 那边整个 `GetMovementSpeed` 都没读 `scene.txt`，80 应该是手调的。
+
+0.7 这个阈值在 exe 里没验证过。玩家那条输入路径仍未定位，下面是排查记录，
+免得下次重走。
+
+### 从 exe 反向找，走到哪了
 
 速度只可能是 `+0x508`，而 `+0x508` **只有 `FUN_00412710` 写**，它又完全
 按 `+0x504` 分派。所以问题等价于「玩家按方向键走路时 `+0x504` 是几」。
@@ -264,7 +286,5 @@ if (fVar1 < 12.0) { +0x4f4 = 0; return; }    // 连移动状态都不进
 - `FUN_00417c50` 结尾那段确实做位移合成（方向归一化 × `+0x508`），但它
   只是**用**速度，不设。
 
-**下次该从哪切：** 正向追输入层——找 PAL3 读方向键/手柄的地方，看它把
-方向交给谁。反向从字段找已经走到头了。在那之前 175 保持不动：改成 200
-是全游戏最常被感知的手感改动，只有推理（玩家跑 = `+0x504 = 2` = case 2 =
-`PRunSpeed`）不够。
+**反向从字段找已经到头了。** 要在 exe 里确认 0.7 那个阈值，得正向追输入
+层——找 PAL3 读方向键/手柄的地方，看它把推力交给谁。

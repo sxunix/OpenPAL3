@@ -218,6 +218,24 @@ impl RoleConstants {
 /// ```
 pub const MIN_MOVE_DISTANCE: f32 = 12.0;
 
+/// 摇杆推力超过这个数就是跑，不到就是走。
+///
+/// **这一条来自 Pal3.Unity**（`PlayerGamePlayManager.Movement.cs`：
+/// `movement.magnitude < 0.7f ? MovementMode.Walk : MovementMode.Run`），
+/// 不是从 exe 逆出来的——玩家那条输入路径还没定位到，见
+/// `switch/re/notes/role_move.md` §6。键盘按方向键推力恒为 1，所以键盘
+/// 走路就是跑，和实机一致。
+pub const RUN_THROW_THRESHOLD: f32 = 0.7;
+
+/// 玩家这一帧是走还是跑。
+pub fn player_mode(throw: f32) -> MoveMode {
+    if throw < RUN_THROW_THRESHOLD {
+        MoveMode::Walk
+    } else {
+        MoveMode::Run
+    }
+}
+
 /// exe 里写死的路径。
 pub const SCENE_TXT: &str = "/basedata/basedata/datascript/scene.txt";
 
@@ -310,6 +328,19 @@ END\r
             RoleConstants::parse(";只有注释\n"),
             RoleConstants::default()
         );
+    }
+
+    #[test]
+    fn a_full_throw_runs_and_a_light_one_walks() {
+        assert_eq!(player_mode(1.0), MoveMode::Run, "键盘按下推力就是 1");
+        assert_eq!(player_mode(0.7), MoveMode::Run, "正好到阈值算跑");
+        assert_eq!(player_mode(0.69), MoveMode::Walk);
+        assert_eq!(player_mode(0.2), MoveMode::Walk, "轻推摇杆是走");
+
+        // 玩家跑 200、走 100，都从 scene.txt 来。
+        let c = RoleConstants::default();
+        assert_eq!(c.speed(player_mode(1.0), true, 0.), 200.);
+        assert_eq!(c.speed(player_mode(0.3), true, 0.), 100.);
     }
 
     #[test]
