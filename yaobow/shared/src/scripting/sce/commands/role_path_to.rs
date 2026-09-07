@@ -1,5 +1,7 @@
 use crate::openpal3::directors::SceneManagerExtensions;
 use crate::openpal3::scene::RoleController;
+use crate::openpal3::states::role_move::MoveMode;
+use crate::scripting::sce::commands::role_move_to::{apply_move_action, move_speed};
 use crate::scripting::sce::{SceCommand, SceState};
 
 use crosscom::ComRc;
@@ -13,18 +15,13 @@ pub struct SceCommandRolePathTo {
     role_id: i32,
     nav_x: f32,
     nav_z: f32,
-    run: i32,
+    /// 第四个参数，见 `openpal3::states::role_move::MoveMode`。
+    mode: MoveMode,
 }
 
 impl SceCommand for SceCommandRolePathTo {
     fn initialize(&mut self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
-        let _role = scene_manager.resolve_role_mut_do(state, self.role_id, |_e, r| {
-            if self.run == 1 {
-                r.run();
-            } else {
-                r.walk();
-            }
-        });
+        apply_move_action(&scene_manager, state, self.role_id, self.mode);
     }
 
     fn update(
@@ -34,10 +31,7 @@ impl SceCommand for SceCommandRolePathTo {
         state: &mut SceState,
         delta_sec: f32,
     ) -> bool {
-        const WALK_SPEED: f32 = 80.;
-        const RUN_SPEED: f32 = 175.;
-
-        let speed = if self.run == 1 { RUN_SPEED } else { WALK_SPEED };
+        let speed = move_speed(state, self.role_id, self.mode);
         let role = scene_manager.get_resolved_role(state, self.role_id);
 
         if role.is_none() {
@@ -75,7 +69,7 @@ impl SceCommand for SceCommandRolePathTo {
         };
 
         let mut look_at = Vec3::new(to.x, position.y, to.z);
-        if self.run == 2 {
+        if self.mode == MoveMode::Still {
             look_at = Vec3::add(&position, &Vec3::sub(&position, &to));
         }
 
@@ -92,12 +86,12 @@ impl SceCommand for SceCommandRolePathTo {
 }
 
 impl SceCommandRolePathTo {
-    pub fn new(role_id: i32, nav_x: i32, nav_z: i32, run: i32) -> Self {
+    pub fn new(role_id: i32, nav_x: i32, nav_z: i32, mode: i32) -> Self {
         Self {
             role_id,
             nav_x: nav_x as f32,
             nav_z: nav_z as f32,
-            run,
+            mode: MoveMode::from_param(mode),
         }
     }
 }

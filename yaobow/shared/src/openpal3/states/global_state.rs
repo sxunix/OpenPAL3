@@ -10,6 +10,7 @@ use crate::openpal3::asset_manager::AssetManager;
 use super::camera::Pal3Camera;
 use super::game_db::GameDb;
 use super::persistent_state::PersistentState;
+use super::role_move::{RoleConstants, SCENE_TXT};
 use common::store_ext::StoreExt2;
 use radiance::{
     audio::{AudioEngine, AudioMemorySource, AudioSource, AudioSourceState, Codec as AudioCodec},
@@ -38,6 +39,8 @@ pub struct GlobalState {
     /// the shipped data is missing or unreadable — callers fall back to
     /// placeholder behaviour rather than refusing to run.
     game_db: Option<Rc<GameDb>>,
+    /// `datascript\scene.txt` 的 `role` 一节——走跑速度那一组常数。
+    role_constants: RoleConstants,
 
     pass_through_wall: bool,
     divine_tree_flower_initialized: bool,
@@ -65,6 +68,13 @@ impl GlobalState {
         let default_scene_bgm = parse_music_mapping(&music_txt, "scene");
         let combat_bgm = parse_music_mapping(&music_txt, "combat");
 
+        // 走跑速度这一组常数原版也是启动时读一次（`FUN_0041efa0`）。
+        let role_constants = asset_mgr
+            .vfs()
+            .read_to_end_from_gbk(SCENE_TXT)
+            .map(|text| RoleConstants::parse(&text))
+            .unwrap_or_default();
+
         let game_db = GameDb::load(asset_mgr.vfs(), &PathBuf::from("/basedata/basedata"));
         if let Some(db) = game_db.as_ref() {
             persistent_state.borrow_mut().seed_from_db(db);
@@ -83,6 +93,7 @@ impl GlobalState {
             combat_bgm,
             video_player,
             game_db,
+            role_constants,
             pass_through_wall: false,
             divine_tree_flower_initialized: false,
             effect_position: Vec3::new(0., 0., 0.),
@@ -102,6 +113,11 @@ impl GlobalState {
     /// The shipped item/skill/actor tables and experience curve.
     pub fn game_db(&self) -> Option<&Rc<GameDb>> {
         self.game_db.as_ref()
+    }
+
+    /// 走跑速度那一组常数（`datascript\scene.txt` 的 `role` 节）。
+    pub fn role_constants(&self) -> &RoleConstants {
+        &self.role_constants
     }
 
     pub fn adv_input_enabled(&self) -> bool {
