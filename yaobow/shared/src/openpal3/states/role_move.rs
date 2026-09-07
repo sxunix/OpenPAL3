@@ -31,22 +31,36 @@ impl MoveMode {
         }
     }
 
-    /// 播哪条动画。取决于这个角色用哪套命名，见 [`ActionSet`]。
-    pub fn action_name(self, set: ActionSet) -> &'static str {
+    /// 播哪条动画，按优先级排——挑第一个这个模型真有的。
+    ///
+    /// 见 [`ActionSet`]。三套的差别：
+    ///
+    /// - `Cee`（主角）：内部值直接当动作号查表，1 → `c02`、2 → `c03`、
+    ///   3 → `c15`；没有 `c03` 的退回 `c02`。
+    /// - `Zed`（NPC）：经 `FUN_004126d0` 映射，走和跑落到同一个 `z3`
+    ///   ——Pal3.Unity 那边这一条的注释就写着「跑,用走代替」。
+    /// - `Monster`：走路另有 `z4`，没有才退回 `z3`。
+    pub fn action_names(self, set: ActionSet) -> &'static [&'static str] {
         match set {
-            // `+0xae == '1'`：内部值直接当动作号查表，
-            // 1 → `c02`、2 → `c03`、3 → `c15`。
             ActionSet::Cee => match self {
-                MoveMode::Walk => "c02",
-                MoveMode::Run => "c03",
-                MoveMode::Still => "c15",
+                MoveMode::Walk => &["c02"],
+                MoveMode::Run => &["c03", "c02"],
+                MoveMode::Still => &["c15"],
             },
-            // 经 `FUN_004126d0` 映射，走和跑落到同一个 `z3`。
             ActionSet::Zed => match self {
-                MoveMode::Walk | MoveMode::Run => "z3",
-                MoveMode::Still => "z1",
+                MoveMode::Walk | MoveMode::Run => &["z3"],
+                MoveMode::Still => &["z1"],
+            },
+            ActionSet::Monster => match self {
+                MoveMode::Walk | MoveMode::Run => &["z4", "z3"],
+                MoveMode::Still => &["z0", "z1"],
             },
         }
+    }
+
+    /// 首选的那一条。
+    pub fn action_name(self, set: ActionSet) -> &'static str {
+        self.action_names(set)[0]
     }
 
     /// 动画播放倍速。
@@ -56,7 +70,7 @@ impl MoveMode {
     /// 跑有自己的 `c03`，倍速**恒为 1.0**。
     pub fn anim_scale(self, set: ActionSet) -> f32 {
         match (set, self) {
-            (ActionSet::Zed, MoveMode::Run) => 2.4,
+            (ActionSet::Zed | ActionSet::Monster, MoveMode::Run) => 2.4,
             _ => 1.0,
         }
     }
@@ -77,8 +91,36 @@ impl MoveMode {
 pub enum ActionSet {
     /// `+0xae == '1'`：主角那一类，有完整的 `c` 系列动画。
     Cee,
-    /// 其余角色，只有 `z` 系列。
+    /// 普通 NPC，只有 `z` 系列。
     Zed,
+    /// 怪物。也是 `z` 系列，但站立和行走另有 `z0` / `z4`。
+    Monster,
+}
+
+impl ActionSet {
+    /// 按模型名分类。
+    ///
+    /// 照 Pal3.Unity 的 `ActorBase`（`IsMainActor` = 名字以 `1` 开头、
+    /// `IsMonsterActor` = 既不以 `1` 也不以 `2` 开头）。原版看的是角色对象
+    /// 上的 `+0xae` / `+0xad`，但模型名本来就是按类型编号的，两者等价：
+    /// 实机 `basedata/ROLE` 下 269 个角色里，`c01`/`c02`/`c03` 只有 10 个
+    /// 角色有（101–110），`z0`/`z4` 全在 3xx 和 Bxx。
+    pub fn of(model_name: &str) -> Self {
+        match model_name.chars().next() {
+            Some('1') => ActionSet::Cee,
+            Some('2') => ActionSet::Zed,
+            _ => ActionSet::Monster,
+        }
+    }
+
+    /// 站着不动播什么，按优先级排。挑第一个这个模型真有的。
+    pub fn idle_names(self) -> &'static [&'static str] {
+        match self {
+            ActionSet::Cee => &["c01"],
+            ActionSet::Zed => &["z1", "z2"],
+            ActionSet::Monster => &["z0", "z1", "z2"],
+        }
+    }
 }
 
 /// `datascript\scene.txt` 的 `role` 一节。原版启动时读进 0x58b378 起那串槽位。
@@ -286,6 +328,40 @@ END\r
         assert_eq!(MoveMode::Still.action_name(ActionSet::Cee), "c15");
         // 跑有自己的动画，就不需要加速播了。
         assert_eq!(MoveMode::Run.anim_scale(ActionSet::Cee), 1.0);
+    }
+
+    #[test]
+    fn the_model_name_says_which_set_a_role_uses() {
+        // 101–110 是主角，2xx 是普通 NPC，3xx / Bxx 是怪物。
+        assert_eq!(ActionSet::of("101"), ActionSet::Cee);
+        assert_eq!(ActionSet::of("110"), ActionSet::Cee);
+        assert_eq!(ActionSet::of("201"), ActionSet::Zed);
+        assert_eq!(ActionSet::of("299"), ActionSet::Zed);
+        assert_eq!(ActionSet::of("335"), ActionSet::Monster);
+        assert_eq!(ActionSet::of("B06"), ActionSet::Monster);
+        assert_eq!(ActionSet::of("b38"), ActionSet::Monster);
+        assert_eq!(ActionSet::of(""), ActionSet::Monster, "名字空的当怪物");
+    }
+
+    #[test]
+    fn monsters_have_their_own_idle_and_walk() {
+        assert_eq!(
+            MoveMode::Walk.action_names(ActionSet::Monster),
+            ["z4", "z3"]
+        );
+        assert_eq!(MoveMode::Run.action_names(ActionSet::Monster), ["z4", "z3"]);
+        assert_eq!(ActionSet::Monster.idle_names(), ["z0", "z1", "z2"]);
+        // 实机 19 个有 z4 的角色全都同时有 z3，所以退路一定走得通。
+        assert_eq!(MoveMode::Walk.action_names(ActionSet::Monster)[1], "z3");
+    }
+
+    #[test]
+    fn every_set_has_an_idle_fallback() {
+        for set in [ActionSet::Cee, ActionSet::Zed, ActionSet::Monster] {
+            assert!(!set.idle_names().is_empty());
+        }
+        assert_eq!(ActionSet::Cee.idle_names(), ["c01"]);
+        assert_eq!(ActionSet::Zed.idle_names(), ["z1", "z2"]);
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use crate::openpal3::asset_manager::AssetManager;
 use crate::openpal3::comdef::IRoleController;
+use crate::openpal3::states::role_move::{ActionSet, MoveMode};
 use common::store_ext::StoreExt2;
 use crosscom::ComRc;
 use dashmap::DashMap;
@@ -121,8 +122,12 @@ impl RoleController {
         idle_anim: &str,
     ) -> Result<Self, EntityError> {
         let idle_anim = idle_anim;
+        // 站立动画按角色类型排优先级：主角 c01、NPC z1/z2、怪物 z0 打头。
+        // 实机 269 个角色里有 z0 的都同时有 z1，所以退路一定走得通。
+        let mut candidates = vec![idle_anim];
+        candidates.extend_from_slice(ActionSet::of(role_name).idle_names());
         let anim = asset_mgr
-            .load_role_anim_first(entity.clone(), role_name, &[idle_anim, "c01", "z1"])
+            .load_role_anim_first(entity.clone(), role_name, &candidates)
             .ok_or(EntityError::EntityAnimationNotFound)?;
 
         Ok(Self::new_from_idle_animation(
@@ -142,10 +147,18 @@ impl RoleController {
             animations.insert(idle_anim_name.to_string(), idle_anim);
         }
 
-        let walking_anim =
-            asset_mgr.load_role_anim_first(entity.clone(), role_name, &["c02", "z3"]);
-        let running_anim =
-            asset_mgr.load_role_anim_first(entity.clone(), role_name, &["c03", "c02", "z3"]);
+        // 走和跑同理——怪物有自己的 z4，NPC 的「跑」原版就是拿走路顶的。
+        let set = ActionSet::of(role_name);
+        let walking_anim = asset_mgr.load_role_anim_first(
+            entity.clone(),
+            role_name,
+            MoveMode::Walk.action_names(set),
+        );
+        let running_anim = asset_mgr.load_role_anim_first(
+            entity.clone(),
+            role_name,
+            MoveMode::Run.action_names(set),
+        );
 
         let walking_anim_name = walking_anim
             .map(|(name, _)| name)
