@@ -2,6 +2,7 @@ pub mod attributes;
 pub mod camera;
 pub mod cave_wolf;
 pub mod combat_data;
+pub mod fade;
 pub mod game_db;
 pub mod global_state;
 pub mod growth;

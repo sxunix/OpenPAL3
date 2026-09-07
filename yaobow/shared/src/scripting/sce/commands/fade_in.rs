@@ -3,7 +3,9 @@ use crosscom::ComRc;
 use imgui::Ui;
 use radiance::comdef::ISceneManager;
 
-pub const SCE_COMMAND_FADE_IN_TIMEOUT: f32 = 3.;
+/// 四条 fade 命令共用的时长。真值和出处在
+/// [`crate::openpal3::states::fade::FADE_SECONDS`]。
+pub use crate::openpal3::states::fade::FADE_SECONDS as SCE_COMMAND_FADE_IN_TIMEOUT;
 
 #[derive(Debug, Clone)]
 pub struct SceCommandFadeIn {
