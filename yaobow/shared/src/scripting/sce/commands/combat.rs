@@ -286,6 +286,7 @@ impl SceCommandCombat {
     /// ——规则层不碰这些实体。
     fn build_stage(&mut self, scene_manager: &ComRc<ISceneManager>, state: &mut SceState) {
         use crate::openpal3::combat::stage;
+        use common::store_ext::StoreExt2;
         use mini_fs::StoreExt;
         use radiance::scene::{CoreScene, SceneLighting};
 
@@ -345,6 +346,23 @@ impl SceCommandCombat {
                 .borrow_mut()
                 .set_position(&Vec3::new(pos.x, 0., pos.z));
             scene.add_entity(entity);
+        }
+
+        // 相机：位置取 cbCam.ini 的 DefaultCam0，朝向看战场中心。
+        if let Some(text) = asset_mgr
+            .vfs()
+            .read_to_end_from_gbk(stage::COMBAT_CAMERA_INI)
+            .ok()
+        {
+            if let Some(cam) = stage::parse_cameras(&text).first() {
+                let (pos, target) = cam.look_at_origin();
+                let mut camera = scene.camera_mut();
+                camera.set_fov43(stage::COMBAT_FOV_DEGREES.to_radians());
+                camera
+                    .transform_mut()
+                    .set_position(&Vec3::new(pos.0, pos.1, pos.2))
+                    .look_at(&Vec3::new(target.0, target.1, target.2));
+            }
         }
 
         scene_manager.push_scene(scene.clone());

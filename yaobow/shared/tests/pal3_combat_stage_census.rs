@@ -106,3 +106,39 @@ fn the_stage_has_eleven_slots_five_of_them_ours() {
             .collect::<Vec<_>>()
     );
 }
+
+/// `cbCam.ini` 的 `DefaultCam*`：十八台，位置都在战场外围。
+#[test]
+fn the_shipped_combat_cameras_parse() {
+    let Some((vfs, data)) = data() else {
+        eprintln!("skipping: set YAOBOW_PAL3_ASSETS");
+        return;
+    };
+    use shared::openpal3::combat::stage::{COMBAT_CAMERA_INI, parse_cameras};
+
+    let text = vfs
+        .read_to_end_from_gbk(COMBAT_CAMERA_INI)
+        .expect("cbCam.ini");
+    let cams = parse_cameras(&text);
+    assert_eq!(cams.len(), 18, "DefaultCam0..17");
+
+    // 每台都得离战场中心有点距离，否则等于摆在人堆里。
+    let mut nearest = f32::MAX;
+    for (i, c) in cams.iter().enumerate() {
+        let d = (c.x * c.x + c.y * c.y + c.z * c.z).sqrt();
+        assert!(d > 100., "第 {i} 台相机离原点只有 {d}");
+        assert!(c.y > 0., "第 {i} 台相机在地面下（y = {}）", c.y);
+        nearest = nearest.min(d);
+    }
+    println!("18 台战斗相机，最近的离战场中心 {nearest:.0}");
+
+    // 十一个站位的重心确实在原点附近——这是「朝向看原点」的依据。
+    let n = data.role_positions.len() as f32;
+    let cx: f32 = data.role_positions.iter().map(|p| p.x).sum::<f32>() / n;
+    let cz: f32 = data.role_positions.iter().map(|p| p.z).sum::<f32>() / n;
+    println!("站位重心 ({cx:.0}, {cz:.0})");
+    assert!(
+        cx.abs() < 100. && cz.abs() < 100.,
+        "站位重心 ({cx}, {cz}) 离原点太远，朝向原点就不对了"
+    );
+}
