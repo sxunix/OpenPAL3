@@ -123,17 +123,40 @@ pub struct Level {
 }
 
 impl Level {
-    /// 这一级、这个经营方针下，选定三档之后的红利百分比：
-    /// 基础值加三个加权值。
-    pub fn dividend_rate(&self, mode: usize, period: usize, accrual: usize, unhock: usize) -> f32 {
+    /// 三档加权的和（`FUN_0051f130` 里连着两次 `fadd` 加出来的那个数）。
+    pub fn weight_sum(&self, mode: usize, period: usize, accrual: usize, unhock: usize) -> f32 {
         let Some(w) = self.dividends.get(mode) else {
-            return self.base_dividend;
+            return 0.;
         };
         let pick = |arr: &[f32; TIERS], i: usize| arr.get(i).copied().unwrap_or(0.);
-        self.base_dividend
-            + pick(&w.period, period)
-            + pick(&w.accrual, accrual)
-            + pick(&w.unhock, unhock)
+        pick(&w.period, period) + pick(&w.accrual, accrual) + pick(&w.unhock, unhock)
+    }
+
+    /// 这一单红利占资本的比例：`基础红利 × (1 + 三档加权之和)`。
+    ///
+    /// **加权是乘上去的，不是加上去的**——`FUN_0051f130`：
+    ///
+    /// ```text
+    /// st0 = 资本 × BaseDividend        // 先算好的「基础红利钱」+0x50158
+    /// st0 = (加权1 + 加权2 + 加权3) × st0 + st0
+    /// ```
+    ///
+    /// 也就是 `基础红利钱 × (1 + 加权和)`。先前按「基础值加三个加权」写是错
+    /// 的，会把 A 级最差的组合算成负数；乘法这一版最差也只是打到 0.25 倍。
+    pub fn dividend_rate(&self, mode: usize, period: usize, accrual: usize, unhock: usize) -> f32 {
+        self.base_dividend * (1. + self.weight_sum(mode, period, accrual, unhock))
+    }
+
+    /// 这一单能分多少钱：`ftol(资本 × dividend_rate)`。
+    pub fn dividend(
+        &self,
+        capital: i32,
+        mode: usize,
+        period: usize,
+        accrual: usize,
+        unhock: usize,
+    ) -> i32 {
+        (capital as f32 * self.dividend_rate(mode, period, accrual, unhock)) as i32
     }
 }
 
@@ -375,15 +398,17 @@ end
     }
 
     #[test]
-    fn the_dividend_rate_is_the_base_plus_three_weights() {
+    fn the_dividend_rate_multiplies_the_base_by_one_plus_the_weights() {
         let t = HockShopLevels::parse(SAMPLE);
         let d = t.level(1);
-        // 短当期 +0.1、低利率 0、低拆当率 +0.1，基础 0.2。
-        assert!((d.dividend_rate(MODE_CATHOLICON, 0, 0, 0) - 0.4).abs() < 1e-6);
-        // 高拆当率 −0.1。
+        // 短当期 +0.1、低利率 0、低拆当率 +0.1 → 0.2 × (1 + 0.2) = 0.24。
+        assert!((d.dividend_rate(MODE_CATHOLICON, 0, 0, 0) - 0.24).abs() < 1e-6);
+        // 短当期 +0.1、低利率 0、高拆当率 −0.1 → 0.2 × 1.0 = 0.2。
         assert!((d.dividend_rate(MODE_CATHOLICON, 0, 0, 2) - 0.2).abs() < 1e-6);
-        // 没有加权数据的方针只剩基础值。
+        // 没有加权数据的方针就是基础值本身。
         assert!((d.dividend_rate(MODE_ANY, 0, 0, 0) - 0.2).abs() < 1e-6);
+        // 分红的钱：资本 × 比例，向下取整。
+        assert_eq!(d.dividend(100_000, MODE_CATHOLICON, 0, 0, 0), 24_000);
     }
 
     #[test]

@@ -145,7 +145,51 @@ if (资本 > 500000) 等级 = 4                 // A 顶格
 移植：`states/hockshop.rs` 的 `CAPITAL_FOR_TOP` / `level_for_capital` /
 `max_investment` / `invest`，边界值都有单测。
 
-## 7. 还没做
+## 7. 分红怎么算（`FUN_0051f130`）
+
+先在切页时算出「基础红利钱」（0x521058 一带）：
+
+```text
+记录 = FUN_00523090(等级)          // this->+0x214 + 等级 × 0xdc
+资本 = (+0x1f4c)->+0x1488
++0x50154 = 资本
++0x50158 = ftol(资本 × 记录[+0xd8])   // 记录的最后一个 float 就是 BaseDividend
+```
+
+再按玩家选的三档折算（`FUN_0051f130`，FPU 那几步）：
+
+```text
+st0 = 基础红利钱                                   // fild +0x50158
+st0 = 记录[利率项] + 记录[拆当率项] + 记录[当期项]   // 三次 fld/fadd
+st0 = st0 × 基础红利钱 + 基础红利钱                 // fmul st(1); fadd st(1)
+红利 = ftol(st0) → +0x5015c
+```
+
+也就是
+
+```text
+红利 = 资本 × BaseDividend × (1 + 当期加权 + 利率加权 + 拆当率加权)
+```
+
+**加权是乘上去的，不是加上去的**。先前笔记里写成「基础值加三个加权」是错的
+——那样 A 级奇珍异宝最差的组合会算出负红利；乘法这一版最差是 ×0.25，永远
+为正。
+
+顺带把记录的字段位置钉死了（三个索引式子反推出来的，0xdc 字节正好填满）：
+
+```text
++0x00  七个功能开关，各一字节（Sale/Buy/MelonCutting/DealIn/Invest/Rest/Exhibit）
++0x08  BuyDiscount (float)
++0x0c  PropNum   +0x10 DisMinNum   +0x14 DisMaxNum
++0x18  四种经营方针，每种 48 字节：
+         +0   resume / attack / ancient   （三个比例）
+         +12  period[3]                   （当期加权，代码里 +0x24 + 48×方针）
+         +24  accrual[3]                  （利率加权，+0x30 + 48×方针）
+         +36  unhock[3]                   （拆当率加权，+0x3c + 48×方针）
++0xd8  BaseDividend (float)
+```
+
+## 8. 还没做
 
 **经营玩法本身**：0x51d710–0x522xxx 那一大段（`FUN_0051f1b0` 一个函数就
 10209 字节），加上五页界面和 0xa4128 字节的状态。这是六个小游戏里最大的

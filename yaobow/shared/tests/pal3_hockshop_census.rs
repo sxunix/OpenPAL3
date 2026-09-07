@@ -3,7 +3,7 @@
 //! 文件里带着完整注释（见 `switch/re/notes/hockshop.md`），所以这里查的是
 //! 「五级都解出来了，而且和文件里写的数对得上」：功能开关随等级放开、
 //! 打折随等级变低、四种经营方针的比例加起来接近 1、红利加权随等级放大
-//! 到 ±0.25（最差的组合会算出负红利）。
+//! 到 ±0.25，乘进去之后红利率始终为正。
 //!
 //! ```sh
 //! YAOBOW_PAL3_ASSETS=/path/to/PAL3 cargo test -p shared --test pal3_hockshop_census
@@ -110,16 +110,20 @@ fn the_dividend_weights_stay_small() {
                     );
                 }
             }
-            // 三档选下来的红利率**可以是负的**：最差是 A 级奇珍异宝挑
-            // 「短当期 + 高利率 + 高拆当率」，0.25 − 0.25 − 0.25 − 0.25 = −0.5。
-            // 这是数据本来的样子，不是解析错了；只查它落在合理的带子里。
+            // 加权是**乘**上去的（`基础 × (1 + 加权和)`，见 FUN_0051f130），
+            // 所以再差也不会变成负的：最差是 A 级奇珍异宝挑「短当期 + 高利率
+            // + 高拆当率」，加权和 −0.75 → 0.25 × 0.25 = 0.0625。
             for p in 0..TIERS {
                 for a in 0..TIERS {
                     for u in 0..TIERS {
                         let r = lv.dividend_rate(mode, p, a, u);
                         assert!(
-                            (-0.55..=1.0).contains(&r),
+                            (0. ..=1.0).contains(&r),
                             "{level}/{mode}/{p}{a}{u} 的红利率 {r} 离谱"
+                        );
+                        assert!(
+                            lv.weight_sum(mode, p, a, u) > -1.0,
+                            "{level}/{mode}/{p}{a}{u} 的加权和到了 −1，红利会归零"
                         );
                     }
                 }
