@@ -8,7 +8,7 @@
 //! hardcoded switch in the original `PAL3.exe`. Reverse-engineered from
 //! the binary, each effect is composed of (additively blended):
 //!   * 16 animated flame frames (folder + name pattern per id),
-//!   * a shared radial glow billboard (`effect/flare4`), and
+//!   * a radial glow billboard (`effect/flare4`) — only ids 0, 2, 4 —, and
 //!   * for ids 2 (candle) and 4 (lamp), a static holder mesh.
 
 use std::io::Read;
@@ -47,6 +47,9 @@ struct EffectSpec {
     height: f32,
     base_y: f32,
     fps: f32,
+    /// Whether this variant gets the `flare4` glow at all. See
+    /// [`effect_spec`]'s table — ids 1 and 3 do not.
+    glow: bool,
     /// Radial glow (`flare4`) billboard: square side length and the
     /// height of its centre.
     glow_size: f32,
@@ -60,17 +63,31 @@ struct EffectSpec {
 /// effect-loader builds `frame_table[id]` for the 16 flame frames and
 /// loads a holder `.pol` only for ids 2 and 4:
 ///
-/// | id | holder | flame frames |
-/// |----|--------|--------------|
-/// | 0  | —          | `Fire1/torch01-16` |
-/// | 1  | —          | `Fire2/01-16`      |
-/// | 2  | Candle.pol | `Candle/001-016`   |
-/// | 3  | —          | `Fire4/01-16`      |
-/// | 4  | Lamp.pol   | `Candle/001-016`   |
+/// | id | holder | flame frames | flare4 glow |
+/// |----|--------|--------------|-------------|
+/// | 0  | —          | `Fire1/torch01-16` | yes |
+/// | 1  | —          | `Fire2/01-16`      | **no** |
+/// | 2  | Candle.pol | `Candle/001-016`   | yes |
+/// | 3  | —          | `Fire4/01-16`      | **no** |
+/// | 4  | Lamp.pol   | `Candle/001-016`   | yes |
 ///
 /// Verified live against q01/yn09a, whose `+3` node has id 4 → the brass
-/// oil lamp with the candle flame. All variants also get a shared
-/// `effect/flare4` glow billboard (see [`build_effect`]).
+/// oil lamp with the candle flame.
+///
+/// The glow column comes from `FUN_004b7980`, which after loading the 16
+/// frames does:
+///
+/// ```text
+/// if (id != 2 && id != 4 && id != 0) goto done;   // 1 and 3 skip the rest
+/// new gbGeomNode -> +0xf0
+/// if (id == 2) load Candle\Candle.pol
+/// else if (id == 4) load Lamp\Lamp.pol            // id 0 loads no holder
+/// load effect\Flare4.bmp -> +0xec                 // the glow
+/// done:
+/// ```
+///
+/// So ids 1 and 3 get **no glow at all** — this used to give every
+/// variant one.
 fn effect_spec(effect_id: u32) -> Option<EffectSpec> {
     // `prefixNN.dds` for NN in 1..=16, zero-padded to `width`.
     let seq = |prefix: &str, width: usize| -> Vec<String> {
@@ -79,8 +96,9 @@ fn effect_spec(effect_id: u32) -> Option<EffectSpec> {
             .collect()
     };
     // Holderless fire/torch: flame rooted at the node origin.
-    let fire = |folder: &'static str, frames: Vec<String>| EffectSpec {
+    let fire = |folder: &'static str, frames: Vec<String>, glow: bool| EffectSpec {
         holder_pol: None,
+        glow,
         flame_folder: folder,
         frames,
         cols: 4,
@@ -93,11 +111,12 @@ fn effect_spec(effect_id: u32) -> Option<EffectSpec> {
         glow_y: 16.0,
     };
     Some(match effect_id {
-        0 => fire("Fire1", seq("torch", 2)),
-        1 => fire("Fire2", seq("", 2)),
+        0 => fire("Fire1", seq("torch", 2), true),
+        1 => fire("Fire2", seq("", 2), false),
         2 => EffectSpec {
             // The tall wax candle (candle.pol is ~30.6 tall).
             holder_pol: Some("Candle/candle.pol"),
+            glow: true,
             flame_folder: "Candle",
             frames: seq("", 3),
             cols: 4,
@@ -109,11 +128,12 @@ fn effect_spec(effect_id: u32) -> Option<EffectSpec> {
             glow_size: 24.0,
             glow_y: 32.0,
         },
-        3 => fire("Fire4", seq("", 2)),
+        3 => fire("Fire4", seq("", 2), false),
         4 => EffectSpec {
             // The brass oil lamp (lamp.pol is ~10.8 tall). Its folder
             // ships no frames, so the exe feeds it the candle flame.
             holder_pol: Some("Lamp/lamp.pol"),
+            glow: true,
             flame_folder: "Candle",
             frames: seq("", 3),
             cols: 4,
@@ -169,16 +189,20 @@ pub fn build_effect(
     // Shared radial glow (`effect/flare4`), additive, centred on the
     // flame. The exe loads `effect\Flare4.bmp` relative to `basedata`,
     // i.e. a sibling of the `EffectScn` root.
-    let glow = effect_root.parent().and_then(|basedata| {
-        build_glow(
-            factory,
-            vfs,
-            &basedata.join("effect").join("flare4.dds"),
-            spec.glow_size,
-            spec.glow_y,
-            format!("EFFECT_GLOW_{}", index),
-        )
-    });
+    let glow = spec
+        .glow
+        .then_some(())
+        .and(effect_root.parent())
+        .and_then(|basedata| {
+            build_glow(
+                factory,
+                vfs,
+                &basedata.join("effect").join("flare4.dds"),
+                spec.glow_size,
+                spec.glow_y,
+                format!("EFFECT_GLOW_{}", index),
+            )
+        });
 
     // Parent the flame + glow under the holder so the caller-applied
     // position/rotation carries them. With no holder, the flame entity
@@ -348,4 +372,51 @@ fn build_glow(
         name,
         BlendMode::Additive,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::effect_spec;
+
+    #[test]
+    fn only_three_of_the_five_variants_get_a_glow() {
+        // FUN_004b7980：`if (id != 2 && id != 4 && id != 0) goto done;`
+        // ——1 和 3 连 Flare4 都不加载。
+        for (id, want) in [(0, true), (1, false), (2, true), (3, false), (4, true)] {
+            let spec = effect_spec(id).unwrap_or_else(|| panic!("id {id} 没有 spec"));
+            assert_eq!(spec.glow, want, "id {id} 的光晕");
+        }
+    }
+
+    #[test]
+    fn only_the_candle_and_the_lamp_have_a_holder() {
+        // 同一段：id 0 也建了 gbGeomNode，但一个 .pol 都没加载。
+        assert_eq!(effect_spec(0).unwrap().holder_pol, None);
+        assert_eq!(effect_spec(1).unwrap().holder_pol, None);
+        assert_eq!(
+            effect_spec(2).unwrap().holder_pol,
+            Some("Candle/candle.pol")
+        );
+        assert_eq!(effect_spec(3).unwrap().holder_pol, None);
+        assert_eq!(effect_spec(4).unwrap().holder_pol, Some("Lamp/lamp.pol"));
+    }
+
+    #[test]
+    fn every_variant_has_sixteen_frames() {
+        // `do { ... } while (iVar2 < 0x10)`。
+        for id in 0..5 {
+            let spec = effect_spec(id).unwrap();
+            assert_eq!(spec.frames.len(), 16, "id {id} 的帧数");
+        }
+        // 灯没有自己的帧，用蜡烛的（三位补零）。
+        assert_eq!(effect_spec(4).unwrap().flame_folder, "Candle");
+        assert_eq!(effect_spec(4).unwrap().frames[0], "001.dds");
+        assert_eq!(effect_spec(0).unwrap().frames[0], "torch01.dds");
+    }
+
+    #[test]
+    fn there_are_exactly_five_variants() {
+        assert!(effect_spec(5).is_none());
+        assert!(effect_spec(99).is_none());
+    }
 }
