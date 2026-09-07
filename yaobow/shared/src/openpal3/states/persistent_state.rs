@@ -196,6 +196,22 @@ pub struct PersistentState {
     /// 奖品，之后就只有对白。
     #[serde(default)]
     cave_wolf_wins: u32,
+    /// 当铺累计投进去的资本。原版存在当铺状态块里（`DAT_00d92788` 那一坨的
+    /// `+0x1488`），等级是拿它算出来的，见
+    /// [`super::hockshop::level_for_capital`]。
+    #[serde(default)]
+    hockshop_capital: i32,
+    /// 当铺的四个经营选择：经营方针 / 当期 / 利率 / 拆当率。原版在状态块的
+    /// `+0x27844` / `+0x27838` / `+0x2783c` / `+0x27840`，SCE 120–123 读的
+    /// 就是它们。
+    #[serde(default)]
+    hockshop_mode: i32,
+    #[serde(default)]
+    hockshop_period: i32,
+    #[serde(default)]
+    hockshop_accrual: i32,
+    #[serde(default)]
+    hockshop_unhock: i32,
     /// Per-scene-object state the story writes and later reads back —
     /// mazes remember which switches have been thrown. The original
     /// keeps a table in the save-state store at `DAT_017b1550`, looked up
@@ -307,6 +323,11 @@ impl PersistentState {
             huaying_mode: 0,
             compose_recipes: BTreeSet::new(),
             cave_wolf_wins: 0,
+            hockshop_capital: 0,
+            hockshop_mode: 0,
+            hockshop_period: 0,
+            hockshop_accrual: 0,
+            hockshop_unhock: 0,
             scene_object_states: BTreeMap::new(),
             objects_not_from_save: BTreeSet::new(),
             scene_object_positions: BTreeMap::new(),
@@ -381,6 +402,61 @@ impl PersistentState {
             self.features.insert(feature);
         } else {
             self.features.remove(&feature);
+        }
+    }
+
+    /// 当铺的资本，以及拿它算出来的等级（0..4 = E D C B A）。
+    pub fn hockshop_capital(&self) -> i32 {
+        self.hockshop_capital
+    }
+
+    pub fn hockshop_level(&self) -> i32 {
+        super::hockshop::level_for_capital(self.hockshop_capital)
+    }
+
+    /// 增资：钱和资本一起动，等级跟着资本走（`FUN_00524b00`）。返回实际投
+    /// 进去的钱。
+    pub fn hockshop_invest(&mut self, amount: i32) -> i32 {
+        let spent = amount.clamp(
+            0,
+            super::hockshop::max_investment(self.hockshop_capital, self.money()),
+        );
+        self.hockshop_capital += spent;
+        self.add_money(-spent);
+        spent
+    }
+
+    /// 分红：按当前等级和四个选择算一笔，加进钱里，返回分了多少
+    /// （`FUN_0051f130`）。
+    pub fn hockshop_dividend(&mut self, table: &super::hockshop::HockShopLevels) -> i32 {
+        let level = table.level(self.hockshop_level());
+        let paid = level.dividend(
+            self.hockshop_capital,
+            self.hockshop_mode.max(0) as usize,
+            self.hockshop_period.max(0) as usize,
+            self.hockshop_accrual.max(0) as usize,
+            self.hockshop_unhock.max(0) as usize,
+        );
+        self.add_money(paid);
+        paid
+    }
+
+    /// 四个经营选择：0 经营方针 · 1 当期 · 2 利率 · 3 拆当率。
+    pub fn hockshop_choice(&self, which: usize) -> i32 {
+        match which {
+            0 => self.hockshop_mode,
+            1 => self.hockshop_period,
+            2 => self.hockshop_accrual,
+            _ => self.hockshop_unhock,
+        }
+    }
+
+    pub fn set_hockshop_choice(&mut self, which: usize, value: i32) {
+        match which {
+            0 => self.hockshop_mode = value,
+            1 => self.hockshop_period = value,
+            2 => self.hockshop_accrual = value,
+            _ => self.hockshop_unhock = value,
         }
     }
 

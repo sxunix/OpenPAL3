@@ -314,6 +314,93 @@ fn number(value: &str) -> f32 {
     value.trim().parse::<f32>().unwrap_or(0.)
 }
 
+/// 攻击/仙宝那一类里要排除的：五灵珠和土灵珠（`source.txt` 里写死的）。
+pub const EXCLUDED_ATTACK: [u32; 8] = [6119, 6120, 6121, 6122, 6123, 6124, 6125, 6427];
+/// 古董那一类里要排除的：五本仙术书。
+pub const EXCLUDED_ANCIENT: [u32; 5] = [6409, 6410, 6411, 6412, 6413];
+
+/// 死当物的随机来源：`source.txt` 里那段循环要的两样东西——掷概率、
+/// 从物品表里随机抽一个下标。
+pub trait PawnRng {
+    /// `CalProbability(p)`：按概率 `p` 掷一次。
+    fn chance(&mut self, p: f32) -> bool;
+    /// `rand() % item_num`。
+    fn below(&mut self, n: usize) -> usize;
+}
+
+/// 按 `source.txt` 的循环挑 `total` 件死当物。
+///
+/// 每一件先按恢复类比例掷，中了就在物品表里随机摸，摸到 `type == 1` 的就
+/// 收下；没中或者没摸到再按攻击/仙宝比例掷（`type == 2 || 3`，排除
+/// [`EXCLUDED_ATTACK`]），再不成按古董比例掷（`type == 4`，排除
+/// [`EXCLUDED_ANCIENT`]）。**重复的不要**。
+///
+/// `items` 是物品表里的 (id, type) 对，顺序就是数据库顺序；`tries` 是每一
+/// 类摸多少次就放弃（原版是把整张表摸一遍，这里给个上限免得死循环）。
+pub fn pick_dead_pawn_items(
+    total: usize,
+    p: Proportions,
+    items: &[(u32, u8)],
+    rng: &mut impl PawnRng,
+) -> Vec<u32> {
+    let mut out: Vec<u32> = Vec::new();
+    if items.is_empty() {
+        return out;
+    }
+    let tries = items.len();
+    // 一轮下来一件都没添上就收手，别在数据不够时空转。
+    let mut idle_rounds = 0;
+    while out.len() < total && idle_rounds < 8 {
+        let before = out.len();
+        for (chance, want) in [
+            (p.resume, Category::Resume),
+            (p.attack, Category::Attack),
+            (p.ancient, Category::Ancient),
+        ] {
+            if out.len() >= total {
+                break;
+            }
+            if !rng.chance(chance) {
+                continue;
+            }
+            for _ in 0..tries {
+                let (id, item_type) = items[rng.below(items.len())];
+                if out.contains(&id) || !want.accepts(id, item_type) {
+                    continue;
+                }
+                out.push(id);
+                break;
+            }
+        }
+        if out.len() == before {
+            idle_rounds += 1;
+        } else {
+            idle_rounds = 0;
+        }
+    }
+    out
+}
+
+/// `source.txt` 里那三类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Category {
+    Resume,
+    Attack,
+    Ancient,
+}
+
+impl Category {
+    fn accepts(self, id: u32, item_type: u8) -> bool {
+        match self {
+            Category::Resume => item_type == 1,
+            Category::Attack => {
+                (item_type == 2 || item_type == 3) && !EXCLUDED_ATTACK.contains(&id)
+            }
+            Category::Ancient => item_type == 4 && !EXCLUDED_ANCIENT.contains(&id),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,6 +528,89 @@ end
         // 想投超过上限的，按上限投。
         let (capital, money, level) = invest(499_000, 10_000, 9_999);
         assert_eq!((capital, money, level), (500_000, 9_000, 4));
+    }
+
+    /// 掷骰按脚本给的序列走，好把生成过程钉死。
+    struct ScriptedRng {
+        chances: Vec<bool>,
+        picks: Vec<usize>,
+    }
+
+    impl PawnRng for ScriptedRng {
+        fn chance(&mut self, _p: f32) -> bool {
+            if self.chances.is_empty() {
+                return false;
+            }
+            self.chances.remove(0)
+        }
+        fn below(&mut self, n: usize) -> usize {
+            if self.picks.is_empty() {
+                return 0;
+            }
+            self.picks.remove(0) % n
+        }
+    }
+
+    fn item_table() -> Vec<(u32, u8)> {
+        vec![
+            (6201, 1), // 恢复
+            (6202, 1),
+            (6101, 2), // 投掷
+            (6119, 2), // 五灵珠，要排除
+            (6427, 3), // 土灵珠，要排除
+            (6401, 3), // 仙宝
+            (6017, 4), // 古董
+            (6409, 4), // 仙术书，要排除
+        ]
+    }
+
+    #[test]
+    fn the_generator_follows_the_shipped_source() {
+        let p = Proportions {
+            resume: 1.0,
+            attack: 1.0,
+            ancient: 1.0,
+        };
+        // 第一轮三类各中一次：恢复摸到 6201、攻击先摸到要排除的 6119 再摸到
+        // 6101、古董先摸到 6409 再摸到 6017。
+        let mut rng = ScriptedRng {
+            chances: vec![true, true, true],
+            picks: vec![0, 3, 2, 7, 6],
+        };
+        let got = pick_dead_pawn_items(3, p, &item_table(), &mut rng);
+        assert_eq!(got, vec![6201, 6101, 6017]);
+    }
+
+    #[test]
+    fn excluded_ids_never_show_up() {
+        let p = Proportions {
+            resume: 0.,
+            attack: 1.0,
+            ancient: 1.0,
+        };
+        // 一直摸到要排除的那几个，最后什么也添不上，函数得收手而不是空转。
+        let mut rng = ScriptedRng {
+            chances: vec![true; 64],
+            picks: vec![3; 256],
+        };
+        let got = pick_dead_pawn_items(3, p, &item_table(), &mut rng);
+        assert!(got.is_empty(), "五灵珠不该被当成死当物：{got:?}");
+    }
+
+    #[test]
+    fn nothing_repeats() {
+        let p = Proportions {
+            resume: 1.0,
+            attack: 0.,
+            ancient: 0.,
+        };
+        let mut rng = ScriptedRng {
+            chances: vec![true; 64],
+            picks: vec![0; 256],
+        };
+        // 只摸得到 6201 一件，第二件添不上就收手。
+        let got = pick_dead_pawn_items(3, p, &item_table(), &mut rng);
+        assert_eq!(got, vec![6201]);
     }
 
     #[test]

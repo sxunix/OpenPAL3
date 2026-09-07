@@ -20,11 +20,6 @@ use crosscom::ComRc;
 use imgui::Ui;
 use radiance::comdef::ISceneManager;
 
-/// Values the pawnshop query opcodes hand back while the game itself is
-/// missing. Zero is the "nothing special" answer for each of the four
-/// type queries and for the shop's level.
-const PAWNSHOP_DEFAULT: i32 = 0;
-
 /// A skipped subsystem. `$note` is shown to the player through the same
 /// note widget opcode 68 uses, so a scene that silently does nothing is
 /// at least explained; Pal3.Unity does the same for its own mini-game
@@ -182,14 +177,14 @@ impl SceCommand for SceCommandMiniGameSki {
 
 /// 101 当铺等级 · 120 Manage 类型 · 121 Period 类型 · 122 Accrual 类型 ·
 /// 123 UnHock 类型 — `LAB_00436cb0` / `00436d30` / `00436db0` /
-/// `00436e10` / `00436e70`.
+/// `00436e10` / `00436e70`。
 ///
-/// All five read one byte of pawnshop state and assign it to a script
-/// variable. With no pawnshop there is no state to read, so they write
-/// [`PAWNSHOP_DEFAULT`] — leaving the variable untouched would let the
-/// script branch on whatever the slot happened to hold.
+/// 五个都是从当铺的存档状态里取一个数写进脚本变量：等级在状态块的 `+8`
+/// （移植端由资本算出来，见 `states::hockshop::level_for_capital`），四个
+/// 经营选择在 `+0x27844` / `+0x27838` / `+0x2783c` / `+0x27840`。
+/// 详见 `switch/re/notes/hockshop.md`。
 macro_rules! pawnshop_query {
-    ($name:ident, $what:expr) => {
+    ($name:ident, $what:expr, $read:expr) => {
         #[doc = concat!("当铺状态查询：", $what, "。")]
         #[derive(Debug, Clone)]
         pub struct $name {
@@ -210,19 +205,26 @@ macro_rules! pawnshop_query {
                 state: &mut SceState,
                 _delta_sec: f32,
             ) -> bool {
-                log::warn!(concat!("当铺未实现，", $what, " 取默认值"));
-                vars::write(state, self.var, PAWNSHOP_DEFAULT);
+                let read: fn(&crate::openpal3::states::persistent_state::PersistentState) -> i32 =
+                    $read;
+                let value = read(&state.global_state().persistent_state());
+                vars::write(state, self.var, value);
                 true
             }
         }
     };
 }
 
-pawnshop_query!(SceCommandGetPawnshopLevel, "当铺等级");
-pawnshop_query!(SceCommandGetPawnshopManage, "Manage 类型");
-pawnshop_query!(SceCommandGetPawnshopPeriod, "Period 类型");
-pawnshop_query!(SceCommandGetPawnshopAccrual, "Accrual 类型");
-pawnshop_query!(SceCommandGetPawnshopUnHock, "UnHock 类型");
+pawnshop_query!(SceCommandGetPawnshopLevel, "当铺等级", |p| p
+    .hockshop_level());
+pawnshop_query!(SceCommandGetPawnshopManage, "Manage 类型", |p| p
+    .hockshop_choice(0));
+pawnshop_query!(SceCommandGetPawnshopPeriod, "Period 类型", |p| p
+    .hockshop_choice(1));
+pawnshop_query!(SceCommandGetPawnshopAccrual, "Accrual 类型", |p| p
+    .hockshop_choice(2));
+pawnshop_query!(SceCommandGetPawnshopUnHock, "UnHock 类型", |p| p
+    .hockshop_choice(3));
 
 /// 142 设置 VFX 特效位置 — `LAB_00438930`, three floats straight into
 /// `DAT_00d8e478/47c/480` (0x43894b–0x438961). GameBox coordinates.
