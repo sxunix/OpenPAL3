@@ -6,6 +6,7 @@ pub mod game_db;
 pub mod global_state;
 pub mod growth;
 pub mod hockshop;
+pub mod inn;
 pub mod item_use;
 pub mod killflyer;
 pub mod persistent_state;
