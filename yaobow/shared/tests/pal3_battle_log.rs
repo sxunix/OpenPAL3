@@ -325,3 +325,82 @@ fn a_battle_against_the_shipped_data_plays_out() {
         "战斗应在 400 次出手内分出胜负"
     );
 }
+
+/// 装备对战力到底贡献多少——`combat_formulas.md` 末尾那条待办。
+///
+/// 走的是 `attributes::item_bonus`，也就是 `FUN_0040be80` 的规则：
+/// 精气神武防速运七项只认 Absolute 型的加成，五灵各按「带不带」加 1。
+#[test]
+fn what_equipment_is_actually_worth() {
+    let Some(gdb) = load_gdb() else {
+        eprintln!("skipping: 没有 gdb");
+        return;
+    };
+    use shared::openpal3::states::attributes::{
+        SLOT_ATTACK, SLOT_DEFENSE, SLOT_HP, SLOT_SPEED, item_bonus,
+    };
+
+    // 能穿戴的五个 ItemType：7 衣服 8 帽子 9 鞋子 10 饰品 11 武器。
+    // 12 是尸块（冶炼材料），不是装备。
+    let mut by_slot: std::collections::BTreeMap<u8, Vec<(String, i32, i32, i32, i32)>> =
+        Default::default();
+    for item in &gdb.items {
+        if !(7..=11).contains(&item.item_type) {
+            continue;
+        }
+        let name = item.name.as_str().unwrap_or_else(|_| "?".to_string());
+        by_slot.entry(item.item_type).or_default().push((
+            name,
+            item_bonus(item, SLOT_ATTACK),
+            item_bonus(item, SLOT_DEFENSE),
+            item_bonus(item, SLOT_HP),
+            item_bonus(item, SLOT_SPEED),
+        ));
+    }
+
+    println!("\n=== 装备加成（武 / 防 / 精 / 速）===");
+    for (ty, mut rows) in by_slot {
+        rows.sort_by_key(|r| -(r.1 + r.2));
+        let n = rows.len();
+        let atk_max = rows.iter().map(|r| r.1).max().unwrap_or(0);
+        let def_max = rows.iter().map(|r| r.2).max().unwrap_or(0);
+        let hp_max = rows.iter().map(|r| r.3).max().unwrap_or(0);
+        println!("\ntype {ty}: {n} 件，最高 武+{atk_max} 防+{def_max} 精+{hp_max}");
+        for (name, a, d, h, s) in rows.iter().take(4) {
+            println!("   {name:<12} 武+{a:<4} 防+{d:<4} 精+{h:<5} 速+{s}");
+        }
+    }
+
+    // 装备也可能只带五灵。
+    use shared::openpal3::states::attributes::FIRST_ELEMENT_SLOT;
+    let with_element = gdb
+        .items
+        .iter()
+        .filter(|i| (7..=11).contains(&i.item_type))
+        .filter(|i| (0..5).any(|k| item_bonus(i, FIRST_ELEMENT_SLOT + k) > 0))
+        .count();
+    println!("\n带五灵的装备：{with_element} 件");
+
+    // 百分比型的加成被 item_bonus 过滤掉了，看看有多少装备是这一类。
+    let mut pct = 0;
+    for item in gdb.items.iter().filter(|i| (7..=11).contains(&i.item_type)) {
+        if (0..FIRST_ELEMENT_SLOT)
+            .any(|k| item.attribute_impact_type[k] != 0 && item.attribute_impact_value[k] != 0)
+        {
+            pct += 1;
+        }
+    }
+    println!("\n带百分比型加成的装备：{pct} 件（这些的那一项按原版不计入）");
+
+    // 有加成的装备总得有几件，否则说明 item_bonus 读错了字段。
+    let any: i32 = gdb
+        .items
+        .iter()
+        .filter(|i| (7..=11).contains(&i.item_type))
+        .map(|i| item_bonus(i, SLOT_ATTACK) + item_bonus(i, SLOT_DEFENSE))
+        .sum();
+    assert!(
+        any > 0,
+        "所有装备的武/防加成合计为 0，item_bonus 大概读错了"
+    );
+}
