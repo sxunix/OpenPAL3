@@ -33,8 +33,9 @@ use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use fileformats::pal3::gdb::GameItemInfo;
 use imgui::{Condition, Ui};
-use radiance::comdef::{IEntityExt, ISceneManager};
+use radiance::comdef::{IEntityExt, IScene, ISceneExt, ISceneManager};
 use radiance::input::Key;
+use radiance::math::Vec3;
 
 /// `SceState::ext` key for the [`PendingFlags`] the flag opcodes set.
 pub const EXT_PENDING: &str = "pal3.combat.pending";
@@ -152,6 +153,10 @@ pub struct SceCommandCombat {
     game_over_on_loss: bool,
     /// The 游戏结束 screen is up, waiting for a confirm.
     game_over: bool,
+    /// 这一场用哪张战场（`z**`），由 `combatScn.txt` 按脚下地面类型选出。
+    combat_scene: Option<String>,
+    /// 摆好的战斗舞台。压在场景栈上，散场时弹掉。
+    stage: Option<ComRc<IScene>>,
 }
 
 impl std::fmt::Debug for SceCommandCombat {
@@ -185,6 +190,8 @@ impl SceCommandCombat {
             switched_bgm: false,
             game_over_on_loss: true,
             game_over: false,
+            combat_scene: None,
+            stage: None,
         }
     }
 
@@ -271,6 +278,86 @@ impl SceCommandCombat {
     }
 
     /// Build the battle and the session from the party and the database.
+    /// 把战场和参战的人摆出来，压到场景栈上。
+    ///
+    /// 战场模型是 `cbScene/<Z**>/<z**>.pol`，站位是 `combat.ini` 的
+    /// `[RolePos]`（我方 0..4、敌方 5..10），模型名见
+    /// `combat::stage::model_name`。缺哪一件就少摆哪一个，不影响战斗本身
+    /// ——规则层不碰这些实体。
+    fn build_stage(&mut self, scene_manager: &ComRc<ISceneManager>, state: &mut SceState) {
+        use crate::openpal3::combat::stage;
+        use mini_fs::StoreExt;
+        use radiance::scene::{CoreScene, SceneLighting};
+
+        let Some(scene_name) = self.combat_scene.clone() else {
+            return;
+        };
+        let Some(db) = state.global_state().game_db().cloned() else {
+            return;
+        };
+        let asset_mgr = state.asset_mgr();
+        let vfs = asset_mgr.vfs();
+        let factory = asset_mgr.component_factory();
+
+        let model_path = stage::scene_model_path(&scene_name);
+        if vfs.open(&model_path).is_err() {
+            log::warn!("Combat: 战场模型不在包里 {}", model_path.display());
+            return;
+        }
+
+        let scene = CoreScene::create();
+        scene.set_lighting(SceneLighting::new([1., 1., 1.], vec![]));
+        scene.add_entity(crate::openpal3::loaders::pol::create_entity_from_pol_model(
+            &factory,
+            vfs,
+            &model_path,
+            format!("COMBAT_STAGE_{scene_name}"),
+            true,
+        ));
+
+        // 参战的人。站位表短了或者模型缺了就跳过那一个。
+        let positions = &db.combat().role_positions;
+        let Some(battle) = self.session.as_ref().map(|s| &s.battle) else {
+            return;
+        };
+        for slot in 0..stage::STAGE_SLOTS {
+            let Some(c) = battle.get(slot) else { continue };
+            if !c.alive {
+                continue;
+            }
+            let enemy_model = db
+                .combat_actor(c.actor_id)
+                .and_then(|a| a.model_id.as_str().ok());
+            let Some(model) = stage::model_name(slot, enemy_model.as_deref()) else {
+                continue;
+            };
+            let Some(pos) = stage::stage_position(positions, slot) else {
+                continue;
+            };
+            let Some(entity) =
+                asset_mgr.load_role(&model, "z1", format!("COMBAT_ROLE_{slot}"), true)
+            else {
+                log::warn!("Combat: 战斗模型 {model} 加载不了（位 {slot}）");
+                continue;
+            };
+            entity
+                .transform()
+                .borrow_mut()
+                .set_position(&Vec3::new(pos.x, 0., pos.z));
+            scene.add_entity(entity);
+        }
+
+        scene_manager.push_scene(scene.clone());
+        self.stage = Some(scene);
+    }
+
+    /// 散场：把舞台弹掉。
+    fn drop_stage(&mut self, scene_manager: &ComRc<ISceneManager>) {
+        if self.stage.take().is_some() {
+            scene_manager.pop_scene();
+        }
+    }
+
     fn start(&mut self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
         let flags = take_pending_flags(state);
         self.game_over_on_loss = flags.game_over_on_loss;
@@ -310,10 +397,14 @@ impl SceCommandCombat {
                 persistent.scene_name().unwrap_or_default(),
                 persistent.sub_scene_name().unwrap_or_default(),
             );
-            battle.scene_element = db
+            let combat_scene = db
                 .combat()
                 .combat_scene(&scene, &block, floor_type)
+                .map(|s| s.to_string());
+            battle.scene_element = combat_scene
+                .as_deref()
                 .and_then(|name| db.combat().scene_element(name));
+            self.combat_scene = combat_scene;
 
             // 花钱的技能和蛊术要看队伍身上的钱和背包里的蛊，散场时再把花掉
             // 的写回去（`FUN_004f3430` 改的是全队共用的钱，蛊是物品 6113）。
@@ -766,12 +857,14 @@ impl SceCommandCombat {
 
 impl SceCommand for SceCommandCombat {
     fn initialize(&mut self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
-        self.start(scene_manager, state);
+        self.start(scene_manager.clone(), state);
+        // 战场和参战的人。规则层不碰这些实体，摆不出来也照打。
+        self.build_stage(&scene_manager, state);
     }
 
     fn update(
         &mut self,
-        _scene_manager: ComRc<ISceneManager>,
+        scene_manager: ComRc<ISceneManager>,
         ui: &Ui,
         state: &mut SceState,
         delta_sec: f32,
@@ -824,6 +917,7 @@ impl SceCommand for SceCommandCombat {
             None => false,
             Some(outcome) => {
                 log::info!("Combat: finished with {outcome:?}");
+                self.drop_stage(&scene_manager);
                 if self.finish(state, outcome) {
                     self.game_over = true;
                     false

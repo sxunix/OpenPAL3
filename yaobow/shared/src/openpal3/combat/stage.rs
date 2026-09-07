@@ -13,6 +13,27 @@ use std::path::PathBuf;
 
 use crate::openpal3::states::combat_data::StagePos;
 
+/// 我方五个战斗位用的模型名，和 `PLAYER_COMBAT_IDS` 一一对应
+/// （101 景天 · 104 雪见 · 105 龙葵 · 107 紫萱 · 102 长卿）。
+///
+/// gdb 里主角那五条 `combat_actors` 的 `model_id` 写的是 `"Null"`——他们
+/// 直接用冒险模式的角色模型，所以名字要从这里来，不是从数据库。
+/// 龙葵的战斗 id 是 106（红葵），但模型目录是 105。
+pub const PARTY_MODELS: [&str; PARTY_SLOTS] = ["101", "104", "105", "107", "102"];
+
+/// 战斗里一个位子上站着谁的模型。
+///
+/// 我方（0..4）查 [`PARTY_MODELS`]；敌方（5..10）用 gdb 那条记录的
+/// `model_id`（`B01` 之类，对应 `basedata/ROLE/B01`）。
+pub fn model_name(slot: usize, enemy_model: Option<&str>) -> Option<String> {
+    if slot < PARTY_SLOTS {
+        return PARTY_MODELS.get(slot).map(|s| s.to_string());
+    }
+    let name = enemy_model?.trim();
+    // 主角那几条写的是 Null，别拿它去找目录。
+    (!name.is_empty() && !name.eq_ignore_ascii_case("null")).then(|| name.to_string())
+}
+
 /// `cbScene` 在 vfs 里的位置。
 pub const COMBAT_SCENE_DIR: &str = "/basedata/basedata/cbScene";
 
@@ -83,6 +104,26 @@ mod tests {
         assert_eq!(stage_index(5), Some(5));
         assert_eq!(stage_index(10), Some(10));
         assert_eq!(stage_index(11), None, "只有十一个站位");
+    }
+
+    #[test]
+    fn our_side_uses_the_adventure_models() {
+        // gdb 里主角的 model_id 是 "Null"，模型名只能从这张表来。
+        assert_eq!(model_name(0, None).as_deref(), Some("101"));
+        assert_eq!(
+            model_name(2, None).as_deref(),
+            Some("105"),
+            "龙葵目录是 105"
+        );
+        assert_eq!(model_name(4, None).as_deref(), Some("102"));
+        // 敌方拿数据库那一条。
+        assert_eq!(model_name(5, Some("B01")).as_deref(), Some("B01"));
+        assert_eq!(model_name(10, Some("B08")).as_deref(), Some("B08"));
+        // "Null" 和空的都不能当目录名去找。
+        assert_eq!(model_name(5, Some("Null")), None);
+        assert_eq!(model_name(5, Some("null")), None);
+        assert_eq!(model_name(5, Some("  ")), None);
+        assert_eq!(model_name(5, None), None);
     }
 
     #[test]

@@ -575,6 +575,37 @@ swap(this->+0x80..+0x88, this->+0x8c..+0x94);
   [`flexeff_format.md`](flexeff_format.md)；还差槽位子块那 124 字节里各类
   自己的字段语义（要逐个类跟 update）。
 - `flexcam.dat` / `efflinker.dat` 两个二进制表未解析。
+
+## 战斗舞台（移植侧）
+
+规则层一直是完整的，缺的只是表现。第一步把战场和人摆出来了：
+
+- 战场模型在 `basedata/cbScene/<大写>/<小写>.pol`（`cbScene/Z01/z01.pol`），
+  同目录有 `.lgt` 和 `.DKM`。包里 44 张，`combatScn.txt` 会派到其中 **41
+  张，模型和 `.lgt` 全部在包里**（`pal3_combat_stage_census` 核过）。
+- 站位是 `combat.ini` 的 `[RolePos]` 十一行，**我方 0..4、敌方 5..10**。
+  两军分居 **z** 的两侧（我方 z 全负、敌方 z 全正），x 上并不分开——敌方
+  的 `Role9`（x = −40）比我方的 `Role1`（x = −75）还靠里：
+
+  ```text
+  我方 (-118,-209) (-75,-119) (-148,-46) (-244,-96) (-221,-194)
+  敌方 (207,78) (181,235) (23,257) (69,4) (-40,118) (98,151)
+  ```
+
+- 模型名：**我方五个从 `PARTY_MODELS`（101/104/105/107/102）来，不是从
+  数据库**——gdb 里主角那五条 `combat_actors` 的 `model_id` 写的是
+  `"Null"`，他们直接用冒险模式的模型。敌方才用 `model_id`（`B01` 这种，
+  对应 `basedata/ROLE/B01`）。167 个战斗角色都带 `model_id`。
+
+`SceCommandCombat::initialize` 里建一个 `CoreScene`、放战场和活着的参战者、
+压到场景栈；散场时弹掉。缺哪一件就少摆哪一个，规则层不碰这些实体。
+
+### 还没做
+
+- **镜头**。现在压上去的场景用默认相机，`cbCam.ini` / `flexcam.dat` 都没接。
+- **动作**。所有人都摆成 `z1` 站着不动，攻击/受击/施法都没有。
+- 五灵环（`[FiveLineup]` / `[EnemyFiveLineup]` 的位置和半径已解析，没画）。
+- 战场光照 `.lgt` 没读，现在给的是白色环境光。
 - ~~升级成长曲线本身~~ —— 五条曲线（`FUN_004fa210` / `004fa280` / `004fa330` /
   `004fa3a0` / `004fa440`）和经验门槛表（`FUN_004fa4e0`）移植里都已实现，
   见 `states/growth.rs` 与 `GameDb::level_for_exp`。
