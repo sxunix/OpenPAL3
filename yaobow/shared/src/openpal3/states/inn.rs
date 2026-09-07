@@ -1,10 +1,60 @@
-//! 客栈住店（SCE 119 `UIShowHotelMenu`）。
+//! 客栈（SCE 119 `UIShowHotelMenu`）。
 //!
-//! 配置的解析在 [`super::shop::RestScript`]（和店铺共用
-//! `DealScript/` 那个目录，但格式是另一套）。这里放的是**住一晚发生了
-//! 什么**——照 `PAL3_unpacked.exe` 里那个客栈界面对象的每帧函数
-//! （`0x44b0f0`，Ghidra 没识别出来，是读反汇编读的）写的，逆向记录在
+//! 配置的解析在 [`super::shop::RestScript`]（和店铺共用 `DealScript/` 那个
+//! 目录，但格式是另一套）。这里放的是**菜单和住一晚发生了什么**——照
+//! `PAL3_unpacked.exe` 里客栈界面对象的每帧函数（`0x44b0f0`，Ghidra 没识别
+//! 出来，是读反汇编读的）和消息处理 `FUN_0044b710` 写的，逆向记录在
 //! `switch/re/notes/inn.md`。
+//!
+//! 一句话：SCE 119 打开的是「聊天 / 住宿 / 退出」**三项菜单**，点「住宿」
+//! 才播 `M_Rest` 那句话，播完再问一次「住宿共需 N 文钱」，答「是」且钱够
+//! 才住得成。
+
+/// 三个菜单项。文本在 `AssisLang.lang` 的第 348/349/350 槽
+/// （`FUN_0044b710` 里三个按钮分别绑 `DAT_00dd8f3c/903c/913c`，本地化表
+/// 基址 0xdc333c、步长 0x100）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuItem {
+    /// 348「聊天」。关菜单，`M_ID` 非 0 就跑那个对话过程。
+    Chat,
+    /// 349「住宿」。播 `M_Rest`，然后进住宿确认。
+    Stay,
+    /// 350「退出」。关掉，什么也不跑。
+    Leave,
+}
+
+impl MenuItem {
+    pub const ALL: [MenuItem; 3] = [MenuItem::Chat, MenuItem::Stay, MenuItem::Leave];
+
+    /// 在 `AssisLang.lang` 里的槽号。
+    pub fn lang_slot(self) -> usize {
+        match self {
+            MenuItem::Chat => lang::CHAT,
+            MenuItem::Stay => lang::STAY,
+            MenuItem::Leave => lang::LEAVE,
+        }
+    }
+}
+
+/// 客栈用到的 `AssisLang.lang` 槽号。
+pub mod lang {
+    /// 346「住宿共需」。
+    pub const COST_PREFIX: usize = 346;
+    /// 347「文钱」。
+    pub const COST_SUFFIX: usize = 347;
+    /// 348「聊天」。
+    pub const CHAT: usize = 348;
+    /// 349「住宿」。
+    pub const STAY: usize = 349;
+    /// 350「退出」。
+    pub const LEAVE: usize = 350;
+}
+
+/// 确认框那句话的格式：`"\n          %s%d%s"`（0x59daec），三个参数依次是
+/// 346、价格、347。前面那十个空格是原版就有的缩进。
+pub fn cost_line(prefix: &str, price: i32, suffix: &str) -> String {
+    format!("\n          {prefix}{price}{suffix}")
+}
 
 /// 住店回哪几项：**精（`hp`）和神（`mp`）回满，气（`sp`）不回**。
 ///
@@ -25,6 +75,9 @@
 /// 中间那一项（`+0x3d0` 当前气 ← `+0x3a0` 气上限）**没有被写**——不是漏
 /// 读，那两条指令不在循环里。
 pub const RESTORES_SP: bool = false;
+
+/// 淡出之后要等多久才结算（原版 `GetTickCount() − +0xce0 > 0x3e8`）。
+pub const BLACKOUT_MILLIS: u32 = 1000;
 
 /// 住店会顺手推进的剧情号（`g_story`，脚本里的全局变量 −32768）。
 ///
@@ -53,7 +106,7 @@ pub fn can_afford(money: i32, price: i32) -> bool {
     money >= price
 }
 
-/// 玩家在「要不要住店」那个是/否框里选了什么
+/// 玩家在「住宿共需 N 文钱」那个是/否框里选了什么
 /// （原版 `FUN_004a1cf0()`：0 = 住，1 = 不住）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Answer {
@@ -61,15 +114,17 @@ pub enum Answer {
     Leave,
 }
 
-/// 住一晚的结果，命令层照着走。
+/// 一次客栈交互的结果，命令层照着决定跑哪个过程。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RestOutcome {
+pub enum InnOutcome {
+    /// 选了「聊天」：跑 `M_ID` 那个过程（0 就什么都不跑）。
+    Chat { keeper_proc: u16 },
     /// 钱够，住下了：扣了 `paid` 文，跑 `enough_money_proc` 再跑
     /// `after_rest_proc`。
     Rested { paid: i32 },
     /// 钱不够：一文没扣，跑 `not_enough_money_proc`。
     TooPoor,
-    /// 选了不住。
+    /// 选了「退出」，或者在确认框里答了「不住」。
     Left,
 }
 
@@ -95,7 +150,7 @@ impl Vitals {
     }
 }
 
-/// 结算一次住店。`in_party` 说五个槽里哪几个在队上——原版按
+/// 结算一次住店。`party` 里的 `bool` 说这个槽在不在队上——原版按
 /// `(&DAT_00c05f58)[i]` 挑，不在队上的不回。
 pub fn rest(
     answer: Answer,
@@ -103,12 +158,12 @@ pub fn rest(
     price: i32,
     party: &mut [(bool, Vitals)],
     g_story: &mut i32,
-) -> RestOutcome {
+) -> InnOutcome {
     if answer == Answer::Leave {
-        return RestOutcome::Left;
+        return InnOutcome::Left;
     }
     if !can_afford(*money, price) {
-        return RestOutcome::TooPoor;
+        return InnOutcome::TooPoor;
     }
 
     // 原版的顺序是先回血、再扣钱、最后改剧情号。
@@ -119,7 +174,7 @@ pub fn rest(
     }
     *money -= price;
     *g_story = story_after_rest(*g_story);
-    RestOutcome::Rested { paid: price }
+    InnOutcome::Rested { paid: price }
 }
 
 #[cfg(test)]
@@ -138,6 +193,26 @@ mod tests {
     }
 
     #[test]
+    fn the_menu_has_three_items_in_the_shipped_order() {
+        assert_eq!(
+            MenuItem::ALL,
+            [MenuItem::Chat, MenuItem::Stay, MenuItem::Leave]
+        );
+        assert_eq!(MenuItem::Chat.lang_slot(), 348);
+        assert_eq!(MenuItem::Stay.lang_slot(), 349);
+        assert_eq!(MenuItem::Leave.lang_slot(), 350);
+    }
+
+    #[test]
+    fn the_cost_line_keeps_the_original_indent() {
+        // `"\n          %s%d%s"` —— 换行加十个空格。
+        assert_eq!(
+            cost_line("住宿共需", 50, "文钱"),
+            "\n          住宿共需50文钱"
+        );
+    }
+
+    #[test]
     fn a_night_refills_jing_and_shen_but_not_qi() {
         let mut v = hurt();
         v.rest();
@@ -152,7 +227,7 @@ mod tests {
         let mut story = 0;
         let mut party = [(true, hurt()), (false, hurt()), (true, hurt())];
         let out = rest(Answer::Rest, &mut money, 50, &mut party, &mut story);
-        assert_eq!(out, RestOutcome::Rested { paid: 50 });
+        assert_eq!(out, InnOutcome::Rested { paid: 50 });
         assert_eq!(money, 50);
         assert_eq!(party[0].1.hp, 300);
         assert_eq!(party[1].1.hp, 3, "不在队上的不回");
@@ -169,7 +244,7 @@ mod tests {
         let mut party = [(true, hurt())];
         assert_eq!(
             rest(Answer::Rest, &mut money, 50, &mut party, &mut story),
-            RestOutcome::Rested { paid: 50 }
+            InnOutcome::Rested { paid: 50 }
         );
         assert_eq!(money, 0);
     }
@@ -181,7 +256,7 @@ mod tests {
         let mut party = [(true, hurt())];
         assert_eq!(
             rest(Answer::Rest, &mut money, 50, &mut party, &mut story),
-            RestOutcome::TooPoor
+            InnOutcome::TooPoor
         );
         assert_eq!(money, 49, "钱不够不能扣钱");
         assert_eq!(party[0].1.hp, 3, "钱不够不能回血");
@@ -195,7 +270,7 @@ mod tests {
         let mut party = [(true, hurt())];
         assert_eq!(
             rest(Answer::Leave, &mut money, 50, &mut party, &mut story),
-            RestOutcome::Left
+            InnOutcome::Left
         );
         assert_eq!(money, 999);
         assert_eq!(party[0].1.hp, 3);

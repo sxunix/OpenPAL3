@@ -1,16 +1,30 @@
-//! 119 客栈住店 — `UIShowHotelMenu`，`FUN_004369c0` → `FUN_0044b630`。
+//! 119 客栈 — `UIShowHotelMenu`，`FUN_004369c0` → `FUN_0044b630`。
 //!
-//! 规则在 `openpal3::states::inn`（照客栈界面对象的每帧函数 `0x44b0f0` 写
-//! 的，见 `switch/re/notes/inn.md`）。配置的解析是
-//! `openpal3::states::shop::RestScript`。
+//! 规则在 `openpal3::states::inn`（照客栈界面对象的每帧函数 `0x44b0f0` 和
+//! 消息处理 `FUN_0044b710` 写的，见 `switch/re/notes/inn.md`）。配置的解析
+//! 是 `openpal3::states::shop::RestScript`。
 //!
-//! 三个过程号的用法照原版：钱够跑 `enough_money_proc`、钱不够跑
-//! `not_enough_money_proc`、住完跑 `after_rest_proc`。
+//! 流程照原版：
+//!
+//! ```text
+//! 三项菜单 聊天 / 住宿 / 退出
+//!   ├ 聊天 → 跑 M_ID 那个对话过程
+//!   ├ 退出 → 什么都不跑
+//!   └ 住宿 → 播 M_Rest → 「住宿共需 N 文钱」是/否
+//!             ├ 否     → 什么都不跑
+//!             ├ 钱不够 → 跑 not_enough_money_proc
+//!             └ 钱够   → 淡出、等一秒、回血扣钱改剧情、淡入
+//!                        → 跑 enough_money_proc 再跑 after_rest_proc
+//! ```
 
 use std::path::PathBuf;
 
+use crate::openpal3::assis_lang;
 use crate::openpal3::states::game_db::PLAYER_ACTOR_IDS;
-use crate::openpal3::states::inn::{Answer, G_STORY, RestOutcome, Vitals, rest};
+use crate::openpal3::states::inn::{
+    Answer, BLACKOUT_MILLIS, G_STORY, InnOutcome, MenuItem, Vitals, can_afford, cost_line, lang,
+    rest,
+};
 use crate::openpal3::states::shop::RestScript;
 use crate::scripting::sce::commands::appraise::overlay;
 use crate::scripting::sce::{SceCommand, SceState};
@@ -19,19 +33,36 @@ use imgui::Ui;
 use radiance::comdef::ISceneManager;
 use radiance::input::Key;
 
+const LANG_PATH: &str = "/basedata/basedata/AssisLang.lang";
+const LANG_SECTION: &str = "sec1";
+
 const TEXT: [f32; 4] = [1., 1., 1., 1.];
 const DIM: [f32; 4] = [0.7, 0.74, 0.8, 1.];
 const PICKED: [f32; 4] = [1., 0.86, 0.4, 1.];
 
-/// 结算之后停留几秒让玩家看一眼。
-const RESULT_SECONDS: f32 = 1.6;
+/// 淡出、淡入各用多久。原版的黑屏由引擎的淡入淡出对象做
+/// （`FUN_004be590(1)` / `(2)`），脚本侧只看得到「淡完了没有」，时长没读
+/// 出来——这个值是 **[推断]**。
+const FADE_SECONDS: f32 = 0.5;
+
+/// `M_Rest` 那句话在屏幕上停多久再弹确认框。原版是等对话系统播完，移植端
+/// 没有那套对话时序，给一个固定值 **[推断]**，按键可以跳过。
+const LINE_SECONDS: f32 = 2.0;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Phase {
-    /// 问「要不要住店」。
-    Asking,
-    /// 答完了，给一句回话。
-    Answered,
+    /// 三项菜单。
+    Menu,
+    /// 播 `M_Rest`。
+    Line,
+    /// 「住宿共需 N 文钱」是/否。
+    Confirm,
+    /// 淡出。
+    FadingOut,
+    /// 全黑，等一秒；结算就在这一段的末尾做。
+    Blackout,
+    /// 淡入。
+    FadingIn,
 }
 
 #[derive(Debug, Clone)]
@@ -42,12 +73,19 @@ pub struct SceCommandShowChatRest {
     after_rest_proc: u32,
 
     inn: RestScript,
+    /// `AssisLang.lang` 的 346–350 五条。
+    labels: [String; 5],
     loaded: bool,
+
     phase: Phase,
-    /// 是/否两项里选中哪个。
+    /// 菜单里选中第几项。
     cursor: usize,
-    outcome: Option<RestOutcome>,
-    shown: f32,
+    /// 确认框里选中「住下」还是「不住」。
+    answer: usize,
+    /// 当前阶段已经走了多久。
+    spent: f32,
+    settled: bool,
+    outcome: Option<InnOutcome>,
 }
 
 impl SceCommandShowChatRest {
@@ -63,31 +101,70 @@ impl SceCommandShowChatRest {
             not_enough_money_proc,
             after_rest_proc,
             inn: RestScript::default(),
+            labels: Default::default(),
             loaded: false,
-            phase: Phase::Asking,
+            phase: Phase::Menu,
             cursor: 0,
+            answer: 0,
+            spent: 0.,
+            settled: false,
             outcome: None,
-            shown: 0.,
         }
     }
 
     /// `DealScript\Rest\q01rest.txt` 这样的脚本参数转成 vfs 路径，和店铺
-    /// 那边同一套。
+    /// 那边同一套。三个菜单项和确认框那句话不在这个配置里，在本地化表里。
     fn load(&mut self, state: &mut SceState) {
         self.loaded = true;
+        let vfs = state.asset_mgr().vfs();
+
         let path = PathBuf::from(format!(
             "/basedata/basedata/{}",
             self.config_file.replace('\\', "/")
         ));
-        let Some(text) = read_gbk(state.asset_mgr().vfs(), &path) else {
-            log::error!("ShowChatRest: 读不到 {}", path.display());
-            return;
-        };
-        self.inn = RestScript::parse(&text);
+        match read_gbk(vfs, &path) {
+            Some(text) => self.inn = RestScript::parse(&text),
+            None => log::error!("ShowChatRest: 读不到 {}", path.display()),
+        }
+
+        let fallback = ["住宿共需", "文钱", "聊天", "住宿", "退出"];
+        let table = read_gbk(vfs, &PathBuf::from(LANG_PATH))
+            .map(|text| assis_lang::parse_section(&text, LANG_SECTION))
+            .unwrap_or_else(|| {
+                log::error!("ShowChatRest: 读不到 {LANG_PATH}");
+                vec![]
+            });
+        for (i, slot) in [
+            lang::COST_PREFIX,
+            lang::COST_SUFFIX,
+            lang::CHAT,
+            lang::STAY,
+            lang::LEAVE,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            self.labels[i] = table
+                .get(slot)
+                .cloned()
+                .unwrap_or_else(|| fallback[i].to_string());
+        }
     }
 
-    /// 把存档里在队的人搬进 [`Vitals`]，结算完再写回去。
-    fn settle(&mut self, answer: Answer, state: &mut SceState) -> RestOutcome {
+    fn label(&self, item: MenuItem) -> &str {
+        match item {
+            MenuItem::Chat => &self.labels[2],
+            MenuItem::Stay => &self.labels[3],
+            MenuItem::Leave => &self.labels[4],
+        }
+    }
+
+    fn cost_text(&self) -> String {
+        cost_line(&self.labels[0], self.inn.price, &self.labels[1])
+    }
+
+    /// 扣钱、回血、改剧情号。只在全黑那一段末尾做一次。
+    fn settle(&mut self, answer: Answer, state: &mut SceState) -> InnOutcome {
         let mut p_state = state.global_state_mut().persistent_state_mut();
 
         let party: Vec<(u32, bool, Vitals)> = PLAYER_ACTOR_IDS
@@ -115,7 +192,7 @@ impl SceCommandShowChatRest {
 
         let outcome = rest(answer, &mut money, self.inn.price, &mut slots, &mut story);
 
-        if let RestOutcome::Rested { paid } = outcome {
+        if let InnOutcome::Rested { paid } = outcome {
             for ((id, _, _), (_, v)) in party.iter().zip(slots.iter()) {
                 if let Some(r) = p_state.role_mut(*id) {
                     r.hp = v.hp;
@@ -130,54 +207,129 @@ impl SceCommandShowChatRest {
         outcome
     }
 
+    /// 结束时把该跑的过程压上去。`call_proc` 是压栈，所以后压的先跑——要
+    /// 「钱够的对白」在「住完的对白」之前，就得先压后者。
+    fn queue_procs(&self, state: &mut SceState) {
+        match self.outcome {
+            Some(InnOutcome::Chat { keeper_proc }) => {
+                if keeper_proc > 0 {
+                    state.call_proc(keeper_proc as u32);
+                }
+            }
+            Some(InnOutcome::Rested { .. }) => {
+                if self.after_rest_proc > 0 {
+                    state.call_proc(self.after_rest_proc);
+                }
+                if self.enough_money_proc > 0 {
+                    state.call_proc(self.enough_money_proc);
+                }
+            }
+            Some(InnOutcome::TooPoor) => {
+                if self.not_enough_money_proc > 0 {
+                    state.call_proc(self.not_enough_money_proc);
+                }
+            }
+            Some(InnOutcome::Left) | None => {}
+        }
+    }
+
+    fn finish(&mut self, state: &mut SceState) -> bool {
+        state.set_curtain(0.);
+        self.queue_procs(state);
+        true
+    }
+
     fn draw(&self, ui: &Ui, money: i32) {
-        let price = self.inn.price;
-        let asking = self.phase == Phase::Asking;
+        // 全黑那一段只留幕布，界面不画。
+        if self.phase == Phase::Blackout {
+            return;
+        }
+        let phase = self.phase;
         let cursor = self.cursor;
-        let ask = if self.inn.ask.is_empty() {
-            "要不要住店？".to_string()
-        } else {
-            self.inn.ask.clone()
-        };
-        let reply = match self.outcome {
-            Some(RestOutcome::Rested { .. }) => self.inn.enough.clone(),
-            Some(RestOutcome::TooPoor) => self.inn.not_enough.clone(),
-            _ => String::new(),
-        };
+        let answer = self.answer;
         let keeper = self.inn.keeper_name.clone();
+        let price = self.inn.price;
+        let items: Vec<String> = MenuItem::ALL
+            .iter()
+            .map(|i| self.label(*i).to_string())
+            .collect();
+        let line = self.inn.ask.clone();
+        let cost = self.cost_text();
 
         overlay(ui, "Inn", |ui, at, _scale| {
             let list = ui.get_window_draw_list();
-            list.add_rect(at(60, 380), at(740, 560), [0.06, 0.07, 0.11, 0.86])
+            list.add_rect(at(60, 372), at(740, 560), [0.06, 0.07, 0.11, 0.86])
                 .filled(true)
                 .build();
 
             if !keeper.is_empty() {
-                list.add_text(at(84, 396), DIM, &keeper);
+                list.add_text(at(84, 388), DIM, &keeper);
             }
-            let head = format!("住一晚 {price} 文　身上 {money} 文");
-            list.add_text(at(560, 396), DIM, head);
+            list.add_text(
+                at(548, 388),
+                DIM,
+                format!("住一晚 {price} 文　身上 {money} 文"),
+            );
 
-            if asking {
-                for (i, line) in ask.split('\n').enumerate() {
-                    list.add_text(at(84, 424 + i as i32 * 22), TEXT, line);
+            match phase {
+                Phase::Menu => {
+                    for (i, label) in items.iter().enumerate() {
+                        let picked = i == cursor;
+                        list.add_text(
+                            at(84, 424 + i as i32 * 26),
+                            if picked { PICKED } else { DIM },
+                            format!("{} {label}", if picked { "▶" } else { "  " }),
+                        );
+                    }
+                    list.add_text(at(548, 528), DIM, "↑↓ 选　回车 确定　Esc 退出");
                 }
-                for (i, label) in ["住下", "不住"].iter().enumerate() {
-                    let y = 500 + i as i32 * 24;
-                    let picked = i == cursor;
-                    list.add_text(
-                        at(84, y),
-                        if picked { PICKED } else { DIM },
-                        format!("{} {label}", if picked { "▶" } else { "  " }),
-                    );
+                Phase::Line => {
+                    for (i, l) in line.split('\n').enumerate() {
+                        list.add_text(at(84, 424 + i as i32 * 24), TEXT, l);
+                    }
+                    list.add_text(at(548, 528), DIM, "回车 继续");
                 }
-                list.add_text(at(560, 524), DIM, "↑↓ 选　回车 确定　Esc 离开");
-            } else {
-                for (i, line) in reply.split('\n').enumerate() {
-                    list.add_text(at(84, 424 + i as i32 * 22), TEXT, line);
+                Phase::Confirm => {
+                    // 原版这句是「\n + 十个空格 + 住宿共需 N 文钱」。
+                    for (i, l) in cost.trim_start_matches('\n').split('\n').enumerate() {
+                        list.add_text(at(84, 424 + i as i32 * 24), TEXT, l);
+                    }
+                    for (i, label) in ["住下", "不住"].iter().enumerate() {
+                        let picked = i == answer;
+                        list.add_text(
+                            at(84, 480 + i as i32 * 26),
+                            if picked { PICKED } else { DIM },
+                            format!("{} {label}", if picked { "▶" } else { "  " }),
+                        );
+                    }
+                    list.add_text(at(548, 528), DIM, "↑↓ 选　回车 确定　Esc 不住");
                 }
+                _ => {}
             }
         });
+    }
+}
+
+/// 这一帧按了什么。
+struct Keys {
+    up: bool,
+    down: bool,
+    confirm: bool,
+    cancel: bool,
+}
+
+fn keys(ui: &Ui, state: &SceState) -> Keys {
+    let input = state.input();
+    Keys {
+        up: input.get_key_state(Key::Up).pressed()
+            || input.get_key_state(Key::GamePadDPadUp).pressed(),
+        down: input.get_key_state(Key::Down).pressed()
+            || input.get_key_state(Key::GamePadDPadDown).pressed(),
+        confirm: input.get_key_state(Key::Space).pressed()
+            || input.get_key_state(Key::GamePadSouth).pressed()
+            || ui.is_key_pressed(imgui::Key::Enter),
+        cancel: input.get_key_state(Key::Escape).pressed()
+            || input.get_key_state(Key::GamePadEast).pressed(),
     }
 }
 
@@ -193,86 +345,116 @@ impl SceCommand for SceCommandShowChatRest {
             self.load(state);
         }
 
-        // 快进（脚本测试）：当作选了「住下」，钱够不够由 `rest` 判。
+        // 快进（脚本测试）：当作选了「退出」，一个过程都不跑，钱和血都不动
+        // ——自动跑图不该替玩家花钱。
         if state.fast_forward() {
-            let outcome = self.settle(Answer::Rest, state);
-            self.queue_procs(outcome, state);
-            return true;
+            self.outcome = Some(InnOutcome::Left);
+            return self.finish(state);
         }
 
-        if self.phase == Phase::Asking {
-            let (up, down, confirm, cancel) = {
-                let input = state.input();
-                (
-                    input.get_key_state(Key::Up).pressed()
-                        || input.get_key_state(Key::GamePadDPadUp).pressed(),
-                    input.get_key_state(Key::Down).pressed()
-                        || input.get_key_state(Key::GamePadDPadDown).pressed(),
-                    input.get_key_state(Key::Space).pressed()
-                        || input.get_key_state(Key::GamePadSouth).pressed()
-                        || ui.is_key_pressed(imgui::Key::Enter),
-                    input.get_key_state(Key::Escape).pressed()
-                        || input.get_key_state(Key::GamePadEast).pressed(),
-                )
-            };
+        self.spent += delta_sec;
 
-            if up || down {
-                self.cursor = 1 - self.cursor;
-            }
-            if cancel {
-                self.cursor = 1;
-            }
-            if confirm || cancel {
-                let answer = if self.cursor == 0 {
-                    Answer::Rest
-                } else {
-                    Answer::Leave
-                };
-                let outcome = self.settle(answer, state);
-                self.outcome = Some(outcome);
-                if outcome == RestOutcome::Left {
-                    // 选了不住：原版只关界面，一个过程都不跑。
-                    return true;
+        match self.phase {
+            Phase::Menu => {
+                let k = keys(ui, state);
+                if k.up {
+                    self.cursor = (self.cursor + MenuItem::ALL.len() - 1) % MenuItem::ALL.len();
                 }
-                self.phase = Phase::Answered;
+                if k.down {
+                    self.cursor = (self.cursor + 1) % MenuItem::ALL.len();
+                }
+                if k.cancel {
+                    self.outcome = Some(InnOutcome::Left);
+                    return self.finish(state);
+                }
+                if k.confirm {
+                    match MenuItem::ALL[self.cursor] {
+                        MenuItem::Chat => {
+                            self.outcome = Some(InnOutcome::Chat {
+                                keeper_proc: self.inn.keeper_id,
+                            });
+                            return self.finish(state);
+                        }
+                        MenuItem::Leave => {
+                            self.outcome = Some(InnOutcome::Left);
+                            return self.finish(state);
+                        }
+                        MenuItem::Stay => {
+                            self.phase = Phase::Line;
+                            self.spent = 0.;
+                        }
+                    }
+                }
             }
-        } else {
-            self.shown += delta_sec;
+
+            Phase::Line => {
+                let k = keys(ui, state);
+                // 原版是等 `M_Rest` 那句话播完；这里给个时长，也允许跳过。
+                if k.confirm || k.cancel || self.spent >= LINE_SECONDS {
+                    self.phase = Phase::Confirm;
+                    self.spent = 0.;
+                    self.answer = 0;
+                }
+            }
+
+            Phase::Confirm => {
+                let k = keys(ui, state);
+                if k.up || k.down {
+                    self.answer = 1 - self.answer;
+                }
+                if k.cancel {
+                    self.answer = 1;
+                }
+                if k.confirm || k.cancel {
+                    if self.answer == 1 {
+                        self.outcome = Some(InnOutcome::Left);
+                        return self.finish(state);
+                    }
+                    // 钱不够就地退出，不黑屏——原版也是先比钱再淡出。
+                    let money = state.global_state().persistent_state().money();
+                    if !can_afford(money, self.inn.price) {
+                        self.outcome = Some(InnOutcome::TooPoor);
+                        return self.finish(state);
+                    }
+                    self.phase = Phase::FadingOut;
+                    self.spent = 0.;
+                }
+            }
+
+            Phase::FadingOut => {
+                let t = (self.spent / FADE_SECONDS).clamp(0., 1.);
+                state.set_auto_fade_in(false);
+                state.set_curtain(t);
+                if t >= 1. {
+                    self.phase = Phase::Blackout;
+                    self.spent = 0.;
+                }
+            }
+
+            Phase::Blackout => {
+                state.set_curtain(1.);
+                if self.spent * 1000. >= BLACKOUT_MILLIS as f32 {
+                    if !self.settled {
+                        self.settled = true;
+                        self.outcome = Some(self.settle(Answer::Rest, state));
+                    }
+                    self.phase = Phase::FadingIn;
+                    self.spent = 0.;
+                }
+            }
+
+            Phase::FadingIn => {
+                let t = (self.spent / FADE_SECONDS).clamp(0., 1.);
+                state.set_curtain(1. - t);
+                if t >= 1. {
+                    return self.finish(state);
+                }
+            }
         }
 
         let money = state.global_state().persistent_state().money();
         self.draw(ui, money);
-
-        if self.phase == Phase::Answered && self.shown >= RESULT_SECONDS {
-            let outcome = self.outcome.unwrap_or(RestOutcome::Left);
-            self.queue_procs(outcome, state);
-            return true;
-        }
         false
-    }
-}
-
-impl SceCommandShowChatRest {
-    /// 原版的顺序是「钱够的对白 → 淡出、回血扣钱 → 淡入 → 住完的对白」。
-    /// 移植端没有那一秒黑屏，回血在对白之前就做掉了（玩家看不出来），
-    /// 两段对白的先后和原版一致——`call_proc` 是压栈，所以后压的先跑。
-    fn queue_procs(&self, outcome: RestOutcome, state: &mut SceState) {
-        match outcome {
-            RestOutcome::Rested { .. } => {
-                if self.after_rest_proc > 0 {
-                    state.call_proc(self.after_rest_proc);
-                }
-                if self.enough_money_proc > 0 {
-                    state.call_proc(self.enough_money_proc);
-                }
-            }
-            RestOutcome::TooPoor => {
-                if self.not_enough_money_proc > 0 {
-                    state.call_proc(self.not_enough_money_proc);
-                }
-            }
-            RestOutcome::Left => {}
-        }
     }
 }
 
