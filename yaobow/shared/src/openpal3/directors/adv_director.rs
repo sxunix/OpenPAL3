@@ -240,6 +240,29 @@ impl AdventureDirector {
         self.props.borrow_mut().sce_vm.call_proc(proc_id);
     }
 
+    /// Start a battle straight away, the way opcode 73/80 would.
+    ///
+    /// A debug poke for the agent server: every scripted battle sits
+    /// behind a cutscene, so verifying the combat stage otherwise means
+    /// playing through one. `boss` picks the 80 (fixed line-up) path
+    /// over 73 (random encounter).
+    pub fn start_debug_combat(&self, ids: [i32; 6], boss: bool) {
+        let mut p = self.props.borrow_mut();
+        let scene_manager = p.scene_manager.clone();
+        let cmd: Box<dyn crate::scripting::sce::SceCommand> = if boss {
+            Box::new(
+                crate::scripting::sce::commands::SceCommandCombat::new_boss(
+                    ids[0], ids[1], ids[2], ids[3], ids[4], ids[5],
+                ),
+            )
+        } else {
+            Box::new(crate::scripting::sce::commands::SceCommandCombat::new(
+                ids[0], ids[1], ids[2], ids[3],
+            ))
+        };
+        p.sce_vm.push_debug_command(cmd, scene_manager);
+    }
+
     /// Point the camera at `target` from `eye` and hold it there.
     ///
     /// Parks the polar camera in "a script has it" mode — following off,

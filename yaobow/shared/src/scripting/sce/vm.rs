@@ -175,6 +175,21 @@ impl SceVm {
         self.state.call_proc(proc_id)
     }
 
+    /// Queue a command as if the script had just issued it.
+    ///
+    /// Only for the agent server's debug pokes — it lets an automation
+    /// driver start something (a battle, say) without playing the
+    /// cutscene that normally leads there. The command goes through the
+    /// same `initialize` + `update` path a scripted one does.
+    pub fn push_debug_command(
+        &mut self,
+        mut cmd: Box<dyn SceCommand>,
+        scene_manager: ComRc<ISceneManager>,
+    ) {
+        cmd.initialize(scene_manager, &mut self.state);
+        self.active_commands.push(cmd);
+    }
+
     /// Drop whatever commands are mid-flight.
     ///
     /// Only for the agent server's debug scene jump: a blocking command

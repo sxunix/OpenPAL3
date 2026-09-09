@@ -600,6 +600,29 @@ swap(this->+0x80..+0x88, this->+0x8c..+0x94);
 `SceCommandCombat::initialize` 里建一个 `CoreScene`、放战场和活着的参战者、
 压到场景栈；散场时弹掉。缺哪一件就少摆哪一个，规则层不碰这些实体。
 
+### 已在实机上验证过
+
+2026-09-09 在桌面版上跑通并截图确认：z08 战场铺满画面，右下角景天、左上角
+霹雳堂弟子甲，两军按 `[RolePos]` 分居 z 的两侧，相机把两边都收进画面。
+
+验证的路子（以后回归照这个走）：
+
+1. 桌面版要带 `DYLD_*` 才找得到 `libvulkan.dylib`，而 macOS SIP 会在执行
+   受保护二进制时把这些变量剥掉——**用 homebrew 的 python `os.execve`
+   直接起进程**才带得住（`/opt/homebrew/bin/python3`，系统 `/usr/bin/env`
+   不行）。
+2. `--agent-port <n>` 起 agent server，`/v1/menu/new_game` +
+   `/v1/time/fast_forward` 跳过开场，`/v1/script/eval` 的 `load_scene`
+   跳到有战斗映射的场景（`combatScn.txt` 里 **q01 只有 `q01_x`**，
+   `q01/yn09a` 查不到战场，舞台不会建；`M01/1` 的 default 是 `z08`）。
+3. `start_combat` 直接开战（新加的调试 poke，见下），随后立刻
+   `/v1/time/pause` —— **不暂停的话战斗几帧就结束、舞台跟着弹掉，截到的
+   是弹掉之后的画面**。第一次排查卡在这儿，误以为舞台没上屏。
+4. `/v1/screenshot` 取图。
+
+`/v1/script/eval` 加了 `start_combat`（`[id0..id5, boss?]`）：每场脚本
+战斗都藏在过场后面，没有它就得先演一遍剧情才看得到战斗。
+
 ### 还没做
 
 - **镜头只做了静态一台**。`cbCam.ini` 有 47 节，其中

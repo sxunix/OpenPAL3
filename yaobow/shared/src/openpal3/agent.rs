@@ -411,6 +411,19 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: Some(serde_json::json!({ "render_objects": n })),
             })
         }
+        "start_combat" => {
+            // [id0..id5, boss?] —— 六个战斗 actor id 加一个可选的 boss 标志。
+            let mut ids = [0i32; 6];
+            for (i, slot) in ids.iter_mut().enumerate() {
+                *slot = int_arg(i).unwrap_or(0) as i32;
+            }
+            let boss = int_arg(6).unwrap_or(1) != 0;
+            director.start_debug_combat(ids, boss);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "load_scene" => {
             let name = params.args.first().and_then(|v| v.as_str());
             let sub = params.args.get(1).and_then(|v| v.as_str());

@@ -404,3 +404,31 @@ fn what_equipment_is_actually_worth() {
         "所有装备的武/防加成合计为 0，item_bonus 大概读错了"
     );
 }
+
+/// 战斗角色的模型名——摆战斗舞台要用。
+#[test]
+fn combat_actors_carry_a_model_name() {
+    let Some(gdb) = load_gdb() else { return };
+    let mut shown = 0;
+    for a in &gdb.combat_actors {
+        let name = a.name.as_str().unwrap_or_else(|_| "?".to_string());
+        let model = a.model_id.as_str().unwrap_or_else(|_| "?".to_string());
+        if shown < 12 {
+            println!(
+                "  id {:<5} type {} 「{name}」 model={model}",
+                a.id, a.actor_type
+            );
+            shown += 1;
+        }
+    }
+    let with_model = gdb
+        .combat_actors
+        .iter()
+        .filter(|a| a.model_id.as_str().map(|s| !s.is_empty()).unwrap_or(false))
+        .count();
+    println!(
+        "  {} 个战斗角色，{with_model} 个带模型名",
+        gdb.combat_actors.len()
+    );
+    assert!(with_model > 0, "一个模型名都没有，字段大概读错了");
+}

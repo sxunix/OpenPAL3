@@ -291,8 +291,10 @@ impl SceCommandCombat {
         use radiance::scene::{CoreScene, SceneLighting};
 
         let Some(scene_name) = self.combat_scene.clone() else {
+            log::warn!("Combat: 没算出战场名，舞台不建");
             return;
         };
+        log::info!("Combat: 战场 {scene_name}");
         let Some(db) = state.global_state().game_db().cloned() else {
             return;
         };
@@ -319,6 +321,7 @@ impl SceCommandCombat {
         // 参战的人。站位表短了或者模型缺了就跳过那一个。
         let positions = &db.combat().role_positions;
         let Some(battle) = self.session.as_ref().map(|s| &s.battle) else {
+            log::warn!("Combat: session 还没建，舞台上没人");
             return;
         };
         for slot in 0..stage::STAGE_SLOTS {
@@ -365,7 +368,13 @@ impl SceCommandCombat {
             }
         }
 
+        let entities = scene.entities().len();
         scene_manager.push_scene(scene.clone());
+        let top_entities = scene_manager
+            .scene()
+            .map(|s| s.entities().len())
+            .unwrap_or(0);
+        log::info!("Combat: 舞台压栈，{entities} 个实体；栈顶场景有 {top_entities} 个实体");
         self.stage = Some(scene);
     }
 
@@ -574,6 +583,17 @@ impl SceCommandCombat {
             self.switched_bgm = state.global_state_mut().play_combat_bgm();
         }
 
+        {
+            let ours: Vec<String> = (0..PARTY_SLOTS)
+                .filter_map(|i| battle.get(i))
+                .map(|c| format!("{}({}/{})", c.actor_id, c.hp, c.max_hp))
+                .collect();
+            let theirs: Vec<String> = (PARTY_SLOTS..SLOTS)
+                .filter_map(|i| battle.get(i))
+                .map(|c| format!("{}({}/{})", c.actor_id, c.hp, c.max_hp))
+                .collect();
+            log::info!("Combat: 我方 {ours:?} 敌方 {theirs:?}");
+        }
         let mut session = CombatSession::new(battle, profiles, seed.rotate_left(13) ^ 0x5bd1_e995);
         session.set_items(items);
         self.session = Some(session);
