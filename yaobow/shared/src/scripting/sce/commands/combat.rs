@@ -176,6 +176,10 @@ pub struct SceCommandCombat {
     camera: Option<crate::openpal3::combat::camera::CamPlayer>,
     /// `flexcam.dat`，散场时还要播胜 / 败 / 逃的序列。
     flexcam: Option<crate::openpal3::combat::camera::Flexcam>,
+    /// `efflinker.dat`：技能 / 道具 → 特效组和结算时刻。
+    linker: Option<crate::openpal3::combat::linker::EffectLinker>,
+    /// 两方的定点：`[我方, 敌方]`（`FUN_00508930` 的 CBStage +0x384 / 10 号位）。
+    side_anchors: [Vec3; 2],
     /// 分出胜负、正在播散场镜头。
     ending: Option<Outcome>,
     /// 结算画面的时间轴（`combat::result`）。
@@ -247,6 +251,11 @@ struct StageRun {
     slot: usize,
     kind: ActKind,
     step: StageStep,
+    /// 这一招在 efflinker 里的那一条（仙术、投掷道具才有）。
+    link: Option<crate::openpal3::combat::linker::EffectLink>,
+    target: Option<usize>,
+    /// 第一 / 第二段特效放过没有。
+    played: [bool; 2],
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -417,6 +426,8 @@ impl SceCommandCombat {
             run: None,
             camera: None,
             flexcam: None,
+            linker: None,
+            side_anchors: [Vec3::new(0., 0., 0.); 2],
             ending: None,
             result: None,
             result_messages: Vec::new(),
@@ -643,6 +654,27 @@ impl SceCommandCombat {
                 .flexcam
                 .as_ref()
                 .and_then(|f| CamPlayer::new(f.sequence(camera::STAND_SEQUENCE), stand));
+            self.linker = asset_mgr
+                .vfs()
+                .read_to_end(crate::openpal3::combat::linker::LINKER_PATH)
+                .ok()
+                .and_then(|b| crate::openpal3::combat::linker::EffectLinker::parse(&b));
+            // 两方的定点：敌方是 10 号位（FUN_00508930 读 +0x40 那个舞台角色）；
+            // 我方原版读 CBStage +0x384，这里用 0..4 号位的重心代替 [推断]。
+            let pos =
+                |k: usize| stage::stage_position(positions, k).map(|p| Vec3::new(p.x, 0., p.z));
+            let party: Vec<Vec3> = (0..PARTY_SLOTS).filter_map(pos).collect();
+            if !party.is_empty() {
+                let n = party.len() as f32;
+                self.side_anchors[0] = Vec3::new(
+                    party.iter().map(|p| p.x).sum::<f32>() / n,
+                    0.,
+                    party.iter().map(|p| p.z).sum::<f32>() / n,
+                );
+            }
+            if let Some(p) = pos(10) {
+                self.side_anchors[1] = p;
+            }
             if player.is_none() {
                 log::warn!("Combat: flexcam.dat 读不出来，镜头停在 EditorCam0");
             }
@@ -1182,8 +1214,15 @@ impl SceCommandCombat {
 
     /// 演交给舞台的那一次行动（`CombatSession::staging`）：攻击走过去 →
     /// 出手 → 隔 `HIT_DELAY` 结算 → 走回来；仙术、道具原地出手。演完放开时钟。
-    fn drive_staging(&mut self, delta_sec: f32) {
+    fn drive_staging(&mut self, state: &mut SceState, delta_sec: f32) {
+        use crate::openpal3::combat::linker::Anchor;
         use motion::Motion;
+        let positions: Vec<Option<Vec3>> = self
+            .actors
+            .iter()
+            .map(|a| a.as_ref().map(|a| a.entity.transform().borrow().position()))
+            .collect();
+        let side_anchors = self.side_anchors;
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -1205,10 +1244,24 @@ impl SceCommandCombat {
                     return;
                 }
             };
+            let link_id = match session.pending {
+                Some(Pending::Cast { skill, .. }) => {
+                    session.skills(slot).get(skill).map(|s| s.effect.id)
+                }
+                Some(Pending::Item { item, .. }) => session.items().get(item).map(|i| i.effect.id),
+                _ => None,
+            };
+            let link = link_id.and_then(|id| self.linker.as_ref()?.find(id));
+            if let (Some(id), None) = (link_id, link) {
+                log::debug!("Combat: efflinker 里没有 {id}");
+            }
             self.run = Some(StageRun {
                 slot,
                 kind,
                 step: StageStep::Begin,
+                link,
+                target: None,
+                played: [false; 2],
             });
         }
         let target = match session.pending {
@@ -1269,10 +1322,39 @@ impl SceCommandCombat {
             StageStep::Strike { t } => {
                 let t = t + delta_sec;
                 run.step = StageStep::Strike { t };
-                if t >= motion::HIT_DELAY && !staging.landed {
+                run.target = run.target.or(target);
+                // efflinker 那一条：按起播时刻放特效，结算落在它写的时刻。
+                if let Some(link) = run.link {
+                    let side = |s: usize| side_anchors[(s >= PARTY_SLOTS) as usize];
+                    for (k, e) in link.effects().enumerate() {
+                        if run.played[k] || t < e.at {
+                            continue;
+                        }
+                        run.played[k] = true;
+                        let at = match e.anchor {
+                            Anchor::Actor => positions.get(slot).copied().flatten(),
+                            Anchor::Target => {
+                                run.target.and_then(|t| positions.get(t).copied().flatten())
+                            }
+                            Anchor::ActorSide => Some(side(slot)),
+                            Anchor::TargetSide => run.target.map(side),
+                            Anchor::Fixed(p) => Some(Vec3::new(p[0], p[1], p[2])),
+                        };
+                        if let Some(at) = at {
+                            log::info!("Combat: 特效组 {} 于 {at:?}", e.group);
+                            state.play_effect(e.group, at);
+                        }
+                    }
+                }
+                let hit_at = run.link.map(|l| l.result_at).unwrap_or(motion::HIT_DELAY);
+                if t >= hit_at && !staging.landed {
                     session.strike();
                 }
-                let done = t >= motion::HIT_DELAY
+                let effects_done = run
+                    .link
+                    .is_none_or(|l| l.effects().enumerate().all(|(k, _)| run.played[k]));
+                let done = t >= hit_at
+                    && effects_done
                     && rc.state() != crate::openpal3::scene::RoleState::PlayingAnimation;
                 if done {
                     let at = actor.entity.transform().borrow().position();
@@ -1771,7 +1853,7 @@ impl SceCommand for SceCommandCombat {
             session.tick(delta_sec)
         };
 
-        self.drive_staging(delta_sec);
+        self.drive_staging(state, delta_sec);
         self.animate_stage(delta_sec);
         if let (Some(player), Some(stage)) = (self.camera.as_mut(), self.stage.as_ref()) {
             let moving = !player.finished();

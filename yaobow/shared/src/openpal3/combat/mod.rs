@@ -16,6 +16,7 @@ pub mod camera;
 pub mod encounter;
 pub mod formulas;
 pub mod hud;
+pub mod linker;
 pub mod motion;
 pub mod result;
 pub mod session;

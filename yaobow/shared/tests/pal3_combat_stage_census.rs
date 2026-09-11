@@ -171,3 +171,35 @@ fn the_combat_camera_data_hangs_together() {
         .collect();
     println!("有内容的镜头序列 {} 个：{used:?}", used.len());
 }
+
+/// `efflinker.dat`：每个技能都有一条，结算时刻和特效组读得出来。
+#[test]
+fn every_skill_has_an_effect_link() {
+    use shared::openpal3::combat::linker::{EffectLinker, FILE_SIZE, LINKER_PATH};
+    let Some((vfs, _)) = data() else { return };
+    let bytes = vfs.read_to_end(LINKER_PATH).expect("efflinker.dat");
+    assert_eq!(bytes.len(), FILE_SIZE);
+    let linker = EffectLinker::parse(&bytes).unwrap();
+    assert_eq!(linker.len(), 256, "187 技能 + 59 道具 + 10 条 501..510");
+
+    // 烈焰燃雷：第一段 371 号组，1.5 秒结算。
+    let l = linker.find(245).expect("245 烈焰燃雷");
+    assert_eq!(l.first.map(|e| e.group), Some(371));
+    assert!((l.result_at - 1.5).abs() < 1e-5);
+    // 梅花镖（投掷道具）也在。
+    assert!(linker.find(6101).is_some());
+
+    let gdb_path =
+        std::env::var("YAOBOW_PAL3_GDB").unwrap_or_else(|_| "/tmp/pal3_softstar.gdb".into());
+    if let Ok(raw) = std::fs::read(gdb_path) {
+        let gdb = fileformats::pal3::gdb::GdbFile::read(&mut std::io::Cursor::new(raw)).unwrap();
+        let missing: Vec<u32> = gdb
+            .skills
+            .iter()
+            .map(|s| s.id)
+            .filter(|id| linker.find(*id).is_none())
+            .collect();
+        assert!(missing.is_empty(), "这些技能 efflinker 里没有：{missing:?}");
+        println!("{} 个技能都有特效链接", gdb.skills.len());
+    }
+}
