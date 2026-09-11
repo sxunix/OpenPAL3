@@ -440,6 +440,28 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "add_money" => {
+            // [n] —— 加钱（负数扣钱），测买卖用。
+            director.add_money(int_arg(0).unwrap_or(0) as i32);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "dealer" => {
+            // ["DealScript\\WeaponShop\\q01weapon.txt"] —— 直接开一家店（SCE 100）。
+            let shop = params
+                .args
+                .first()
+                .and_then(|v| v.as_str())
+                .unwrap_or("DealScript\\WeaponShop\\q01weapon.txt")
+                .to_string();
+            director.start_debug_dealer(shop);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "start_combat" => {
             // [id0..id5, boss?] —— 六个战斗 actor id 加一个可选的 boss 标志。
             let mut ids = [0i32; 6];

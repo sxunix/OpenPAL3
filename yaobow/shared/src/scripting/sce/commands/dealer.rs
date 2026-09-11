@@ -5,51 +5,99 @@
 //! 命令在买卖期间阻塞脚本（原版是 `FUN_0044f610(2)` 进模式 2 再挂一个等待
 //! 任务），玩家关掉店面脚本才继续。
 //!
-//! **界面不是原版那一套**。原版的五个列表框布局在 `FUN_004593c0` /
-//! `FUN_00459970` 里，是按控件基类算出来的相对矩形，还没逐字段读通；这里先
-//! 照战斗那样画一个文字浮层，把买卖跑通。换成像素级的界面是纯渲染改动。
+//! 界面照原版的像素布局画（`dealer_layout`，逆向记录
+//! `switch/re/notes/dealer_layout.md`）：
 //!
-//! 买和卖两页都有：卖价是 `price / 2`、不还价、剧情物品不能卖（`shop.md`
-//! §5）。原版是三个子页对象，这里做成一个浮层上的两页，Tab 切换。
+//! - 先是一面竖幡上挂几个按钮（`FUN_004593c0` / `FUN_00459970`），按店铺类型
+//!   摆「买装备 / 买道具 / 卖东西 / 聊天 / 退出」；
+//! - 点进去是三个全屏子页之一（买装备 `FUN_0045b990`、买道具 `FUN_0046df40`、
+//!   卖 `FUN_00471590`）：左边框、右边列表、中间说明面板、底栏三个按钮。
+//!   原版一单可以在好几行上各挑数量，「累计」是整单的钱，确定时一起结。
+//!
+//! 操作：十字键上下选行、左右调数量，A（空格）确定，Y（Q）还价，
+//! X（E）换卖页的页签，B（Esc）回上一层。鼠标和原版一样点按钮。
+//!
+//! 还没做的：买装备页左边五个人的装备对比（每人六格、四项升降箭头，
+//! `FUN_0046b040`）、物品的 3D 预览、滚动条、按钮音效。
 
-use crate::openpal3::states::shop::{
-    DealScript, Haggle, ShopRng, TIERS, buyable, discounted, haggle, price_to_pay, sell_price,
-    sellable,
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use super::appraise::{overlay, virtual_mouse};
+use super::dealer_layout::{
+    self as lay, BUY_LIST, INK, ListGeom, MenuButton, Rect, SELL_LIST, inside, page,
 };
+use super::encamp::draw_sprite;
+use crate::openpal3::assis_lang;
+use crate::openpal3::states::shop::{
+    DealScript, Haggle, ShopRng, TIERS, buyable, haggle, price_to_pay, sell_price, sellable,
+};
+use crate::openpal3::ui_tex::UiTextures;
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
-use imgui::{Condition, Ui};
+use imgui::{MouseButton, Ui};
 use radiance::comdef::ISceneManager;
+use radiance::imgui::{GameFontSize, game_font};
 use radiance::input::Key;
-use std::path::PathBuf;
+use radiance::rendering::Sprite;
 
-/// 店里的一行。
+const LANG_PATH: &str = "/basedata/basedata/AssisLang.lang";
+const LANG_SECTION: &str = "sec1";
+
+/// AssisLang 里用到的几格（`FUN_0045b990` 那几处 `&Lang[n]`）。
+mod lang {
+    pub const NAME: usize = 2;
+    pub const PRICE: usize = 3;
+    pub const COUNT: usize = 4;
+    pub const HELD: usize = 44;
+    pub const TOTAL: usize = 123;
+}
+
+/// 原版菜单背后每帧再贴一张场景截图（`0x459900`）：打开时 `FUN_004bdc40` 把场景按
+/// 512×384 渲染进一张渲染目标，之后用白色、alpha 0x3e 拉满全屏叠上去。只有底下的
+/// 场景还在画时，这样一张 24% 的叠图才有意义——效果是场景上一层淡淡的虚影，不是
+/// 压暗 [推断]。移植端直接让场景照常画，不另加这一层。
+
+/// 选中行的字色（见 `draw_page`）。
+const SELECTED_INK: [f32; 4] = [1.0, 0.98, 0.98, 1.0];
+
+type Tex = Option<Rc<Sprite>>;
+
+/// 店里或背包里的一行。
 #[derive(Debug, Clone)]
 struct Good {
     id: u32,
     name: String,
+    description: String,
+    item_type: u8,
     price: i32,
     /// 背包里已经有几个——每种最多买到 99 个（`FUN_0045b7a0`）。
     owned: u32,
 }
 
-/// 在买还是在卖。原版是两个子页对象（`FUN_0045b990` / `FUN_00471590`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Page {
-    Buy,
+    Equip,
+    Prop,
     Sell,
 }
 
-/// 光标在哪一层。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    /// 挑东西、调数量。
-    Browse,
-    /// 挑折扣档；`TIERS` 那一格是「照原价买」。
-    Haggle { index: usize },
+enum Screen {
+    Menu,
+    Page(Page),
 }
 
-/// 按键，和战斗菜单同一套。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Browse,
+    /// 五个折扣档（`bDK5..9`）亮着，`index` 是手柄挑的那一档。
+    Haggle {
+        index: usize,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Input {
     Up,
@@ -58,32 +106,182 @@ enum Input {
     Right,
     Confirm,
     Cancel,
-    /// 买卖两页之间来回（原版是点页签）。
-    Switch,
+    Dicker,
+    NextTab,
 }
 
-const TIER_LABELS: [&str; TIERS] = ["五折", "六折", "七折", "八折", "九折"];
+/// 鼠标落在什么上面。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hit {
+    Menu(usize),
+    /// 列表第几个**可见**行。
+    Row(usize),
+    Yes,
+    Dicker,
+    No,
+    Exit,
+    Tier(usize),
+    Tab(usize),
+    Add,
+    Sub,
+}
 
-#[derive(Debug, Clone)]
+/// 卖页六个页签（`FUN_0040d010` 的 0/1/2/3/4/6 号表，`shop.md` §5.2）。
+fn sell_tab_of(item_type: u8) -> Option<usize> {
+    match item_type {
+        1 => Some(0),
+        3 => Some(1),
+        2 => Some(2),
+        5 | 12 => Some(3),
+        4 => Some(4),
+        7..=11 => Some(5),
+        _ => None,
+    }
+}
+
+const SELL_TAB_TEX: [&str; 6] = [
+    "UI\\GameMainUI\\Prop\\Resume",
+    "UI\\GameMainUI\\Prop\\Treasure",
+    "UI\\GameMainUI\\Prop\\Attack",
+    "UI\\GameMainUI\\Prop\\Smelt",
+    "UI\\GameMainUI\\Prop\\Ancient",
+    "UI\\GameMainUI\\Equip\\Cloth",
+];
+
+/// 这一界面用到的贴图。三态的按钮按原版命名 `<基名>0/1/2.tga`：常态、鼠标
+/// 悬停、按下（选中）。
+#[derive(Clone, Default)]
+struct Skin {
+    flag_t: Tex,
+    flag_m: Tex,
+    flag_b: Tex,
+    rawbtn: [Tex; 3],
+    buy_flag: Tex,
+    sale_flag: Tex,
+    frame_bar: Tex,
+    frame: Tex,
+    list_frame: Tex,
+    info: Tex,
+    equip_word: Tex,
+    prop_word: Tex,
+    buy_grid: Tex,
+    sale_grid: Tex,
+    selected: Tex,
+    tab_bar: Tex,
+    yes: [Tex; 3],
+    no: [Tex; 3],
+    dicker: [Tex; 3],
+    undicker: Tex,
+    exit: [Tex; 3],
+    add: [Tex; 3],
+    sub: [Tex; 3],
+    unadd: Tex,
+    unsub: Tex,
+    tiers: [[Tex; 3]; TIERS],
+    tabs: [[Tex; 3]; 6],
+}
+
+impl Skin {
+    fn load(state: &SceState) -> Self {
+        let am = state.asset_mgr().clone();
+        let mut t = UiTextures::new(&am);
+        let mut one = |name: &str| t.get(&am, name);
+        let mut three = |base: &str| -> [Tex; 3] {
+            [
+                t_get(&mut one, base, 0),
+                t_get(&mut one, base, 1),
+                t_get(&mut one, base, 2),
+            ]
+        };
+        fn t_get(one: &mut dyn FnMut(&str) -> Tex, base: &str, i: usize) -> Tex {
+            one(&format!("{base}{i}.tga"))
+        }
+        let rawbtn = three("SubGame\\HockShop\\Control\\rawbtn");
+        let yes = three("UI\\GameMainUI\\MUIDialog\\Normal\\Yes");
+        let no = three("UI\\GameMainUI\\MUIDialog\\Normal\\No");
+        let dicker = three("UI\\Assistant\\Communal\\bDicker");
+        let exit = three("UI\\GameMainUI\\Communal\\StpCtl\\Exit");
+        let add = three("UI\\Assistant\\Communal\\Add");
+        let sub = three("UI\\Assistant\\Communal\\Sub");
+        let tiers = std::array::from_fn(|k| three(&format!("UI\\Assistant\\Equip\\bDK{}", k + 5)));
+        let tabs = std::array::from_fn(|k| three(SELL_TAB_TEX[k]));
+        drop(three);
+        Self {
+            flag_t: one("UI\\Assistant\\Deal\\FlagT.tga"),
+            flag_m: one("UI\\Assistant\\Deal\\FlagM.tga"),
+            flag_b: one("UI\\Assistant\\Deal\\FlagB.tga"),
+            rawbtn,
+            buy_flag: one("UI\\Assistant\\Communal\\BuyFlag.tga"),
+            sale_flag: one("UI\\Assistant\\Communal\\SaleFlag.tga"),
+            frame_bar: one("UI\\Flex\\framebar.tga"),
+            frame: one("UI\\Assistant\\Communal\\Frame.tga"),
+            list_frame: one("UI\\GameMainUI\\Equip\\ListFrame.tga"),
+            info: one("UI\\GameMainUI\\Communal\\Info.tga"),
+            equip_word: one("UI\\GameMainUI\\Communal\\Equip_word.tga"),
+            prop_word: one("UI\\GameMainUI\\Communal\\Prop_word.tga"),
+            buy_grid: one("UI\\Assistant\\Communal\\Buy_Grid.tga"),
+            sale_grid: one("UI\\Assistant\\Communal\\Sale_Grid.tga"),
+            selected: one("UI\\Assistant\\Communal\\ListBoxSelPic.tga"),
+            tab_bar: one("UI\\Flex\\Bar.tga"),
+            yes,
+            no,
+            dicker,
+            undicker: one("UI\\Assistant\\Communal\\UnDicker.tga"),
+            exit,
+            add,
+            sub,
+            unadd: one("UI\\Assistant\\Communal\\UnAdd.tga"),
+            unsub: one("UI\\Assistant\\Communal\\UnSub.tga"),
+            tiers,
+            tabs,
+        }
+    }
+}
+
+#[derive(Clone)]
 pub struct SceCommandDealerMenu {
     shop_file: String,
     shop: DealScript,
-    page: Page,
-    goods: Vec<Good>,
-    /// 背包里能卖的东西，按 id 升序——原版卖页那六张表也是从背包按序抓的。
+    loaded: bool,
+    screen: Screen,
+    buttons: Vec<MenuButton>,
+    menu_cursor: usize,
+    equip_goods: Vec<Good>,
+    prop_goods: Vec<Good>,
+    /// 背包里能卖的全部东西，按 id 升序。
     stock: Vec<Good>,
+    /// 卖页当前页签下的那几行。
+    sell_rows: Vec<Good>,
+    sell_tab: usize,
     cursor: usize,
-    /// 这一单要买几个。
-    quantity: i32,
+    /// 列表滚到哪一行在最上面。
+    top: usize,
+    /// 这一单：物品 id → 个数。原版每行各自记数量，确定时一起结。
+    cart: HashMap<u32, i32>,
     mode: Mode,
     /// 这家店已经拒绝过几次；到了忍耐度就强制成交（原版 `+0x19d98`）。
     refusals: i32,
     /// 被严词拒绝过之后，再买东西说的是 `HarshTalkbuy`。
     harsh: bool,
-    /// 商人现在说的话。
+    /// 商人现在说的话（原版画在页面 `+0x17604` 那个文本框里）。
     talk: String,
     rng: ShopRng,
-    loaded: bool,
+    lang: Vec<String>,
+    skin: Skin,
+    last_mouse: (f32, f32),
+    /// 点了「聊天」：关店后跑商人的过程（`FUN_00432170(M_ID)`）。
+    chat_proc: Option<u16>,
+}
+
+impl std::fmt::Debug for SceCommandDealerMenu {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SceCommandDealerMenu")
+            .field("shop_file", &self.shop_file)
+            .field("screen", &self.screen)
+            .field("mode", &self.mode)
+            .field("cursor", &self.cursor)
+            .finish()
+    }
 }
 
 impl SceCommandDealerMenu {
@@ -91,17 +289,27 @@ impl SceCommandDealerMenu {
         Self {
             shop_file: shop,
             shop: DealScript::default(),
-            page: Page::Buy,
-            goods: Vec::new(),
-            stock: Vec::new(),
+            loaded: false,
+            screen: Screen::Menu,
+            buttons: vec![],
+            menu_cursor: 0,
+            equip_goods: vec![],
+            prop_goods: vec![],
+            stock: vec![],
+            sell_rows: vec![],
+            sell_tab: 0,
             cursor: 0,
-            quantity: 1,
+            top: 0,
+            cart: HashMap::new(),
             mode: Mode::Browse,
             refusals: 0,
             harsh: false,
             talk: String::new(),
             rng: ShopRng::new(0x1234_5678),
-            loaded: false,
+            lang: vec![],
+            skin: Skin::default(),
+            last_mouse: (-1., -1.),
+            chat_proc: None,
         }
     }
 
@@ -123,74 +331,109 @@ impl SceCommandDealerMenu {
             return;
         };
         self.shop = DealScript::parse(&text);
+        self.lang = read_gbk(state.asset_mgr().vfs(), &PathBuf::from(LANG_PATH))
+            .map(|t| assis_lang::parse_section(&t, LANG_SECTION))
+            .unwrap_or_default();
+        self.buttons = lay::menu_buttons(self.shop.shop_type);
 
-        let db = state.global_state().game_db().cloned();
-        let p_state = state.global_state().persistent_state();
-        self.goods = self
-            .shop
-            .goods()
-            .into_iter()
-            .filter_map(|id| {
-                let row = db.as_ref()?.item(id)?;
-                Some(Good {
-                    id,
-                    name: row
-                        .name
-                        .as_str()
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|_| format!("道具#{id}")),
-                    price: row.price,
-                    owned: p_state.item_count(id),
-                })
-            })
-            .collect();
-
-        drop(p_state);
+        let shop = self.shop.clone();
+        self.equip_goods = self.goods_of(state, &shop.equipment);
+        self.prop_goods = self.goods_of(state, &shop.props);
         self.rebuild_stock(state);
-
-        // 开场白，随后进买的页面（原版分别是 BeginTalk 和 EntryBuy）。
-        self.talk = if self.shop.entry_buy.is_empty() {
-            self.shop.begin_talk.clone()
-        } else {
-            format!("{}\n{}", self.shop.begin_talk, self.shop.entry_buy)
-        };
         // 掷骰的种子跟着这一单走，跑起来才不是每次一样。
         self.rng =
             ShopRng::new(state.global_state().persistent_state().money() as u32 ^ 0x5bd1_e995);
     }
 
+    fn good(state: &SceState, id: u32, owned: u32) -> Option<Good> {
+        let db = state.global_state().game_db().cloned()?;
+        let row = db.item(id)?;
+        Some(Good {
+            id,
+            name: row
+                .name
+                .as_str()
+                .map(|n| n.to_string())
+                .unwrap_or_else(|_| format!("道具#{id}")),
+            description: row
+                .description
+                .as_str()
+                .map(|d| d.to_string())
+                .unwrap_or_default(),
+            item_type: row.item_type,
+            price: row.price,
+            owned,
+        })
+    }
+
+    fn goods_of(&self, state: &SceState, ids: &[u32]) -> Vec<Good> {
+        let p_state = state.global_state().persistent_state();
+        let owned: Vec<u32> = ids.iter().map(|id| p_state.item_count(*id)).collect();
+        drop(p_state);
+        ids.iter()
+            .zip(owned)
+            .filter_map(|(id, n)| Self::good(state, *id, n))
+            .collect()
+    }
+
     /// 背包里能卖的东西。`FUN_0040d010` 的六张表并起来就是「除剧情之外的
     /// 一切」，`BTreeMap` 的 id 升序也就是原版的列表顺序。
     fn rebuild_stock(&mut self, state: &SceState) {
-        let db = state.global_state().game_db().cloned();
-        let p_state = state.global_state().persistent_state();
-        self.stock = p_state
+        let held: Vec<(u32, u32)> = state
+            .global_state()
+            .persistent_state()
             .inventory()
             .iter()
             .filter(|(_, count)| **count > 0)
-            .filter_map(|(id, count)| {
-                let row = db.as_ref()?.item(*id)?;
-                if !sellable(row.item_type) {
-                    return None;
-                }
-                Some(Good {
-                    id: *id,
-                    name: row
-                        .name
-                        .as_str()
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|_| format!("道具#{id}")),
-                    price: row.price,
-                    owned: *count,
-                })
-            })
+            .map(|(id, count)| (*id, *count))
+            .collect();
+        self.stock = held
+            .into_iter()
+            .filter_map(|(id, n)| Self::good(state, id, n))
+            .filter(|g| sellable(g.item_type))
+            .collect();
+        self.refresh_sell_rows();
+    }
+
+    fn refresh_sell_rows(&mut self) {
+        let tab = self.sell_tab;
+        self.sell_rows = self
+            .stock
+            .iter()
+            .filter(|g| sell_tab_of(g.item_type) == Some(tab))
+            .cloned()
             .collect();
     }
 
+    fn text(&self, slot: usize, fallback: &str) -> String {
+        self.lang
+            .get(slot)
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
+    fn page(&self) -> Option<Page> {
+        match self.screen {
+            Screen::Page(p) => Some(p),
+            Screen::Menu => None,
+        }
+    }
+
+    fn geom(&self) -> &'static ListGeom {
+        if self.page() == Some(Page::Sell) {
+            &SELL_LIST
+        } else {
+            &BUY_LIST
+        }
+    }
+
     fn rows(&self) -> &[Good] {
-        match self.page {
-            Page::Buy => &self.goods,
-            Page::Sell => &self.stock,
+        match self.page() {
+            Some(Page::Equip) => &self.equip_goods,
+            Some(Page::Prop) => &self.prop_goods,
+            Some(Page::Sell) => &self.sell_rows,
+            None => &[],
         }
     }
 
@@ -198,49 +441,93 @@ impl SceCommandDealerMenu {
         self.rows().get(self.cursor)
     }
 
-    /// 这一行这一单最多能做几个：买是 `99 − 已持有`，卖是手上有几个。
-    fn quantity_cap(&self) -> i32 {
-        match self.page {
-            Page::Buy => self.current().map(|g| buyable(g.owned)).unwrap_or(0),
-            Page::Sell => self.current().map(|g| g.owned as i32).unwrap_or(0),
-        }
+    fn in_cart(&self, id: u32) -> i32 {
+        self.cart.get(&id).copied().unwrap_or(0)
     }
 
-    /// 这一单的钱：买是原价合计，卖是 `price / 2` 合计。
-    fn total(&self) -> i32 {
-        let n = self.quantity.max(0);
-        match (self.page, self.current()) {
-            (Page::Buy, Some(g)) => g.price * n,
-            (Page::Sell, Some(g)) => sell_price(g.price) * n,
-            _ => 0,
-        }
-    }
-
-    fn clamp_quantity(&mut self) {
-        let max = self.quantity_cap();
-        if max <= 0 {
-            self.quantity = 0;
+    /// 这一行最多能挑几个：买是 `99 − 已持有`，卖是手上有几个。
+    fn cap(&self, g: &Good) -> i32 {
+        if self.page() == Some(Page::Sell) {
+            g.owned as i32
         } else {
-            self.quantity = self.quantity.clamp(1, max);
+            buyable(g.owned)
         }
     }
 
-    /// 换页：光标和数量都从头来。
-    fn switch_page(&mut self) {
-        self.page = match self.page {
-            Page::Buy => Page::Sell,
-            Page::Sell => Page::Buy,
-        };
+    /// 「累计」：买是原价合计，卖是 `price / 2` 合计。
+    fn total(&self) -> i32 {
+        let sell = self.page() == Some(Page::Sell);
+        let all = self
+            .equip_goods
+            .iter()
+            .chain(&self.prop_goods)
+            .chain(&self.stock);
+        let mut seen = std::collections::HashSet::new();
+        all.filter(|g| seen.insert(g.id))
+            .filter_map(|g| {
+                let n = self.in_cart(g.id);
+                (n > 0).then(|| if sell { sell_price(g.price) } else { g.price } * n)
+            })
+            .sum()
+    }
+
+    fn enter(&mut self, page: Page) {
+        self.screen = Screen::Page(page);
         self.mode = Mode::Browse;
         self.cursor = 0;
-        self.quantity = 1;
-        self.clamp_quantity();
-        self.talk = match self.page {
-            Page::Buy => self.shop.entry_buy.clone(),
-            // 卖页对象读 `EntrySale` 的地方没在 exe 里找到，这里照数据文件的
-            // 字段意思用 `[推断]`。
+        self.top = 0;
+        self.cart.clear();
+        // 卖页读 `EntrySale` 的地方没在 exe 里找到，照字段意思用 [推断]。
+        self.talk = match page {
             Page::Sell => self.shop.entry_sale.clone(),
+            _ => self.shop.entry_buy.clone(),
         };
+    }
+
+    fn back_to_menu(&mut self) {
+        self.screen = Screen::Menu;
+        self.mode = Mode::Browse;
+        self.cart.clear();
+    }
+
+    fn select(&mut self, row: usize) {
+        let n = self.rows().len();
+        if n == 0 {
+            return;
+        }
+        self.cursor = row.min(n - 1);
+        let vis = self.geom().visible_rows();
+        if self.cursor < self.top {
+            self.top = self.cursor;
+        } else if self.cursor >= self.top + vis {
+            self.top = self.cursor + 1 - vis;
+        }
+    }
+
+    fn step(&mut self, delta: isize) {
+        let n = self.rows().len() as isize;
+        if n > 0 {
+            self.select(((self.cursor as isize + delta).rem_euclid(n)) as usize);
+        }
+    }
+
+    fn adjust(&mut self, delta: i32) {
+        let Some(g) = self.current().cloned() else {
+            return;
+        };
+        let n = (self.in_cart(g.id) + delta).clamp(0, self.cap(&g).max(0));
+        if n == 0 {
+            self.cart.remove(&g.id);
+        } else {
+            self.cart.insert(g.id, n);
+        }
+    }
+
+    fn set_tab(&mut self, tab: usize) {
+        self.sell_tab = tab % SELL_TAB_TEX.len();
+        self.cursor = 0;
+        self.top = 0;
+        self.refresh_sell_rows();
     }
 
     /// 两句里随机挑一句（原版 `(rand & 1) + tier*2` 那个下标）。
@@ -252,83 +539,51 @@ impl SceCommandDealerMenu {
         lines[i].clone()
     }
 
-    /// 付钱、进货。返回 false 表示钱不够。
-    fn pay(&mut self, state: &mut SceState, price: i32) -> bool {
-        let Some(good) = self.current().cloned() else {
-            return false;
-        };
+    /// 付钱、把这一单的东西放进背包。返回 false 表示钱不够。
+    fn checkout_buy(&mut self, state: &mut SceState, price: i32) -> bool {
         let mut p_state = state.global_state_mut().persistent_state_mut();
         if p_state.money() < price {
             return false;
         }
         p_state.add_money(-price);
-        p_state.add_item(good.id, self.quantity.max(0) as u32);
-        let owned = p_state.item_count(good.id);
-        drop(p_state);
-        if let Some(g) = self.goods.get_mut(self.cursor) {
-            g.owned = owned;
+        for (id, n) in self.cart.drain() {
+            p_state.add_item(id, n.max(0) as u32);
         }
-        self.clamp_quantity();
+        for g in self
+            .equip_goods
+            .iter_mut()
+            .chain(self.prop_goods.iter_mut())
+        {
+            g.owned = p_state.item_count(g.id);
+        }
         true
     }
 
-    /// 卖掉这一行的 `quantity` 个：钱 += `price / 2` × 个数，东西从背包扣掉
-    /// （`FUN_00474c80` 的六个同构分支）。卖不还价。
-    fn sell(&mut self, state: &mut SceState) {
-        let Some(good) = self.current().cloned() else {
-            return;
-        };
-        let count = self.quantity.max(0) as u32;
-        if count == 0 {
-            return;
-        }
-        let paid = sell_price(good.price) * count as i32;
-        {
-            let mut p_state = state.global_state_mut().persistent_state_mut();
-            let held = p_state.item_count(good.id);
-            if held < count {
-                return;
-            }
-            p_state.remove_item(good.id, count);
-            p_state.add_money(paid);
-        }
-        self.rebuild_stock(state);
-        if self.cursor >= self.stock.len() {
-            self.cursor = self.stock.len().saturating_sub(1);
-        }
-        self.quantity = 1;
-        self.clamp_quantity();
-        self.talk = if self.shop.normal_accept_talk.is_empty() {
-            format!("卖了 {} 个{}，得 {} 文", count, good.name, paid)
-        } else {
-            self.shop.normal_accept_talk.clone()
-        };
-    }
-
-    /// 不还价，照原价买（`DK == 0` 的店，或者还价页里选「照原价买」）。
+    /// 不还价，照原价买（底栏「确定」）。
     fn buy_at_full_price(&mut self, state: &mut SceState) {
         let total = self.total();
-        if self.quantity < 1 {
+        if total <= 0 {
             return;
         }
-        if self.pay(state, total) {
-            self.talk = if self.harsh && !self.shop.harsh_talk_buy.is_empty() {
+        self.talk = if self.checkout_buy(state, total) {
+            if self.harsh && !self.shop.harsh_talk_buy.is_empty() {
                 self.shop.harsh_talk_buy.clone()
             } else {
                 self.shop.normal_accept_talk.clone()
-            };
+            }
         } else {
-            self.talk = self.shop.no_enough_money.clone();
-        }
+            self.shop.no_enough_money.clone()
+        };
         self.mode = Mode::Browse;
     }
 
     /// 还一次价。
     fn haggle_at(&mut self, state: &mut SceState, tier: usize) {
-        if self.quantity < 1 {
+        let total = self.total();
+        if total <= 0 {
+            self.mode = Mode::Browse;
             return;
         }
-        let total = self.total();
         let money = state.global_state().persistent_state().money();
         let outcome = haggle(
             &self.shop,
@@ -338,15 +593,17 @@ impl SceCommandDealerMenu {
             &mut self.refusals,
             &mut self.rng,
         );
-
         match outcome {
             Haggle::NotEnoughMoney => {
                 self.talk = self.shop.no_enough_money.clone();
                 self.mode = Mode::Browse;
             }
+            // 每还一次价原版都先 `FUN_00461fd0(0)` 把五个折扣钮收起，商人的话才露出来；
+            // 被拒了要再点「还价」重来。
             Haggle::Refused => {
                 let lines = self.shop.tiers[tier].refuse_talk.clone();
                 self.talk = self.pick(&lines);
+                self.mode = Mode::Browse;
             }
             Haggle::Harsh => {
                 let lines = self.shop.tiers[tier].harsh_talk.clone();
@@ -367,7 +624,7 @@ impl SceCommandDealerMenu {
                 {
                     line = format!("{}\n{}", line, self.shop.tiers[tier].force_accept_reply);
                 }
-                if self.pay(state, price) {
+                if self.checkout_buy(state, price) {
                     self.refusals = 0;
                     self.talk = line;
                 } else {
@@ -376,6 +633,66 @@ impl SceCommandDealerMenu {
                 self.mode = Mode::Browse;
             }
         }
+    }
+
+    /// 卖掉这一单：钱 += `price / 2` × 个数，东西从背包扣掉（`FUN_00474c80`
+    /// 的六个同构分支）。卖不还价。
+    fn sell(&mut self, state: &mut SceState) {
+        if self.cart.is_empty() {
+            return;
+        }
+        let price: HashMap<u32, i32> = self.stock.iter().map(|g| (g.id, g.price)).collect();
+        {
+            let mut p_state = state.global_state_mut().persistent_state_mut();
+            for (id, n) in self.cart.drain() {
+                let n = n.max(0) as u32;
+                if n == 0 || p_state.item_count(id) < n {
+                    continue;
+                }
+                p_state.remove_item(id, n);
+                p_state.add_money(sell_price(price.get(&id).copied().unwrap_or(0)) * n as i32);
+            }
+        }
+        self.rebuild_stock(state);
+        let n = self.rows().len();
+        self.select(self.cursor.min(n.saturating_sub(1)));
+        self.talk = self.shop.normal_accept_talk.clone();
+    }
+
+    fn confirm(&mut self, state: &mut SceState) {
+        match self.page() {
+            Some(Page::Sell) => self.sell(state),
+            Some(_) => self.buy_at_full_price(state),
+            None => {}
+        }
+    }
+
+    fn start_haggle(&mut self) {
+        if self.page().is_some_and(|p| p != Page::Sell) && self.shop.haggling && self.total() > 0 {
+            self.mode = Mode::Haggle { index: 0 };
+        }
+    }
+
+    /// 返回 true = 关店。
+    fn activate(&mut self, state: &SceState, button: MenuButton) -> bool {
+        match button {
+            MenuButton::BuyEquip => self.enter(Page::Equip),
+            MenuButton::BuyProp => self.enter(Page::Prop),
+            // 刚买的东西也要能卖：进卖页前按背包重排一遍。
+            MenuButton::Sell => {
+                self.rebuild_stock(state);
+                self.enter(Page::Sell);
+            }
+            // `FUN_0045a600` case 7：`+0xa0` 是 0 就什么都不做。
+            MenuButton::Chat => {
+                if self.shop.merchant_id > 0 {
+                    self.chat_proc = Some(self.shop.merchant_id);
+                    return true;
+                }
+            }
+            MenuButton::Leave => return true,
+        }
+        false
     }
 
     fn poll_input(state: &SceState) -> Option<Input> {
@@ -394,7 +711,9 @@ impl SceCommandDealerMenu {
         } else if pressed(Key::Escape) || pressed(Key::GamePadSouth) {
             Some(Input::Cancel)
         } else if pressed(Key::Q) || pressed(Key::GamePadNorth) {
-            Some(Input::Switch)
+            Some(Input::Dicker)
+        } else if pressed(Key::E) || pressed(Key::GamePadWest) {
+            Some(Input::NextTab)
         } else {
             None
         }
@@ -402,187 +721,476 @@ impl SceCommandDealerMenu {
 
     /// 返回 true = 关店，脚本继续。
     fn handle(&mut self, state: &mut SceState, input: Input) -> bool {
-        match self.mode {
-            Mode::Browse => match input {
-                Input::Up => {
-                    let n = self.rows().len();
-                    if n > 0 {
-                        self.cursor = (self.cursor + n - 1) % n;
-                        self.quantity = 1;
-                        self.clamp_quantity();
-                    }
-                }
-                Input::Down => {
-                    let n = self.rows().len();
-                    if n > 0 {
-                        self.cursor = (self.cursor + 1) % n;
-                        self.quantity = 1;
-                        self.clamp_quantity();
-                    }
-                }
-                Input::Left => {
-                    self.quantity -= 1;
-                    self.clamp_quantity();
-                }
-                Input::Right => {
-                    self.quantity += 1;
-                    self.clamp_quantity();
-                }
-                Input::Switch => self.switch_page(),
-                Input::Confirm => {
-                    if self.quantity_cap() < 1 {
-                        return false;
-                    }
-                    match self.page {
-                        // 卖不还价，确认就成交。
-                        Page::Sell => self.sell(state),
-                        Page::Buy => {
-                            if self.shop.haggling {
-                                self.mode = Mode::Haggle { index: TIERS };
-                            } else {
-                                self.buy_at_full_price(state);
-                            }
-                        }
-                    }
-                }
-                Input::Cancel => {
-                    self.talk = self.shop.leave_talk.clone();
-                    return true;
-                }
-            },
-            Mode::Haggle { index } => {
-                // 五档 + 「照原价买」，一共 TIERS + 1 项。
-                let n = TIERS + 1;
+        match (self.screen, self.mode) {
+            (Screen::Menu, _) => {
+                let n = self.buttons.len().max(1);
                 match input {
-                    Input::Up | Input::Left => {
-                        self.mode = Mode::Haggle {
-                            index: (index + n - 1) % n,
-                        }
-                    }
-                    Input::Down | Input::Right => {
-                        self.mode = Mode::Haggle {
-                            index: (index + 1) % n,
-                        }
-                    }
+                    Input::Up => self.menu_cursor = (self.menu_cursor + n - 1) % n,
+                    Input::Down => self.menu_cursor = (self.menu_cursor + 1) % n,
                     Input::Confirm => {
-                        if index >= TIERS {
-                            self.buy_at_full_price(state);
-                        } else {
-                            self.haggle_at(state, index);
+                        if let Some(b) = self.buttons.get(self.menu_cursor).copied() {
+                            return self.activate(state, b);
                         }
                     }
-                    Input::Cancel => {
-                        self.talk = self.shop.normal_cancel_talk.clone();
-                        self.mode = Mode::Browse;
-                    }
-                    Input::Switch => {}
+                    Input::Cancel => return true,
+                    _ => {}
                 }
             }
+            (Screen::Page(_), Mode::Browse) => match input {
+                Input::Up => self.step(-1),
+                Input::Down => self.step(1),
+                Input::Left => self.adjust(-1),
+                Input::Right => self.adjust(1),
+                Input::Confirm => self.confirm(state),
+                Input::Dicker => self.start_haggle(),
+                Input::NextTab => {
+                    if self.page() == Some(Page::Sell) {
+                        self.set_tab(self.sell_tab + 1);
+                    }
+                }
+                Input::Cancel => self.back_to_menu(),
+            },
+            (Screen::Page(_), Mode::Haggle { index }) => match input {
+                Input::Up | Input::Left => {
+                    self.mode = Mode::Haggle {
+                        index: (index + TIERS - 1) % TIERS,
+                    }
+                }
+                Input::Down | Input::Right => {
+                    self.mode = Mode::Haggle {
+                        index: (index + 1) % TIERS,
+                    }
+                }
+                Input::Confirm => self.haggle_at(state, index),
+                Input::Cancel | Input::Dicker => {
+                    self.talk = self.shop.normal_cancel_talk.clone();
+                    self.mode = Mode::Browse;
+                }
+                Input::NextTab => {}
+            },
         }
         false
     }
 
-    fn draw(&self, ui: &Ui, money: i32) {
-        let [window_width, _] = ui.io().display_size;
-        ui.window("Dealer")
-            .collapsible(false)
-            .title_bar(false)
-            .resizable(false)
-            .always_auto_resize(true)
-            .position([16., 16.], Condition::Always)
-            .size_constraints([window_width * 0.4, 0.], [window_width * 0.9, f32::MAX])
-            .build(|| {
-                let _font = radiance::imgui::game_font(radiance::imgui::GameFontSize::LARGE)
-                    .map(|f| ui.push_font(f));
+    fn cursor_anchor(&self) -> Option<(i32, i32)> {
+        let vis = self.cursor.checked_sub(self.top)?;
+        (vis < self.geom().visible_rows() && self.cursor < self.rows().len())
+            .then(|| self.geom().row_anchor(vis))
+    }
 
-                let tab = match self.page {
-                    Page::Buy => "［买］　卖 ",
-                    Page::Sell => " 买 　［卖］",
+    fn hit(&self, x: f32, y: f32) -> Option<Hit> {
+        let page = match self.screen {
+            Screen::Menu => {
+                return (0..self.buttons.len())
+                    .find(|&k| inside(lay::menu_button_rect(k), x, y))
+                    .map(Hit::Menu);
+            }
+            Screen::Page(p) => p,
+        };
+        if let Mode::Haggle { .. } = self.mode {
+            if let Some(t) = (0..TIERS).find(|&t| inside(lay::tier_rect(t), x, y)) {
+                return Some(Hit::Tier(t));
+            }
+        }
+        let no = if page == Page::Sell {
+            page::SELL_NO
+        } else {
+            page::NO
+        };
+        for (r, h) in [
+            (page::EXIT, Hit::Exit),
+            (page::YES, Hit::Yes),
+            (no, Hit::No),
+        ] {
+            if inside(r, x, y) {
+                return Some(h);
+            }
+        }
+        if page != Page::Sell && inside(page::DICKER, x, y) {
+            return Some(Hit::Dicker);
+        }
+        if page == Page::Sell {
+            if let Some(i) = (0..SELL_TAB_TEX.len()).find(|&i| inside(lay::sell_tab_rect(i), x, y))
+            {
+                return Some(Hit::Tab(i));
+            }
+        }
+        if let Some(a) = self.cursor_anchor() {
+            let (add, sub) = lay::spinner_rects(a);
+            if inside(add, x, y) {
+                return Some(Hit::Add);
+            }
+            if inside(sub, x, y) {
+                return Some(Hit::Sub);
+            }
+        }
+        self.geom()
+            .row_at(x, y)
+            .filter(|k| self.top + k < self.rows().len())
+            .map(Hit::Row)
+    }
+
+    fn follow_hover(&mut self, hit: Hit) {
+        match hit {
+            Hit::Menu(k) => self.menu_cursor = k,
+            Hit::Tier(t) => self.mode = Mode::Haggle { index: t },
+            _ => {}
+        }
+    }
+
+    /// 返回 true = 关店。
+    fn click(&mut self, state: &mut SceState, hit: Hit) -> bool {
+        match hit {
+            Hit::Menu(k) => {
+                if let Some(b) = self.buttons.get(k).copied() {
+                    return self.activate(state, b);
+                }
+            }
+            Hit::Row(k) => self.select(self.top + k),
+            Hit::Yes => {
+                if let Mode::Haggle { .. } = self.mode {
+                    self.mode = Mode::Browse;
+                }
+                self.confirm(state);
+            }
+            Hit::Dicker => self.start_haggle(),
+            Hit::No => {
+                if let Mode::Haggle { .. } = self.mode {
+                    self.talk = self.shop.normal_cancel_talk.clone();
+                    self.mode = Mode::Browse;
+                } else {
+                    self.cart.clear();
+                }
+            }
+            Hit::Exit => self.back_to_menu(),
+            Hit::Tier(t) => self.haggle_at(state, t),
+            Hit::Tab(i) => self.set_tab(i),
+            Hit::Add => self.adjust(1),
+            Hit::Sub => self.adjust(-1),
+        }
+        false
+    }
+
+    fn finish(&mut self, state: &mut SceState) -> bool {
+        if let Some(proc_id) = self.chat_proc.take() {
+            state.call_proc(proc_id as u32);
+        }
+        true
+    }
+}
+
+// ---------------------------------------------------------------- 画
+
+/// 贴图按原生尺寸贴在 (x, y)。
+fn blit(
+    list: &imgui::DrawListMut<'_>,
+    tex: &Tex,
+    x: i32,
+    y: i32,
+    at: &dyn Fn(i32, i32) -> [f32; 2],
+) {
+    if let Some(s) = tex.as_deref() {
+        let r = (x, y, x + s.width() as i32, y + s.height() as i32);
+        draw_sprite(list, Some(s), r, at);
+    }
+}
+
+/// 三态按钮：悬停或手柄选中用 1 号图，常态 0 号。
+fn button(
+    list: &imgui::DrawListMut<'_>,
+    tex: &[Tex; 3],
+    r: Rect,
+    lit: bool,
+    at: &dyn Fn(i32, i32) -> [f32; 2],
+) {
+    blit(list, &tex[usize::from(lit)], r.0, r.1, at);
+}
+
+/// 横向三段条：贴图切成宽 `cap` 的三列（`FUN_0043dab0`），竖直方向取贴图
+/// 底下那 `h` 行（和 `sprite_uv` 同一个约定）。
+fn bar(
+    list: &imgui::DrawListMut<'_>,
+    tex: &Tex,
+    r: Rect,
+    cap: i32,
+    at: &dyn Fn(i32, i32) -> [f32; 2],
+) {
+    let Some(s) = tex.as_deref() else { return };
+    let (tw, th) = (s.width().max(1) as f32, s.height().max(1) as f32);
+    let v0 = (1. - (r.3 - r.1) as f32 / th).max(0.);
+    for (piece, col) in lay::three_slice(r, cap) {
+        let u0 = (col as i32 * cap) as f32 / tw;
+        let u1 = (((col as i32 + 1) * cap) as f32 / tw).min(1.);
+        list.add_image(
+            s.imgui_texture_id(),
+            at(piece.0, piece.1),
+            at(piece.2, piece.3),
+        )
+        .uv_min([u0, v0])
+        .uv_max([u1, 1.])
+        .build();
+    }
+}
+
+/// 文本控件的第一行：rect 左上各缩 8。
+fn label(list: &imgui::DrawListMut<'_>, r: Rect, text: &str, at: &dyn Fn(i32, i32) -> [f32; 2]) {
+    list.add_text(at(r.0 + lay::TEXT_INSET, r.1 + lay::TEXT_INSET), INK, text);
+}
+
+/// 多行：到 rect 右边 − 8 折行，行距 16。
+fn paragraph(
+    list: &imgui::DrawListMut<'_>,
+    r: Rect,
+    text: &str,
+    at: &dyn Fn(i32, i32) -> [f32; 2],
+) {
+    let width = r.2 - r.0 - 2 * lay::TEXT_INSET;
+    for (k, line) in lay::wrap(text, width).iter().enumerate() {
+        let y = r.1 + lay::TEXT_INSET + lay::GLYPH * k as i32;
+        if y + lay::GLYPH > r.3 {
+            break;
+        }
+        list.add_text(at(r.0 + lay::TEXT_INSET, y), INK, line);
+    }
+}
+
+fn text_width(text: &str) -> i32 {
+    text.chars()
+        .map(|c| {
+            if c.is_ascii() {
+                lay::GLYPH / 2
+            } else {
+                lay::GLYPH
+            }
+        })
+        .sum()
+}
+
+impl SceCommandDealerMenu {
+    fn draw(&self, ui: &Ui, money: i32, hover: Option<Hit>) {
+        overlay(ui, "Dealer", |ui, at, scale| {
+            let list = ui.get_window_draw_list();
+            let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
+            match self.screen {
+                Screen::Menu => self.draw_menu(&list, at, hover),
+                Screen::Page(p) => self.draw_page(&list, at, scale, p, money, hover),
+            }
+        });
+    }
+
+    fn draw_menu(
+        &self,
+        list: &imgui::DrawListMut<'_>,
+        at: &dyn Fn(i32, i32) -> [f32; 2],
+        hover: Option<Hit>,
+    ) {
+        let n = self.buttons.len();
+        let sk = &self.skin;
+        let t = lay::flag_top_rect();
+        blit(list, &sk.flag_t, t.0, t.1, at);
+        let b = lay::flag_bottom_rect(n);
+        blit(list, &sk.flag_b, b.0, b.1, at);
+        for k in 0..n {
+            let m = lay::flag_mid_rect(k);
+            blit(list, &sk.flag_m, m.0, m.1, at);
+        }
+        for (k, btn) in self.buttons.iter().enumerate() {
+            let r = lay::menu_button_rect(k);
+            let lit = k == self.menu_cursor || hover == Some(Hit::Menu(k));
+            button(list, &sk.rawbtn, r, lit, at);
+            // 字居中 [推断]：按钮控件的对齐方式没有逐字段读。
+            let s = self.text(btn.lang_slot(), btn.fallback_label());
+            let x = r.0 + (r.2 - r.0 - text_width(&s)) / 2;
+            let y = r.1 + (r.3 - r.1 - lay::GLYPH) / 2;
+            list.add_text(at(x, y), INK, &s);
+        }
+    }
+
+    fn draw_page(
+        &self,
+        list: &imgui::DrawListMut<'_>,
+        at: &dyn Fn(i32, i32) -> [f32; 2],
+        scale: f32,
+        page: Page,
+        money: i32,
+        hover: Option<Hit>,
+    ) {
+        let sk = &self.skin;
+        let sell = page == Page::Sell;
+        let geom = self.geom();
+
+        blit(list, &sk.frame, page::FRAME.0, page::FRAME.1, at);
+        let flag = if sell { &sk.sale_flag } else { &sk.buy_flag };
+        blit(list, flag, page::FLAG.0, page::FLAG.1, at);
+        bar(
+            list,
+            &sk.frame_bar,
+            page::FRAME_BAR,
+            page::FRAME_BAR_CAP,
+            at,
+        );
+        blit(
+            list,
+            &sk.list_frame,
+            page::LIST_FRAME.0,
+            page::LIST_FRAME.1,
+            at,
+        );
+        blit(list, &sk.info, page::INFO.0, page::INFO.1, at);
+        match page {
+            Page::Equip => blit(list, &sk.equip_word, page::WORD.0, page::WORD.1, at),
+            Page::Prop => blit(list, &sk.prop_word, page::WORD.0, page::WORD.1, at),
+            Page::Sell => {}
+        }
+
+        // 卖页的页签条。
+        if sell {
+            bar(
+                list,
+                &sk.tab_bar,
+                lay::SELL_TAB_BAR,
+                lay::SELL_TAB_BAR_CAP,
+                at,
+            );
+            for i in 0..SELL_TAB_TEX.len() {
+                let r = lay::sell_tab_rect(i);
+                let state = if i == self.sell_tab {
+                    2
+                } else {
+                    usize::from(hover == Some(Hit::Tab(i)))
                 };
-                ui.text(format!(
-                    "{}　　{}　　身上 {} 文",
-                    self.shop.merchant_name, tab, money
-                ));
-                if !self.talk.is_empty() {
-                    ui.separator();
-                    for line in self.talk.lines() {
-                        ui.text(line);
-                    }
-                }
+                blit(list, &sk.tabs[i][state], r.0, r.1, at);
+            }
+        }
 
-                ui.separator();
-                if self.rows().is_empty() {
-                    match self.page {
-                        Page::Buy => ui.text("这里没有东西卖。"),
-                        Page::Sell => ui.text("身上没有能卖的东西。"),
-                    }
-                }
-                for (i, g) in self.rows().iter().enumerate() {
-                    let marker = if i == self.cursor { "▶" } else { "  " };
-                    let line = match self.page {
-                        Page::Buy => {
-                            format!("{marker}{}　{} 文　已有 {}", g.name, g.price, g.owned)
-                        }
-                        Page::Sell => format!(
-                            "{marker}{}　{} 文　有 {}",
-                            g.name,
-                            sell_price(g.price),
-                            g.owned
-                        ),
-                    };
-                    let usable = match self.page {
-                        Page::Buy => buyable(g.owned) > 0,
-                        Page::Sell => g.owned > 0,
-                    };
-                    if usable {
-                        ui.text(line);
-                    } else {
-                        ui.text_disabled(line);
-                    }
-                }
+        // 表头。
+        let (name, price, count) = (
+            self.text(lang::NAME, "名称"),
+            self.text(lang::PRICE, "价格"),
+            self.text(lang::COUNT, "数量"),
+        );
+        let header = if sell {
+            let held = self.text(lang::HELD, "持有");
+            format!("{name}            {price}   {count} {held}")
+        } else {
+            format!("{name}                {price}   {count}")
+        };
+        label(list, geom.header, &header, at);
 
-                ui.separator();
-                ui.text(format!(
-                    "数量 {}（左右调，最多 {}）　{} {} 文",
-                    self.quantity,
-                    self.quantity_cap(),
-                    if self.page == Page::Buy {
-                        "总价"
-                    } else {
-                        "可得"
-                    },
-                    self.total()
-                ));
+        // 网格、选中条、各行。
+        let grid = if sell { &sk.sale_grid } else { &sk.buy_grid };
+        let rows = self.rows();
+        let row_dy = (lay::ROW_H - lay::GLYPH) as f32 * 0.5 * scale;
+        for k in 0..geom.grid_rows {
+            let g = geom.grid_rect(k);
+            blit(list, grid, g.0, g.1, at);
+            let i = self.top + k;
+            let Some(good) = rows.get(i) else { continue };
+            if i == self.cursor {
+                blit(list, &sk.selected, g.0, g.1, at);
+            }
+            // 选中条是深绿色不透明的，上面的字换成浅色 [推断]：列表控件画行的那段
+            // 没追到（`0x43ff70` 画的是滚动条），颜色取对话选择框的 0xfffafa。
+            let ink = if i == self.cursor { SELECTED_INK } else { INK };
+            let cell = |c: usize, s: &str| {
+                let [x, y] = at(geom.column_x(c) + lay::TEXT_INSET, g.1);
+                list.add_text([x, y + row_dy], ink, s);
+            };
+            cell(0, &good.name);
+            let unit = if sell {
+                sell_price(good.price)
+            } else {
+                good.price
+            };
+            cell(1, &unit.to_string());
+            let n = self.in_cart(good.id);
+            if n > 0 {
+                cell(2, &n.to_string());
+            }
+            if sell {
+                cell(3, &good.owned.to_string());
+            }
+        }
 
-                match self.mode {
-                    Mode::Browse => {
-                        let confirm = match self.page {
-                            Page::Sell => "确定：卖出",
-                            Page::Buy if self.shop.haggling => "确定：还价",
-                            Page::Buy => "确定：买下",
-                        };
-                        ui.text(format!("{confirm}　Q：换买/卖　取消：离开"));
-                    }
-                    Mode::Haggle { index } => {
-                        ui.separator();
-                        ui.text("还价：");
-                        for t in 0..TIERS {
-                            let marker = if t == index { "▶" } else { "  " };
-                            ui.text(format!(
-                                "{marker}{}　{} 文",
-                                TIER_LABELS[t],
-                                discounted(self.total(), t)
-                            ));
-                        }
-                        let marker = if index >= TIERS { "▶" } else { "  " };
-                        ui.text(format!("{marker}照原价买　{} 文", self.total()));
-                    }
+        // 选中行上的「持有:N」和加减钮。
+        if let (Some(a), Some(good)) = (self.cursor_anchor(), self.current()) {
+            if !sell {
+                let held = self.text(lang::HELD, "持有");
+                // 这行字压在选中条上，和选中行一样用浅色 [推断]。
+                let r = lay::owned_tip_rect(a);
+                list.add_text(
+                    at(r.0 + lay::TEXT_INSET, r.1 + lay::TEXT_INSET),
+                    SELECTED_INK,
+                    format!("{held}:{}", good.owned),
+                );
+            }
+            let n = self.in_cart(good.id);
+            let (add, sub) = lay::spinner_rects(a);
+            if n < self.cap(good) {
+                button(list, &sk.add, add, hover == Some(Hit::Add), at);
+            } else {
+                blit(list, &sk.unadd, add.0, add.1, at);
+            }
+            if n > 0 {
+                button(list, &sk.sub, sub, hover == Some(Hit::Sub), at);
+            } else {
+                blit(list, &sk.unsub, sub.0, sub.1, at);
+            }
+
+            // 说明面板：`$` 前是描述，后面是属性行。
+            let (desc, stat) = good
+                .description
+                .split_once('$')
+                .unwrap_or((good.description.as_str(), ""));
+            paragraph(list, page::DESC, desc, at);
+            let stat = stat.trim_end_matches(['\n', '\r', ' ', '\u{3000}']);
+            if !stat.is_empty() {
+                label(list, page::STAT, stat, at);
+            }
+        }
+
+        let held = self.text(lang::HELD, "持有");
+        label(list, page::MONEY, &format!("{held} {money}"), at);
+        let total = self.text(lang::TOTAL, "累计");
+        label(list, page::TOTAL, &format!("{total} {}", self.total()), at);
+
+        match self.mode {
+            Mode::Browse => paragraph(list, page::TALK, &self.talk, at),
+            Mode::Haggle { index } => {
+                for t in 0..TIERS {
+                    let r = lay::tier_rect(t);
+                    let lit = t == index || hover == Some(Hit::Tier(t));
+                    button(list, &sk.tiers[t], r, lit, at);
                 }
-            });
+            }
+        }
+
+        button(list, &sk.yes, page::YES, hover == Some(Hit::Yes), at);
+        if sell {
+            button(list, &sk.no, page::SELL_NO, hover == Some(Hit::No), at);
+        } else {
+            button(list, &sk.no, page::NO, hover == Some(Hit::No), at);
+            if self.shop.haggling {
+                button(
+                    list,
+                    &sk.dicker,
+                    page::DICKER,
+                    hover == Some(Hit::Dicker),
+                    at,
+                );
+            } else {
+                blit(list, &sk.undicker, page::DICKER.0, page::DICKER.1, at);
+            }
+        }
+        button(list, &sk.exit, page::EXIT, hover == Some(Hit::Exit), at);
     }
 }
 
 impl SceCommand for SceCommandDealerMenu {
+    fn initialize(&mut self, _scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
+        self.skin = Skin::load(state);
+    }
+
     fn update(
         &mut self,
         _scene_manager: ComRc<ISceneManager>,
@@ -592,15 +1200,10 @@ impl SceCommand for SceCommandDealerMenu {
     ) -> bool {
         if !self.loaded {
             self.load(state);
-            // 读不到数据文件才跳过——店里没货也还能卖东西给他。
-            if self.shop.merchant_name.is_empty() && self.goods.is_empty() {
+            if self.shop.merchant_name.is_empty() && self.buttons.is_empty() {
                 log::warn!("DealerMenu: {} 读不出来，直接跳过", self.shop_file);
                 return true;
             }
-            if self.goods.is_empty() {
-                self.page = Page::Sell;
-            }
-            self.clamp_quantity();
         }
 
         // 快进（脚本跳过）时不开店。
@@ -608,12 +1211,28 @@ impl SceCommand for SceCommandDealerMenu {
             return true;
         }
 
-        let money = state.global_state().persistent_state().money();
-        self.draw(ui, money);
+        let (mx, my) = virtual_mouse(ui);
+        let hover = self.hit(mx, my);
+        if (mx, my) != self.last_mouse {
+            self.last_mouse = (mx, my);
+            if let Some(h) = hover {
+                self.follow_hover(h);
+            }
+        }
 
+        let money = state.global_state().persistent_state().money();
+        self.draw(ui, money, hover);
+
+        if ui.is_mouse_clicked(MouseButton::Left) {
+            if let Some(h) = hover {
+                if self.click(state, h) {
+                    return self.finish(state);
+                }
+            }
+        }
         if let Some(input) = Self::poll_input(state) {
             if self.handle(state, input) {
-                return true;
+                return self.finish(state);
             }
         }
         false

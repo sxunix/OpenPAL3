@@ -541,6 +541,12 @@ impl AssetManager {
         )))
     }
 
+    /// 已经解好的图直接做成 `Sprite`——从图集裁出来的小图走这里
+    /// （[`super::ui_tex::UiTextures`]）。
+    pub fn sprite_from_image(&self, image: image::RgbaImage) -> Rc<Sprite> {
+        Rc::new(Sprite::load_from_image(image, self.factory.as_ref()))
+    }
+
     /// Build a PAL3 scene effect (candle / lamp / torch / fire) for the
     /// given effect id (`ScnNode::dw184[3]`). Returns the holder entity
     /// (flame attached) or the bare flame, or `None` for unknown ids.

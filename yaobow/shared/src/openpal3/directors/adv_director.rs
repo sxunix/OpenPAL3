@@ -276,6 +276,17 @@ impl AdventureDirector {
         p.sce_vm.push_debug_command(cmd, scene_manager);
     }
 
+    /// Push a 100 dealer command for `shop` (a `DealScript\\…` path as
+    /// the scripts write it), so the shop UI can be looked at directly.
+    pub fn start_debug_dealer(&self, shop: String) {
+        let mut p = self.props.borrow_mut();
+        let scene_manager = p.scene_manager.clone();
+        let cmd: Box<dyn crate::scripting::sce::SceCommand> = Box::new(
+            crate::scripting::sce::commands::SceCommandDealerMenu::new(shop),
+        );
+        p.sce_vm.push_debug_command(cmd, scene_manager);
+    }
+
     pub fn start_debug_combat(&self, ids: [i32; 6], boss: bool) {
         let mut p = self.props.borrow_mut();
         let scene_manager = p.scene_manager.clone();
@@ -400,6 +411,16 @@ impl AdventureDirector {
         Some(crate::scripting::sce::commands::role_fade::set_alpha(
             &entity, alpha,
         ))
+    }
+
+    /// Give (or take, if negative) money — a test aid for the shop UI.
+    pub fn add_money(&self, amount: i32) {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .global_state_mut()
+            .persistent_state_mut()
+            .add_money(amount);
     }
 
     pub fn set_script_global(&self, var: i16, value: i32) {

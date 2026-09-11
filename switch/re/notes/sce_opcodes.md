@@ -180,7 +180,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 90 | `004378e0` | int float float float float | SceneMoveObjectCommand | 桩 ObjectMove | 移动场景物体到某处， |
 | 91 | `004371f0` | （无） | CameraFadeInWhiteCommand | ✓ SceCommandFadeInWhite | 屏幕淡入(白色） |
 | 92 | `-` | （无） | — | —  |  |
-| 100 | `00436c00` | string | UIShowDealerMenuCommand | ✓ SceCommandDealerMenu（只买不卖，界面是文字浮层） | 调用买卖系统， |
+| 100 | `00436c00` | string | UIShowDealerMenuCommand | ✓ SceCommandDealerMenu（买卖、还价；原版像素布局，见 `dealer_layout.md`） | 调用买卖系统， |
 | 101 | `00436cb0` | int | ScriptVarSetPawnshopLevelCommand | ✓ SceCommandGetPawnshopLevel | 取出当前当铺经营游戏的当铺等级并赋值给变量， |
 | 102 | `00436f90` | int | GameSwitchRenderingStateCommand | 桩 SwitchRS | **实为 `SwitchMode(n)` 全局模式切换**，不是渲染状态；13 = 大地图、0 = 回冒险、15 = 回标题。见 [`bigmap.md`](bigmap.md) |
 | 103 | `00436c60` | int | MiniGameStartPawnshopCommand | ✓ SceCommandMiniGamePawnshop（文字浮层，陈列/休息没做）| 进入当铺经营游戏，参数是**过程号** |

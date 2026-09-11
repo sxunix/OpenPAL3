@@ -14,3 +14,4 @@ pub mod loaders;
 pub mod scene;
 pub mod states;
 pub mod ui_atlas;
+pub mod ui_tex;

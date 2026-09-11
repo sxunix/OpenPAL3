@@ -13,6 +13,7 @@ mod cmp;
 mod combat;
 mod combat_effect;
 mod dealer;
+mod dealer_layout;
 mod dlg;
 mod dlg_face;
 mod dlg_sel;
