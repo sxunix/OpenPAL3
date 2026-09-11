@@ -82,6 +82,7 @@ impl AdventureDirector {
                 water_magic_failed: false,
                 flexeff: vec![],
                 flexeff_cyl: vec![],
+                flexeff_par: vec![],
                 flexeff_audio: vec![],
                 flexeff_pending: vec![],
                 flexeff_seq: 0,
@@ -189,6 +190,7 @@ impl AdventureDirector {
                 water_magic_failed: false,
                 flexeff: vec![],
                 flexeff_cyl: vec![],
+                flexeff_par: vec![],
                 flexeff_audio: vec![],
                 flexeff_pending: vec![],
                 flexeff_seq: 0,
@@ -333,6 +335,16 @@ impl AdventureDirector {
     /// box does. Negative indices are globals; see `commands::vars`.
     /// Flip 152's water effect, for checking it without playing the
     /// cutscene that turns it on.
+    /// Queue flexeff group `group` at `position`, the way 143 and combat
+    /// do, so a driver can time screenshots against a known start.
+    pub fn play_effect(&self, group: i32, position: Vec3) {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .state_mut()
+            .play_effect(group, position);
+    }
+
     pub fn set_water_magic(&self, on: bool) {
         self.props
             .borrow_mut()
@@ -471,6 +483,8 @@ struct AdventureDirectorProps {
         crate::openpal3::scene::flexeff_cylinder::CylinderEffect,
         ComRc<radiance::comdef::IEntity>,
     )>,
+    /// flexeff 的 `particle` 类：`.par` 粒子，挂在特效位置上。
+    flexeff_par: Vec<FlexParticle>,
     /// `audio` 那一支——没有画面，只是到点放几个 wav。
     flexeff_audio: Vec<crate::openpal3::scene::flexeff_audio::AudioEffect>,
     /// `callback` 排下来、还在等延迟的特效组：`(组号, 位置, 还差几秒, 深度)`。
@@ -481,6 +495,63 @@ struct AdventureDirectorProps {
 
 /// `callback` 链的展开深度上限。实机最深 3 层且无环，留一点余量。
 const FLEXEFF_MAX_DEPTH: u8 = 5;
+
+/// 一份 flexeff `particle` 实例（战斗特效里的 `.par`）。
+///
+/// 原版的实例时间线（FUN_004c8e90 排、FUN_004c90c0 走）：延迟 `+72` 后
+/// 打开发射，这一步持续 `+76` 秒；每帧按子块移动、绕圈、缩放。步走完、
+/// 实例没了，FUN_004c8bf0 就 `FUN_004bd7a0(0)` 关发射，已有粒子照常走完。
+struct FlexParticle {
+    effect: crate::openpal3::scene::ParticleEffect,
+    entities: Vec<ComRc<radiance::comdef::IEntity>>,
+    /// 播放位置加定义记录 `+0xb8..+0xc0` 的偏移（FUN_004c8b80）。
+    origin: Vec3,
+    /// 子块 +72：起播延迟。
+    delay: f32,
+    /// 子块 +76：发射这一步的时长。
+    life: f32,
+    t: f32,
+    /// 定义记录 `+200` 起步，子块 +0 每秒加多少（下限 0.001）。
+    scale: f32,
+    grow: f32,
+    /// 子块 +4..+12：每秒平移。
+    velocity: Vec3,
+    /// 子块 +20..+28 转轴（零向量按 `gbVec3D::Normalize` 当 +y）、
+    /// +32 半径、+36 每秒几度。
+    axis: Vec3,
+    radius: f32,
+    spin: f32,
+    /// 平移和绕圈算出来的当前偏移。
+    moved: Vec3,
+    orbit: Vec3,
+}
+
+impl FlexParticle {
+    /// FUN_004c90c0：发射那一步里每帧做的事。
+    fn drive(&mut self, delta_sec: f32) {
+        if self.grow != 0. {
+            self.scale = (self.scale + self.grow * delta_sec).max(0.001);
+            self.effect.set_scale(self.scale);
+        }
+        self.moved = Vec3::add(&self.moved, &Vec3::scalar_mul(delta_sec, &self.velocity));
+        // `SetAxisAngle(轴, (t − 起点) × +36)` 后转 `(+32, 0, 0)`；gbengine 的
+        // SetAxisAngle 乘 π/180 × 0.5 进四元数，所以角度是度。转向按
+        // 右手 Rodrigues **[推断]**（Rotate 是行向量乘法，未逐项核对正负）。
+        let k = if self.axis.norm() < 1e-6 {
+            Vec3::new(0., 1., 0.)
+        } else {
+            Vec3::normalized(&self.axis)
+        };
+        let (sin, cos) = ((self.t - self.delay) * self.spin).to_radians().sin_cos();
+        let v = Vec3::new(self.radius, 0., 0.);
+        let cross = Vec3::cross(&k, &v);
+        let dot = Vec3::dot(&k, &v);
+        self.orbit = Vec3::add(
+            &Vec3::add(&Vec3::scalar_mul(cos, &v), &Vec3::scalar_mul(sin, &cross)),
+            &Vec3::scalar_mul(dot * (1. - cos), &k),
+        );
+    }
+}
 
 impl AdventureDirectorProps {
     /// 152 的水特效：跟着玩家走的一组 `.par` 粒子。
@@ -525,7 +596,6 @@ impl AdventureDirectorProps {
                     i,
                     texture_path.to_str().unwrap_or("particle"),
                     image,
-                    group.param.blend,
                 );
                 scene.add_entity(entity.clone());
                 entities.push(entity);
@@ -693,6 +763,86 @@ impl AdventureDirectorProps {
                     }
                     continue;
                 }
+                // `particle`：`.par` 粒子（运行时和 152 水特效共用）。
+                if class == Some("particle") {
+                    use crate::openpal3::scene::{ParticleEffect, build_particle_entity};
+                    use fileformats::pal3::par::{ParEffect, read_par};
+                    let par_path = asset_mgr
+                        .basedata_path()
+                        .join(def.asset().replace('\\', "/"));
+                    let Some(par) =
+                        common::store_ext::StoreExt2::read_to_end(asset_mgr.vfs(), &par_path)
+                            .ok()
+                            .and_then(|data| read_par(&mut data.as_slice()).ok())
+                            .map(|file| ParEffect::decode(&file))
+                    else {
+                        log::warn!("CEft: 读不到粒子 {}", par_path.display());
+                        continue;
+                    };
+                    // 定义记录里的两项（FUN_004c8b80）：`+200` 是整个粒子
+                    // 系统的缩放，`+0xb8..+0xc0` 加在播放位置上。
+                    let raw = {
+                        use fileformats::pal3::flexeff::DEF_SIZE;
+                        &eff.definitions_block()[def.index * DEF_SIZE..(def.index + 1) * DEF_SIZE]
+                    };
+                    let rf = |o: usize| f32::from_le_bytes(raw[o..o + 4].try_into().unwrap());
+                    let scale = if rf(200) > 0. { rf(200) } else { 1. };
+                    let offset = Vec3::new(rf(0xb8), rf(0xbc), rf(0xc0));
+                    for sidx in 0..GROUP_SUBS {
+                        if !group.sub_enabled(k, sidx) {
+                            continue;
+                        }
+                        let sub = group.sub(k, sidx).unwrap();
+                        let f = |o: usize| f32::from_le_bytes(sub[o..o + 4].try_into().unwrap());
+                        let mut entities = vec![];
+                        for (i, g) in par.groups.iter().enumerate() {
+                            let texture_path = asset_mgr
+                                .particle_root()
+                                .join(g.param.texture.replace('\\', "/"));
+                            let Some(image) = asset_mgr.read_picture(&texture_path) else {
+                                log::warn!("CEft: 读不到粒子贴图 {}", texture_path.display());
+                                continue;
+                            };
+                            let entity = build_particle_entity(
+                                &asset_mgr.component_factory(),
+                                i,
+                                texture_path.to_str().unwrap_or("particle"),
+                                image,
+                            );
+                            entity.set_visible(false);
+                            scene.add_entity(entity.clone());
+                            entities.push(entity);
+                        }
+                        if entities.is_empty() {
+                            continue;
+                        }
+                        let effect = ParticleEffect::new(&par);
+                        effect.set_scale(scale);
+                        log::info!(
+                            "CEft: 粒子 {} 缩放 {scale} 偏移 {offset:?} 延迟 {} 发射 {} 秒",
+                            def.asset(),
+                            f(72),
+                            f(76)
+                        );
+                        self.flexeff_par.push(FlexParticle {
+                            effect,
+                            entities,
+                            origin: Vec3::add(&position, &offset),
+                            delay: f(72).max(0.),
+                            life: f(76).max(0.),
+                            t: 0.,
+                            scale,
+                            grow: f(0),
+                            velocity: Vec3::new(f(4), f(8), f(12)),
+                            axis: Vec3::new(f(20), f(24), f(28)),
+                            radius: f(32),
+                            spin: f(36),
+                            moved: Vec3::new(0., 0., 0.),
+                            orbit: Vec3::new(0., 0., 0.),
+                        });
+                    }
+                    continue;
+                }
                 if class != Some("quad") && class != Some("cylinder") {
                     continue;
                 }
@@ -745,6 +895,54 @@ impl AdventureDirectorProps {
             for name in due {
                 self.play_effect_sound(&name);
             }
+        }
+
+        if !self.flexeff_par.is_empty() {
+            use crate::openpal3::scene::write_particle_mesh;
+            let (right, up) = {
+                let camera = scene.camera();
+                let f = camera.transform().matrix().floats();
+                (
+                    Vec3::new(f[0][0], f[1][0], f[2][0]),
+                    Vec3::new(f[0][1], f[1][1], f[2][1]),
+                )
+            };
+            for p in self.flexeff_par.iter_mut() {
+                p.t += delta_sec;
+                if p.t < p.delay {
+                    continue;
+                }
+                if p.t >= p.delay + p.life {
+                    p.effect.stop();
+                } else {
+                    p.drive(delta_sec);
+                }
+                p.effect.step(delta_sec);
+                let at = Vec3::add(&p.origin, &Vec3::add(&p.moved, &p.orbit));
+                for (entity, group) in p.entities.iter().zip(p.effect.groups()) {
+                    entity.set_visible(true);
+                    let particles: Vec<_> = group
+                        .particles()
+                        .into_iter()
+                        .map(|mut q| {
+                            q.position = Vec3::add(&at, &q.position);
+                            q
+                        })
+                        .collect();
+                    write_particle_mesh(entity, &particles, group.def().param.frames, &right, &up);
+                }
+            }
+            // 发射停了、粒子也走完了（或者拖太久）就收掉。
+            self.flexeff_par.retain(|p| {
+                let over = p.t >= p.delay + p.life
+                    && (p.effect.alive_count() == 0 || p.t >= p.delay + p.life + 10.);
+                if over {
+                    for e in &p.entities {
+                        e.set_visible(false);
+                    }
+                }
+                !over
+            });
         }
 
         if self.flexeff.is_empty() && self.flexeff_cyl.is_empty() {

@@ -344,7 +344,10 @@ fn handle_teleport(ctx: &Pal3DispatchCtx, params: TeleportParams) -> AgentRespon
 ///   every proc that fades also walks and talks its way there;
 /// * `{"function": "set_water_magic", "args": [0|1]}` flips 152's水特效
 ///   for the same reason — the only two procs that use it sit at the end
-///   of long 熔岩地狱 cutscenes.
+///   of long 熔岩地狱 cutscenes;
+/// * `{"function": "play_effect", "args": [<group>, x, y, z]}` plays a
+///   flexeff group at a point, so its timeline can be screenshotted from
+///   a known start.
 ///
 /// Both exist so an automation driver can reach a scripted beat without
 /// playing up to it; commands whose only effect is on screen cannot be
@@ -389,6 +392,19 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
         "set_water_magic" => {
             let on = int_arg(0).unwrap_or(0) != 0;
             director.set_water_magic(on);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "play_effect" => {
+            let f = |i: usize| params.args.get(i).and_then(|v| v.as_f64()).unwrap_or(0.) as f32;
+            let Some(group) = int_arg(0) else {
+                return AgentResponse::err(AgentError::bad_request(
+                    "play_effect needs args: [group, x, y, z]",
+                ));
+            };
+            director.play_effect(group as i32, Vec3::new(f(1), f(2), f(3)));
             AgentResponse::Script(ScriptEvalResponse {
                 function: params.function,
                 result: None,

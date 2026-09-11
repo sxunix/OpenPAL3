@@ -116,6 +116,10 @@ pub struct ParticleGroup {
     /// `gbEmitterData+0x28`, the fraction of a particle left over.
     pending: RefCell<f32>,
     rand: RefCell<Rand>,
+    /// 不再发新粒子（战斗特效的寿命到了）；已有的照常走完。
+    stopped: RefCell<bool>,
+    /// 整组的缩放，见 [`ParticleEffect::set_scale`]。
+    scale: RefCell<f32>,
 }
 
 impl ParticleGroup {
@@ -126,6 +130,8 @@ impl ParticleGroup {
             elapsed: RefCell::new(0.),
             pending: RefCell::new(0.),
             rand: RefCell::new(Rand(seed | 1)),
+            stopped: RefCell::new(false),
+            scale: RefCell::new(1.),
         }
     }
 
@@ -150,6 +156,9 @@ impl ParticleGroup {
 
     /// `ComputeEmitterData` plus the `CreateOneParticle` loop.
     fn emit(&self, elapsed: f32, delta_sec: f32) {
+        if *self.stopped.borrow() {
+            return;
+        }
         let emitter = &self.def.emitter;
         let cycles = (elapsed / emitter.period) as i32;
         if cycles > 1 && !emitter.looping {
@@ -183,6 +192,7 @@ impl ParticleGroup {
             return;
         }
 
+        let scale = *self.scale.borrow();
         let mut particles = self.particles.borrow_mut();
         let mut rand = self.rand.borrow_mut();
         let mut made = 0;
@@ -193,24 +203,27 @@ impl ParticleGroup {
             if slot.alive() {
                 continue;
             }
+            // `ComputeParticleInitVel`（gbengine 0x1002a590，exe 里那份是
+            // FUN_004b91e0）：速率 × 方向曲线的原值，再逐轴加 `rand(±扩散)`。
+            // 方向不归一化，扩散是加在速度上的。
             let speed = rand.range(speed_lo, speed_hi);
-            let spread = emitter.spread;
-            let aim = Vec3::new(
-                direction[0] + rand.range(-spread[0], spread[0]),
-                direction[1] + rand.range(-spread[1], spread[1]),
-                direction[2] + rand.range(-spread[2], spread[2]),
+            let spread = emitter.spread.map(|v| v * scale);
+            let jitter = Vec3::new(
+                rand.range(-spread[0], spread[0]),
+                rand.range(-spread[1], spread[1]),
+                rand.range(-spread[2], spread[2]),
             );
-            let aim = if aim.norm() > f32::EPSILON {
-                Vec3::normalized(&aim)
-            } else {
-                Vec3::new(0., 1., 0.)
-            };
+            let velocity = Vec3::new(
+                speed * direction[0] + jitter.x,
+                speed * direction[1] + jitter.y,
+                speed * direction[2] + jitter.z,
+            );
 
             *slot = Particle {
                 age: 0.,
                 life: rand.range(life_lo, life_hi).max(f32::EPSILON),
-                position: self.spawn_position(&mut rand),
-                velocity: Vec3::scalar_mul(speed, &aim),
+                position: self.spawn_position(&mut rand, scale),
+                velocity,
                 frame: 0,
                 first_frame: (rand.range(0., self.def.param.first_frame_range as f32)) as u32,
                 spin: if rand.next() < 0.5 { -1. } else { 1. },
@@ -233,14 +246,21 @@ impl ParticleGroup {
     /// * 其余（形状 2）：在 `.csf` 网格的点云里随机挑一个点再过一次矩阵。
     ///   `.csf` 还没有读者，所以这一支暂时落在原点 `[推断]`；实机 65 个发射
     ///   器里有 27 个是它。
-    fn spawn_position(&self, rand: &mut Rand) -> Vec3 {
+    ///
+    /// 缩放（exe 里那份的 FUN_004ba800）：形状上取的那一点乘发射器 `+0xb0`
+    /// 的缩放，原点由 FUN_004bb0f0 预先乘过，所以两者都随缩放放大。
+    fn spawn_position(&self, rand: &mut Rand, scale: f32) -> Vec3 {
         let e = &self.def.emitter;
-        let o = Vec3::new(e.origin[0], e.origin[1], e.origin[2]);
+        let o = Vec3::new(
+            e.origin[0] * scale,
+            e.origin[1] * scale,
+            e.origin[2] * scale,
+        );
         match e.shape {
             0 => Vec3::new(
-                o.x + rand.range(e.box_min[0], e.box_max[0]),
-                o.y + rand.range(e.box_min[1], e.box_max[1]),
-                o.z + rand.range(e.box_min[2], e.box_max[2]),
+                o.x + scale * rand.range(e.box_min[0], e.box_max[0]),
+                o.y + scale * rand.range(e.box_min[1], e.box_max[1]),
+                o.z + scale * rand.range(e.box_min[2], e.box_max[2]),
             ),
             1 => {
                 let bound = if rand.next() < 0.5 {
@@ -248,7 +268,7 @@ impl ParticleGroup {
                 } else {
                     e.radii.0 + e.radii.1
                 };
-                let r = rand.range(0., bound);
+                let r = scale * rand.range(0., bound);
                 let theta = rand.range(0., 180f32).to_radians();
                 let phi = rand.range(0., 360f32).to_radians();
                 Vec3::new(
@@ -305,13 +325,21 @@ impl ParticleGroup {
         }
     }
 
-    /// The live particles, for the mesh.
+    /// The live particles, for the mesh. `size` comes out already
+    /// multiplied by the group's scale: the exe's Render (FUN_004bc8a0)
+    /// takes half the size track's value times group param `+0x164`, which
+    /// is where FUN_004bb180 stores the scale. Drag still sees the raw
+    /// track value, as `unit+0x40` does.
     pub fn particles(&self) -> Vec<Particle> {
+        let scale = *self.scale.borrow();
         self.particles
             .borrow()
             .iter()
             .filter(|p| p.alive())
-            .copied()
+            .map(|p| Particle {
+                size: p.size * scale,
+                ..*p
+            })
             .collect()
     }
 
@@ -346,6 +374,30 @@ impl ParticleEffect {
     pub fn groups(&self) -> &[ParticleGroup] {
         &self.groups
     }
+
+    /// 整个特效放大 `scale` 倍：粒子尺寸、发射器原点、形状取点和扩散。
+    ///
+    /// 战斗特效（flexeff `particle` 类）的定义记录 `+200` 就是它：
+    /// FUN_004c8b80 取出来交给 FUN_004bd7c0，后者对每个发射器调
+    /// FUN_004bb0f0（原点、扩散先除旧值再乘新值，新值记在 `+0xb0`），对每个
+    /// 组参数调 FUN_004bb180（写 `+0x164`，Render 拿它乘尺寸）。速度和
+    /// 重力不乘。
+    pub fn set_scale(&self, scale: f32) {
+        for group in &self.groups {
+            *group.scale.borrow_mut() = scale;
+        }
+    }
+
+    /// 不再发新粒子（已有的走完为止）。
+    pub fn stop(&self) {
+        for group in &self.groups {
+            *group.stopped.borrow_mut() = true;
+        }
+    }
+
+    pub fn alive_count(&self) -> usize {
+        self.groups.iter().map(|g| g.alive_count()).sum()
+    }
 }
 
 /// Name of the entity one group is drawn as.
@@ -363,12 +415,19 @@ pub fn pack_color(color: [f32; 4]) -> (f32, f32) {
 
 /// Build the mesh one group draws through: `MAX_PARTICLES` quads whose
 /// vertices are rewritten every frame, host-dynamic like the snow's.
+///
+/// 一律加法混合，不看 `.par` 里的混合标记：exe 自带的那份粒子系统画的
+/// 时候（FUN_004bc8a0，0x4bcb75 起）无条件 `SetRenderState(ALPHABLENDENABLE,
+/// 1)`、`SRCBLEND = ONE`、`DESTBLEND = ONE`，颜色是贴图 × 顶点色，组循环之前
+/// 设一次、没有分支。`param+0x164` 选 `p_alpha.gbf` 那一支是 gbengine.dll
+/// 里另一份的做法，exe 里连这两个 `.gbf` 的字符串都没有，而且它把 `+0x164`
+/// 挪去存缩放了（FUN_004bb180）。三个标成 alpha 的 Snow 组在原版里也是加法，
+/// 黑底因此不显。
 pub fn build_particle_entity(
     factory: &Rc<dyn ComponentFactory>,
     group: usize,
     texture_name: &str,
     texture: image::RgbaImage,
-    blend: ParBlend,
 ) -> ComRc<IEntity> {
     let mut verts = Vec::with_capacity(MAX_PARTICLES * 4);
     let mut uv = Vec::with_capacity(MAX_PARTICLES * 4);
@@ -384,14 +443,8 @@ pub fn build_particle_entity(
         indices.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
     }
 
-    let material = ParticleMaterialDef::create_with_image(
-        texture_name,
-        Some(texture),
-        match blend {
-            ParBlend::Additive => BlendMode::Additive,
-            ParBlend::Alpha => BlendMode::AlphaBlend,
-        },
-    );
+    let material =
+        ParticleMaterialDef::create_with_image(texture_name, Some(texture), BlendMode::Additive);
     let geometry = Geometry::new(&verts, None, &[uv, packed], indices, material);
 
     let object = factory.create_render_object(
@@ -574,6 +627,41 @@ mod tests {
         let before = g.particles()[0].velocity.y;
         g.step(0.1);
         assert!(g.particles()[0].velocity.y < before, "重力没把速度往下拉");
+    }
+
+    #[test]
+    fn the_direction_curve_is_not_normalised() {
+        // 方向 (0,10,0)、速率 2、无扩散：初速就是 (0,20,0)。
+        let mut def = group(100., 10.);
+        def.emitter.direction = [constant(0.), constant(10.), constant(0.)];
+        def.emitter.speed = (constant(2.), constant(2.));
+        let g = ParticleGroup::new(def, 1);
+        g.step(0.01);
+        let v = g.particles()[0].velocity;
+        assert!((v.y - 20.).abs() < 1e-4 && v.x == 0. && v.z == 0., "{v:?}");
+    }
+
+    #[test]
+    fn the_scale_grows_size_and_spawn_box_but_not_speed() {
+        let mut def = group(100., 10.);
+        def.emitter.box_min = [-1., 0., -1.];
+        def.emitter.box_max = [1., 0., 1.];
+        def.emitter.origin = [0., 2., 0.];
+        let effect = ParticleEffect {
+            groups: vec![ParticleGroup::new(def, 1)],
+        };
+        effect.set_scale(10.);
+        effect.step(0.1);
+        let ps = effect.groups()[0].particles();
+        assert!(!ps.is_empty());
+        for p in &ps {
+            assert_eq!(p.size, 10., "尺寸曲线 1 × 缩放 10");
+            assert!(p.position.x.abs() <= 10. + 1e-3 && p.position.z.abs() <= 10. + 1e-3);
+            assert!((p.velocity.y - 1.).abs() < 1e-4, "速度不随缩放变");
+        }
+        // 盒子放大到 ±10，二十来颗里总有落在 ±1 之外的；原点抬到 20。
+        assert!(ps.iter().any(|p| p.position.x.abs() > 1.));
+        assert!(ps.iter().all(|p| p.position.y >= 20.));
     }
 
     #[test]
