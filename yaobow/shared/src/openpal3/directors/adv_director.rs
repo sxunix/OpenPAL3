@@ -83,6 +83,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_model: vec![],
                 flexeff_shock: vec![],
                 flexeff_cam: vec![],
                 flexeff_meteor: vec![],
@@ -194,6 +195,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_model: vec![],
                 flexeff_shock: vec![],
                 flexeff_cam: vec![],
                 flexeff_meteor: vec![],
@@ -491,6 +493,11 @@ struct AdventureDirectorProps {
     )>,
     /// flexeff 的 `particle` 类：`.par` 粒子，挂在特效位置上。
     flexeff_par: Vec<FlexParticle>,
+    /// `model` 实例：模型、`.cvd` / `.pol` 实体。
+    flexeff_model: Vec<(
+        crate::openpal3::scene::flexeff_model::ModelEffect,
+        ComRc<radiance::comdef::IEntity>,
+    )>,
     /// `shock` 实例：模型、面片实体。
     flexeff_shock: Vec<(
         crate::openpal3::scene::flexeff_shock::ShockEffect,
@@ -881,6 +888,55 @@ impl AdventureDirectorProps {
                     }
                     continue;
                 }
+                // `model`：摆一个 `.cvd` / `.pol` 模型（scene::flexeff_model）。
+                if class == Some("model") {
+                    use crate::openpal3::loaders::pol::create_entity_from_pol_model;
+                    use crate::openpal3::scene::create_entity_from_cvd_model;
+                    use crate::openpal3::scene::flexeff_model::{ModelDef, ModelEffect};
+                    use mini_fs::StoreExt;
+                    let path = asset_mgr
+                        .basedata_path()
+                        .join(def.asset().replace('\\', "/"));
+                    if asset_mgr.vfs().open(&path).is_err() {
+                        log::warn!("CEft: 读不到特效模型 {}", path.display());
+                        continue;
+                    }
+                    let is_pol = path
+                        .extension()
+                        .is_some_and(|e| e.eq_ignore_ascii_case("pol"));
+                    let md = ModelDef::from_def(&def);
+                    let origin = [position.x, position.y, position.z];
+                    for sidx in 0..GROUP_SUBS {
+                        if !group.sub_enabled(k, sidx) {
+                            continue;
+                        }
+                        let sub = group.sub(k, sidx).unwrap();
+                        self.flexeff_seq += 1;
+                        let name = format!("FLEXEFF_MODEL_{}", self.flexeff_seq);
+                        let entity = if is_pol {
+                            create_entity_from_pol_model(
+                                &asset_mgr.component_factory(),
+                                asset_mgr.vfs(),
+                                &path,
+                                name,
+                                false,
+                            )
+                        } else {
+                            create_entity_from_cvd_model(
+                                asset_mgr.component_factory(),
+                                asset_mgr.vfs(),
+                                &path,
+                                name,
+                                false,
+                            )
+                        };
+                        scene.add_entity(entity.clone());
+                        log::info!("CEft: 模型 {}", def.asset());
+                        self.flexeff_model
+                            .push((ModelEffect::new(md, sub, origin), entity));
+                    }
+                    continue;
+                }
                 // `shock`：一道闪电（scene::flexeff_shock）。
                 if class == Some("shock") {
                     use crate::openpal3::scene::flexeff_meteor::build_meteor_entity;
@@ -1103,6 +1159,27 @@ impl AdventureDirectorProps {
                 log::info!("CEft: 镜头 flexcam 序列 {seq}");
                 self.sce_vm.state_mut().request_combat_camera(seq);
             }
+        }
+
+        if !self.flexeff_model.is_empty() {
+            use crate::openpal3::scene::flexeff_model::{place, play_tree, set_visible_tree};
+            for (effect, entity) in self.flexeff_model.iter_mut() {
+                if effect.step(delta_sec) {
+                    set_visible_tree(entity, true);
+                    play_tree(entity);
+                }
+                if effect.visible() {
+                    place(entity, effect);
+                }
+            }
+            self.flexeff_model.retain(|(effect, entity)| {
+                if effect.finished() {
+                    set_visible_tree(entity, false);
+                    false
+                } else {
+                    true
+                }
+            });
         }
 
         if !self.flexeff_shock.is_empty() {

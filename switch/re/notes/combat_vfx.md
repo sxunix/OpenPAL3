@@ -102,7 +102,7 @@ shock 98、model 67、grid 62、action 49、explosive 16、camera 13、quake 12�
 「烈焰燃雷」371 展开为 shock ×13 + quad「xiaozha.tga」×13 + particle「huo.par」×11，
 其中 quad 那一半现在就能画。
 
-下一步按缺口大小和难度：~~particle~~（§6）→ ~~meteor~~（§7）→ ~~camera~~（§3）→ ~~shock~~（§8）→ model（67）→ grid（62）→ action（49）。
+下一步按缺口大小和难度：~~particle~~（§6）→ ~~meteor~~（§7）→ ~~camera~~（§3）→ ~~shock~~（§8）→ ~~model~~（§9）→ grid（62）→ action（49）。
 
 ## 6. `particle` 类（2026-09-11 接上）
 
@@ -261,4 +261,40 @@ NoZTest 移植端还表达不了。
 
 桌面实测（M01 起战斗，`play_effect 371` 烈焰燃雷）：画面左缘出现蓝白折线闪电，伴随 huo 粒子火光，
 约 1 秒内闪烁熄灭。特效在战场原点加偏移处播，大半在镜头外；只核对了「出现、会闪、会消失」。
+
+## 9. `model` 类（2026-09-11 接上）
+
+`CEffModel`（`D:\Project\PAL3\combat\EffModel.cpp`）：原型 `FUN_004cfc70`，vtable 0x56f9dc。
+实现在 `scene/flexeff_model.rs`。
+
+实机数据：
+- 59 条定义，资源大多是 `.cvd`（`effect\mojian\M07.cvd` 等魔剑、`t051.cvd` ×16），少数 `.POL`；
+- 定义用到偏移 `+0xb8..`、朝向 `+0xc4`（36 条）、缩放 `+0xc8`（0.5–2）、颜色 `+0xcc`、标志 `+0xd4`；
+- 89 个子块用到 `+4..+12`、`+24`、`+32/+36`、`+44`、`+72`、`+76`；
+- 44–67 号组各是一把魔剑，87 号组把 huaying 分三段播。
+
+| 槽 / 函数 | 做什么 |
+|---|---|
+| `+4` 0x4cfeb0 → FUN_004d0950 | `new gbGeomNode` 后 `gbGeomNode::LoadFromFile(资源)`，由引擎读 cvd / pol，不走 exe 自己的解析 |
+| `+8` 0x4cfe20 | 位置 = 播放点 + `+0xb8..`；绕圈偏移 `+0x40..` 清零；转角 `+0x4c/+0x50/+0x54` = 定义 `+0xd8/+0xc4/+0xdc`；缩放三轴 = `+0xc8`；不可见；`gbGeomNode::Reset(0)` |
+| `+0x30` 0x4d03b0 | 开实例，排一步 0x4d05e0（延迟 `+72`、时长 `+76`） |
+| 0x4d05e0 | 第一次进来置可见、`Reset(0)`；位置 += `+4..+12`·dt；缩放三轴各加 `+0/+92/+84`、转角三轴各加 `+40/+44/+48`——**按帧加，不乘 dt**；绕圈：转轴 `+20..+28`、角度 (t − 起点)·`+36` 度、半径 `+32`；`+56` ≠ 0 时 `GetBlend` → alpha += dt·`+56`，截 0..1 → `SetBlend(1, alpha)`；到时长或强停结束 |
+| `+0x14` FUN_004cffb0 | 推时间线；实例没了清可见；`gbGeomNode::Update()`（引擎时钟推动画） |
+| `+0x10` 0x4d01c0 | 可见时：`Translate(位置 + 绕圈偏移)` → `Rotate X/Y/Z` → `Scale(三轴)` → `gbGeomNode::Render` |
+| `+0x2c` 0x4d0390 | `gbVisNode::SetTimeScale(参数)` |
+
+移植端：
+- `.cvd` 用 `create_entity_from_cvd_model`、`.pol` 用 `create_entity_from_pol_model`，先建成不可见；
+- 到点整棵树设可见，CVD 关键帧从头循环播，每帧把根实体的变换设成 平移 → X → Y → Z → 缩放；
+- 结束时整棵树隐藏。
+
+[推断] 的地方：
+- 按帧累加的量按 60 fps 换算（和 encamp 指针速度的处理一样）；实机只用到 `+44` = 2 / 6，即绕 Y 每秒 120° / 360°；
+- 动画循环播放（没跟进 `gbGeomNode::Update`）；
+- 转角按度、右手系；
+- alpha（`+56`）没接到材质上，实机也没用到；`SetTimeScale` 没接。
+
+桌面实测（M01 起战斗，`play_effect 50`）：日志出 `CEft: 模型 effect\mojian\M07.cvd`，截图里战场中央出现
+半透明、带竖向拖影的紫白色物体，两张截图之间形状在变。同组还带 yiwai3 粒子（偏移在左后方），画面上
+和模型没有完全分开；只核对了「模型加载、显示、会动、到时消失」。
 
