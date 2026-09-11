@@ -83,6 +83,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_meteor: vec![],
                 flexeff_audio: vec![],
                 flexeff_pending: vec![],
                 flexeff_seq: 0,
@@ -191,6 +192,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_meteor: vec![],
                 flexeff_audio: vec![],
                 flexeff_pending: vec![],
                 flexeff_seq: 0,
@@ -485,6 +487,12 @@ struct AdventureDirectorProps {
     )>,
     /// flexeff 的 `particle` 类：`.par` 粒子，挂在特效位置上。
     flexeff_par: Vec<FlexParticle>,
+    /// `meteor` 实例：模型、头部面片实体（定义不画头部时没有）、拖尾实体。
+    flexeff_meteor: Vec<(
+        crate::openpal3::scene::flexeff_meteor::MeteorEffect,
+        Option<ComRc<radiance::comdef::IEntity>>,
+        ComRc<radiance::comdef::IEntity>,
+    )>,
     /// `audio` 那一支——没有画面，只是到点放几个 wav。
     flexeff_audio: Vec<crate::openpal3::scene::flexeff_audio::AudioEffect>,
     /// `callback` 排下来、还在等延迟的特效组：`(组号, 位置, 还差几秒, 深度)`。
@@ -843,6 +851,75 @@ impl AdventureDirectorProps {
                     }
                     continue;
                 }
+                // `meteor`：追着目标飞的面片加拖尾（scene::flexeff_meteor）。
+                if class == Some("meteor") {
+                    use crate::openpal3::scene::flexeff_meteor::{
+                        MeteorDef, MeteorEffect, build_meteor_entity,
+                    };
+                    let texture_path = asset_mgr
+                        .basedata_path()
+                        .join(def.asset().replace('\\', "/"));
+                    let Some(image) = asset_mgr.read_picture(&texture_path) else {
+                        log::warn!("CEft: 读不到陨石贴图 {}", texture_path.display());
+                        continue;
+                    };
+                    let md = MeteorDef::from_def(&def);
+                    let origin = [position.x, position.y, position.z];
+                    let name = texture_path.to_str().unwrap_or("meteor").to_string();
+                    let factory = asset_mgr.component_factory();
+                    for sidx in 0..GROUP_SUBS {
+                        if !group.sub_enabled(k, sidx) {
+                            continue;
+                        }
+                        let sub = group.sub(k, sidx).unwrap();
+                        let effect = MeteorEffect::new(md, sub, origin);
+                        self.flexeff_seq += 1;
+                        let seq = self.flexeff_seq;
+                        let heads = md.has_heads().then(|| {
+                            let e = build_meteor_entity(
+                                &factory,
+                                format!("FLEXEFF_METEOR_HEAD_{seq}"),
+                                &name,
+                                image.clone(),
+                                md.quad.additive,
+                                effect.head_capacity(),
+                            );
+                            scene.add_entity(e.clone());
+                            e
+                        });
+                        // 有头部面片时拖尾不贴图（FUN_004cd0d0 的第三个参数），拿一张白图代替。
+                        let (trail_name, trail_image) = if md.has_heads() {
+                            (
+                                "FLEXEFF_METEOR_WHITE".to_string(),
+                                image::RgbaImage::from_pixel(
+                                    1,
+                                    1,
+                                    image::Rgba([255, 255, 255, 255]),
+                                ),
+                            )
+                        } else {
+                            (name.clone(), image.clone())
+                        };
+                        let trails = build_meteor_entity(
+                            &factory,
+                            format!("FLEXEFF_METEOR_TRAIL_{seq}"),
+                            &trail_name,
+                            trail_image,
+                            true,
+                            effect.trail_capacity(),
+                        );
+                        scene.add_entity(trails.clone());
+                        log::info!(
+                            "CEft: 陨石 {} ×{} 延迟 {} 持续 {} 秒",
+                            def.asset(),
+                            md.meteors(),
+                            f32::from_le_bytes(sub[72..76].try_into().unwrap()),
+                            f32::from_le_bytes(sub[76..80].try_into().unwrap())
+                        );
+                        self.flexeff_meteor.push((effect, heads, trails));
+                    }
+                    continue;
+                }
                 if class != Some("quad") && class != Some("cylinder") {
                     continue;
                 }
@@ -942,6 +1019,36 @@ impl AdventureDirectorProps {
                     }
                 }
                 !over
+            });
+        }
+
+        if !self.flexeff_meteor.is_empty() {
+            use crate::openpal3::scene::flexeff_meteor::{write_meteor_heads, write_meteor_trails};
+            let (right, up, eye) = {
+                let camera = scene.camera();
+                let f = camera.transform().matrix().floats();
+                (
+                    Vec3::new(f[0][0], f[1][0], f[2][0]),
+                    Vec3::new(f[0][1], f[1][1], f[2][1]),
+                    camera.transform().position(),
+                )
+            };
+            for (effect, heads, trails) in self.flexeff_meteor.iter_mut() {
+                effect.step(delta_sec);
+                if let Some(h) = heads {
+                    write_meteor_heads(h, effect, &right, &up);
+                }
+                write_meteor_trails(trails, effect, &eye);
+            }
+            self.flexeff_meteor.retain(|(effect, heads, trails)| {
+                if !effect.finished() {
+                    return true;
+                }
+                if let Some(h) = heads {
+                    h.set_visible(false);
+                }
+                trails.set_visible(false);
+                false
             });
         }
 
