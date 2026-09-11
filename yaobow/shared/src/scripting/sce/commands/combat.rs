@@ -43,7 +43,7 @@ use radiance::rendering::Sprite;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use super::appraise::overlay;
+use super::appraise::{overlay, play_sfx};
 use super::encamp::draw_sprite;
 
 /// `SceState::ext` key for the [`PendingFlags`] the flag opcodes set.
@@ -178,6 +178,67 @@ pub struct SceCommandCombat {
     flexcam: Option<crate::openpal3::combat::camera::Flexcam>,
     /// 分出胜负、正在播散场镜头。
     ending: Option<Outcome>,
+    /// 结算画面的时间轴（`combat::result`）。
+    result: Option<crate::openpal3::combat::result::ResultPlayer>,
+    /// 结算时收集的升级 / 钱 / 物品消息。
+    result_messages: Vec<crate::openpal3::combat::result::ResultMessage>,
+    /// 结算面板上每个人的样子。
+    result_panels: Vec<ResultPanel>,
+    result_tex: Option<ResultTextures>,
+    /// 散场一开始就结算过了（打赢 / 逃掉）。
+    settled: bool,
+}
+
+/// 结算面板上的一个人。
+#[derive(Clone)]
+struct ResultPanel {
+    /// 我方战斗位，也是 `result\face\<位>.tga` 的编号。
+    slot: usize,
+    /// 「名字 等级 级」（`%s %d %s`，`FUN_005184e0`）。
+    label: String,
+    /// 精 / 气 / 神：(当前, 上限)。
+    gauges: [(i32, i32); 3],
+}
+
+/// 结算画面的贴图（坐标在 `combat::result`）。
+#[derive(Clone)]
+struct ResultTextures {
+    big_win: Tex,
+    big_lose: Tex,
+    back: Tex,
+    faces: Vec<Tex>,
+    slot: Tex,
+    fills: [Tex; 3],
+    label: Tex,
+    levelup: Tex,
+    getitem: Tex,
+}
+
+impl ResultTextures {
+    fn load(state: &SceState) -> Self {
+        use crate::openpal3::combat::result as res;
+        let asset_mgr = state.asset_mgr();
+        let tex = |rel: &str| {
+            asset_mgr.load_sprite(
+                PathBuf::from("/basedata/basedata")
+                    .join(hud::UI_DIR)
+                    .join(rel),
+            )
+        };
+        Self {
+            big_win: tex(res::BIG_WIN),
+            big_lose: tex(res::BIG_LOSE),
+            back: tex(res::PANEL_BACK),
+            faces: (0..PARTY_SLOTS)
+                .map(|s| tex(&res::face_texture(s)))
+                .collect(),
+            slot: tex(res::GAUGE_SLOT),
+            fills: res::GAUGE_FILLS.map(tex),
+            label: tex(res::GAUGE_LABEL),
+            levelup: tex(res::LEVELUP_PANEL),
+            getitem: tex(res::GETITEM_PANEL),
+        }
+    }
 }
 
 /// 一次行动的演出：攻击是走过去 → 出手 → 结算 → 走回来，其余原地出手。
@@ -357,6 +418,11 @@ impl SceCommandCombat {
             camera: None,
             flexcam: None,
             ending: None,
+            result: None,
+            result_messages: Vec::new(),
+            result_panels: Vec::new(),
+            result_tex: None,
+            settled: false,
         }
     }
 
@@ -614,20 +680,24 @@ impl SceCommandCombat {
 
     /// 分出胜负：播胜 / 败 / 逃的镜头序列（`FUN_004f7910`），打赢了我方活着的人做
     /// 胜利动作。起不来（没舞台、没 flexcam、序列空）返回 `false`，直接散场。
-    fn begin_ending(&mut self, outcome: Outcome) -> bool {
+    fn begin_ending(&mut self, state: &mut SceState, outcome: Outcome) -> bool {
         use crate::openpal3::combat::camera::{CamPlayer, ending_sequence};
-        let (Some(flex), Some(_)) = (self.flexcam.as_ref(), self.stage.as_ref()) else {
+        use crate::openpal3::combat::result::{ResultPlayer, timeline};
+        if self.stage.is_none() {
             return false;
-        };
+        }
         let Some(seq) = ending_sequence(outcome) else {
             return false;
         };
         let current = self.camera.as_ref().map(|p| p.pose).unwrap_or_default();
-        let Some(player) = CamPlayer::new(flex.sequence(seq), current) else {
-            return false;
-        };
-        log::info!("Combat: 散场镜头 {seq} 号（{outcome:?}）");
-        self.camera = Some(player);
+        if let Some(player) = self
+            .flexcam
+            .as_ref()
+            .and_then(|f| CamPlayer::new(f.sequence(seq), current))
+        {
+            log::info!("Combat: 散场镜头 {seq} 号（{outcome:?}）");
+            self.camera = Some(player);
+        }
         self.ending = Some(outcome);
         if outcome == Outcome::Win {
             // 每人排的任务 0x18 → 胜利动作 z20（`FUN_0050fa20`）；做完停住 [推断]。
@@ -656,6 +726,14 @@ impl SceCommandCombat {
                 }
             }
         }
+        // 打赢 / 逃掉：先结算，收集结算画面要的消息（败的等散场后再写回）。
+        if matches!(outcome, Outcome::Win | Outcome::Escaped) {
+            self.settled = true;
+            self.finish(state, outcome);
+        }
+        let steps = timeline(outcome, std::mem::take(&mut self.result_messages));
+        self.result = Some(ResultPlayer::new(steps));
+        self.result_tex = Some(ResultTextures::load(state));
         true
     }
 
@@ -679,6 +757,9 @@ impl SceCommandCombat {
         self.camera = None;
         self.flexcam = None;
         self.ending = None;
+        self.result = None;
+        self.result_tex = None;
+        self.result_panels.clear();
         if self.stage.take().is_some() {
             scene_manager.pop_scene();
         }
@@ -907,6 +988,7 @@ impl SceCommandCombat {
         };
         let won = outcome.counts_as_win();
         let db = state.global_state().game_db().cloned();
+        let mut raw: Option<(Vec<(usize, i32)>, i32, Vec<(u32, i32)>)> = None;
 
         {
             let mut persistent = state.global_state_mut().persistent_state_mut();
@@ -958,6 +1040,7 @@ impl SceCommandCombat {
 
             if won {
                 let spoils = session.spoils();
+                let mut level_ups: Vec<(usize, i32)> = Vec::new();
                 if let Some(db) = db.as_ref() {
                     for (slot, amount) in spoils.experience {
                         if let Some(actor_id) = self
@@ -966,7 +1049,10 @@ impl SceCommandCombat {
                             .copied()
                             .find(|a| *a as usize == slot)
                         {
-                            persistent.award_experience(actor_id, db, amount);
+                            if persistent.award_experience(actor_id, db, amount) > 0 {
+                                let level = persistent.role(actor_id).map(|r| r.level).unwrap_or(0);
+                                level_ups.push((slot, level));
+                            }
                         }
                     }
                     for (slot, skill_id) in session.casts.iter().copied() {
@@ -983,25 +1069,95 @@ impl SceCommandCombat {
                     }
                 }
                 persistent.add_money(spoils.money);
+                let loot = spoils.loot.clone();
                 for (item, count) in spoils.loot {
                     if count > 0 {
                         persistent.add_item(item, count as u32);
                     }
                 }
+                raw = Some((level_ups, spoils.money, loot));
             }
+        }
+
+        // 结算画面要的消息和面板（combat::result）。
+        if let Some((level_ups, money, loot)) = raw {
+            use crate::openpal3::combat::result::{
+                LANG_PATH, MessageKind, ResultLang, ResultMessage,
+            };
+            use common::store_ext::StoreExt2;
+            let lang = state
+                .asset_mgr()
+                .vfs()
+                .read_to_end_from_gbk(LANG_PATH)
+                .ok()
+                .map(|t| ResultLang::parse(&t))
+                .unwrap_or_else(|| ResultLang::parse(""));
+            let mut msgs = Vec::new();
+            for (slot, level) in level_ups {
+                msgs.push(ResultMessage {
+                    kind: MessageKind::LevelUp,
+                    text: lang.level_up(session.name(slot), level),
+                });
+            }
+            if money > 0 {
+                msgs.push(ResultMessage {
+                    kind: MessageKind::Money,
+                    text: lang.money(money),
+                });
+            }
+            for (item, count) in loot {
+                if count <= 0 {
+                    continue;
+                }
+                let name = db
+                    .as_ref()
+                    .and_then(|d| d.item(item))
+                    .and_then(|r| r.name.as_str().ok())
+                    .unwrap_or_else(|| format!("#{item}"));
+                msgs.push(ResultMessage {
+                    kind: MessageKind::Item,
+                    text: lang.item(&name, count),
+                });
+            }
+            let persistent = state.global_state().persistent_state();
+            let panels: Vec<ResultPanel> = (0..PARTY_SLOTS)
+                .filter_map(|slot| {
+                    let c = session.battle.get(slot)?;
+                    let level = persistent
+                        .role(slot as u32)
+                        .map(|r| r.level)
+                        .unwrap_or(c.level);
+                    Some(ResultPanel {
+                        slot,
+                        label: format!("{} {} {}", session.name(slot), level, lang.level),
+                        gauges: [(c.hp.max(0), c.max_hp), (c.sp, c.max_sp), (c.mp, c.max_mp)],
+                    })
+                })
+                .collect();
+            drop(persistent);
+            self.result_messages = msgs;
+            self.result_panels = panels;
         }
 
         state
             .ext_mut()
             .insert(EXT_RESULT.to_string(), Box::new(won));
 
+        // 散场一开始就结算的，音乐等结算画面走完再换回去。
+        if !self.settled {
+            self.restore_bgm(state);
+        }
+
+        outcome == Outcome::Lose && self.game_over_on_loss
+    }
+
+    fn restore_bgm(&mut self, state: &mut SceState) {
         if self.switched_bgm {
+            self.switched_bgm = false;
             let g = state.global_state_mut();
             g.bgm_source().stop();
             g.play_default_bgm();
         }
-
-        outcome == Outcome::Lose && self.game_over_on_loss
     }
 
     fn poll_input(state: &SceState) -> Option<Input> {
@@ -1407,6 +1563,71 @@ impl SceCommandCombat {
         });
     }
 
+    /// 结算画面：大字、人物面板、消息横幅、渐黑（坐标见 `combat::result`）。
+    fn draw_result(
+        ui: &Ui,
+        player: &crate::openpal3::combat::result::ResultPlayer,
+        panels: &[ResultPanel],
+        tex: Option<&ResultTextures>,
+    ) {
+        use crate::openpal3::combat::result::{self as res, MessageKind};
+        let Some(tex) = tex else { return };
+        overlay(ui, "CombatResult", |ui, at, scale| {
+            let list = ui.get_window_draw_list();
+            if let Some(since) = player.panels_elapsed() {
+                let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
+                for (k, p) in panels.iter().enumerate().take(res::PANELS) {
+                    let dy = res::panel_slide_y(k, since);
+                    let base = res::panel_rect(k);
+                    let panel = (base.0, base.1 + dy, base.2, base.3 + dy);
+                    draw_sprite(&list, tex.back.as_deref(), panel, at);
+                    let face = tex.faces.get(p.slot).and_then(|t| t.as_deref());
+                    draw_sprite(&list, face, hud::offset(res::FACE_RECT, panel), at);
+                    let label = hud::offset(res::GAUGE_LABEL_RECT, panel);
+                    draw_sprite(&list, tex.label.as_deref(), label, at);
+                    for (i, (value, max)) in p.gauges.iter().enumerate() {
+                        let bar = hud::offset(res::GAUGE_RECTS[i], panel);
+                        draw_sprite(&list, tex.slot.as_deref(), bar, at);
+                        if let Some(fill) =
+                            hud::fill_rect(bar, res::GAUGE_PADDING, *value as f32, *max as f32)
+                        {
+                            draw_sprite(&list, tex.fills[i].as_deref(), fill, at);
+                        }
+                    }
+                    let r = hud::offset(res::NAME_RECT, panel);
+                    list.add_text(at(r.0 + 8, r.1 + 8), BANNER_TEXT, &p.label);
+                }
+            }
+            if let Some(win) = player.banner() {
+                let big = if win { &tex.big_win } else { &tex.big_lose };
+                draw_sprite(&list, big.as_deref(), res::BIG_RECT, at);
+            }
+            if let Some(m) = player.message() {
+                let back = match m.kind {
+                    MessageKind::LevelUp => tex.levelup.as_deref(),
+                    _ => tex.getitem.as_deref(),
+                };
+                let r = m.panel().1;
+                draw_sprite(&list, back, r, at);
+                let _font = game_font(GameFontSize::LARGE).map(|f| ui.push_font(f));
+                let [w, h] = ui.calc_text_size(&m.text);
+                let [x0, y0] = at(r.0, r.1);
+                let (bw, bh) = ((r.2 - r.0) as f32 * scale, (r.3 - r.1) as f32 * scale);
+                list.add_text(
+                    [x0 + (bw - w) * 0.5, y0 + (bh - h) * 0.5],
+                    BANNER_TEXT,
+                    &m.text,
+                );
+            }
+            if let Some(alpha) = player.fade() {
+                let [sw, sh] = ui.io().display_size;
+                list.add_rect([0., 0.], [sw, sh], [0., 0., 0., alpha])
+                    .filled(true)
+                    .build();
+            }
+        });
+    }
+
     /// 仙术 / 道具列表：底图、选中行、各列文字。
     #[allow(clippy::too_many_arguments)]
     fn draw_list(
@@ -1575,26 +1796,46 @@ impl SceCommand for SceCommandCombat {
                 None => {}
             }
         }
-        if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
+        if let Some(player) = self.result.as_ref() {
+            // 结算期间战斗界面收起来（`FUN_00518b30(0)` / `FUN_004db940(0)`）。
+            Self::draw_result(ui, player, &self.result_panels, self.result_tex.as_ref());
+        } else if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
             Self::draw(ui, session, hud);
         }
 
         match outcome {
             None => false,
             Some(outcome) => {
-                // 先播散场镜头，播完再散（快进不播）。
+                // 先演散场：镜头 + 结算画面，时间轴走完再散（快进不演）。
                 if !state.fast_forward() {
-                    if self.ending.is_none() && !self.begin_ending(outcome) {
-                        self.ending = None;
+                    if self.ending.is_none() {
+                        self.begin_ending(state, outcome);
                     }
-                    if self.ending.is_some() && self.camera.as_ref().is_some_and(|p| !p.finished())
-                    {
-                        return false;
+                    if self.ending.is_some() {
+                        let skip = Self::poll_input(state) == Some(Input::Confirm);
+                        let running = match self.result.as_mut() {
+                            Some(player) => {
+                                if let Some(sound) =
+                                    player.update(delta_sec, skip).and_then(|s| s.sound())
+                                {
+                                    play_sfx(state, sound);
+                                }
+                                !player.finished()
+                            }
+                            None => self.camera.as_ref().is_some_and(|p| !p.finished()),
+                        };
+                        if running {
+                            return false;
+                        }
                     }
                 }
                 log::info!("Combat: finished with {outcome:?}");
                 self.drop_stage(&scene_manager);
-                if self.finish(state, outcome) {
+                let settled = std::mem::take(&mut self.settled);
+                if settled {
+                    self.restore_bgm(state);
+                }
+                if !settled && self.finish(state, outcome) {
                     self.game_over = true;
                     false
                 } else {
