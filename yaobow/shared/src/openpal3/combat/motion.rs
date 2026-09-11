@@ -68,6 +68,8 @@ pub enum Motion {
     Move,
     /// 濒死（精不到四分之一）
     Dying,
+    /// 胜利（打赢后每人排的任务，`FUN_0050fa20` 写 49）
+    Win,
 }
 
 /// 用哪套名字。
@@ -101,6 +103,7 @@ impl MotionSet {
                 Flee => 48,
                 Move => 31,
                 Dying => 46,
+                Win => 49,
             }),
             MotionSet::Monster => match motion {
                 Idle => Some(50),
@@ -399,6 +402,7 @@ mod tests {
             Motion::Flee,
             Motion::Move,
             Motion::Dying,
+            Motion::Win,
         ] {
             let i = MotionSet::Party.index(m).unwrap();
             assert!((29..50).contains(&i), "{m:?} → {i}");

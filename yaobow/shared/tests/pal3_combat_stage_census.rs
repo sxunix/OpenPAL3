@@ -152,6 +152,20 @@ fn the_combat_camera_data_hangs_together() {
     assert_eq!(sneak.len(), 5);
     assert!((sneak.last().unwrap().to.x - c0.x).abs() < 1e-3);
 
+    // 散场三段：胜 3、败 10、逃 8，都得有内容，而且都从 EditorCam0 出发。
+    use shared::openpal3::combat::camera::{ESCAPE_SEQUENCE, LOSE_SEQUENCE, WIN_SEQUENCE};
+    for seq in [WIN_SEQUENCE, LOSE_SEQUENCE, ESCAPE_SEQUENCE] {
+        let steps = flex.sequence(seq);
+        assert!(!steps.is_empty(), "{seq} 号序列是空的");
+        let start = steps[0].from;
+        assert!(
+            (start.x - c0.x).abs() < 1e-3 && (start.z - c0.z).abs() < 1e-3,
+            "{seq} 号序列不是从 EditorCam0 起的"
+        );
+        let total: f32 = steps.iter().map(|r| r.duration).sum();
+        println!("{seq} 号序列 {} 步，共 {total:.2} 秒", steps.len());
+    }
+
     let used: Vec<usize> = (0..flex.sequences.len())
         .filter(|&s| !flex.sequences[s].is_empty())
         .collect();

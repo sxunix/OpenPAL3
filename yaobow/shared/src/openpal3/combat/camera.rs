@@ -34,6 +34,23 @@ pub const FILE_SIZE: usize = TABLE_OFFSET + SEQUENCES * STEPS * 4;
 pub const STAND_SEQUENCE: usize = 0;
 /// 我方偷袭时开战播的序列（0x512f02：`push 0x14`）。
 pub const SNEAK_SEQUENCE: usize = 20;
+/// 打赢（敌方全灭或回合到顶）：`FUN_004f7910` 结算完 `FUN_00505770(3)`。
+pub const WIN_SEQUENCE: usize = 3;
+/// 全灭：同一函数 0x4f7a61 `push 0xa`。
+pub const LOSE_SEQUENCE: usize = 10;
+/// 逃掉了（phase 4）：0x4f7e2a `push 8`。
+pub const ESCAPE_SEQUENCE: usize = 8;
+
+/// 散场前播哪个序列。
+pub fn ending_sequence(outcome: super::state::Outcome) -> Option<usize> {
+    use super::state::Outcome;
+    match outcome {
+        Outcome::Win => Some(WIN_SEQUENCE),
+        Outcome::Lose => Some(LOSE_SEQUENCE),
+        Outcome::Escaped => Some(ESCAPE_SEQUENCE),
+        Outcome::Ongoing => None,
+    }
+}
 
 /// 一条镜头记录（字段按 `FUN_00506340` 的读法）。
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -70,6 +87,11 @@ impl CamRecord {
     /// `+0x61`：yaw 绕一圈（见 [`CamPlayer`]）。
     pub fn wraps_yaw(&self) -> bool {
         self.flags[9] != 0
+    }
+    /// `+0x65`：一路盯着 [`CamRecord::target`]——朝向不插值，每帧由
+    /// `FUN_0041c900` 从镜头位置朝目标算。
+    pub fn looks_at_target(&self) -> bool {
+        self.flags[0xd] != 0
     }
 
     fn parse(b: &[u8]) -> Self {
@@ -180,6 +202,12 @@ impl CamPlayer {
     /// 步数用完、镜头停下了。
     pub fn finished(&self) -> bool {
         self.step >= self.steps.len()
+    }
+
+    /// 这一步要不要盯着谁：`Some(战斗位)`，-1 = 战场中心。停下后沿用最后一步的。
+    pub fn look_target(&self) -> Option<i32> {
+        let rec = self.steps.get(self.step).or_else(|| self.steps.last())?;
+        rec.looks_at_target().then_some(rec.target)
     }
 
     /// 往前走 `dt` 秒，返回这一帧的机位。
@@ -346,6 +374,31 @@ mod tests {
         r.flags[0] = 0;
         let mut p = CamPlayer::new(vec![r], pose(0., 0.)).unwrap();
         assert!((p.update(0.5).x - 50.).abs() < 1e-3);
+    }
+
+    #[test]
+    fn each_ending_has_its_own_sequence() {
+        use crate::openpal3::combat::state::Outcome;
+        assert_eq!(ending_sequence(Outcome::Win), Some(3));
+        assert_eq!(ending_sequence(Outcome::Lose), Some(10));
+        assert_eq!(ending_sequence(Outcome::Escaped), Some(8));
+        assert_eq!(ending_sequence(Outcome::Ongoing), None);
+    }
+
+    #[test]
+    fn a_look_at_step_reports_its_target_even_after_it_stops() {
+        let mut r = rec(1., pose(0., 0.), pose(10., 0.));
+        r.flags[0xd] = 1;
+        r.target = 0;
+        let mut p = CamPlayer::new(vec![r], pose(0., 0.)).unwrap();
+        assert_eq!(p.look_target(), Some(0));
+        p.update(2.);
+        p.update(0.1);
+        assert!(p.finished());
+        assert_eq!(p.look_target(), Some(0), "停住后还盯着");
+        let plain =
+            CamPlayer::new(vec![rec(1., pose(0., 0.), pose(1., 0.))], pose(0., 0.)).unwrap();
+        assert_eq!(plain.look_target(), None);
     }
 
     #[test]

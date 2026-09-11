@@ -174,6 +174,10 @@ pub struct SceCommandCombat {
     run: Option<StageRun>,
     /// 战斗镜头（`combat::camera`）：开战播一个序列，播完停在最后的机位。
     camera: Option<crate::openpal3::combat::camera::CamPlayer>,
+    /// `flexcam.dat`，散场时还要播胜 / 败 / 逃的序列。
+    flexcam: Option<crate::openpal3::combat::camera::Flexcam>,
+    /// 分出胜负、正在播散场镜头。
+    ending: Option<Outcome>,
 }
 
 /// 一次行动的演出：攻击是走过去 → 出手 → 结算 → 走回来，其余原地出手。
@@ -351,6 +355,8 @@ impl SceCommandCombat {
             actors: Vec::new(),
             run: None,
             camera: None,
+            flexcam: None,
+            ending: None,
         }
     }
 
@@ -562,11 +568,14 @@ impl SceCommandCombat {
                 .map(|t| stage::parse_cameras(&t))
                 .unwrap_or_default();
             let stand = editor.first().copied().unwrap_or_default();
-            let player = asset_mgr
+            self.flexcam = asset_mgr
                 .vfs()
                 .read_to_end(camera::FLEXCAM_PATH)
                 .ok()
-                .and_then(|b| Flexcam::parse(&b))
+                .and_then(|b| Flexcam::parse(&b));
+            let player = self
+                .flexcam
+                .as_ref()
                 .and_then(|f| CamPlayer::new(f.sequence(camera::STAND_SEQUENCE), stand));
             if player.is_none() {
                 log::warn!("Combat: flexcam.dat 读不出来，镜头停在 EditorCam0");
@@ -603,11 +612,73 @@ impl SceCommandCombat {
             ));
     }
 
+    /// 分出胜负：播胜 / 败 / 逃的镜头序列（`FUN_004f7910`），打赢了我方活着的人做
+    /// 胜利动作。起不来（没舞台、没 flexcam、序列空）返回 `false`，直接散场。
+    fn begin_ending(&mut self, outcome: Outcome) -> bool {
+        use crate::openpal3::combat::camera::{CamPlayer, ending_sequence};
+        let (Some(flex), Some(_)) = (self.flexcam.as_ref(), self.stage.as_ref()) else {
+            return false;
+        };
+        let Some(seq) = ending_sequence(outcome) else {
+            return false;
+        };
+        let current = self.camera.as_ref().map(|p| p.pose).unwrap_or_default();
+        let Some(player) = CamPlayer::new(flex.sequence(seq), current) else {
+            return false;
+        };
+        log::info!("Combat: 散场镜头 {seq} 号（{outcome:?}）");
+        self.camera = Some(player);
+        self.ending = Some(outcome);
+        if outcome == Outcome::Win {
+            // 每人排的任务 0x18 → 胜利动作 z20（`FUN_0050fa20`）；做完停住 [推断]。
+            let alive: Vec<bool> = (0..self.actors.len())
+                .map(|slot| {
+                    self.session
+                        .as_ref()
+                        .and_then(|s| s.battle.get(slot))
+                        .is_some_and(|c| c.alive)
+                })
+                .collect();
+            for (slot, actor) in self.actors.iter().enumerate().take(PARTY_SLOTS) {
+                let Some(actor) = actor.as_ref() else {
+                    continue;
+                };
+                if !alive[slot] {
+                    continue;
+                }
+                if let (Some(rc), Some(name)) = (
+                    RoleController::get_role_controller(actor.entity.clone()),
+                    actor.set.name(motion::Motion::Win),
+                ) {
+                    let rc = rc.inner::<RoleController>();
+                    rc.set_auto_play_idle(false);
+                    rc.play_anim(name, RoleAnimationRepeatMode::Repeat(1));
+                }
+            }
+        }
+        true
+    }
+
+    /// 把舞台相机摆到 `pose` 的位置，朝 `at` 看（盯目标的镜头记录）。
+    fn place_camera_looking_at(
+        scene: &ComRc<IScene>,
+        pose: crate::openpal3::combat::stage::CombatCamera,
+        at: Vec3,
+    ) {
+        scene
+            .camera_mut()
+            .transform_mut()
+            .set_position(&Vec3::new(pose.x, pose.y, pose.z))
+            .look_at(&at);
+    }
+
     /// 散场：把舞台弹掉。
     fn drop_stage(&mut self, scene_manager: &ComRc<ISceneManager>) {
         self.actors.clear();
         self.run = None;
         self.camera = None;
+        self.flexcam = None;
+        self.ending = None;
         if self.stage.take().is_some() {
             scene_manager.pop_scene();
         }
@@ -1482,9 +1553,26 @@ impl SceCommand for SceCommandCombat {
         self.drive_staging(delta_sec);
         self.animate_stage(delta_sec);
         if let (Some(player), Some(stage)) = (self.camera.as_mut(), self.stage.as_ref()) {
-            if !player.finished() {
-                let pose = player.update(delta_sec);
-                Self::place_camera(stage, pose);
+            let moving = !player.finished();
+            let pose = if moving {
+                player.update(delta_sec)
+            } else {
+                player.pose
+            };
+            match player.look_target() {
+                // 盯着人：朝他现在站的地方看（记录 +0x65 / +0x68）。
+                Some(target) => {
+                    let at = usize::try_from(target)
+                        .ok()
+                        .and_then(|t| self.actors.get(t))
+                        .and_then(|a| a.as_ref())
+                        .map(|a| a.entity.transform().borrow().position())
+                        // -1 = 战场中心（CBStage +0x384..+0x38c），按原点算 [推断]。
+                        .unwrap_or(Vec3::new(0., 0., 0.));
+                    Self::place_camera_looking_at(stage, pose, at);
+                }
+                None if moving => Self::place_camera(stage, pose),
+                None => {}
             }
         }
         if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
@@ -1494,6 +1582,16 @@ impl SceCommand for SceCommandCombat {
         match outcome {
             None => false,
             Some(outcome) => {
+                // 先播散场镜头，播完再散（快进不播）。
+                if !state.fast_forward() {
+                    if self.ending.is_none() && !self.begin_ending(outcome) {
+                        self.ending = None;
+                    }
+                    if self.ending.is_some() && self.camera.as_ref().is_some_and(|p| !p.finished())
+                    {
+                        return false;
+                    }
+                }
                 log::info!("Combat: finished with {outcome:?}");
                 self.drop_stage(&scene_manager);
                 if self.finish(state, outcome) {
