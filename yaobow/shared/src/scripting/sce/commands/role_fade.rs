@@ -23,7 +23,17 @@ fn ease(t: f32) -> f32 {
 /// and on below that; here the actor material's pipeline blends either
 /// way and its cutout discard tests the texture's own alpha, so writing
 /// the tint is enough and full opacity needs no special case.
+///
+/// The blob shadow (`scene::shadow`, entity `ROLE_SHADOW`) is left out: it
+/// is a multiply-blended quad, and scaling a premultiplied tint into a
+/// multiply blend darkens the white around the disc, so a half-faded actor
+/// stood on a dark square. It shows only while the actor is fully opaque
+/// **[推断]** — whether `roleshadow.cpp` fades with its role was not traced.
 pub fn set_alpha(entity: &ComRc<IEntity>, alpha: f32) -> usize {
+    if entity.name() == "ROLE_SHADOW" {
+        entity.set_visible(alpha >= 0.999);
+        return 0;
+    }
     let mut n = 0;
     if let Some(rc) = entity.get_rendering_component() {
         for object in rc.render_objects() {

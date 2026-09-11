@@ -427,6 +427,19 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: Some(serde_json::json!({ "render_objects": n })),
             })
         }
+        "dlg_sel" => {
+            // [选项, ...] —— 直接弹一个 65 对话选择框，看它的版面和操作。
+            let items: Vec<String> = params
+                .args
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect();
+            director.start_debug_dlg_sel(items);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "start_combat" => {
             // [id0..id5, boss?] —— 六个战斗 actor id 加一个可选的 boss 标志。
             let mut ids = [0i32; 6];

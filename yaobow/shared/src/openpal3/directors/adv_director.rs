@@ -262,6 +262,20 @@ impl AdventureDirector {
     /// behind a cutscene, so verifying the combat stage otherwise means
     /// playing through one. `boss` picks the 80 (fixed line-up) path
     /// over 73 (random encounter).
+    /// Push a 65 dialog-choice box with `items` (in display order), so a
+    /// driver can see and operate it without playing up to a scripted one.
+    pub fn start_debug_dlg_sel(&self, mut items: Vec<String>) {
+        let mut p = self.props.borrow_mut();
+        let scene_manager = p.scene_manager.clone();
+        // SCE stores the parameters last-first and `SceCommandDlgSel::new`
+        // reverses them back.
+        items.reverse();
+        let cmd: Box<dyn crate::scripting::sce::SceCommand> = Box::new(
+            crate::scripting::sce::commands::SceCommandDlgSel::new(items),
+        );
+        p.sce_vm.push_debug_command(cmd, scene_manager);
+    }
+
     pub fn start_debug_combat(&self, ids: [i32; 6], boss: bool) {
         let mut p = self.props.borrow_mut();
         let scene_manager = p.scene_manager.clone();
