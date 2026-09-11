@@ -445,6 +445,16 @@ impl AdventureDirector {
         ))
     }
 
+    /// Put items in the bag — a test aid for the smelting / shop UIs.
+    pub fn add_item(&self, id: u32, count: u32) {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .global_state_mut()
+            .persistent_state_mut()
+            .add_item(id, count);
+    }
+
     /// Give (or take, if negative) money — a test aid for the shop UI.
     pub fn add_money(&self, amount: i32) {
         self.props

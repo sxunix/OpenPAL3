@@ -62,7 +62,7 @@ mod lang {
 /// 选中行的字色（见 `draw_page`）。
 const SELECTED_INK: [f32; 4] = [1.0, 0.98, 0.98, 1.0];
 
-type Tex = Option<Rc<Sprite>>;
+pub(super) type Tex = Option<Rc<Sprite>>;
 
 /// 店里或背包里的一行。
 #[derive(Debug, Clone)]
@@ -882,7 +882,7 @@ impl SceCommandDealerMenu {
 // ---------------------------------------------------------------- 画
 
 /// 贴图按原生尺寸贴在 (x, y)。
-fn blit(
+pub(super) fn blit(
     list: &imgui::DrawListMut<'_>,
     tex: &Tex,
     x: i32,
@@ -896,7 +896,7 @@ fn blit(
 }
 
 /// 三态按钮：悬停或手柄选中用 1 号图，常态 0 号。
-fn button(
+pub(super) fn button(
     list: &imgui::DrawListMut<'_>,
     tex: &[Tex; 3],
     r: Rect,
@@ -908,7 +908,7 @@ fn button(
 
 /// 横向三段条：贴图切成宽 `cap` 的三列（`FUN_0043dab0`），竖直方向取贴图
 /// 底下那 `h` 行（和 `sprite_uv` 同一个约定）。
-fn bar(
+pub(super) fn bar(
     list: &imgui::DrawListMut<'_>,
     tex: &Tex,
     r: Rect,
@@ -933,12 +933,17 @@ fn bar(
 }
 
 /// 文本控件的第一行：rect 左上各缩 8。
-fn label(list: &imgui::DrawListMut<'_>, r: Rect, text: &str, at: &dyn Fn(i32, i32) -> [f32; 2]) {
+pub(super) fn label(
+    list: &imgui::DrawListMut<'_>,
+    r: Rect,
+    text: &str,
+    at: &dyn Fn(i32, i32) -> [f32; 2],
+) {
     list.add_text(at(r.0 + lay::TEXT_INSET, r.1 + lay::TEXT_INSET), INK, text);
 }
 
 /// 多行：到 rect 右边 − 8 折行，行距 16。
-fn paragraph(
+pub(super) fn paragraph(
     list: &imgui::DrawListMut<'_>,
     r: Rect,
     text: &str,
@@ -954,7 +959,7 @@ fn paragraph(
     }
 }
 
-fn text_width(text: &str) -> i32 {
+pub(super) fn text_width(text: &str) -> i32 {
     text.chars()
         .map(|c| {
             if c.is_ascii() {

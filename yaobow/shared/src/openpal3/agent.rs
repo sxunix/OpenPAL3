@@ -511,6 +511,27 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "add_item" => {
+            // [物品 id, 个数] —— 往背包里放东西，测冶炼、买卖用。
+            let id = int_arg(0).unwrap_or(0).max(0) as u32;
+            let count = int_arg(1).unwrap_or(1).max(0) as u32;
+            director.add_item(id, count);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "smelting" => {
+            // [过程号] —— 直接开冶炼（146）。
+            let proc_id = int_arg(0).unwrap_or(0) as i32;
+            director.start_debug_command(Box::new(
+                crate::scripting::sce::commands::SceCommandSmeltingMenu::new(proc_id),
+            ));
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "dealer" => {
             // ["DealScript\\WeaponShop\\q01weapon.txt"] —— 直接开一家店（SCE 100）。
             let shop = params
