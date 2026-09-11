@@ -58,7 +58,7 @@
 |---|---|
 | `+0x241` | 参战标志（该槽有人） |
 | `+0x242` | 存活标志 |
-| `+0x243` | 已行动完毕 / 退场标志（`FUN_004ed040`） |
+| `+0x243` | 用我方那套动作名（`FUN_004ed040`）。原先记成「已行动完毕 / 退场」是推断，已撤回：舞台角色初始化 0x509843 按它选 `z04`（非零）还是 `z1`（零）；敌人上场 `FUN_004f8bb0` 恒写 0。见 `combat_motion.md` |
 | `+0x24c` | 精 当前 |
 | `+0x250` | 精 上限 |
 | `+0x254` | 气 当前 |
@@ -344,7 +344,7 @@ for (k = 0; k < 11; k++) {
 best = -1; bestEta = 1e8;
 for (k = 0; k < 11; k++) {
     if (!roleStates[k].active) continue;                    // +0x241
-    if (FUN_004ed040(k)) continue;                          // +0x243 已退场
+    if (FUN_004ed040(k)) continue;                          // +0x243（我方那套动作；此处用途待查）
     if (roleStates[k].+0x598 != 0) continue;
     if (FUN_004ee870(k)->+0x36f != 0) continue;
     if (FUN_004f2bb0(k, 0) <= 0) continue;

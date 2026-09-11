@@ -19,11 +19,14 @@
 use crate::openpal3::combat::actions::{ATTRIBUTE_SLOTS, GU_ITEM_ID, ITEM_STATE_CODES, ItemEffect};
 use crate::openpal3::combat::encounter::{CrtRand, Encounter, NO_ROUND_CAP, PendingFlags};
 use crate::openpal3::combat::hud::{self, ButtonLook, Gauge, RingButton};
+use crate::openpal3::combat::motion::{self, ActKind, MotionSet, Play, Snapshot};
+use crate::openpal3::combat::session::Pending;
 use crate::openpal3::combat::session::{
     CombatSession, Input, ItemChoice, Menu, MenuEntry, Profile, Reward, SkillChoice,
 };
 use crate::openpal3::combat::state::{Battle, Combatant, Outcome, PARTY_SLOTS, Phase, SLOTS, Side};
 use crate::openpal3::directors::SceneManagerExtensions;
+use crate::openpal3::scene::RoleAnimationRepeatMode;
 use crate::openpal3::scene::RoleController;
 use crate::openpal3::states::game_db::{GameDb, combat_id_of_party_member};
 use crate::openpal3::states::persistent_state::pearl_charge_index;
@@ -165,7 +168,23 @@ pub struct SceCommandCombat {
     stage: Option<ComRc<IScene>>,
     /// 界面贴图，开战时一次读齐。
     hud: Option<HudTextures>,
+    /// 舞台上每个战斗位的人（`SLOTS` 个，没人的是 `None`）。
+    actors: Vec<Option<StageActor>>,
 }
+
+/// 舞台上的一个人，和上一帧看到的状态。
+#[derive(Clone)]
+struct StageActor {
+    entity: ComRc<radiance::comdef::IEntity>,
+    set: MotionSet,
+    last: Snapshot,
+    /// 怪物倒下后过一会儿收起来（怪物没有倒地动作）。
+    hide_in: Option<f32>,
+}
+
+/// 怪物倒下后多久收起来 **[推断]**：原版怪物目录里没有倒地动作，这里等
+/// 挨打那一下做完。
+const MONSTER_HIDE_SECONDS: f32 = 0.6;
 
 type Tex = Option<Rc<Sprite>>;
 
@@ -290,6 +309,7 @@ impl SceCommandCombat {
             combat_scene: None,
             stage: None,
             hud: None,
+            actors: Vec::new(),
         }
     }
 
@@ -453,8 +473,15 @@ impl SceCommandCombat {
             let Some(pos) = stage::stage_position(positions, slot) else {
                 continue;
             };
+            // 我方那套还是怪物那套，见 `combat::motion`（+0x243）。
+            let set = if slot < PARTY_SLOTS {
+                MotionSet::Party
+            } else {
+                MotionSet::Monster
+            };
+            let idle = set.name(motion::Motion::Idle).unwrap_or("z1");
             let Some(entity) =
-                asset_mgr.load_role(&model, "z1", format!("COMBAT_ROLE_{slot}"), true)
+                asset_mgr.load_role(&model, idle, format!("COMBAT_ROLE_{slot}"), true)
             else {
                 log::warn!("Combat: 战斗模型 {model} 加载不了（位 {slot}）");
                 continue;
@@ -463,7 +490,21 @@ impl SceCommandCombat {
                 .transform()
                 .borrow_mut()
                 .set_position(&Vec3::new(pos.x, 0., pos.z));
-            scene.add_entity(entity);
+            if let Some(rc) = RoleController::get_role_controller(entity.clone()) {
+                let rc = rc.inner::<RoleController>();
+                rc.set_active(true);
+                rc.play_anim(idle, RoleAnimationRepeatMode::Loop);
+            }
+            scene.add_entity(entity.clone());
+            if self.actors.len() < SLOTS {
+                self.actors.resize(SLOTS, None);
+            }
+            self.actors[slot] = Some(StageActor {
+                entity,
+                set,
+                last: Snapshot::of(c, None),
+                hide_in: None,
+            });
         }
 
         // 相机：位置取 cbCam.ini 的 DefaultCam0，朝向看战场中心。
@@ -495,6 +536,7 @@ impl SceCommandCombat {
 
     /// 散场：把舞台弹掉。
     fn drop_stage(&mut self, scene_manager: &ComRc<ISceneManager>) {
+        self.actors.clear();
         if self.stage.take().is_some() {
             scene_manager.pop_scene();
         }
@@ -840,6 +882,89 @@ impl SceCommandCombat {
         }
     }
 
+    /// 让舞台上的人跟着战况做动作（`combat::motion`）。
+    fn animate_stage(&mut self, delta_sec: f32) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let pending = session.pending;
+        for slot in 0..self.actors.len() {
+            let Some(actor) = self.actors[slot].as_mut() else {
+                continue;
+            };
+            let Some(c) = session.battle.get(slot) else {
+                continue;
+            };
+            let acting = pending.filter(|p| p.slot() == slot).map(|p| match p {
+                Pending::Attack { .. } => ActKind::Attack,
+                Pending::Cast { .. } => ActKind::Cast,
+                Pending::Item { target, .. } => ActKind::Item {
+                    hostile: (target < PARTY_SLOTS) != (slot < PARTY_SLOTS),
+                },
+                Pending::Escape { .. } => ActKind::Escape,
+            });
+            let now = Snapshot::of(c, acting);
+            let Some(rc) = RoleController::get_role_controller(actor.entity.clone()) else {
+                continue;
+            };
+            let rc = rc.inner::<RoleController>();
+
+            if let Some(t) = actor.hide_in.as_mut() {
+                *t -= delta_sec;
+                if *t <= 0. {
+                    actor.entity.set_visible(false);
+                    actor.hide_in = None;
+                }
+            }
+
+            let set = actor.set;
+            let play = |m: motion::Motion, mode: RoleAnimationRepeatMode| {
+                set.name(m).is_some_and(|name| rc.play_anim(name, mode))
+            };
+            match motion::react(&actor.last, &now) {
+                Some(Play::Once(m)) => {
+                    rc.set_auto_play_idle(true);
+                    play(m, RoleAnimationRepeatMode::Repeat(1));
+                }
+                Some(Play::Loop(m)) => {
+                    rc.set_auto_play_idle(true);
+                    play(m, RoleAnimationRepeatMode::Loop);
+                }
+                Some(Play::Stay(m)) => {
+                    rc.set_auto_play_idle(false);
+                    if !play(m, RoleAnimationRepeatMode::Repeat(1)) {
+                        // 怪物没有倒地动作：挨一下，然后收起来。
+                        play(
+                            motion::Motion::BeAttacked,
+                            RoleAnimationRepeatMode::Repeat(1),
+                        );
+                        actor.hide_in = Some(MONSTER_HIDE_SECONDS);
+                    }
+                }
+                Some(Play::Rest) => {
+                    rc.set_auto_play_idle(true);
+                    actor.entity.set_visible(true);
+                    actor.hide_in = None;
+                    let rest = motion::rest_motion(&now);
+                    if rest == motion::Motion::Idle || !play(rest, RoleAnimationRepeatMode::Loop) {
+                        rc.idle();
+                    }
+                }
+                None => {
+                    // 一次性的动作做完、自己回到了待机，而此刻该防着或睡着。
+                    let rest = motion::rest_motion(&now);
+                    if now.alive
+                        && rest != motion::Motion::Idle
+                        && rc.state() == crate::openpal3::scene::RoleState::Idle
+                    {
+                        play(rest, RoleAnimationRepeatMode::Loop);
+                    }
+                }
+            }
+            actor.last = now;
+        }
+    }
+
     /// 按原版 `CBUI` 的版面画界面，坐标见 `combat::hud`。
     fn draw(ui: &Ui, session: &CombatSession, tex: &HudTextures) {
         overlay(ui, "CombatHud", |ui, at, scale| {
@@ -1126,6 +1251,7 @@ impl SceCommand for SceCommandCombat {
             session.tick(delta_sec)
         };
 
+        self.animate_stage(delta_sec);
         if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
             Self::draw(ui, session, hud);
         }
