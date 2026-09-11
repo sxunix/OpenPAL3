@@ -83,6 +83,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_cam: vec![],
                 flexeff_meteor: vec![],
                 flexeff_audio: vec![],
                 flexeff_pending: vec![],
@@ -192,6 +193,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_cam: vec![],
                 flexeff_meteor: vec![],
                 flexeff_audio: vec![],
                 flexeff_pending: vec![],
@@ -487,6 +489,8 @@ struct AdventureDirectorProps {
     )>,
     /// flexeff 的 `particle` 类：`.par` 粒子，挂在特效位置上。
     flexeff_par: Vec<FlexParticle>,
+    /// `camera` 实例：`(flexcam 序列号，≤ 0 = 只停；离起播还剩几秒)`。
+    flexeff_cam: Vec<(i32, f32)>,
     /// `meteor` 实例：模型、头部面片实体（定义不画头部时没有）、拖尾实体。
     flexeff_meteor: Vec<(
         crate::openpal3::scene::flexeff_meteor::MeteorEffect,
@@ -851,6 +855,25 @@ impl AdventureDirectorProps {
                     }
                     continue;
                 }
+                // `camera`（FUN_004c39a0）：让战斗镜头播 flexcam 序列。子块 +0 是序列号
+                // （实机 54..83），+76 只是这一步的时长，到点并不停镜头。延迟按 +72 算
+                // [推断：和其他类同一套时间线，实机全是 0]。
+                if class == Some("camera") {
+                    for sidx in 0..GROUP_SUBS {
+                        if !group.sub_enabled(k, sidx) {
+                            continue;
+                        }
+                        let sub = group.sub(k, sidx).unwrap();
+                        let f = |o: usize| f32::from_le_bytes(sub[o..o + 4].try_into().unwrap());
+                        let seq = if f(0) > 0. {
+                            f(0).round_ties_even() as i32
+                        } else {
+                            -1
+                        };
+                        self.flexeff_cam.push((seq, f(72).max(0.)));
+                    }
+                    continue;
+                }
                 // `meteor`：追着目标飞的面片加拖尾（scene::flexeff_meteor）。
                 if class == Some("meteor") {
                     use crate::openpal3::scene::flexeff_meteor::{
@@ -1020,6 +1043,23 @@ impl AdventureDirectorProps {
                 }
                 !over
             });
+        }
+
+        if !self.flexeff_cam.is_empty() {
+            let mut due = vec![];
+            self.flexeff_cam.retain_mut(|(seq, left)| {
+                *left -= delta_sec;
+                if *left <= 0. {
+                    due.push(*seq);
+                    false
+                } else {
+                    true
+                }
+            });
+            for seq in due {
+                log::info!("CEft: 镜头 flexcam 序列 {seq}");
+                self.sce_vm.state_mut().request_combat_camera(seq);
+            }
         }
 
         if !self.flexeff_meteor.is_empty() {

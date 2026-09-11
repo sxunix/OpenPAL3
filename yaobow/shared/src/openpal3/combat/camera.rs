@@ -199,6 +199,13 @@ impl CamPlayer {
         })
     }
 
+    /// `FUN_00505800`：停在当前机位。序列号清成 −1，所以之后也不再盯人。
+    pub fn stop(&mut self) {
+        self.steps.clear();
+        self.step = 0;
+        self.start = None;
+    }
+
     /// 步数用完、镜头停下了。
     pub fn finished(&self) -> bool {
         self.step >= self.steps.len()

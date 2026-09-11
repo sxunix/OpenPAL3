@@ -544,6 +544,8 @@ impl SceCommandCombat {
     /// `combat::stage::model_name`。缺哪一件就少摆哪一个，不影响战斗本身
     /// ——规则层不碰这些实体。
     fn build_stage(&mut self, scene_manager: &ComRc<ISceneManager>, state: &mut SceState) {
+        // 战斗外 143 播到 camera 类留下的请求，别让它顶掉开战镜头。
+        let _ = state.take_combat_camera_requests();
         use crate::openpal3::combat::stage;
         use common::store_ext::StoreExt2;
         use mini_fs::StoreExt;
@@ -1855,6 +1857,25 @@ impl SceCommand for SceCommandCombat {
 
         self.drive_staging(state, delta_sec);
         self.animate_stage(delta_sec);
+        // 特效 `camera` 类（adv_director 从 flexeff 转过来）：先停当前序列
+        // （FUN_00505800，停在原地），序列号 > 0 再从当前机位播它（FUN_00505770）。
+        for seq in state.take_combat_camera_requests() {
+            let Some(current) = self.camera.as_mut().map(|p| {
+                p.stop();
+                p.pose
+            }) else {
+                continue;
+            };
+            let player = usize::try_from(seq).ok().filter(|s| *s > 0).and_then(|s| {
+                self.flexcam.as_ref().and_then(|f| {
+                    crate::openpal3::combat::camera::CamPlayer::new(f.sequence(s), current)
+                })
+            });
+            if let Some(player) = player {
+                log::info!("Combat: 特效镜头播 flexcam 序列 {seq}");
+                self.camera = Some(player);
+            }
+        }
         if let (Some(player), Some(stage)) = (self.camera.as_mut(), self.stage.as_ref()) {
             let moving = !player.finished();
             let pose = if moving {

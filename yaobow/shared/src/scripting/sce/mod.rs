@@ -115,6 +115,9 @@ pub struct SceState {
     /// 143 CEft 排下的战斗特效：`(特效组号, 播放位置)`。指令本身不阻塞，
     /// 由 `AdventureDirector` 每帧取走并接进场景。
     effect_requests: Vec<(i32, radiance::math::Vec3)>,
+    /// 特效 `camera` 类要战斗镜头播的 flexcam 序列（≤ 0 = 只停）。
+    /// `AdventureDirector` 放进来，战斗命令每帧取走。
+    combat_camera_requests: Vec<i32>,
 }
 
 /// The dialog box's readable state — mirrors the agent contract's
@@ -169,6 +172,7 @@ impl SceState {
             screen_effect: None,
             title_requested: false,
             effect_requests: vec![],
+            combat_camera_requests: vec![],
         }
     }
 
@@ -341,6 +345,20 @@ impl SceState {
 
     pub fn take_effect_requests(&mut self) -> Vec<(i32, radiance::math::Vec3)> {
         std::mem::take(&mut self.effect_requests)
+    }
+
+    /// 特效 `camera` 类（FUN_004c39a0）：先停当前镜头序列（`FUN_00505800`），
+    /// `seq > 0` 再从当前机位播 flexcam 第 `seq` 个序列（`FUN_00505770`）。
+    ///
+    /// 每个请求都会先停掉前一个，所以只留最新的一个——战斗外 143 播到 camera
+    /// 类时也不会越积越多。
+    pub fn request_combat_camera(&mut self, seq: i32) {
+        self.combat_camera_requests.clear();
+        self.combat_camera_requests.push(seq);
+    }
+
+    pub fn take_combat_camera_requests(&mut self) -> Vec<i32> {
+        std::mem::take(&mut self.combat_camera_requests)
     }
 
     pub fn show_note(&mut self, text: String) {
