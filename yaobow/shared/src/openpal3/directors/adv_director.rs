@@ -83,6 +83,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_explosive: vec![],
                 flexeff_grid: vec![],
                 flexeff_model: vec![],
                 flexeff_shock: vec![],
@@ -197,6 +198,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_explosive: vec![],
                 flexeff_grid: vec![],
                 flexeff_model: vec![],
                 flexeff_shock: vec![],
@@ -497,6 +499,11 @@ struct AdventureDirectorProps {
     )>,
     /// flexeff 的 `particle` 类：`.par` 粒子，挂在特效位置上。
     flexeff_par: Vec<FlexParticle>,
+    /// `explosive` 实例：模型、碎片实体。
+    flexeff_explosive: Vec<(
+        crate::openpal3::scene::flexeff_explosive::ExplosiveEffect,
+        ComRc<radiance::comdef::IEntity>,
+    )>,
     /// `grid` 实例：模型、面片实体。
     flexeff_grid: Vec<(
         crate::openpal3::scene::flexeff_grid::GridEffect,
@@ -998,6 +1005,45 @@ impl AdventureDirectorProps {
                     }
                     continue;
                 }
+                // `explosive`：一张图切块炸开（scene::flexeff_explosive）。
+                if class == Some("explosive") {
+                    use crate::openpal3::scene::flexeff_explosive::{
+                        ExplosiveDef, ExplosiveEffect,
+                    };
+                    use crate::openpal3::scene::flexeff_meteor::build_meteor_entity;
+                    let texture_path = asset_mgr
+                        .basedata_path()
+                        .join(def.asset().replace('\\', "/"));
+                    let Some(image) = asset_mgr.read_picture(&texture_path) else {
+                        log::warn!("CEft: 读不到碎片贴图 {}", texture_path.display());
+                        continue;
+                    };
+                    let xd = ExplosiveDef::from_def(&def);
+                    let origin = [position.x, position.y, position.z];
+                    let name = texture_path.to_str().unwrap_or("explosive").to_string();
+                    let factory = asset_mgr.component_factory();
+                    for sidx in 0..GROUP_SUBS {
+                        if !group.sub_enabled(k, sidx) {
+                            continue;
+                        }
+                        let sub = group.sub(k, sidx).unwrap();
+                        self.flexeff_seq += 1;
+                        let seq = self.flexeff_seq;
+                        let effect = ExplosiveEffect::new(xd, sub, origin, seq as u32);
+                        let entity = build_meteor_entity(
+                            &factory,
+                            format!("FLEXEFF_EXPLOSIVE_{seq}"),
+                            &name,
+                            image.clone(),
+                            xd.quad.additive,
+                            effect.capacity(),
+                        );
+                        scene.add_entity(entity.clone());
+                        log::info!("CEft: 碎片 {} {}×{}", def.asset(), xd.cols, xd.rows);
+                        self.flexeff_explosive.push((effect, entity));
+                    }
+                    continue;
+                }
                 // `grid`：扭动起伏的方格面（scene::flexeff_grid）。
                 if class == Some("grid") {
                     use crate::openpal3::scene::flexeff_grid::{GridDef, GridEffect};
@@ -1304,6 +1350,22 @@ impl AdventureDirectorProps {
             self.flexeff_model.retain(|(effect, entity)| {
                 if effect.finished() {
                     set_visible_tree(entity, false);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+
+        if !self.flexeff_explosive.is_empty() {
+            use crate::openpal3::scene::flexeff_explosive::write_explosive;
+            for (effect, entity) in self.flexeff_explosive.iter_mut() {
+                effect.step(delta_sec);
+                write_explosive(entity, effect);
+            }
+            self.flexeff_explosive.retain(|(effect, entity)| {
+                if effect.finished() {
+                    entity.set_visible(false);
                     false
                 } else {
                     true

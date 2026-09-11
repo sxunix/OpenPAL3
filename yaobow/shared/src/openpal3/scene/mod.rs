@@ -4,6 +4,7 @@ pub mod emoji;
 mod error;
 pub mod flexeff_audio;
 pub mod flexeff_cylinder;
+pub mod flexeff_explosive;
 pub mod flexeff_grid;
 pub mod flexeff_meteor;
 pub mod flexeff_model;
