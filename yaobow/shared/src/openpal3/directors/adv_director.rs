@@ -83,6 +83,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_grid: vec![],
                 flexeff_model: vec![],
                 flexeff_shock: vec![],
                 flexeff_cam: vec![],
@@ -195,6 +196,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_grid: vec![],
                 flexeff_model: vec![],
                 flexeff_shock: vec![],
                 flexeff_cam: vec![],
@@ -493,6 +495,11 @@ struct AdventureDirectorProps {
     )>,
     /// flexeff 的 `particle` 类：`.par` 粒子，挂在特效位置上。
     flexeff_par: Vec<FlexParticle>,
+    /// `grid` 实例：模型、面片实体。
+    flexeff_grid: Vec<(
+        crate::openpal3::scene::flexeff_grid::GridEffect,
+        ComRc<radiance::comdef::IEntity>,
+    )>,
     /// `model` 实例：模型、`.cvd` / `.pol` 实体。
     flexeff_model: Vec<(
         crate::openpal3::scene::flexeff_model::ModelEffect,
@@ -937,6 +944,42 @@ impl AdventureDirectorProps {
                     }
                     continue;
                 }
+                // `grid`：扭动起伏的方格面（scene::flexeff_grid）。
+                if class == Some("grid") {
+                    use crate::openpal3::scene::flexeff_grid::{GridDef, GridEffect};
+                    use crate::openpal3::scene::flexeff_meteor::build_meteor_entity;
+                    let texture_path = asset_mgr
+                        .basedata_path()
+                        .join(def.asset().replace('\\', "/"));
+                    let Some(image) = asset_mgr.read_picture(&texture_path) else {
+                        log::warn!("CEft: 读不到方格贴图 {}", texture_path.display());
+                        continue;
+                    };
+                    let gd = GridDef::from_def(&def);
+                    let origin = [position.x, position.y, position.z];
+                    let name = texture_path.to_str().unwrap_or("grid").to_string();
+                    let factory = asset_mgr.component_factory();
+                    for sidx in 0..GROUP_SUBS {
+                        if !group.sub_enabled(k, sidx) {
+                            continue;
+                        }
+                        let sub = group.sub(k, sidx).unwrap();
+                        self.flexeff_seq += 1;
+                        let effect = GridEffect::new(gd, sub, origin);
+                        let entity = build_meteor_entity(
+                            &factory,
+                            format!("FLEXEFF_GRID_{}", self.flexeff_seq),
+                            &name,
+                            image.clone(),
+                            gd.quad.additive,
+                            effect.capacity(),
+                        );
+                        scene.add_entity(entity.clone());
+                        log::info!("CEft: 方格 {} {}×{}", def.asset(), gd.cols, gd.rows);
+                        self.flexeff_grid.push((effect, entity));
+                    }
+                    continue;
+                }
                 // `shock`：一道闪电（scene::flexeff_shock）。
                 if class == Some("shock") {
                     use crate::openpal3::scene::flexeff_meteor::build_meteor_entity;
@@ -1175,6 +1218,22 @@ impl AdventureDirectorProps {
             self.flexeff_model.retain(|(effect, entity)| {
                 if effect.finished() {
                     set_visible_tree(entity, false);
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+
+        if !self.flexeff_grid.is_empty() {
+            use crate::openpal3::scene::flexeff_grid::write_grid;
+            for (effect, entity) in self.flexeff_grid.iter_mut() {
+                effect.step(delta_sec);
+                write_grid(entity, effect);
+            }
+            self.flexeff_grid.retain(|(effect, entity)| {
+                if effect.finished() {
+                    entity.set_visible(false);
                     false
                 } else {
                     true
