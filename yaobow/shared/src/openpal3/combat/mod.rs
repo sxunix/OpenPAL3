@@ -22,4 +22,5 @@ pub mod result;
 pub mod session;
 pub mod settlement;
 pub mod stage;
+pub mod stage_action;
 pub mod state;

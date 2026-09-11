@@ -118,6 +118,8 @@ pub struct SceState {
     /// 特效 `camera` 类要战斗镜头播的 flexcam 序列（≤ 0 = 只停）。
     /// `AdventureDirector` 放进来，战斗命令每帧取走。
     combat_camera_requests: Vec<i32>,
+    /// 特效 `action` 类要舞台上的人做的动作，同样由战斗命令每帧取走。
+    combat_action_requests: Vec<crate::openpal3::combat::stage_action::ActionCue>,
 }
 
 /// The dialog box's readable state — mirrors the agent contract's
@@ -173,6 +175,7 @@ impl SceState {
             title_requested: false,
             effect_requests: vec![],
             combat_camera_requests: vec![],
+            combat_action_requests: vec![],
         }
     }
 
@@ -359,6 +362,20 @@ impl SceState {
 
     pub fn take_combat_camera_requests(&mut self) -> Vec<i32> {
         std::mem::take(&mut self.combat_camera_requests)
+    }
+
+    /// 特效 `action` 类（FUN_004c0c10）的一条动作提示。战斗外没人取，只留最近 64 条。
+    pub fn request_combat_action(&mut self, cue: crate::openpal3::combat::stage_action::ActionCue) {
+        if self.combat_action_requests.len() >= 64 {
+            self.combat_action_requests.remove(0);
+        }
+        self.combat_action_requests.push(cue);
+    }
+
+    pub fn take_combat_action_requests(
+        &mut self,
+    ) -> Vec<crate::openpal3::combat::stage_action::ActionCue> {
+        std::mem::take(&mut self.combat_action_requests)
     }
 
     pub fn show_note(&mut self, text: String) {

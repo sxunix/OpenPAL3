@@ -742,6 +742,8 @@ impl AdventureDirectorProps {
             return;
         };
 
+        // `action` 类的提示先攒着：循环里 `asset_mgr` 还借着 `sce_vm`。
+        let mut action_cues = vec![];
         for (group_id, position, depth) in requests {
             let asset_mgr = self.sce_vm.state().asset_mgr();
             let Some(eff) = asset_mgr.flexeff() else {
@@ -893,6 +895,18 @@ impl AdventureDirectorProps {
                         };
                         self.flexeff_cam.push((seq, f(72).max(0.)));
                     }
+                    continue;
+                }
+                // `action`（FUN_004c0c10）：让舞台上的人做动作、走位、转身，交给战斗命令。
+                if class == Some("action") {
+                    use crate::openpal3::combat::stage_action::ActionCue;
+                    let mut cues = vec![];
+                    for sidx in 0..GROUP_SUBS {
+                        if group.sub_enabled(k, sidx) {
+                            cues.push(ActionCue::from_sub(group.sub(k, sidx).unwrap()));
+                        }
+                    }
+                    action_cues.extend(cues);
                     continue;
                 }
                 // `model`：摆一个 `.cvd` / `.pol` 模型（scene::flexeff_model）。
@@ -1123,6 +1137,11 @@ impl AdventureDirectorProps {
                     }
                 }
             }
+        }
+
+        for cue in action_cues {
+            log::info!("CEft: 动作 位 {} {:?}", cue.slot, cue.motion_name());
+            self.sce_vm.state_mut().request_combat_action(cue);
         }
 
         // 声音先处理，它不依赖场景也不依赖相机。

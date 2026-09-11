@@ -191,6 +191,8 @@ pub struct SceCommandCombat {
     result_tex: Option<ResultTextures>,
     /// 散场一开始就结算过了（打赢 / 逃掉）。
     settled: bool,
+    /// 特效 `action` 类的动作提示（`combat::stage_action`）。
+    cues: Vec<crate::openpal3::combat::stage_action::ActionCue>,
 }
 
 /// 结算面板上的一个人。
@@ -280,6 +282,13 @@ struct StageActor {
     /// 站位（`[RolePos]`），走位去了还要回来。
     home: Vec3,
     walk: Option<Walk>,
+    /// 有几条特效 `action` 提示正在控制他（原版舞台角色 `+0x17c`）。大于 0 时常规的站姿 /
+    /// 走位逻辑让开。
+    scripted: u32,
+    /// 刚被交还：下一帧回到该有的站姿。
+    released: bool,
+    /// 特效给的透明度（`gbVisNode::SetBlend`）。
+    alpha: f32,
 }
 
 /// 走位中。
@@ -425,6 +434,7 @@ impl SceCommandCombat {
             actors: Vec::new(),
             run: None,
             camera: None,
+            cues: Vec::new(),
             flexcam: None,
             linker: None,
             side_anchors: [Vec3::new(0., 0., 0.); 2],
@@ -546,6 +556,8 @@ impl SceCommandCombat {
     fn build_stage(&mut self, scene_manager: &ComRc<ISceneManager>, state: &mut SceState) {
         // 战斗外 143 播到 camera 类留下的请求，别让它顶掉开战镜头。
         let _ = state.take_combat_camera_requests();
+        let _ = state.take_combat_action_requests();
+        self.cues.clear();
         use crate::openpal3::combat::stage;
         use common::store_ext::StoreExt2;
         use mini_fs::StoreExt;
@@ -634,6 +646,9 @@ impl SceCommandCombat {
                 hide_in: None,
                 home,
                 walk: None,
+                scripted: 0,
+                released: false,
+                alpha: 1.,
             });
         }
 
@@ -1383,6 +1398,77 @@ impl SceCommandCombat {
     }
 
     /// 让舞台上的人跟着战况做动作（`combat::motion`）。
+    /// 推特效 `action` 类的动作提示（`combat::stage_action`，原版 FUN_004c0c10）。
+    fn drive_cues(&mut self, delta_sec: f32) {
+        use crate::openpal3::combat::stage_action::yaw_direction;
+        use crate::openpal3::scene::RoleState;
+        if self.cues.is_empty() {
+            return;
+        }
+        let mut cues = std::mem::take(&mut self.cues);
+        for cue in cues.iter_mut() {
+            let actor = usize::try_from(cue.slot)
+                .ok()
+                .and_then(|s| self.actors.get_mut(s))
+                .and_then(|a| a.as_mut());
+            let Some(actor) = actor else {
+                // 位上没人：只等时间走完。
+                cue.step(delta_sec, [0.; 3], 1., false);
+                continue;
+            };
+            let rc = RoleController::get_role_controller(actor.entity.clone());
+            let anim_done = rc.as_ref().is_some_and(|rc| {
+                matches!(
+                    rc.inner::<RoleController>().state(),
+                    RoleState::AnimationFinished | RoleState::AnimationHolding
+                )
+            });
+            let p = actor.entity.transform().borrow().position();
+            let frame = cue.step(delta_sec, [p.x, p.y, p.z], actor.alpha, anim_done);
+            if frame.begin {
+                actor.scripted += 1;
+                actor.walk = None;
+                actor.hide_in = None;
+                actor.entity.set_visible(true);
+                if let (Some(name), Some(rc)) = (cue.motion_name(), rc.as_ref()) {
+                    let rc = rc.inner::<RoleController>();
+                    // 原版播完停在最后一帧，由后面的提示或交还来换动作。
+                    rc.set_auto_play_idle(false);
+                    rc.play_anim(&name, RoleAnimationRepeatMode::Repeat(1));
+                }
+            }
+            if let Some(next) = frame.position {
+                actor
+                    .entity
+                    .transform()
+                    .borrow_mut()
+                    .set_position(&Vec3::new(next[0], next[1], next[2]));
+            }
+            if let Some(yaw) = frame.yaw {
+                let pos = actor.entity.transform().borrow().position();
+                let (dx, dz) = yaw_direction(yaw);
+                actor
+                    .entity
+                    .transform()
+                    .borrow_mut()
+                    .look_at(&face_point(pos, (dx, dz)));
+            }
+            if let Some(alpha) = frame.alpha {
+                actor.alpha = alpha;
+                super::role_fade::set_alpha(&actor.entity, alpha);
+            }
+            if frame.end {
+                actor.scripted = actor.scripted.saturating_sub(1);
+                if actor.scripted == 0 {
+                    actor.released = true;
+                }
+            }
+        }
+        cues.retain(|c| !c.finished());
+        cues.extend(std::mem::take(&mut self.cues));
+        self.cues = cues;
+    }
+
     fn animate_stage(&mut self, delta_sec: f32) {
         let Some(session) = self.session.as_ref() else {
             return;
@@ -1409,6 +1495,11 @@ impl SceCommandCombat {
                 Pending::Escape { .. } => ActKind::Escape,
             });
             let now = Snapshot::of(c, acting);
+            if actor.scripted > 0 {
+                // 特效在控制他：动作、位置、朝向都听 `drive_cues` 的。
+                actor.last = now;
+                continue;
+            }
             let Some(rc) = RoleController::get_role_controller(actor.entity.clone()) else {
                 continue;
             };
@@ -1454,7 +1545,12 @@ impl SceCommandCombat {
                 }
             }
 
-            match motion::react(&actor.last, &now) {
+            let reaction = if std::mem::take(&mut actor.released) {
+                Some(Play::Rest)
+            } else {
+                motion::react(&actor.last, &now)
+            };
+            match reaction {
                 Some(Play::Once(m)) => {
                     rc.set_auto_play_idle(true);
                     play(m, RoleAnimationRepeatMode::Repeat(1));
@@ -1856,6 +1952,8 @@ impl SceCommand for SceCommandCombat {
         };
 
         self.drive_staging(state, delta_sec);
+        self.cues.extend(state.take_combat_action_requests());
+        self.drive_cues(delta_sec);
         self.animate_stage(delta_sec);
         // 特效 `camera` 类（adv_director 从 flexeff 转过来）：先停当前序列
         // （FUN_00505800，停在原地），序列号 > 0 再从当前机位播它（FUN_00505770）。
