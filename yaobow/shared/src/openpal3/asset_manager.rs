@@ -541,6 +541,27 @@ impl AssetManager {
         )))
     }
 
+    /// 给 2D 界面读图：和 [`Self::load_sprite`] 一样先找 `.dds`，但找到的 `.dds`
+    /// 要**竖直翻转**——零售版的 `.dds` 是 D3D9 自下而上存的（图集页、
+    /// `EffectScn\104s.dds` 都是这样，见 `switch/re/notes/dealer_layout.md` §0）。
+    /// `read_picture` 还给粒子、灵效这些 3D 贴图用，那边的朝向另有约定，不在这里改。
+    pub fn load_ui_sprite<P: AsRef<Path>>(&self, path: P) -> Option<Rc<Sprite>> {
+        let path = path.as_ref();
+        let dds = path.with_extension("dds");
+        let image = match self.vfs.read_to_end(&dds) {
+            Ok(bytes) => match image::load_from_memory_with_format(&bytes, image::ImageFormat::Dds)
+            {
+                Ok(img) => image::imageops::flip_vertical(&img.to_rgba8()),
+                Err(e) => {
+                    log::warn!("解不开图片 {}: {e}", dds.display());
+                    return None;
+                }
+            },
+            Err(_) => self.read_picture(path)?,
+        };
+        Some(self.sprite_from_image(image))
+    }
+
     /// 已经解好的图直接做成 `Sprite`——从图集裁出来的小图走这里
     /// （[`super::ui_tex::UiTextures`]）。
     pub fn sprite_from_image(&self, image: image::RgbaImage) -> Rc<Sprite> {

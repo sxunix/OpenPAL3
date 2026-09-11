@@ -484,6 +484,33 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "caption" => {
+            // ["1A", 行数] —— 86 全屏字幕。
+            let name = params
+                .args
+                .first()
+                .and_then(|v| v.as_str())
+                .unwrap_or("1A")
+                .to_string();
+            let lines = int_arg(1).unwrap_or(4) as i32;
+            director.start_debug_command(Box::new(
+                crate::scripting::sce::commands::SceCommandCaption::new(name, lines),
+            ));
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "xjpic" => {
+            // [] —— 156 雪见图片。
+            director.start_debug_command(Box::new(
+                crate::scripting::sce::commands::SceCommandShowXueJianPicture::new(),
+            ));
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "dealer" => {
             // ["DealScript\\WeaponShop\\q01weapon.txt"] —— 直接开一家店（SCE 100）。
             let shop = params

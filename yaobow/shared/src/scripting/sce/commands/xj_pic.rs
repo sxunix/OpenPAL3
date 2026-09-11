@@ -22,7 +22,7 @@ use std::rc::Rc;
 
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
-use imgui::{Condition, Ui};
+use imgui::Ui;
 use radiance::comdef::ISceneManager;
 use radiance::rendering::Sprite;
 
@@ -39,10 +39,10 @@ pub const RATE: f32 = PI / 4.;
 /// `0x56ac14` — the peak alpha, out of 255.
 pub const PEAK_ALPHA: f32 = 160.0;
 
-/// The rect the original gives the sprite, in its fixed 640x480 UI space.
-pub const RECT: [f32; 4] = [0., 0., 256., 256.];
-const UI_WIDTH: f32 = 640.;
-const UI_HEIGHT: f32 = 480.;
+/// The rect the original gives the sprite: `{0, 0, 0x100, 0x100}` in the
+/// same 800×600 UI space every other widget uses — the picture sits in the
+/// top-left corner at its native 256×256.
+pub const RECT: (i32, i32, i32, i32) = (0, 0, 256, 256);
 
 /// Alpha at `t` seconds, as a 0..1 multiplier.
 fn alpha(t: f32) -> f32 {
@@ -81,7 +81,7 @@ impl SceCommand for SceCommandShowXueJianPicture {
         if !self.loaded {
             self.loaded = true;
             let asset_mgr = state.asset_mgr();
-            self.sprite = asset_mgr.load_sprite(asset_mgr.effect_scn_path(PICTURE));
+            self.sprite = asset_mgr.load_ui_sprite(asset_mgr.effect_scn_path(PICTURE));
             if self.sprite.is_none() {
                 log::warn!("XJ_Pic: 读不到 EffectScn\\{PICTURE}");
             }
@@ -95,28 +95,17 @@ impl SceCommand for SceCommandShowXueJianPicture {
         }
 
         self.elapsed += delta_sec;
-        let [screen_width, screen_height] = ui.io().display_size;
-        let scale = (screen_width / UI_WIDTH).min(screen_height / UI_HEIGHT);
-        let position = [RECT[0] * scale, RECT[1] * scale];
-        let size = [RECT[2] * scale, RECT[3] * scale];
-
-        let _pad = ui.push_style_var(imgui::StyleVar::WindowPadding([0., 0.]));
-        let _border = ui.push_style_var(imgui::StyleVar::WindowBorderSize(0.));
-        ui.window("XJPic")
-            .collapsible(false)
-            .title_bar(false)
-            .resizable(false)
-            .movable(false)
-            .scroll_bar(false)
-            .draw_background(false)
-            .no_inputs()
-            .position(position, Condition::Always)
-            .size(size, Condition::Always)
-            .build(|| {
-                imgui::Image::new(sprite.imgui_texture_id(), size)
-                    .tint_col([1., 1., 1., alpha(self.elapsed)])
-                    .build(ui);
-            });
+        let a = alpha(self.elapsed);
+        super::appraise::overlay(ui, "XJPic", |ui, at, _scale| {
+            ui.get_window_draw_list()
+                .add_image(
+                    sprite.imgui_texture_id(),
+                    at(RECT.0, RECT.1),
+                    at(RECT.2, RECT.3),
+                )
+                .col([1., 1., 1., a])
+                .build();
+        });
 
         self.elapsed >= SECONDS
     }

@@ -312,6 +312,13 @@ impl AdventureDirector {
         }
     }
 
+    /// Push any SCE command as if a script had issued it.
+    pub fn start_debug_command(&self, cmd: Box<dyn crate::scripting::sce::SceCommand>) {
+        let mut p = self.props.borrow_mut();
+        let scene_manager = p.scene_manager.clone();
+        p.sce_vm.push_debug_command(cmd, scene_manager);
+    }
+
     pub fn start_debug_combat(&self, ids: [i32; 6], boss: bool) {
         let mut p = self.props.borrow_mut();
         let scene_manager = p.scene_manager.clone();
