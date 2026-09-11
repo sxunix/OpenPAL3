@@ -723,13 +723,13 @@ fn any_key(ui: &Ui) -> bool {
 /// 原版贴图控件的 uv：矩形显示贴图**左下角** w×h 那块，正立（`FUN_005400e0`
 /// + gbengine 对左下原点 TGA 不翻转）。`image` 解出来的图是正立的，所以
 /// uv 从 (0, 1 − h/H) 到 (w/W, 1)。
-fn sprite_uv(s: &Sprite, r: Rect) -> ([f32; 2], [f32; 2]) {
+pub(crate) fn sprite_uv(s: &Sprite, r: Rect) -> ([f32; 2], [f32; 2]) {
     let (tw, th) = (s.width().max(1) as f32, s.height().max(1) as f32);
     let (w, h) = ((r.2 - r.0) as f32, (r.3 - r.1) as f32);
     ([0., (1. - h / th).max(0.)], [(w / tw).min(1.), 1.])
 }
 
-fn draw_sprite(
+pub(crate) fn draw_sprite(
     list: &imgui::DrawListMut<'_>,
     sprite: Option<&Sprite>,
     r: Rect,

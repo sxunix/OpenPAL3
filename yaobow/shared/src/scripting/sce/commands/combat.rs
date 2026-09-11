@@ -13,17 +13,16 @@
 //! placeholder overlay for it, and on exit writes the party's state, the
 //! spoils and the `GetCombat` value back.
 //!
-//! The overlay is text and HP bars — the 3D battle stage is not ported.
-//! Everything the overlay shows comes from the rules layer, so replacing
-//! it later is a rendering change only.
+//! 画面分两层：战场和人摆在 3D 舞台上（`build_stage`），界面按原版
+//! `CBUI` 的版面贴原版贴图（`combat::hud`）。两层都只读规则层的状态。
 
 use crate::openpal3::combat::actions::{ATTRIBUTE_SLOTS, GU_ITEM_ID, ITEM_STATE_CODES, ItemEffect};
 use crate::openpal3::combat::encounter::{CrtRand, Encounter, NO_ROUND_CAP, PendingFlags};
+use crate::openpal3::combat::hud::{self, ButtonLook, Gauge, RingButton};
 use crate::openpal3::combat::session::{
-    Action, CombatSession, Input, ItemChoice, Menu, MenuEntry, PlayerTurn, Profile, Reward,
-    SkillChoice,
+    CombatSession, Input, ItemChoice, Menu, MenuEntry, Profile, Reward, SkillChoice,
 };
-use crate::openpal3::combat::state::{Battle, Combatant, Outcome, PARTY_SLOTS, SLOTS, Side};
+use crate::openpal3::combat::state::{Battle, Combatant, Outcome, PARTY_SLOTS, Phase, SLOTS, Side};
 use crate::openpal3::directors::SceneManagerExtensions;
 use crate::openpal3::scene::RoleController;
 use crate::openpal3::states::game_db::{GameDb, combat_id_of_party_member};
@@ -34,8 +33,15 @@ use crosscom::ComRc;
 use fileformats::pal3::gdb::GameItemInfo;
 use imgui::{Condition, Ui};
 use radiance::comdef::{IEntityExt, IScene, ISceneExt, ISceneManager};
+use radiance::imgui::{GameFontSize, game_font};
 use radiance::input::Key;
 use radiance::math::Vec3;
+use radiance::rendering::Sprite;
+use std::path::PathBuf;
+use std::rc::Rc;
+
+use super::appraise::overlay;
+use super::encamp::draw_sprite;
 
 /// `SceState::ext` key for the [`PendingFlags`] the flag opcodes set.
 pub const EXT_PENDING: &str = "pal3.combat.pending";
@@ -157,7 +163,98 @@ pub struct SceCommandCombat {
     combat_scene: Option<String>,
     /// 摆好的战斗舞台。压在场景栈上，散场时弹掉。
     stage: Option<ComRc<IScene>>,
+    /// 界面贴图，开战时一次读齐。
+    hud: Option<HudTextures>,
 }
+
+type Tex = Option<Rc<Sprite>>;
+
+/// 战斗界面要用的贴图（清单和坐标在 `combat::hud`）。
+#[derive(Clone)]
+struct HudTextures {
+    control_back: Tex,
+    /// 按 `RingButton::ALL` 的顺序，每个按钮四张（`ButtonLook` 0..3）。
+    buttons: Vec<[Tex; 4]>,
+    /// `[StatePanel0, StatePanel]`
+    panels: [Tex; 2],
+    gauge_back: Tex,
+    /// 精、气、神。
+    gauge_fill: [Tex; 3],
+    sword_bar: Tex,
+    portraits: Vec<Tex>,
+    names: Vec<Tex>,
+    sequence_back: Tex,
+    /// 每个战斗位的行动条头像。
+    heads: Vec<Tex>,
+    magic_back: Tex,
+    item_back: Tex,
+    row_select: Tex,
+    trick_back: Tex,
+    trick_back2: Tex,
+}
+
+impl HudTextures {
+    /// `models` 是每个战斗位的模型名，行动条头像按它找图。
+    fn load(state: &SceState, models: &[Option<String>]) -> Self {
+        let asset_mgr = state.asset_mgr();
+        let tex = |rel: &str| {
+            asset_mgr.load_sprite(
+                PathBuf::from("/basedata/basedata")
+                    .join(hud::UI_DIR)
+                    .join(rel),
+            )
+        };
+        let looks = [
+            ButtonLook::Normal,
+            ButtonLook::Focused,
+            ButtonLook::Pressed,
+            ButtonLook::Disabled,
+        ];
+        Self {
+            control_back: tex(hud::CONTROL_BACK),
+            buttons: RingButton::ALL
+                .iter()
+                .map(|&b| {
+                    looks.map(|look| {
+                        (look != ButtonLook::Disabled || b.has_disabled_look())
+                            .then(|| tex(&hud::button_texture(b, look)))
+                            .flatten()
+                    })
+                })
+                .collect(),
+            panels: [tex(hud::panel_texture(0)), tex(hud::panel_texture(1))],
+            gauge_back: tex(hud::GAUGE_BACK),
+            gauge_fill: Gauge::ALL.map(|g| tex(g.fill_texture())),
+            sword_bar: tex(hud::SWORD_BAR),
+            portraits: (0..PARTY_SLOTS)
+                .map(|slot| hud::portrait_texture(slot).and_then(|p| tex(&p)))
+                .collect(),
+            names: (0..PARTY_SLOTS)
+                .map(|slot| hud::name_texture(slot).and_then(|p| tex(&p)))
+                .collect(),
+            sequence_back: tex(hud::SEQUENCE_BACK),
+            heads: models
+                .iter()
+                .enumerate()
+                .map(|(slot, m)| {
+                    // 我方的头像名和舞台模型名不全一样（龙葵 106 / 105）。
+                    let name = hud::PARTY_HEADS.get(slot).copied().or(m.as_deref());
+                    name.and_then(|m| tex(&hud::head_texture(m)))
+                })
+                .collect(),
+            magic_back: tex(hud::MAGIC_BACK),
+            item_back: tex(hud::ITEM_BACK),
+            row_select: tex(hud::ROW_SELECT),
+            trick_back: tex(hud::TRICK_BACK),
+            trick_back2: tex(hud::TRICK_BACK2),
+        }
+    }
+}
+
+/// 列表文字的颜色 **[推断]**：表头是印在底图上的深色字，行文字跟着用深色。
+const LIST_TEXT: [f32; 4] = [0.08, 0.08, 0.08, 1.0];
+const LIST_TEXT_DISABLED: [f32; 4] = [0.42, 0.42, 0.42, 1.0];
+const BANNER_TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
 
 impl std::fmt::Debug for SceCommandCombat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -192,7 +289,25 @@ impl SceCommandCombat {
             game_over: false,
             combat_scene: None,
             stage: None,
+            hud: None,
         }
+    }
+
+    /// 每个战斗位的模型名（我方查 `PARTY_MODELS`，敌方查数据库）。
+    fn slot_models(&self, state: &SceState) -> Vec<Option<String>> {
+        use crate::openpal3::combat::stage;
+        let db = state.global_state().game_db().cloned();
+        let battle = self.session.as_ref().map(|s| &s.battle);
+        (0..SLOTS)
+            .map(|slot| {
+                let c = battle?.get(slot)?;
+                let enemy_model = db
+                    .as_ref()
+                    .and_then(|db| db.combat_actor(c.actor_id))
+                    .and_then(|a| a.model_id.as_str().ok());
+                stage::model_name(slot, enemy_model.as_deref())
+            })
+            .collect()
     }
 
     /// The floor type under the controlled character — `FUN_00407320`
@@ -725,154 +840,214 @@ impl SceCommandCombat {
         }
     }
 
-    fn draw(ui: &Ui, session: &CombatSession) {
-        let [window_width, _] = ui.io().display_size;
-        ui.window("Combat")
-            .collapsible(false)
-            .title_bar(false)
-            .resizable(false)
-            .always_auto_resize(true)
-            .position([16., 16.], Condition::Always)
-            .size_constraints([window_width * 0.4, 0.], [window_width * 0.9, f32::MAX])
-            .build(|| {
-                let _font = radiance::imgui::game_font(radiance::imgui::GameFontSize::LARGE)
-                    .map(|f| ui.push_font(f));
+    /// 按原版 `CBUI` 的版面画界面，坐标见 `combat::hud`。
+    fn draw(ui: &Ui, session: &CombatSession, tex: &HudTextures) {
+        overlay(ui, "CombatHud", |ui, at, scale| {
+            let list = ui.get_window_draw_list();
+            let battle = &session.battle;
 
-                ui.text(format!("第 {} 回合", session.battle.round + 1));
+            // 右上角的行动条：底，加每个人的头像按条走（`FUN_004dbb20`）。
+            draw_sprite(
+                &list,
+                tex.sequence_back.as_deref(),
+                hud::SEQUENCE_BACK_RECT,
+                at,
+            );
+            for slot in 0..SLOTS {
+                let Some(c) = battle.get(slot) else { continue };
+                if !c.alive {
+                    continue;
+                }
+                let x = hud::head_x(c.gauge, c.cast_gauge, c.phase == Phase::Executing);
+                let head = tex.heads.get(slot).and_then(|t| t.as_deref());
+                draw_sprite(&list, head, hud::head_rect(x), at);
+            }
+
+            // 底下一排状态面板。原版按角色记录 `+0x18` 那个字节选面板
+            // （`FUN_00518b30`）；这里按战斗位顺序依次占 **[推断]**。
+            let party: Vec<usize> = (0..PARTY_SLOTS)
+                .filter(|&slot| battle.get(slot).is_some())
+                .take(hud::PANELS)
+                .collect();
+            for (panel, &slot) in party.iter().enumerate() {
+                let Some(c) = battle.get(slot) else { continue };
+                let back = tex.panels[(panel != 0) as usize].as_deref();
+                draw_sprite(&list, back, hud::panel_rect(panel), at);
+                if panel == 0 {
+                    draw_sprite(&list, tex.sword_bar.as_deref(), hud::sword_rect(), at);
+                }
+                for (k, gauge) in Gauge::ALL.iter().enumerate() {
+                    let bar = gauge.rect(panel);
+                    draw_sprite(&list, tex.gauge_back.as_deref(), bar, at);
+                    let (value, max) = match gauge {
+                        Gauge::Hp => (c.hp, c.max_hp),
+                        Gauge::Gp => (c.sp, c.max_sp),
+                        Gauge::Mp => (c.mp, c.max_mp),
+                    };
+                    if let Some(fill) =
+                        hud::fill_rect(bar, hud::GAUGE_PADDING, value as f32, max as f32)
+                    {
+                        draw_sprite(&list, tex.gauge_fill[k].as_deref(), fill, at);
+                    }
+                }
+            }
+
+            let Some(turn) = session.turn else {
                 if let Some((notice, _)) = session.notice.as_ref() {
-                    ui.same_line();
-                    ui.text_colored([1.0, 0.8, 0.3, 1.0], format!("  {notice}"));
+                    Self::draw_banner(ui, &list, tex.trick_back2.as_deref(), notice, at, scale);
                 }
+                return;
+            };
 
-                let acting = session.turn.map(|t| t.slot);
-                let cursor_target = match session.turn {
-                    Some(PlayerTurn {
-                        menu: Menu::Target { index, .. },
-                        ..
-                    }) => session.targets().get(index).copied(),
-                    _ => None,
-                };
+            // 左上角：正在选行动的人的头像和竖排名字。
+            if turn.slot < PARTY_SLOTS {
+                let portrait = tex.portraits.get(turn.slot).and_then(|t| t.as_deref());
+                draw_sprite(&list, portrait, hud::PORTRAIT_RECT, at);
+                let name = tex.names.get(turn.slot).and_then(|t| t.as_deref());
+                draw_sprite(&list, name, hud::NAME_RECT, at);
+            }
 
-                ui.separator();
-                ui.text("敌方");
-                for slot in PARTY_SLOTS..SLOTS {
-                    if let Some(c) = session.battle.get(slot) {
-                        let marker = if cursor_target == Some(slot) {
-                            "▶"
+            match turn.menu {
+                Menu::Main { index } => {
+                    let panel = hud::CONTROL_PANEL;
+                    let back = hud::offset(hud::CONTROL_BACK_RECT, panel);
+                    draw_sprite(&list, tex.control_back.as_deref(), back, at);
+                    let focus = RingButton::of_entry(MenuEntry::ALL[index]);
+                    for (i, &button) in RingButton::ALL.iter().enumerate() {
+                        if !button.shown_at_start() {
+                            continue;
+                        }
+                        let look = if button.entry().is_none() {
+                            ButtonLook::Disabled
+                        } else if button == focus {
+                            ButtonLook::Focused
                         } else {
-                            " "
+                            ButtonLook::Normal
                         };
-                        Self::hp_line(ui, marker, session.name(slot), c);
+                        let sprite = tex.buttons[i][look as usize].as_deref();
+                        draw_sprite(&list, sprite, hud::offset(button.rect(), panel), at);
                     }
                 }
-
-                ui.separator();
-                ui.text("我方");
-                for slot in 0..PARTY_SLOTS {
-                    if let Some(c) = session.battle.get(slot) {
-                        let marker = if cursor_target == Some(slot) || acting == Some(slot) {
-                            "▶"
-                        } else {
-                            " "
-                        };
-                        Self::hp_line(ui, marker, session.name(slot), c);
-                        ui.same_line();
-                        ui.text(format!("气{}/{} 神{}/{}", c.sp, c.max_sp, c.mp, c.max_mp));
-                    }
-                }
-
-                ui.separator();
-                for line in session.log.iter() {
-                    ui.text(line);
-                }
-
-                if let Some(turn) = session.turn {
-                    ui.separator();
-                    Self::draw_menu(ui, session, turn);
-                }
-            });
-    }
-
-    fn hp_line(ui: &Ui, marker: &str, name: &str, c: &Combatant) {
-        let fraction = if c.max_hp > 0 {
-            (c.hp as f32 / c.max_hp as f32).clamp(0., 1.)
-        } else {
-            0.
-        };
-        let status = if !c.alive { " 倒下" } else { "" };
-        ui.text(format!("{marker}{name:<8}"));
-        ui.same_line();
-        imgui::ProgressBar::new(fraction)
-            .size([160., 0.])
-            .overlay_text(format!("{}/{}{}", c.hp, c.max_hp, status))
-            .build(ui);
-    }
-
-    fn draw_menu(ui: &Ui, session: &CombatSession, turn: PlayerTurn) {
-        let who = session.name(turn.slot);
-        match turn.menu {
-            Menu::Main { index } => {
-                ui.text(format!("{who}："));
-                for (i, entry) in MenuEntry::ALL.iter().enumerate() {
-                    ui.same_line();
-                    ui.text(format!(
-                        "{}{}",
-                        if i == index { "▶" } else { " " },
-                        entry.label()
-                    ));
-                }
-            }
-            Menu::Skills { index } => {
-                ui.text(format!("{who} 仙术："));
-                for (i, s) in session.skills(turn.slot).iter().enumerate() {
-                    let affordable = session.can_afford(turn.slot, i);
-                    let line = format!(
-                        "{}{} (气{} 神{})",
-                        if i == index { "▶" } else { " " },
-                        s.name,
-                        s.effect.sp_cost,
-                        s.effect.mp_cost
-                    );
-                    if affordable {
-                        ui.text(line);
-                    } else {
-                        ui.text_disabled(line);
-                    }
-                }
-            }
-            Menu::Items { index } => {
-                ui.text(format!("{who} 道具："));
-                for (i, it) in session.items().iter().enumerate() {
-                    let line = format!(
-                        "{}{} ×{}",
-                        if i == index { "▶" } else { " " },
-                        it.name,
-                        it.count
-                    );
-                    if session.item_available(i) {
-                        ui.text(line);
-                    } else {
-                        ui.text_disabled(line);
-                    }
-                }
-            }
-            Menu::Target { action, .. } => {
-                let what = match action {
-                    Action::Attack => "攻击".to_string(),
-                    Action::Cast(i) => session
+                Menu::Skills { index } => {
+                    let rows: Vec<(Vec<String>, bool)> = session
                         .skills(turn.slot)
-                        .get(i)
-                        .map(|s| s.name.clone())
-                        .unwrap_or_default(),
-                    Action::UseItem(i) => session
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| {
+                            let cells = vec![s.name.clone(), s.effect.mp_cost.to_string()];
+                            (cells, session.can_afford(turn.slot, i))
+                        })
+                        .collect();
+                    Self::draw_list(
+                        ui,
+                        &list,
+                        (tex.magic_back.as_deref(), tex.row_select.as_deref()),
+                        hud::MAGIC_PANEL,
+                        &hud::MAGIC_COLUMNS,
+                        &rows,
+                        index,
+                        at,
+                        scale,
+                    );
+                }
+                Menu::Items { index } => {
+                    let rows: Vec<(Vec<String>, bool)> = session
                         .items()
-                        .get(i)
-                        .map(|it| it.name.clone())
-                        .unwrap_or_default(),
-                };
-                ui.text(format!("{who} {what} → 选择目标（上下切换，确定）"));
+                        .iter()
+                        .enumerate()
+                        .map(|(i, it)| {
+                            let cells = vec![it.name.clone(), it.count.to_string()];
+                            (cells, session.item_available(i))
+                        })
+                        .collect();
+                    Self::draw_list(
+                        ui,
+                        &list,
+                        (tex.item_back.as_deref(), tex.row_select.as_deref()),
+                        hud::ITEM_PANEL,
+                        &hud::ITEM_COLUMNS,
+                        &rows,
+                        index,
+                        at,
+                        scale,
+                    );
+                }
+                Menu::Target { index, .. } => {
+                    // 原版在目标头顶放一个 3D 指针（`ui\combat\pointer\pointer.cvd`），
+                    // CVD 还没移植；先把目标的名字写在招式名横幅上。
+                    let targets = session.targets();
+                    if let Some(&target) = targets.get(index) {
+                        let name = session.name(target).to_string();
+                        Self::draw_banner(ui, &list, tex.trick_back.as_deref(), &name, at, scale);
+                    }
+                }
+            }
+
+            if let Some((notice, _)) = session.notice.as_ref() {
+                Self::draw_banner(ui, &list, tex.trick_back2.as_deref(), notice, at, scale);
+            }
+        });
+    }
+
+    /// 仙术 / 道具列表：底图、选中行、各列文字。
+    #[allow(clippy::too_many_arguments)]
+    fn draw_list(
+        ui: &Ui,
+        list: &imgui::DrawListMut<'_>,
+        (back, select): (Option<&Sprite>, Option<&Sprite>),
+        panel: hud::Rect,
+        columns: &[i32],
+        rows: &[(Vec<String>, bool)],
+        index: usize,
+        at: &dyn Fn(i32, i32) -> [f32; 2],
+        scale: f32,
+    ) {
+        draw_sprite(list, back, hud::offset(hud::LIST_BACK_RECT, panel), at);
+        let area = hud::offset(hud::LIST_ROWS, panel);
+        let first = hud::first_visible(index, rows.len());
+        let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
+        let font_px = ui.current_font_size();
+        for (line, (cells, enabled)) in rows.iter().enumerate().skip(first).take(hud::VISIBLE_ROWS)
+        {
+            let y = area.1 + (line - first) as i32 * hud::ROW_HEIGHT;
+            if line == index {
+                draw_sprite(list, select, (area.0, y, area.2, y + hud::ROW_HEIGHT), at);
+            }
+            let color = if *enabled {
+                LIST_TEXT
+            } else {
+                LIST_TEXT_DISABLED
+            };
+            let mut x = area.0;
+            for (cell, width) in cells.iter().zip(columns) {
+                let [sx, sy] = at(x + 2, y);
+                let dy = (hud::ROW_HEIGHT as f32 * scale - font_px) * 0.5;
+                list.add_text([sx, sy + dy], color, cell);
+                x += width;
             }
         }
+    }
+
+    /// 招式名横幅，字居中。
+    fn draw_banner(
+        ui: &Ui,
+        list: &imgui::DrawListMut<'_>,
+        back: Option<&Sprite>,
+        text: &str,
+        at: &dyn Fn(i32, i32) -> [f32; 2],
+        scale: f32,
+    ) {
+        let r = hud::TRICK_NAME_RECT;
+        draw_sprite(list, back, r, at);
+        let _font = game_font(GameFontSize::LARGE).map(|f| ui.push_font(f));
+        let [w, h] = ui.calc_text_size(text);
+        let [x0, y0] = at(r.0, r.1);
+        let (bw, bh) = ((r.2 - r.0) as f32 * scale, (r.3 - r.1) as f32 * scale);
+        list.add_text(
+            [x0 + (bw - w) * 0.5, y0 + (bh - h) * 0.5],
+            BANNER_TEXT,
+            text,
+        );
     }
 
     fn draw_game_over(ui: &Ui) {
@@ -898,6 +1073,10 @@ impl SceCommand for SceCommandCombat {
         self.start(scene_manager.clone(), state);
         // 战场和参战的人。规则层不碰这些实体，摆不出来也照打。
         self.build_stage(&scene_manager, state);
+        if self.session.is_some() {
+            let models = self.slot_models(state);
+            self.hud = Some(HudTextures::load(state, &models));
+        }
     }
 
     fn update(
@@ -947,8 +1126,8 @@ impl SceCommand for SceCommandCombat {
             session.tick(delta_sec)
         };
 
-        if let Some(session) = self.session.as_ref() {
-            Self::draw(ui, session);
+        if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
+            Self::draw(ui, session, hud);
         }
 
         match outcome {

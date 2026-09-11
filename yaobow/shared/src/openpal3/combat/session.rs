@@ -17,6 +17,7 @@ use std::collections::VecDeque;
 use super::actions::{ATTR_HP, ItemEffect, SPECIAL_COST_GU, SPECIAL_COST_MONEY, SkillEffect};
 use super::ai::{self, Decision, SkillOption};
 use super::formulas::CombatRng;
+use super::hud;
 use super::settlement::{self, DefeatedEnemy, Spoils, Survivor};
 use super::state::{Battle, Due, K_CONFUSED, K_SLEEP, Outcome, SLOTS, Side};
 
@@ -500,15 +501,22 @@ impl CombatSession {
         let slot = turn.slot;
         match turn.menu {
             Menu::Main { index } => match input {
-                Input::Up | Input::Left => {
-                    turn.menu = Menu::Main {
-                        index: (index + MenuEntry::ALL.len() - 1) % MenuEntry::ALL.len(),
+                Input::Up | Input::Down | Input::Left | Input::Right => {
+                    // 焦点在控制盘的九宫格上走，见 `hud::ring_move`。
+                    let step = match input {
+                        Input::Up => (0, -1),
+                        Input::Down => (0, 1),
+                        Input::Left => (-1, 0),
+                        _ => (1, 0),
                     };
-                }
-                Input::Down | Input::Right => {
-                    turn.menu = Menu::Main {
-                        index: (index + 1) % MenuEntry::ALL.len(),
-                    };
+                    let from = hud::RingButton::of_entry(MenuEntry::ALL[index]);
+                    let to = hud::ring_move(from, step, |b| b.entry().is_some());
+                    if let Some(i) = to
+                        .entry()
+                        .and_then(|e| MenuEntry::ALL.iter().position(|x| *x == e))
+                    {
+                        turn.menu = Menu::Main { index: i };
+                    }
                 }
                 Input::Confirm => match MenuEntry::ALL[index] {
                     MenuEntry::Attack => {
@@ -1022,7 +1030,7 @@ mod tests {
     fn a_heal_targets_our_own_side_and_cancel_walks_back() {
         let mut s = session();
         run_until_turn(&mut s);
-        s.input(Input::Down); // 仙术
+        s.input(Input::Left); // 仙术
         s.input(Input::Confirm);
         assert_eq!(s.turn.unwrap().menu, Menu::Skills { index: 0 });
         s.input(Input::Confirm);
@@ -1038,7 +1046,7 @@ mod tests {
         let mut s = session();
         s.battle.get_mut(0).unwrap().sp = 3;
         run_until_turn(&mut s);
-        s.input(Input::Down);
+        s.input(Input::Left); // 仙术
         s.input(Input::Confirm);
         s.input(Input::Confirm);
         assert_eq!(s.turn.unwrap().menu, Menu::Skills { index: 0 });
@@ -1051,9 +1059,7 @@ mod tests {
         s.battle.escape_forbidden = true;
         run_until_turn(&mut s);
         s.input(Input::Down);
-        s.input(Input::Down);
-        s.input(Input::Down);
-        s.input(Input::Down); // 逃跑
+        s.input(Input::Right); // 逃跑
         s.input(Input::Confirm);
         assert!(s.turn.is_none());
         assert!(matches!(s.pending, Some(Pending::Escape { slot: 0 })));
@@ -1142,7 +1148,6 @@ mod tests {
         run_until_turn(&mut s);
         s.battle.get_mut(0).unwrap().hp = 100;
 
-        s.input(Input::Down);
         s.input(Input::Down); // 道具
         s.input(Input::Confirm);
         assert_eq!(s.turn.unwrap().menu, Menu::Items { index: 0 });
@@ -1172,7 +1177,6 @@ mod tests {
         s.set_items(vec![potion(6201, 40, 1)]);
         run_until_turn(&mut s);
         s.input(Input::Down);
-        s.input(Input::Down);
         s.input(Input::Confirm);
         s.input(Input::Confirm);
         s.input(Input::Cancel);
@@ -1186,7 +1190,6 @@ mod tests {
         let mut s = session();
         s.set_items(vec![potion(6201, 40, 0)]);
         run_until_turn(&mut s);
-        s.input(Input::Down);
         s.input(Input::Down);
         s.input(Input::Confirm);
         s.input(Input::Confirm);
@@ -1215,7 +1218,6 @@ mod tests {
             effect,
         }]);
         run_until_turn(&mut s);
-        s.input(Input::Down);
         s.input(Input::Down);
         s.input(Input::Confirm);
         s.input(Input::Confirm);

@@ -14,6 +14,7 @@ pub mod actions;
 pub mod ai;
 pub mod encounter;
 pub mod formulas;
+pub mod hud;
 pub mod session;
 pub mod settlement;
 pub mod stage;

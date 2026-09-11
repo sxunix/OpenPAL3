@@ -250,11 +250,9 @@ impl AdventureDirector {
         let mut p = self.props.borrow_mut();
         let scene_manager = p.scene_manager.clone();
         let cmd: Box<dyn crate::scripting::sce::SceCommand> = if boss {
-            Box::new(
-                crate::scripting::sce::commands::SceCommandCombat::new_boss(
-                    ids[0], ids[1], ids[2], ids[3], ids[4], ids[5],
-                ),
-            )
+            Box::new(crate::scripting::sce::commands::SceCommandCombat::new_boss(
+                ids[0], ids[1], ids[2], ids[3], ids[4], ids[5],
+            ))
         } else {
             Box::new(crate::scripting::sce::commands::SceCommandCombat::new(
                 ids[0], ids[1], ids[2], ids[3],

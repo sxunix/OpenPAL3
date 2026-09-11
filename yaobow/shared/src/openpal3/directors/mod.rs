@@ -13,8 +13,8 @@ pub trait SceneManagerExtensions {
 
     fn get_resolved_role(&self, state: &SceState, role_id: i32) -> Option<ComRc<IEntity>> {
         let resolved = resolve_role_id(state, role_id);
-        self.scn_scene()
-            .unwrap()
+        // 战斗舞台压在栈顶时没有 ScnScene；这时找不到人，而不是崩。
+        self.scn_scene()?
             .inner::<crate::openpal3::scene::ScnScene>()
             .get_role_entity(resolved)
     }
