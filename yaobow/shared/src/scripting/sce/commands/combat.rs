@@ -170,6 +170,27 @@ pub struct SceCommandCombat {
     hud: Option<HudTextures>,
     /// 舞台上每个战斗位的人（`SLOTS` 个，没人的是 `None`）。
     actors: Vec<Option<StageActor>>,
+    /// 正在演的那一次行动（`CombatSession::staging`）。
+    run: Option<StageRun>,
+}
+
+/// 一次行动的演出：攻击是走过去 → 出手 → 结算 → 走回来，其余原地出手。
+#[derive(Clone, Copy)]
+struct StageRun {
+    slot: usize,
+    kind: ActKind,
+    step: StageStep,
+}
+
+#[derive(Clone, Copy, PartialEq)]
+enum StageStep {
+    Begin,
+    WalkOut,
+    /// 出手动作开始了 `t` 秒。
+    Strike {
+        t: f32,
+    },
+    WalkBack,
 }
 
 /// 舞台上的一个人，和上一帧看到的状态。
@@ -183,8 +204,6 @@ struct StageActor {
     /// 站位（`[RolePos]`），走位去了还要回来。
     home: Vec3,
     walk: Option<Walk>,
-    /// 这一刀砍完要走回去。
-    return_after_attack: bool,
 }
 
 /// 走位中。
@@ -328,6 +347,7 @@ impl SceCommandCombat {
             stage: None,
             hud: None,
             actors: Vec::new(),
+            run: None,
         }
     }
 
@@ -526,7 +546,6 @@ impl SceCommandCombat {
                 hide_in: None,
                 home,
                 walk: None,
-                return_after_attack: false,
             });
         }
 
@@ -560,6 +579,7 @@ impl SceCommandCombat {
     /// 散场：把舞台弹掉。
     fn drop_stage(&mut self, scene_manager: &ComRc<ISceneManager>) {
         self.actors.clear();
+        self.run = None;
         if self.stage.take().is_some() {
             scene_manager.pop_scene();
         }
@@ -905,6 +925,124 @@ impl SceCommandCombat {
         }
     }
 
+    /// 演交给舞台的那一次行动（`CombatSession::staging`）：攻击走过去 →
+    /// 出手 → 隔 `HIT_DELAY` 结算 → 走回来；仙术、道具原地出手。演完放开时钟。
+    fn drive_staging(&mut self, delta_sec: f32) {
+        use motion::Motion;
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let Some(staging) = session.staging else {
+            self.run = None;
+            return;
+        };
+        let slot = staging.slot;
+        // 新的一次：从登记的行动里读种类和目标。
+        if self.run.map(|r| r.slot) != Some(slot) {
+            let kind = match session.pending {
+                Some(Pending::Attack { .. }) => ActKind::Attack,
+                Some(Pending::Cast { .. }) => ActKind::Cast,
+                Some(Pending::Item { target, .. }) => ActKind::Item {
+                    hostile: (target < PARTY_SLOTS) != (slot < PARTY_SLOTS),
+                },
+                _ => {
+                    session.release();
+                    return;
+                }
+            };
+            self.run = Some(StageRun {
+                slot,
+                kind,
+                step: StageStep::Begin,
+            });
+        }
+        let target = match session.pending {
+            Some(Pending::Attack { target, .. })
+            | Some(Pending::Cast { target, .. })
+            | Some(Pending::Item { target, .. }) => Some(target),
+            _ => None,
+        };
+        let target_home = target
+            .and_then(|t| self.actors.get(t))
+            .and_then(|a| a.as_ref())
+            .map(|a| a.home);
+        let Some(run) = self.run.as_mut() else { return };
+        let Some(actor) = self.actors.get_mut(slot).and_then(|a| a.as_mut()) else {
+            // 台上没这个人：直接结算、放开。
+            session.release();
+            self.run = None;
+            return;
+        };
+        let Some(rc) = RoleController::get_role_controller(actor.entity.clone()) else {
+            session.release();
+            self.run = None;
+            return;
+        };
+        let rc = rc.inner::<RoleController>();
+        let set = actor.set;
+        let play = |m: Motion, mode: RoleAnimationRepeatMode| {
+            set.name(m).is_some_and(|name| rc.play_anim(name, mode))
+        };
+        let start_strike = |run: &mut StageRun| {
+            rc.set_auto_play_idle(true);
+            if let Some(m) = motion::strike_motion(run.kind) {
+                play(m, RoleAnimationRepeatMode::Repeat(1));
+            }
+            run.step = StageStep::Strike { t: 0. };
+        };
+
+        match run.step {
+            StageStep::Begin => match (run.kind, target_home) {
+                (ActKind::Attack, Some(to)) => {
+                    let me = actor.home;
+                    let (x, z) = motion::approach_point((to.x, to.z), (me.x, me.z));
+                    actor.walk = Some(Walk::To {
+                        dest: Vec3::new(x, me.y, z),
+                        face: to,
+                    });
+                    rc.set_auto_play_idle(true);
+                    play(Motion::Move, RoleAnimationRepeatMode::Loop);
+                    run.step = StageStep::WalkOut;
+                }
+                _ => start_strike(run),
+            },
+            StageStep::WalkOut => {
+                if actor.walk.is_none() {
+                    start_strike(run);
+                }
+            }
+            StageStep::Strike { t } => {
+                let t = t + delta_sec;
+                run.step = StageStep::Strike { t };
+                if t >= motion::HIT_DELAY && !staging.landed {
+                    session.strike();
+                }
+                let done = t >= motion::HIT_DELAY
+                    && rc.state() != crate::openpal3::scene::RoleState::PlayingAnimation;
+                if done {
+                    let at = actor.entity.transform().borrow().position();
+                    let (dx, dz) = (at.x - actor.home.x, at.z - actor.home.z);
+                    let away = (dx * dx + dz * dz).sqrt() > motion::ARRIVE_DISTANCE;
+                    let alive = session.battle.get(slot).is_some_and(|c| c.alive);
+                    if away && alive {
+                        actor.walk = Some(Walk::Home);
+                        play(Motion::Move, RoleAnimationRepeatMode::Loop);
+                        run.step = StageStep::WalkBack;
+                    } else {
+                        session.release();
+                        self.run = None;
+                    }
+                }
+            }
+            StageStep::WalkBack => {
+                if actor.walk.is_none() {
+                    session.release();
+                    self.run = None;
+                }
+            }
+        }
+    }
+
     /// 让舞台上的人跟着战况做动作（`combat::motion`）。
     fn animate_stage(&mut self, delta_sec: f32) {
         let Some(session) = self.session.as_ref() else {
@@ -950,24 +1088,6 @@ impl SceCommandCombat {
                 set.name(m).is_some_and(|name| rc.play_anim(name, mode))
             };
 
-            // 攻击的出手段一开始：走到目标跟前（`FUN_0050da90`）。
-            let attack_target = pending.filter(|p| p.slot() == slot).and_then(|p| match p {
-                Pending::Attack { target, .. } => Some(target),
-                _ => None,
-            });
-            if actor.last.acting.is_none() && now.acting == Some(ActKind::Attack) {
-                if let Some(target) = attack_target.and_then(|t| homes.get(t).copied().flatten()) {
-                    let me = actor.home;
-                    let (x, z) = motion::approach_point((target.x, target.z), (me.x, me.z));
-                    actor.walk = Some(Walk::To {
-                        dest: Vec3::new(x, me.y, z),
-                        face: target,
-                    });
-                    rc.set_auto_play_idle(true);
-                    play(motion::Motion::Move, RoleAnimationRepeatMode::Loop);
-                }
-            }
-
             // 走一帧。
             if let Some(walk) = actor.walk {
                 let (dest, face_at_end) = match walk {
@@ -996,23 +1116,6 @@ impl SceCommandCombat {
             }
 
             match motion::react(&actor.last, &now) {
-                Some(Play::Once(motion::Motion::Attack)) => {
-                    // 还没走到就结算了：先落到跟前再砍。
-                    if let Some(Walk::To { dest, face }) = actor.walk.take() {
-                        actor
-                            .entity
-                            .transform()
-                            .borrow_mut()
-                            .set_position(&dest)
-                            .look_at(&Vec3::new(face.x, dest.y, face.z));
-                    }
-                    rc.set_auto_play_idle(true);
-                    play(motion::Motion::Attack, RoleAnimationRepeatMode::Repeat(1));
-                    let at = actor.entity.transform().borrow().position();
-                    let (dx, dz) = (at.x - actor.home.x, at.z - actor.home.z);
-                    actor.return_after_attack =
-                        (dx * dx + dz * dz).sqrt() > motion::ARRIVE_DISTANCE;
-                }
                 Some(Play::Once(m)) => {
                     rc.set_auto_play_idle(true);
                     play(m, RoleAnimationRepeatMode::Repeat(1));
@@ -1050,17 +1153,6 @@ impl SceCommandCombat {
                     {
                         play(rest, RoleAnimationRepeatMode::Loop);
                     }
-                }
-            }
-            // 砍完（回到了待机）就往回走。
-            if actor.return_after_attack
-                && actor.walk.is_none()
-                && rc.state() == crate::openpal3::scene::RoleState::Idle
-            {
-                actor.return_after_attack = false;
-                if now.alive {
-                    actor.walk = Some(Walk::Home);
-                    play(motion::Motion::Move, RoleAnimationRepeatMode::Loop);
                 }
             }
             actor.last = now;
@@ -1334,6 +1426,12 @@ impl SceCommand for SceCommandCombat {
             return true;
         };
 
+        // 有舞台、没在快进，才把出手交给舞台演。
+        session.stage_driven = !state.fast_forward() && !self.actors.is_empty();
+        if !session.stage_driven && session.staging.is_some() {
+            session.release();
+        }
+
         // Fast-forward drives the whole battle in one frame, the AI taking
         // the party's turns; a real frame takes one step.
         let outcome = if state.fast_forward() {
@@ -1353,6 +1451,7 @@ impl SceCommand for SceCommandCombat {
             session.tick(delta_sec)
         };
 
+        self.drive_staging(delta_sec);
         self.animate_stage(delta_sec);
         if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
             Self::draw(ui, session, hud);

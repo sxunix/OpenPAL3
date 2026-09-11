@@ -200,6 +200,14 @@ impl Pending {
     }
 }
 
+/// 出手条满了、交给舞台演的那一次行动。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Staging {
+    pub slot: usize,
+    /// 已经在出手那一刻结算过了，只等人走回去。
+    pub landed: bool,
+}
+
 #[derive(Clone)]
 pub struct CombatSession {
     pub battle: Battle,
@@ -222,6 +230,16 @@ pub struct CombatSession {
     /// 选好了但还在出手段的那个行动，见 [`Pending`]。同一时刻只可能有一个
     /// ——调度器一次只排一个行动任务。
     pub pending: Option<Pending>,
+    /// 交给舞台演出的那一次行动（见 [`CombatSession::stage_driven`]）。
+    pub staging: Option<Staging>,
+    /// 出手条满时先别结算，等舞台演到出手那一刻再调 [`CombatSession::strike`]。
+    ///
+    /// 原版：出手条满后 `FUN_00514870` 把任务切到 0x514ae0，那里冻结出手者
+    /// 自己的行动条（`FUN_004db920(k, 1)`），排走位 / 出手 / 结算一串步骤，
+    /// 结算由步骤按时间点触发。**演出期间移植端整个时钟停住**——原版 0x514ae0
+    /// 只冻结出手者，别人的条照走；移植端同一时刻只挂得住一个行动，所以简化。
+    /// 快进和测试不开这个开关，行为和以前一样。
+    pub stage_driven: bool,
     finished: Option<Outcome>,
 }
 
@@ -240,6 +258,8 @@ impl CombatSession {
             turn: None,
             notice: None,
             pending: None,
+            staging: None,
+            stage_driven: false,
             defeated: Vec::new(),
             casts: Vec::new(),
             items: Vec::new(),
@@ -371,7 +391,7 @@ impl CombatSession {
                 self.notice = None;
             }
         }
-        if self.turn.is_some() {
+        if self.turn.is_some() || self.staging.is_some() {
             return None;
         }
         if self.settle_outcome() {
@@ -386,6 +406,16 @@ impl CombatSession {
         match due {
             // 出手条满了：把先前选定的行动结算掉。
             Due::Executed(slot) => {
+                let staged = self.stage_driven
+                    && matches!(self.pending, Some(p) if p.slot() == slot)
+                    && !matches!(self.pending, Some(Pending::Escape { .. }));
+                if staged {
+                    self.staging = Some(Staging {
+                        slot,
+                        landed: false,
+                    });
+                    return None;
+                }
                 self.resolve_pending(slot);
                 self.settle_outcome();
                 return self.finished;
@@ -427,6 +457,26 @@ impl CombatSession {
         }
         self.settle_outcome();
         self.finished
+    }
+
+    /// 舞台演到出手那一刻：把交出去的行动结算掉。重复调用无害。
+    pub fn strike(&mut self) {
+        let Some(st) = self.staging.as_mut() else {
+            return;
+        };
+        if st.landed {
+            return;
+        }
+        st.landed = true;
+        let slot = st.slot;
+        self.resolve_pending(slot);
+        self.settle_outcome();
+    }
+
+    /// 舞台演完（人走回去了）：放开时钟。没结算过的先结算。
+    pub fn release(&mut self) {
+        self.strike();
+        self.staging = None;
     }
 
     /// 出手段结束，行动生效。原版在这一步之后一律走 `FUN_004f4820` →
@@ -1051,6 +1101,47 @@ mod tests {
         s.input(Input::Confirm);
         assert_eq!(s.turn.unwrap().menu, Menu::Skills { index: 0 });
         assert!(s.notice.is_some());
+    }
+
+    #[test]
+    fn a_staged_attack_waits_for_the_strike_and_holds_the_clock() {
+        let mut s = session();
+        run_until_turn(&mut s);
+        s.stage_driven = true;
+        let enemy_hp = s.battle.get(5).unwrap().hp;
+        s.input(Input::Confirm); // 攻击
+        s.input(Input::Confirm); // 第一个目标
+        for _ in 0..400 {
+            s.tick(0.05);
+            match s.staging {
+                Some(st) if st.slot == 0 => break,
+                // 敌人先出手：它那一场直接演完。
+                Some(_) => s.release(),
+                None => {}
+            }
+        }
+        let st = s.staging.expect("出手条满后应交给舞台");
+        assert_eq!((st.slot, st.landed), (0, false));
+        assert_eq!(s.battle.get(5).unwrap().hp, enemy_hp, "出手前不结算");
+
+        // 演出期间时钟不走。
+        let before: Vec<f32> = (0..SLOTS)
+            .filter_map(|k| s.battle.get(k).map(|c| c.gauge))
+            .collect();
+        for _ in 0..20 {
+            s.tick(0.05);
+        }
+        let after: Vec<f32> = (0..SLOTS)
+            .filter_map(|k| s.battle.get(k).map(|c| c.gauge))
+            .collect();
+        assert_eq!(before, after);
+
+        s.strike();
+        assert!(s.battle.get(5).unwrap().hp < enemy_hp, "出手那一刻结算");
+        assert!(s.staging.unwrap().landed);
+        s.strike(); // 重复调用不再结算
+        s.release();
+        assert!(s.staging.is_none());
     }
 
     #[test]

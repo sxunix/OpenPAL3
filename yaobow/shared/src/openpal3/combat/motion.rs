@@ -11,9 +11,12 @@
 //! 敌人上场时 `FUN_004f8bb0` 先把整个战斗位清零、再把这个字节写成 0，所以
 //! 敌人恒走怪物那套；我方的战斗位是从冒险角色记录整块拷来的。
 //!
-//! 攻击时走到目标跟前再回来：去程照走位任务 `FUN_0050da90`（480/秒、停在
-//! 离目标 42 处）。**出手的时刻是移植端的**——规则层结算那一刻出手、挨打，
-//! 原版是按动作帧触发的，还没逆。逆向记录在 `switch/re/notes/combat_motion.md`。
+//! 时序照原版：出手段里原地摆 z061 等出手条满（`FUN_00514870` 调
+//! `FUN_0050a8e0(4)`），条满后才排走位、出手、结算（任务 0x514ae0）。攻击
+//! 走位照 `FUN_0050da90`（480/秒、停在离目标 42 处）。出手动作开始后隔多久
+//! 结算是 **[推断]**（[`HIT_DELAY`]），原版由步骤函数按数据表的时间点触发，
+//! 还没逆。演出由舞台驱动（`combat.rs`），这里只放规则和常量。逆向记录在
+//! `switch/re/notes/combat_motion.md`。
 
 use super::state::{Combatant, K_SLEEP, Phase};
 
@@ -189,8 +192,12 @@ pub fn hp_condition(hp: i32, max: i32) -> u8 {
 /// 仙术预备（`+0x19a4 == 4`）> 防御（战斗位 `+0x474`）> 眠定（状态 0x11 睡、
 /// 0x0e 封；封移植端没有）> 濒死（状况 4）> 待机。倒下（状况 5）另走
 /// [`Play::Stay`]。
+///
+/// `+0x19a4 = 4` 是行动任务一进出手段就写的（`FUN_0050a8e0(4)`，0x51498f），
+/// **不分行动种类**——攻击、道具也一样站成 z061。怪物那套没有这个名字，
+/// 照旧站着。逃跑除外（它有自己的 z19）。
 pub fn rest_motion(now: &Snapshot) -> Motion {
-    if now.acting == Some(ActKind::Cast) {
+    if now.acting.is_some_and(|k| k != ActKind::Escape) {
         Motion::MagicWait
     } else if now.defending {
         Motion::Defence
@@ -216,23 +223,17 @@ pub fn react(prev: &Snapshot, now: &Snapshot) -> Option<Play> {
         return None;
     }
 
-    // 出手段结束：行动生效的那一刻。
-    if let (Some(kind), None) = (prev.acting, now.acting) {
+    // 出手、结算那一段由舞台演（[`strike_motion`]），这里不管。
+    // 进入出手段：摆预备架势；逃跑开始跑。
+    if let (None, Some(kind)) = (prev.acting, now.acting) {
         return Some(match kind {
-            ActKind::Attack => Play::Once(Motion::Attack),
-            ActKind::Cast => Play::Once(Motion::Magic),
-            ActKind::Item { hostile: false } => Play::Once(Motion::ItemRecover),
-            ActKind::Item { hostile: true } => Play::Once(Motion::ItemAttack),
-            ActKind::Escape => Play::Rest,
+            ActKind::Escape => Play::Loop(Motion::Flee),
+            _ => Play::Loop(Motion::MagicWait),
         });
     }
-    // 进入出手段：仙术先摆预备架势，逃跑开始跑。
-    if let (None, Some(kind)) = (prev.acting, now.acting) {
-        match kind {
-            ActKind::Cast => return Some(Play::Loop(Motion::MagicWait)),
-            ActKind::Escape => return Some(Play::Loop(Motion::Flee)),
-            _ => {}
-        }
+    // 逃跑结果出来了（没逃掉）：回去站着。
+    if prev.acting == Some(ActKind::Escape) && now.acting.is_none() {
+        return Some(Play::Rest);
     }
 
     // 挨打。
@@ -248,12 +249,29 @@ pub fn react(prev: &Snapshot, now: &Snapshot) -> Option<Play> {
     if now.defending && !prev.defending {
         return Some(Play::Once(Motion::StartDefence));
     }
-    // 其余歇着的样子变了（收起防御、睡着 / 醒来、回血脱离濒死……）。
-    if rest_motion(prev) != rest_motion(now) {
+    // 其余歇着的样子变了（收起防御、睡着 / 醒来、回血脱离濒死……）。出手段
+    // 结束引起的变化不算：那时舞台正在演出手动作，不能打断。
+    if prev.acting == now.acting && rest_motion(prev) != rest_motion(now) {
         return Some(Play::Rest);
     }
     None
 }
+
+/// 出手那一下做什么动作。攻击要先走过去（见 [`approach_point`]）。
+pub fn strike_motion(kind: ActKind) -> Option<Motion> {
+    match kind {
+        ActKind::Attack => Some(Motion::Attack),
+        ActKind::Cast => Some(Motion::Magic),
+        ActKind::Item { hostile: false } => Some(Motion::ItemRecover),
+        ActKind::Item { hostile: true } => Some(Motion::ItemAttack),
+        ActKind::Escape => None,
+    }
+}
+
+/// 出手动作开始后多久结算（对方挨打、掉血）**[推断]**：原版由步骤函数按
+/// 数据表里的时间点触发（道具编排 `FUN_00500550` 读 `+0x9a8` 那一格），攻击
+/// 那一格还没逆。
+pub const HIT_DELAY: f32 = 0.3;
 
 // ---------------------------------------------------------------- 走位
 
@@ -388,45 +406,44 @@ mod tests {
     }
 
     #[test]
-    fn an_attack_lands_when_the_cast_gauge_runs_out() {
-        let mut acting = standing();
-        acting.acting = Some(ActKind::Attack);
-        // 进出手段时攻击不摆架势（原版此时是往目标跟前走，没做）。
-        assert_eq!(react(&standing(), &acting), None);
-        // 出手段结束 → 出手。
-        assert_eq!(
-            react(&acting, &standing()),
-            Some(Play::Once(Motion::Attack))
-        );
+    fn every_action_waits_in_the_same_pose() {
+        // FUN_0050a8e0(4) 不分种类：攻击、仙术、道具进出手段都摆 z061。
+        for kind in [
+            ActKind::Attack,
+            ActKind::Cast,
+            ActKind::Item { hostile: false },
+            ActKind::Item { hostile: true },
+        ] {
+            let mut acting = standing();
+            acting.acting = Some(kind);
+            assert_eq!(
+                react(&standing(), &acting),
+                Some(Play::Loop(Motion::MagicWait))
+            );
+            assert_eq!(rest_motion(&acting), Motion::MagicWait);
+            // 出手结算那一段归舞台，react 不插手。
+            assert_eq!(react(&acting, &standing()), None);
+        }
     }
 
     #[test]
-    fn a_spell_waits_then_fires() {
-        let mut casting = standing();
-        casting.acting = Some(ActKind::Cast);
+    fn the_strike_motion_depends_on_the_action() {
+        assert_eq!(strike_motion(ActKind::Attack), Some(Motion::Attack));
+        assert_eq!(strike_motion(ActKind::Cast), Some(Motion::Magic));
         assert_eq!(
-            react(&standing(), &casting),
-            Some(Play::Loop(Motion::MagicWait))
+            strike_motion(ActKind::Item { hostile: false }),
+            Some(Motion::ItemRecover)
         );
         assert_eq!(
-            react(&casting, &standing()),
-            Some(Play::Once(Motion::Magic))
+            strike_motion(ActKind::Item { hostile: true }),
+            Some(Motion::ItemAttack)
         );
-    }
-
-    #[test]
-    fn items_split_by_which_side_they_hit() {
-        let mut healing = standing();
-        healing.acting = Some(ActKind::Item { hostile: false });
+        assert_eq!(strike_motion(ActKind::Escape), None);
+        assert_eq!(MotionSet::Party.name(Motion::MagicWait), Some("z061"));
         assert_eq!(
-            react(&healing, &standing()),
-            Some(Play::Once(Motion::ItemRecover))
-        );
-        let mut throwing = standing();
-        throwing.acting = Some(ActKind::Item { hostile: true });
-        assert_eq!(
-            react(&throwing, &standing()),
-            Some(Play::Once(Motion::ItemAttack))
+            MotionSet::Monster.name(Motion::MagicWait),
+            None,
+            "怪物照旧站着"
         );
     }
 
@@ -520,7 +537,7 @@ mod tests {
         assert_eq!(react(&low, &standing()), Some(Play::Rest));
         // casting 压过濒死。
         let mut casting_low = low;
-        casting_low.acting = Some(ActKind::Cast);
+        casting_low.acting = Some(ActKind::Attack);
         assert_eq!(rest_motion(&casting_low), Motion::MagicWait);
     }
 
