@@ -83,6 +83,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_shock: vec![],
                 flexeff_cam: vec![],
                 flexeff_meteor: vec![],
                 flexeff_audio: vec![],
@@ -193,6 +194,7 @@ impl AdventureDirector {
                 flexeff: vec![],
                 flexeff_cyl: vec![],
                 flexeff_par: vec![],
+                flexeff_shock: vec![],
                 flexeff_cam: vec![],
                 flexeff_meteor: vec![],
                 flexeff_audio: vec![],
@@ -489,6 +491,11 @@ struct AdventureDirectorProps {
     )>,
     /// flexeff 的 `particle` 类：`.par` 粒子，挂在特效位置上。
     flexeff_par: Vec<FlexParticle>,
+    /// `shock` 实例：模型、面片实体。
+    flexeff_shock: Vec<(
+        crate::openpal3::scene::flexeff_shock::ShockEffect,
+        ComRc<radiance::comdef::IEntity>,
+    )>,
     /// `camera` 实例：`(flexcam 序列号，≤ 0 = 只停；离起播还剩几秒)`。
     flexeff_cam: Vec<(i32, f32)>,
     /// `meteor` 实例：模型、头部面片实体（定义不画头部时没有）、拖尾实体。
@@ -874,6 +881,42 @@ impl AdventureDirectorProps {
                     }
                     continue;
                 }
+                // `shock`：一道闪电（scene::flexeff_shock）。
+                if class == Some("shock") {
+                    use crate::openpal3::scene::flexeff_meteor::build_meteor_entity;
+                    use crate::openpal3::scene::flexeff_shock::{ShockDef, ShockEffect};
+                    let texture_path = asset_mgr
+                        .basedata_path()
+                        .join(def.asset().replace('\\', "/"));
+                    let Some(image) = asset_mgr.read_picture(&texture_path) else {
+                        log::warn!("CEft: 读不到闪电贴图 {}", texture_path.display());
+                        continue;
+                    };
+                    let sd = ShockDef::from_def(&def);
+                    let origin = [position.x, position.y, position.z];
+                    let name = texture_path.to_str().unwrap_or("shock").to_string();
+                    let factory = asset_mgr.component_factory();
+                    for sidx in 0..GROUP_SUBS {
+                        if !group.sub_enabled(k, sidx) {
+                            continue;
+                        }
+                        let sub = group.sub(k, sidx).unwrap();
+                        self.flexeff_seq += 1;
+                        let seq = self.flexeff_seq;
+                        let effect = ShockEffect::new(sd, sub, origin, seq as u32);
+                        let entity = build_meteor_entity(
+                            &factory,
+                            format!("FLEXEFF_SHOCK_{seq}"),
+                            &name,
+                            image.clone(),
+                            sd.quad.additive,
+                            effect.capacity(),
+                        );
+                        scene.add_entity(entity.clone());
+                        self.flexeff_shock.push((effect, entity));
+                    }
+                    continue;
+                }
                 // `meteor`：追着目标飞的面片加拖尾（scene::flexeff_meteor）。
                 if class == Some("meteor") {
                     use crate::openpal3::scene::flexeff_meteor::{
@@ -1060,6 +1103,22 @@ impl AdventureDirectorProps {
                 log::info!("CEft: 镜头 flexcam 序列 {seq}");
                 self.sce_vm.state_mut().request_combat_camera(seq);
             }
+        }
+
+        if !self.flexeff_shock.is_empty() {
+            use crate::openpal3::scene::flexeff_shock::write_shock;
+            for (effect, entity) in self.flexeff_shock.iter_mut() {
+                effect.step(delta_sec);
+                write_shock(entity, effect);
+            }
+            self.flexeff_shock.retain(|(effect, entity)| {
+                if effect.finished() {
+                    entity.set_visible(false);
+                    false
+                } else {
+                    true
+                }
+            });
         }
 
         if !self.flexeff_meteor.is_empty() {

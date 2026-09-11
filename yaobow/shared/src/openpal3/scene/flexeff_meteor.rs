@@ -412,7 +412,7 @@ impl MeteorEffect {
     }
 }
 
-/// 建一个 `meteor` 用的动态网格实体：`capacity` 个四边形，顶点每帧重写。
+/// 建一个动态网格实体：`capacity` 个四边形，顶点每帧重写（meteor / shock 共用）。
 pub fn build_meteor_entity(
     factory: &Rc<dyn ComponentFactory>,
     name: String,
@@ -457,9 +457,10 @@ pub fn build_meteor_entity(
 }
 
 /// 一个四边形的四个顶点：位置、uv、打包好的颜色。
-type QuadVerts = [(Vec3, (f32, f32), (f32, f32)); 4];
+pub(crate) type QuadVerts = [(Vec3, (f32, f32), (f32, f32)); 4];
 
-fn write_quads(entity: &ComRc<IEntity>, capacity: usize, quads: &[QuadVerts]) {
+/// 把一批四边形写进 [`build_meteor_entity`] 建的网格，多出来的位置清零。
+pub(crate) fn write_quads(entity: &ComRc<IEntity>, capacity: usize, quads: &[QuadVerts]) {
     let Some(rc) = entity.get_rendering_component() else {
         return;
     };

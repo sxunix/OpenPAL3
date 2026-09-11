@@ -6,6 +6,7 @@ pub mod flexeff_audio;
 pub mod flexeff_cylinder;
 pub mod flexeff_meteor;
 pub mod flexeff_quad;
+pub mod flexeff_shock;
 mod particles;
 mod role_controller;
 mod scene;
