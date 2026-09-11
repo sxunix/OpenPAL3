@@ -16,7 +16,7 @@ mod dealer;
 mod dealer_layout;
 mod dlg;
 mod dlg_face;
-mod dlg_sel;
+pub(crate) mod dlg_sel;
 mod dlg_time;
 mod encamp;
 mod entry_row;
@@ -252,3 +252,7 @@ impl Direction {
         z: -1.,
     };
 }
+
+/// 给 `SceState` 的浮层用（提示框）。
+pub(crate) use appraise::overlay;
+pub(crate) use encamp::draw_sprite;

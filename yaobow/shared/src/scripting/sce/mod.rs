@@ -95,6 +95,8 @@ pub struct SceState {
     /// 68 Note's toast: the text and how long it still has to live. The
     /// command does not block, so the vm draws and ages it.
     note: Option<(String, f32)>,
+    /// 提示框的九宫格外框 `ui\flex\note0..8.tga`，第一次显示时读。
+    note_frame: Vec<Option<std::rc::Rc<radiance::rendering::Sprite>>>,
     /// What the dialog box is showing, so the agent snapshot can report
     /// it. The box itself lives in a p7 renderer that cannot be read
     /// back, and an automation driver has no other way to tell "waiting
@@ -137,10 +139,9 @@ pub struct DialogState {
     pub choices: Vec<String>,
 }
 
-/// How long a 68 Note stays up. The original's dwell time lives in the
-/// note widget's animation state (`+0xac = 2`) and was not read; this
-/// follows Pal3.Unity's 2.5 s visible plus 1 s fade. `[推断]`
-pub const NOTE_SECONDS: f32 = 3.5;
+/// 68 / 157 提示框停多久：`FUN_00450c90` 在模式 2 时 `+0x108 += dt`，超过 4.0 秒
+/// 直接隐藏，没有淡出。逆向见 `switch/re/notes/note_box.md`。
+pub const NOTE_SECONDS: f32 = 4.0;
 
 impl SceState {
     pub fn new(
@@ -172,6 +173,7 @@ impl SceState {
             dialog_renderer,
             status_renderer,
             note: None,
+            note_frame: Vec::new(),
             dialog: None,
             snow: false,
             water_magic: false,
@@ -409,9 +411,12 @@ impl SceState {
         self.note = Some((text, NOTE_SECONDS));
     }
 
-    /// Draw the pending note and age it out. `FUN_00450bc0` sizes the box
-    /// `max(0x40, (strlen + 5) * 10)` wide by `0x30` high and centres it
-    /// on screen (0x450bc0 onwards).
+    /// 画提示框、到点收起（`FUN_00450bc0` 排版，`FUN_00445500` 画）。
+    ///
+    /// 框宽 `max(0x40, (GBK 字节数 + 5) × 10)`、高 0x30，居中在
+    /// `((800 − 0x112) / 2, 10, +0x112, 0x57)` 那条横带里——在屏幕上方。外框是
+    /// `ui\flex\note` 九宫格，角块边长取 min(32, 半宽, 半高)；字是字号档 2、居中，
+    /// 颜色是控件默认的 0xff000505（近黑）。
     pub fn render_note(&mut self, ui: &imgui::Ui, delta_sec: f32) {
         let Some((text, remaining)) = self.note.as_mut() else {
             return;
@@ -421,27 +426,64 @@ impl SceState {
             self.note = None;
             return;
         }
-
         let text = text.clone();
-        let width = 64f32.max((text.chars().count() as f32 + 5.) * 10.);
-        let [screen_width, screen_height] = ui.io().display_size;
-        ui.window("Note")
-            .collapsible(false)
-            .title_bar(false)
-            .resizable(false)
-            .movable(false)
-            .scroll_bar(false)
-            .size([width, 48.], imgui::Condition::Always)
-            .position_pivot([0.5, 0.5])
-            .position(
-                [screen_width / 2., screen_height / 2.],
-                imgui::Condition::Always,
-            )
-            .build(|| {
-                let _font = radiance::imgui::game_font(radiance::imgui::GameFontSize::SMALL)
-                    .map(|f| ui.push_font(f));
-                ui.text_wrapped(&text);
-            });
+        if self.note_frame.is_empty() {
+            self.note_frame = (0..9)
+                .map(|i| {
+                    self.asset_mgr
+                        .load_sprite(format!("/basedata/basedata/ui/flex/note{i}.tga"))
+                })
+                .collect();
+        }
+
+        let bytes = crate::scripting::sce::commands::dlg_sel::gbk_len(&text) as i32;
+        let (w, h) = (0x40.max((bytes + 5) * 10), 0x30);
+        let strip = ((800 - 0x112) / 2, 10, (800 - 0x112) / 2 + 0x112, 0x57);
+        let x = strip.0 + (strip.2 - strip.0 - w) / 2;
+        let y = strip.1 + (strip.3 - strip.1 - h) / 2;
+        let b = (x, y, x + w, y + h);
+        let c = 32.min(w / 2).min(h / 2);
+        let (ix0, iy0, ix1, iy1) = (b.0 + c, b.1 + c, b.2 - c, b.3 - c);
+        let pieces = [
+            (b.0, b.1, ix0, iy0),
+            (b.0, iy1, ix0, b.3),
+            (ix1, iy1, b.2, b.3),
+            (ix1, b.1, b.2, iy0),
+            (b.0, iy0, ix0, iy1),
+            (ix0, iy1, ix1, b.3),
+            (ix1, iy0, b.2, iy1),
+            (ix0, b.1, ix1, iy0),
+            (ix0, iy0, ix1, iy1),
+        ];
+        let frame = &self.note_frame;
+        crate::scripting::sce::commands::overlay(ui, "Note", |ui, at, _scale| {
+            let list = ui.get_window_draw_list();
+            // 每一块都是整张贴图缩放进去（`FUN_00445760` 的 uv 固定 0..1），
+            // 不是按原生尺寸裁——框只有 48 高时角块缩成 24，顶边才不会丢。
+            for (k, r) in pieces.iter().enumerate() {
+                let Some(tex) = frame.get(k).and_then(|t| t.as_deref()) else {
+                    continue;
+                };
+                if r.0 < r.2 && r.1 < r.3 {
+                    list.add_image(tex.imgui_texture_id(), at(r.0, r.1), at(r.2, r.3))
+                        .build();
+                }
+            }
+            let _font = radiance::imgui::game_font(radiance::imgui::GameFontSize::LARGE)
+                .map(|f| ui.push_font(f));
+            let [tw, th] = ui.calc_text_size(&text);
+            let [x0, y0] = at(b.0, b.1);
+            let [x1, y1] = at(b.2, b.3);
+            // 控件默认色是近黑（0xff000505），可 `note8` 是 81% 不透明的纯黑，近黑字
+            // 在原版上也会看不见——颜色一定另有地方设，没追到。先用对话选择框同一套
+            // 外框上的 0xfffafa [推断]。
+            let ink = [1.0, 0.98, 0.98, 1.0];
+            list.add_text(
+                [x0 + (x1 - x0 - tw) * 0.5, y0 + (y1 - y0 - th) * 0.5],
+                ink,
+                &text,
+            );
+        });
     }
 
     pub fn asset_mgr(&self) -> &Rc<AssetManager> {

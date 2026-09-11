@@ -252,6 +252,11 @@ impl AdventureDirector {
     /// does. Exposed so an automation driver can reach a scripted beat
     /// without playing up to it — the only way to exercise commands
     /// whose effect is on screen.
+    /// Pop a 68 note, for looking at the note box.
+    pub fn show_note(&self, text: String) {
+        self.props.borrow_mut().sce_vm.state_mut().show_note(text);
+    }
+
     pub fn call_sce_proc(&self, proc_id: u32) {
         self.props.borrow_mut().sce_vm.call_proc(proc_id);
     }

@@ -470,6 +470,20 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "note" => {
+            // ["文字"] —— 弹一个 68 提示框。
+            let text = params
+                .args
+                .first()
+                .and_then(|v| v.as_str())
+                .unwrap_or("雪岭镇")
+                .to_string();
+            director.show_note(text);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "dealer" => {
             // ["DealScript\\WeaponShop\\q01weapon.txt"] —— 直接开一家店（SCE 100）。
             let shop = params
