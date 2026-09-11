@@ -11,9 +11,9 @@
 //! 敌人上场时 `FUN_004f8bb0` 先把整个战斗位清零、再把这个字节写成 0，所以
 //! 敌人恒走怪物那套；我方的战斗位是从冒险角色记录整块拷来的。
 //!
-//! **时序是移植端的**：原版攻击要先走到目标跟前（`z03`）、打完再走回来，
-//! 这些位移任务还没逆；这里在规则层结算那一刻让出手的人和挨打的人同时做
-//! 动作。逆向记录在 `switch/re/notes/combat_motion.md`。
+//! 攻击时走到目标跟前再回来：去程照走位任务 `FUN_0050da90`（480/秒、停在
+//! 离目标 42 处）。**出手的时刻是移植端的**——规则层结算那一刻出手、挨打，
+//! 原版是按动作帧触发的，还没逆。逆向记录在 `switch/re/notes/combat_motion.md`。
 
 use super::state::{Combatant, K_SLEEP, Phase};
 
@@ -61,6 +61,10 @@ pub enum Motion {
     Dead,
     /// 逃跑
     Flee,
+    /// 走位（攻击时去目标跟前、再回来）
+    Move,
+    /// 濒死（精不到四分之一）
+    Dying,
 }
 
 /// 用哪套名字。
@@ -92,12 +96,15 @@ impl MotionSet {
                 Freeze => 45,
                 Dead => 47,
                 Flee => 48,
+                Move => 31,
+                Dying => 46,
             }),
             MotionSet::Monster => match motion {
                 Idle => Some(50),
                 Attack => Some(53),
                 BeAttacked => Some(54),
                 Magic => Some(55),
+                Move => Some(52),
                 _ => None,
             },
         }
@@ -124,6 +131,7 @@ pub enum ActKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Snapshot {
     pub hp: i32,
+    pub max_hp: i32,
     pub alive: bool,
     pub defending: bool,
     pub asleep: bool,
@@ -135,6 +143,7 @@ impl Snapshot {
     pub fn of(c: &Combatant, acting: Option<ActKind>) -> Self {
         Self {
             hp: c.hp,
+            max_hp: c.max_hp,
             alive: c.alive,
             defending: c.defending,
             asleep: c.has_state(K_SLEEP),
@@ -160,12 +169,35 @@ pub enum Play {
     Rest,
 }
 
-/// 歇着的时候做什么：睡着 > 防御 > 待机。
+/// 精的状况（`FUN_004f3a50`）：1 满、2 半数以上、3 四分之一以上、4 不到
+/// 四分之一、5 倒下（不到 1）。
+pub fn hp_condition(hp: i32, max: i32) -> u8 {
+    if hp == max {
+        1
+    } else if max / 2 <= hp && hp < max {
+        2
+    } else if max / 4 <= hp {
+        3
+    } else if hp < 1 {
+        5
+    } else {
+        4
+    }
+}
+
+/// 歇着的时候做什么——`FUN_0050bbd0`（任务表空了时的默认动作）的顺序：
+/// 仙术预备（`+0x19a4 == 4`）> 防御（战斗位 `+0x474`）> 眠定（状态 0x11 睡、
+/// 0x0e 封；封移植端没有）> 濒死（状况 4）> 待机。倒下（状况 5）另走
+/// [`Play::Stay`]。
 pub fn rest_motion(now: &Snapshot) -> Motion {
-    if now.asleep {
-        Motion::Freeze
+    if now.acting == Some(ActKind::Cast) {
+        Motion::MagicWait
     } else if now.defending {
         Motion::Defence
+    } else if now.asleep {
+        Motion::Freeze
+    } else if hp_condition(now.hp, now.max_hp) == 4 {
+        Motion::Dying
     } else {
         Motion::Idle
     }
@@ -212,14 +244,62 @@ pub fn react(prev: &Snapshot, now: &Snapshot) -> Option<Play> {
         }));
     }
 
-    // 摆出 / 收起防御，睡着 / 醒来。
+    // 摆出防御先做一遍「开始防御」。
     if now.defending && !prev.defending {
         return Some(Play::Once(Motion::StartDefence));
     }
-    if (prev.defending && !now.defending) || (prev.asleep != now.asleep) {
+    // 其余歇着的样子变了（收起防御、睡着 / 醒来、回血脱离濒死……）。
+    if rest_motion(prev) != rest_motion(now) {
         return Some(Play::Rest);
     }
     None
+}
+
+// ---------------------------------------------------------------- 走位
+
+/// 走位速度（`FUN_0050da90`：方向 × 480，每帧乘帧时长）。
+pub const WALK_SPEED: f32 = 480.;
+/// 离终点不到这么远就算到了、直接对齐（同上，`< 4.0`）。
+pub const ARRIVE_DISTANCE: f32 = 4.;
+/// 停在离目标多远：先从目标朝自己挪 32，再朝自己挪 10。
+pub const STOP_SHORT: f32 = 32. + 10.;
+
+/// 去程终点：目标位置朝自己退 [`STOP_SHORT`]。两个人站在一处时原地不动。
+pub fn approach_point(target: (f32, f32), me: (f32, f32)) -> (f32, f32) {
+    let (dx, dz) = (me.0 - target.0, me.1 - target.1);
+    let len = (dx * dx + dz * dz).sqrt();
+    if len < f32::EPSILON {
+        return me;
+    }
+    (
+        target.0 + dx / len * STOP_SHORT,
+        target.1 + dz / len * STOP_SHORT,
+    )
+}
+
+/// 往 `to` 走一帧。返回新位置和到没到。原版还有一条「走过头（和出发时的
+/// 朝向差到 90°）就当到了」，按匀速直线走不会发生，这里用步长盖过剩余
+/// 距离来判。
+pub fn step_toward(pos: (f32, f32), to: (f32, f32), dt: f32) -> ((f32, f32), bool) {
+    let (dx, dz) = (to.0 - pos.0, to.1 - pos.1);
+    let left = (dx * dx + dz * dz).sqrt();
+    let step = WALK_SPEED * dt;
+    if left < ARRIVE_DISTANCE || step >= left {
+        return (to, true);
+    }
+    ((pos.0 + dx / left * step, pos.1 + dz / left * step), false)
+}
+
+/// 站好时面朝哪边（x, z）。舞台初始化 `FUN_005096d0`：我方 yaw 45°
+/// （0x42340000），怪物那套 −135°（0xc3070000），偷袭时再加 180°（没做）。
+/// 45° 按哪根轴量起不影响结果：两种量法都落在 (+x, +z) 这条对角线上，和
+/// `[RolePos]` 里我方重心指向敌方重心的方向（42°~48°）一致。
+pub fn rest_facing(set: MotionSet) -> (f32, f32) {
+    let d = std::f32::consts::FRAC_1_SQRT_2;
+    match set {
+        MotionSet::Party => (d, d),
+        MotionSet::Monster => (-d, -d),
+    }
 }
 
 #[cfg(test)]
@@ -229,6 +309,7 @@ mod tests {
     fn standing() -> Snapshot {
         Snapshot {
             hp: 100,
+            max_hp: 100,
             alive: true,
             ..Default::default()
         }
@@ -298,6 +379,8 @@ mod tests {
             Motion::Freeze,
             Motion::Dead,
             Motion::Flee,
+            Motion::Move,
+            Motion::Dying,
         ] {
             let i = MotionSet::Party.index(m).unwrap();
             assert!((29..50).contains(&i), "{m:?} → {i}");
@@ -393,12 +476,82 @@ mod tests {
         let mut asleep = standing();
         asleep.asleep = true;
         asleep.defending = true;
-        assert_eq!(rest_motion(&asleep), Motion::Freeze, "睡着压过防御");
+        assert_eq!(
+            rest_motion(&asleep),
+            Motion::Defence,
+            "FUN_0050bbd0 先查防御"
+        );
+        let mut only_asleep = standing();
+        only_asleep.asleep = true;
+        assert_eq!(rest_motion(&only_asleep), Motion::Freeze);
         assert_eq!(
             react(&standing(), &asleep),
             Some(Play::Once(Motion::StartDefence))
         );
         assert_eq!(react(&asleep, &standing()), Some(Play::Rest));
+    }
+
+    #[test]
+    fn hp_condition_matches_the_quarter_and_half_marks() {
+        assert_eq!(hp_condition(100, 100), 1);
+        assert_eq!(hp_condition(99, 100), 2);
+        assert_eq!(hp_condition(50, 100), 2);
+        assert_eq!(hp_condition(49, 100), 3);
+        assert_eq!(hp_condition(25, 100), 3);
+        assert_eq!(hp_condition(24, 100), 4);
+        assert_eq!(hp_condition(1, 100), 4);
+        assert_eq!(hp_condition(0, 100), 5);
+        // 88 精的景天：21 就算濒死（88/4 = 22）。
+        assert_eq!(hp_condition(21, 88), 4);
+        assert_eq!(hp_condition(22, 88), 3);
+    }
+
+    #[test]
+    fn a_blow_that_leaves_under_a_quarter_rests_as_dying() {
+        let mut low = standing();
+        low.hp = 20;
+        assert_eq!(rest_motion(&low), Motion::Dying);
+        // 挨打那一下先做挨打，做完才轮到濒死（由舞台在回到待机时补上）。
+        assert_eq!(
+            react(&standing(), &low),
+            Some(Play::Once(Motion::BeAttacked))
+        );
+        // 回血脱离濒死：换回待机。
+        assert_eq!(react(&low, &standing()), Some(Play::Rest));
+        // casting 压过濒死。
+        let mut casting_low = low;
+        casting_low.acting = Some(ActKind::Cast);
+        assert_eq!(rest_motion(&casting_low), Motion::MagicWait);
+    }
+
+    #[test]
+    fn the_walk_stops_42_short_and_arrives_within_4() {
+        let dest = approach_point((0., 0.), (100., 0.));
+        assert!((dest.0 - 42.).abs() < 1e-4 && dest.1.abs() < 1e-4);
+        // 斜着来也是 42。
+        let d = approach_point((10., 10.), (-90., -90.));
+        let off = ((d.0 - 10.).powi(2) + (d.1 - 10.).powi(2)).sqrt();
+        assert!((off - 42.).abs() < 1e-3);
+        // 一帧 1/60 秒走 8。
+        let (p, arrived) = step_toward((0., 0.), (100., 0.), 1. / 60.);
+        assert!(!arrived && (p.0 - 8.).abs() < 1e-3);
+        // 剩不到 4 直接到。
+        assert_eq!(step_toward((97., 0.), (100., 0.), 0.), ((100., 0.), true));
+        // 步子大过剩余距离也不冲过头。
+        assert_eq!(step_toward((0., 0.), (5., 0.), 1.), ((5., 0.), true));
+    }
+
+    #[test]
+    fn the_two_sides_face_each_other_along_the_diagonal() {
+        let (p, m) = (
+            rest_facing(MotionSet::Party),
+            rest_facing(MotionSet::Monster),
+        );
+        assert!(
+            (p.0 + m.0).abs() < 1e-6 && (p.1 + m.1).abs() < 1e-6,
+            "正好相反"
+        );
+        assert!(p.0 > 0. && p.1 > 0., "我方朝 +x+z，敌方在那边");
     }
 
     #[test]

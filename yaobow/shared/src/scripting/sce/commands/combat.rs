@@ -180,6 +180,24 @@ struct StageActor {
     last: Snapshot,
     /// 怪物倒下后过一会儿收起来（怪物没有倒地动作）。
     hide_in: Option<f32>,
+    /// 站位（`[RolePos]`），走位去了还要回来。
+    home: Vec3,
+    walk: Option<Walk>,
+    /// 这一刀砍完要走回去。
+    return_after_attack: bool,
+}
+
+/// 走位中。
+#[derive(Clone, Copy)]
+enum Walk {
+    /// 去目标跟前，到了面朝 `face`。
+    To { dest: Vec3, face: Vec3 },
+    /// 回站位。
+    Home,
+}
+
+fn face_point(pos: Vec3, dir: (f32, f32)) -> Vec3 {
+    Vec3::new(pos.x + dir.0 * 100., pos.y, pos.z + dir.1 * 100.)
 }
 
 /// 怪物倒下后多久收起来 **[推断]**：原版怪物目录里没有倒地动作，这里等
@@ -486,10 +504,12 @@ impl SceCommandCombat {
                 log::warn!("Combat: 战斗模型 {model} 加载不了（位 {slot}）");
                 continue;
             };
+            let home = Vec3::new(pos.x, 0., pos.z);
             entity
                 .transform()
                 .borrow_mut()
-                .set_position(&Vec3::new(pos.x, 0., pos.z));
+                .set_position(&home)
+                .look_at(&face_point(home, motion::rest_facing(set)));
             if let Some(rc) = RoleController::get_role_controller(entity.clone()) {
                 let rc = rc.inner::<RoleController>();
                 rc.set_active(true);
@@ -504,6 +524,9 @@ impl SceCommandCombat {
                 set,
                 last: Snapshot::of(c, None),
                 hide_in: None,
+                home,
+                walk: None,
+                return_after_attack: false,
             });
         }
 
@@ -888,6 +911,11 @@ impl SceCommandCombat {
             return;
         };
         let pending = session.pending;
+        let homes: Vec<Option<Vec3>> = self
+            .actors
+            .iter()
+            .map(|a| a.as_ref().map(|a| a.home))
+            .collect();
         for slot in 0..self.actors.len() {
             let Some(actor) = self.actors[slot].as_mut() else {
                 continue;
@@ -921,7 +949,70 @@ impl SceCommandCombat {
             let play = |m: motion::Motion, mode: RoleAnimationRepeatMode| {
                 set.name(m).is_some_and(|name| rc.play_anim(name, mode))
             };
+
+            // 攻击的出手段一开始：走到目标跟前（`FUN_0050da90`）。
+            let attack_target = pending.filter(|p| p.slot() == slot).and_then(|p| match p {
+                Pending::Attack { target, .. } => Some(target),
+                _ => None,
+            });
+            if actor.last.acting.is_none() && now.acting == Some(ActKind::Attack) {
+                if let Some(target) = attack_target.and_then(|t| homes.get(t).copied().flatten()) {
+                    let me = actor.home;
+                    let (x, z) = motion::approach_point((target.x, target.z), (me.x, me.z));
+                    actor.walk = Some(Walk::To {
+                        dest: Vec3::new(x, me.y, z),
+                        face: target,
+                    });
+                    rc.set_auto_play_idle(true);
+                    play(motion::Motion::Move, RoleAnimationRepeatMode::Loop);
+                }
+            }
+
+            // 走一帧。
+            if let Some(walk) = actor.walk {
+                let (dest, face_at_end) = match walk {
+                    Walk::To { dest, face } => (dest, face),
+                    Walk::Home => {
+                        let (fx, fz) = motion::rest_facing(set);
+                        (actor.home, face_point(actor.home, (fx, fz)))
+                    }
+                };
+                let pos = actor.entity.transform().borrow().position();
+                let ((x, z), arrived) =
+                    motion::step_toward((pos.x, pos.z), (dest.x, dest.z), delta_sec);
+                let next = Vec3::new(x, pos.y, z);
+                let look = if arrived { face_at_end } else { dest };
+                let transform = actor.entity.transform();
+                transform
+                    .borrow_mut()
+                    .set_position(&next)
+                    .look_at(&Vec3::new(look.x, next.y, look.z));
+                if arrived {
+                    actor.walk = None;
+                    if now.alive {
+                        rc.idle();
+                    }
+                }
+            }
+
             match motion::react(&actor.last, &now) {
+                Some(Play::Once(motion::Motion::Attack)) => {
+                    // 还没走到就结算了：先落到跟前再砍。
+                    if let Some(Walk::To { dest, face }) = actor.walk.take() {
+                        actor
+                            .entity
+                            .transform()
+                            .borrow_mut()
+                            .set_position(&dest)
+                            .look_at(&Vec3::new(face.x, dest.y, face.z));
+                    }
+                    rc.set_auto_play_idle(true);
+                    play(motion::Motion::Attack, RoleAnimationRepeatMode::Repeat(1));
+                    let at = actor.entity.transform().borrow().position();
+                    let (dx, dz) = (at.x - actor.home.x, at.z - actor.home.z);
+                    actor.return_after_attack =
+                        (dx * dx + dz * dz).sqrt() > motion::ARRIVE_DISTANCE;
+                }
                 Some(Play::Once(m)) => {
                     rc.set_auto_play_idle(true);
                     play(m, RoleAnimationRepeatMode::Repeat(1));
@@ -959,6 +1050,17 @@ impl SceCommandCombat {
                     {
                         play(rest, RoleAnimationRepeatMode::Loop);
                     }
+                }
+            }
+            // 砍完（回到了待机）就往回走。
+            if actor.return_after_attack
+                && actor.walk.is_none()
+                && rc.state() == crate::openpal3::scene::RoleState::Idle
+            {
+                actor.return_after_attack = false;
+                if now.alive {
+                    actor.walk = Some(Walk::Home);
+                    play(motion::Motion::Move, RoleAnimationRepeatMode::Loop);
                 }
             }
             actor.last = now;
