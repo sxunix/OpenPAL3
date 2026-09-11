@@ -448,6 +448,28 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "bigmap" => {
+            // [] —— 直接开大地图（102 13）。
+            director.start_debug_bigmap();
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "bigmap_set" => {
+            // [s0, s1, ...] —— 按下标给目的地设状态（同 125：0 藏、1 看得见去不了、2 能去）。
+            let states: Vec<i32> = params
+                .args
+                .iter()
+                .filter_map(|v| v.as_i64())
+                .map(|v| v as i32)
+                .collect();
+            director.set_bigmap_elements(&states);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "dealer" => {
             // ["DealScript\\WeaponShop\\q01weapon.txt"] —— 直接开一家店（SCE 100）。
             let shop = params

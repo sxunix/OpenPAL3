@@ -236,6 +236,10 @@ pub struct PersistentState {
     /// 见 `switch/re/notes/bigmap.md`。
     #[serde(default)]
     bigmap_elements: BTreeMap<i32, i32>,
+    /// 125 新点亮的目的地（原版 `u8 [0xdba0ac + id] = option > 0`）：下次进大地图
+    /// 闪两轮后清掉。原版存读档只存到 0xdba0ac 之前那张 i32 表，这个不进存档。
+    #[serde(skip)]
+    bigmap_new: std::collections::BTreeSet<i32>,
     /// 紫幽粉在身——`DAT_00c10cc1`，`FUN_00410580(0x1f)` 置 1。和角色 0 的
     /// 状态 27..30 一样受下面那个 60 秒计时器管。
     #[serde(default)]
@@ -332,6 +336,7 @@ impl PersistentState {
             objects_not_from_save: BTreeSet::new(),
             scene_object_positions: BTreeMap::new(),
             bigmap_elements: BTreeMap::new(),
+            bigmap_new: Default::default(),
             purple_powder: false,
             maze_effect_timer: 0.,
             pearl_charges: full_pearl_charges(),
@@ -347,11 +352,26 @@ impl PersistentState {
 
     pub fn set_bigmap_element(&mut self, id: i32, option: i32) {
         self.bigmap_elements.insert(id, option);
+        if option > 0 {
+            self.bigmap_new.insert(id);
+        } else {
+            self.bigmap_new.remove(&id);
+        }
     }
 
-    /// 目的地 `id` 是否画在地图上——原版的 `可见[id] = (option > 0)`。
+    /// 目的地 `id` 画不画在地图上：状态 1、2 画，0 不画（`FUN_004499a0`）。
     pub fn bigmap_element_visible(&self, id: i32) -> bool {
-        self.bigmap_element(id) > 0
+        matches!(self.bigmap_element(id), 1 | 2)
+    }
+
+    /// 目的地 `id` 能不能去：只有状态 2 能；1 点了是「不能去“地名”」。
+    pub fn bigmap_element_enterable(&self, id: i32) -> bool {
+        self.bigmap_element(id) == 2
+    }
+
+    /// 取走「新点亮、要闪」的那几个（大地图进场时读一次就清掉）。
+    pub fn take_bigmap_new(&mut self) -> Vec<i32> {
+        std::mem::take(&mut self.bigmap_new).into_iter().collect()
     }
 
     pub fn scene_object_state(&self, city: &str, scene: &str, object_id: i32) -> i32 {

@@ -4,17 +4,17 @@
 //!
 //! ```text
 //! [0xdba014 + id*4] = option;        // i32 状态[38]
-//! [0xdba0ac + id]   = (option > 0);  // u8  可见[38]
+//! [0xdba0ac + id]   = (option > 0);  // u8  新点亮[38]
 //! ```
 //!
-//! 大地图的绘制循环（0x44a366）逐个跳过 `可见[i] == 0` 的元件，只看后者；
-//! 前面那份 i32 只被存读档碰（0x537d90 / 0x538ae8）。所以 **`option` 取 1
-//! 还是 2 在游戏里没有区别，起作用的只有"是否 > 0"**——`bigmap.sce` 的
-//! 2000 号过程「大地图开启测试」连着 38 条这个指令，值就在 0/1/2 之间。
+//! 状态进大地图时由 `FUN_004499a0` 解释：0 不显示、**1 显示但不能去**（点了弹
+//! 「不能去“地名”」）、**2 能去**。u8 那张是「新点亮」，进图闪两轮后清零，
+//! 不进存档（存读档 0x537d90 / 0x538ae8 只存到 0xdba0ac 之前）。——先前以为
+//! 1 和 2 没区别，是把闪烁循环错当成了绘制循环，见 `bigmap.md` 的更正。
 //!
-//! 这里按原样把 `option` 存进存档，可见性由
-//! [`PersistentState::bigmap_element_visible`] 判。目的地表和 `id` 的含义
-//! 见 [`crate::openpal3::bigmap`]。
+//! 这里按原样把 `option` 存进存档，[`PersistentState::bigmap_element_visible`] /
+//! `bigmap_element_enterable` 按上面的规则判；「新点亮」另记一份不存档的。
+//! 目的地表和 `id` 的含义见 [`crate::openpal3::bigmap`]。
 //!
 //! [`PersistentState::bigmap_element_visible`]:
 //!     crate::openpal3::states::PersistentState::bigmap_element_visible

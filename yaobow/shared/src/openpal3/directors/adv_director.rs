@@ -287,6 +287,26 @@ impl AdventureDirector {
         p.sce_vm.push_debug_command(cmd, scene_manager);
     }
 
+    /// Open the big map (102 13) right here, so it can be looked at without
+    /// playing up to a scripted exit.
+    pub fn start_debug_bigmap(&self) {
+        let mut p = self.props.borrow_mut();
+        let scene_manager = p.scene_manager.clone();
+        let cmd: Box<dyn crate::scripting::sce::SceCommand> = Box::new(
+            crate::scripting::sce::commands::SceCommandSwitchMode::new(13),
+        );
+        p.sce_vm.push_debug_command(cmd, scene_manager);
+    }
+
+    /// Set big-map destination states the way 125 does, one per index.
+    pub fn set_bigmap_elements(&self, states: &[i32]) {
+        let mut p = self.props.borrow_mut();
+        let mut ps = p.sce_vm.global_state_mut().persistent_state_mut();
+        for (id, option) in states.iter().enumerate() {
+            ps.set_bigmap_element(id as i32, *option);
+        }
+    }
+
     pub fn start_debug_combat(&self, ids: [i32; 6], boss: bool) {
         let mut p = self.props.borrow_mut();
         let scene_manager = p.scene_manager.clone();

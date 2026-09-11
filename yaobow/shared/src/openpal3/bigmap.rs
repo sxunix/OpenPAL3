@@ -9,7 +9,8 @@
 //! * 选中第 `i` 个就跑 `ui\bigmap\bigmap.sce` 的 `i + 100` 号过程，再
 //!   `SwitchMode(0)` 回冒险模式（`FUN_0044a4f0`，`0 <= i < 0x26`）。
 //! * 哪些点亮由指令 125 决定：`LAB_00436bd0` 写 `i32 状态[38]` 和
-//!   `u8 可见[38] = (option > 0)`，绘制循环只看后者。
+//!   `u8 新点亮[38] = (option > 0)`。状态 0 不显示、1 显示但不能去、2 能去
+//!   （`FUN_004499a0`）；新点亮的那几个进图时闪两轮（`FUN_0044a2e0`）。
 //!
 //! 坐标都在背景那张 1536×1024 的图上，背景本身是 6×4 张 256×256 的
 //! `BigMap0.tga` .. `BigMap23.tga`。
@@ -362,6 +363,119 @@ pub const DESTINATIONS: [Destination; 38] = [
     }, // 37 -> 过程 137
 ];
 
+/// 38 个目的地各自对应的场景代号（0x598c14 起每项 64 字节）。用来到
+/// `datascript\SceneName.txt` 那一节取 `default` 当地名（`0x44a5d5`），也用来
+/// 按当前场景找小人的起点（`FUN_00449b90`）。
+pub const SCENE_CODES: [&str; 38] = [
+    "Q07", "Q16", "Q02", "M01", "M22", "M18", "M04", "M05", "M03", "Q06", "Q13", "Q12", "M10",
+    "Q14", "M23", "M21", "M24", "M08", "M02", "Q09", "Q11", "M15", "Q04", "M06", "M09", "M20",
+    "Q10", "M16", "Q08", "M11", "M17", "Q05", "M19", "M25", "M26", "Q15", "Q01", "Q03",
+];
+
+pub const SCENE_NAME_TXT: &str = "/basedata/basedata/datascript/SceneName.txt";
+
+/// 小人 `Spirit_{LU,RU,LD,RD}{0,1}.tga`，64×64，每秒 5 帧（`FUN_0043a4b0(5.0)`）。
+pub const SPIRIT_DIR: &str = "/basedata/basedata/ui/BigMap";
+pub const SPIRIT_SIZE: i32 = 64;
+pub const SPIRIT_FPS: f32 = 5.0;
+/// 小人每秒走几像素，x、y 各自（`+0x498c = 120.0`，`FUN_00449fe0`）。
+pub const WALK_SPEED: f32 = 120.0;
+/// 贴边卷动每秒几像素：`+0x90 = 80.0` × 进图时的 `+0x74 = 3.0`。
+pub const SCROLL_SPEED: f32 = 80.0 * 3.0;
+/// 窗口（大图控件的 rect）。
+pub const VIEW_W: i32 = 800;
+pub const VIEW_H: i32 = 600;
+
+/// 目的地中心（`FUN_00449ab0` / `FUN_00449f70`：`x2 − (x2 − x1) / 2`，整数除法）。
+pub fn center(d: &Destination) -> (i32, i32) {
+    let (x2, y2) = (d.x + d.width, d.y + d.height);
+    (x2 - (x2 - d.x) / 2, y2 - (y2 - d.y) / 2)
+}
+
+/// 按场景代号找目的地（不分大小写）。
+pub fn index_of_scene(code: &str) -> Option<usize> {
+    SCENE_CODES
+        .iter()
+        .position(|c| c.eq_ignore_ascii_case(code))
+}
+
+/// 从 `SceneName.txt` 里取 `code` 那一节的 `default`。文件是
+/// `BEGIN,Q01 ... default $渝州& ...` 这样一节一节的。
+pub fn place_name(text: &str, code: &str) -> Option<String> {
+    let mut in_section = false;
+    for raw in text.lines() {
+        let line = raw.split(';').next().unwrap_or("").trim();
+        if let Some(rest) = line
+            .strip_prefix("BEGIN,")
+            .or_else(|| line.strip_prefix("Begin,"))
+        {
+            in_section = rest.trim().eq_ignore_ascii_case(code);
+            continue;
+        }
+        if !in_section {
+            continue;
+        }
+        let Some(value) = line.strip_prefix("default") else {
+            continue;
+        };
+        let value = value.trim();
+        let body = value.strip_prefix('$')?;
+        return Some(body.split('&').next().unwrap_or("").to_string());
+    }
+    None
+}
+
+/// 贴边卷动之后把视口夹在图里（`FUN_00443ba0` 那一类检查）。
+pub fn clamp_view(x: f32, y: f32) -> (f32, f32) {
+    (
+        x.clamp(0., (MAP_WIDTH - VIEW_W) as f32),
+        y.clamp(0., (MAP_HEIGHT - VIEW_H) as f32),
+    )
+}
+
+/// `FUN_00443ce0(px, py)`：只在点出了窗口时把图挪到刚好让它进来。
+pub fn reveal(view: (f32, f32), px: i32, py: i32) -> (f32, f32) {
+    let (mut vx, mut vy) = view;
+    let (sx, sy) = (px as f32 - vx, py as f32 - vy);
+    if sx < 0. {
+        vx += sx;
+    } else if sx > VIEW_W as f32 {
+        vx += sx - VIEW_W as f32;
+    }
+    if sy < 0. {
+        vy += sy;
+    } else if sy > VIEW_H as f32 {
+        vy += sy - VIEW_H as f32;
+    }
+    clamp_view(vx, vy)
+}
+
+/// 朝向（`FUN_00449e60`）：目标在右边用 R、否则 L；在下面用 D、否则 U。
+/// 相等时原版两个分支都不进，保持原朝向，这里返回 `None`。
+pub fn facing(from: (i32, i32), to: (i32, i32)) -> Option<&'static str> {
+    match (to.0.cmp(&from.0), to.1 > from.1) {
+        (std::cmp::Ordering::Greater, true) => Some("RD"),
+        (std::cmp::Ordering::Greater, false) => Some("RU"),
+        (std::cmp::Ordering::Less, true) => Some("LD"),
+        (std::cmp::Ordering::Less, false) => Some("LU"),
+        (std::cmp::Ordering::Equal, _) => None,
+    }
+}
+
+/// 小人往目标挪一帧（`FUN_00449fe0`）：x、y 各自以同样速度逼近，到了就停。
+pub fn walk(pos: (f32, f32), target: (i32, i32), dt: f32) -> (f32, f32) {
+    let step = dt * WALK_SPEED;
+    let approach = |p: f32, t: i32| {
+        let t = t as f32;
+        if p < t {
+            (p + step).min(t)
+        } else {
+            (p - step).max(t)
+        }
+    };
+    (approach(pos.0, target.0), approach(pos.1, target.1))
+}
+
 /// 目的地 `index` 要跑的过程号。
 pub fn proc_of(index: usize) -> Option<u32> {
     (index < DESTINATIONS.len()).then(|| FIRST_PROC + index as u32)
@@ -425,5 +539,37 @@ mod tests {
         assert_eq!(DESTINATIONS[15].texture, "rongyandiyu");
         assert_eq!(DESTINATIONS[25].name, "熔岩地狱");
         assert_eq!(DESTINATIONS[25].texture, "huangquanlu");
+    }
+
+    #[test]
+    fn scene_codes_find_the_start_and_the_place_name() {
+        assert_eq!(index_of_scene("q01"), Some(36), "渝州");
+        assert_eq!(index_of_scene("Q07"), Some(0), "安宁村");
+        assert_eq!(index_of_scene("X99"), None);
+        let text = "BEGIN,Q01\t;每个场景一个Section\ndefault\t\t$渝州&\n1\t\t$新安当&\nEND\nBEGIN,Q07\ndefault $安宁村&\n";
+        assert_eq!(place_name(text, "Q01").as_deref(), Some("渝州"));
+        assert_eq!(place_name(text, "q07").as_deref(), Some("安宁村"));
+        assert_eq!(place_name(text, "M01"), None);
+    }
+
+    #[test]
+    fn the_avatar_walks_each_axis_on_its_own() {
+        // 两轴同速：先斜着走，短的那条轴先到。
+        let p = walk((0., 0.), (100, 10), 0.5);
+        assert_eq!(p, (60., 10.));
+        let p = walk(p, (100, 10), 1.);
+        assert_eq!(p, (100., 10.));
+        assert_eq!(facing((0, 0), (10, 10)), Some("RD"));
+        assert_eq!(facing((0, 0), (10, -1)), Some("RU"));
+        assert_eq!(facing((0, 0), (-1, 0)), Some("LU"));
+        assert_eq!(facing((0, 0), (0, 5)), None);
+    }
+
+    #[test]
+    fn the_view_only_moves_to_reveal_and_stays_on_the_map() {
+        assert_eq!(reveal((0., 0.), 700, 500), (0., 0.));
+        assert_eq!(reveal((0., 0.), 1386, 1020), (586., 420.));
+        assert_eq!(clamp_view(-5., 900.), (0., 424.));
+        assert_eq!(center(&DESTINATIONS[36]), (865, 358));
     }
 }
