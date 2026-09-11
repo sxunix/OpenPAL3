@@ -172,6 +172,8 @@ pub struct SceCommandCombat {
     actors: Vec<Option<StageActor>>,
     /// 正在演的那一次行动（`CombatSession::staging`）。
     run: Option<StageRun>,
+    /// 战斗镜头（`combat::camera`）：开战播一个序列，播完停在最后的机位。
+    camera: Option<crate::openpal3::combat::camera::CamPlayer>,
 }
 
 /// 一次行动的演出：攻击是走过去 → 出手 → 结算 → 走回来，其余原地出手。
@@ -348,6 +350,7 @@ impl SceCommandCombat {
             hud: None,
             actors: Vec::new(),
             run: None,
+            camera: None,
         }
     }
 
@@ -549,21 +552,31 @@ impl SceCommandCombat {
             });
         }
 
-        // 相机：位置取 cbCam.ini 的 DefaultCam0，朝向看战场中心。
-        if let Some(text) = asset_mgr
-            .vfs()
-            .read_to_end_from_gbk(stage::COMBAT_CAMERA_INI)
-            .ok()
+        // 相机：开战播 flexcam 的序列（combat::camera），先摆到第一帧。
         {
-            if let Some(cam) = stage::parse_cameras(&text).first() {
-                let (pos, target) = cam.look_at_origin();
-                let mut camera = scene.camera_mut();
-                camera.set_fov43(stage::COMBAT_FOV_DEGREES.to_radians());
-                camera
-                    .transform_mut()
-                    .set_position(&Vec3::new(pos.0, pos.1, pos.2))
-                    .look_at(&Vec3::new(target.0, target.1, target.2));
+            use crate::openpal3::combat::camera::{self, CamPlayer, Flexcam};
+            let editor = asset_mgr
+                .vfs()
+                .read_to_end_from_gbk(stage::COMBAT_CAMERA_INI)
+                .ok()
+                .map(|t| stage::parse_cameras(&t))
+                .unwrap_or_default();
+            let stand = editor.first().copied().unwrap_or_default();
+            let player = asset_mgr
+                .vfs()
+                .read_to_end(camera::FLEXCAM_PATH)
+                .ok()
+                .and_then(|b| Flexcam::parse(&b))
+                .and_then(|f| CamPlayer::new(f.sequence(camera::STAND_SEQUENCE), stand));
+            if player.is_none() {
+                log::warn!("Combat: flexcam.dat 读不出来，镜头停在 EditorCam0");
             }
+            let pose = player.as_ref().map(|p| p.pose).unwrap_or(stand);
+            scene
+                .camera_mut()
+                .set_fov43(stage::COMBAT_FOV_DEGREES.to_radians());
+            Self::place_camera(&scene, pose);
+            self.camera = player;
         }
 
         let entities = scene.entities().len();
@@ -576,10 +589,25 @@ impl SceCommandCombat {
         self.stage = Some(scene);
     }
 
+    /// 把舞台相机摆到 `pose`（位置 + 朝 `forward()` 看；roll 数据里全是 0，不管）。
+    fn place_camera(scene: &ComRc<IScene>, pose: crate::openpal3::combat::stage::CombatCamera) {
+        let (fx, fy, fz) = pose.forward();
+        scene
+            .camera_mut()
+            .transform_mut()
+            .set_position(&Vec3::new(pose.x, pose.y, pose.z))
+            .look_at(&Vec3::new(
+                pose.x + fx * 100.,
+                pose.y + fy * 100.,
+                pose.z + fz * 100.,
+            ));
+    }
+
     /// 散场：把舞台弹掉。
     fn drop_stage(&mut self, scene_manager: &ComRc<ISceneManager>) {
         self.actors.clear();
         self.run = None;
+        self.camera = None;
         if self.stage.take().is_some() {
             scene_manager.pop_scene();
         }
@@ -1453,6 +1481,12 @@ impl SceCommand for SceCommandCombat {
 
         self.drive_staging(delta_sec);
         self.animate_stage(delta_sec);
+        if let (Some(player), Some(stage)) = (self.camera.as_mut(), self.stage.as_ref()) {
+            if !player.finished() {
+                let pose = player.update(delta_sec);
+                Self::place_camera(stage, pose);
+            }
+        }
         if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
             Self::draw(ui, session, hud);
         }

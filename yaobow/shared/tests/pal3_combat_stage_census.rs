@@ -107,12 +107,15 @@ fn the_stage_has_eleven_slots_five_of_them_ours() {
     );
 }
 
-/// `cbCam.ini` 的 `DefaultCam*`：十八台，位置都在战场外围。
+/// `cbCam.ini` 的 `EditorCam*`（游戏只读这些）和 `flexcam.dat` 的镜头序列。
 #[test]
-fn the_shipped_combat_cameras_parse() {
-    let Some((vfs, data)) = data() else {
+fn the_combat_camera_data_hangs_together() {
+    let Some((vfs, _data)) = data() else {
         eprintln!("skipping: set YAOBOW_PAL3_ASSETS");
         return;
+    };
+    use shared::openpal3::combat::camera::{
+        FILE_SIZE, FLEXCAM_PATH, Flexcam, SNEAK_SEQUENCE, STAND_SEQUENCE,
     };
     use shared::openpal3::combat::stage::{COMBAT_CAMERA_INI, parse_cameras};
 
@@ -120,25 +123,37 @@ fn the_shipped_combat_cameras_parse() {
         .read_to_end_from_gbk(COMBAT_CAMERA_INI)
         .expect("cbCam.ini");
     let cams = parse_cameras(&text);
-    assert_eq!(cams.len(), 18, "DefaultCam0..17");
+    assert_eq!(cams.len(), 29, "EditorCam0..28");
 
-    // 每台都得离战场中心有点距离，否则等于摆在人堆里。
-    let mut nearest = f32::MAX;
-    for (i, c) in cams.iter().enumerate() {
-        let d = (c.x * c.x + c.y * c.y + c.z * c.z).sqrt();
-        assert!(d > 100., "第 {i} 台相机离原点只有 {d}");
-        assert!(c.y > 0., "第 {i} 台相机在地面下（y = {}）", c.y);
-        nearest = nearest.min(d);
+    let bytes = vfs.read_to_end(FLEXCAM_PATH).expect("flexcam.dat");
+    assert_eq!(bytes.len(), FILE_SIZE);
+    let flex = Flexcam::parse(&bytes).unwrap();
+
+    // 平时开战：0 号序列一步，0.8 秒拉到 EditorCam0。
+    let stand = flex.sequence(STAND_SEQUENCE);
+    assert_eq!(stand.len(), 1);
+    assert!((stand[0].duration - 0.8).abs() < 1e-4);
+    let end = stand.last().unwrap().to;
+    let c0 = cams[0];
+    for (a, b) in [
+        (end.x, c0.x),
+        (end.y, c0.y),
+        (end.z, c0.z),
+        (end.yaw, c0.yaw),
+        (end.pitch, c0.pitch),
+    ] {
+        assert!(
+            (a - b).abs() < 1e-3,
+            "0 号序列终点 ≠ EditorCam0：{a} vs {b}"
+        );
     }
-    println!("18 台战斗相机，最近的离战场中心 {nearest:.0}");
+    // 偷袭：20 号序列五步，最后也落在 EditorCam0。
+    let sneak = flex.sequence(SNEAK_SEQUENCE);
+    assert_eq!(sneak.len(), 5);
+    assert!((sneak.last().unwrap().to.x - c0.x).abs() < 1e-3);
 
-    // 十一个站位的重心确实在原点附近——这是「朝向看原点」的依据。
-    let n = data.role_positions.len() as f32;
-    let cx: f32 = data.role_positions.iter().map(|p| p.x).sum::<f32>() / n;
-    let cz: f32 = data.role_positions.iter().map(|p| p.z).sum::<f32>() / n;
-    println!("站位重心 ({cx:.0}, {cz:.0})");
-    assert!(
-        cx.abs() < 100. && cz.abs() < 100.,
-        "站位重心 ({cx}, {cz}) 离原点太远，朝向原点就不对了"
-    );
+    let used: Vec<usize> = (0..flex.sequences.len())
+        .filter(|&s| !flex.sequences[s].is_empty())
+        .collect();
+    println!("有内容的镜头序列 {} 个：{used:?}", used.len());
 }

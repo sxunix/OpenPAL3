@@ -625,7 +625,8 @@ swap(this->+0x80..+0x88, this->+0x8c..+0x94);
 
 ### 还没做
 
-- **镜头只做了静态一台**。`cbCam.ini` 有 47 节，其中
+- **（已撤回，见 `combat_camera.md`）** 下面这条关于 `DefaultCam0` / 朝向原点 / FOV 39° 的记录不对：游戏只读 `EditorCam*`，开战播 flexcam 的 0 号序列。原文保留备查——
+  **镜头只做了静态一台**。`cbCam.ini` 有 47 节，其中
   `DefaultCam0..17` 十八台是游戏用的（其余 `EditorCam*` 是战斗编辑器留下
   的）。现在取 `DefaultCam0` 的位置，朝向看战场中心，FOV 39°。
 
