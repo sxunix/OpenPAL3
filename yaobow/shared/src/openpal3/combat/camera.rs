@@ -441,3 +441,77 @@ mod tests {
         assert!(Flexcam::parse(&bytes[..FILE_SIZE - 1]).is_none());
     }
 }
+
+/// 镜头震动（`FUN_005054f0`，镜头每帧更新里的那一段；参数是镜头对象 `+0x68ffc` 幅度、
+/// `+0x69000` 每秒衰减、`+0x69004` 频率）。
+///
+/// 每帧：幅度 −= dt × 衰减；幅度还大于 0 时，上下偏移 = sin(总时间 × 频率) × 幅度，临时加在
+/// 镜头位姿的 y（`+0x69024`）上，摆完镜头再还原——所以不会累积。特效 `quake` 类
+/// （0x4d35e0）写的是 幅度 = 子块 `+0`、衰减 = `+4`、频率 = `+8`；战斗调试对话框那处写
+/// (10, 10, 90)。总时间原版用战斗时钟 `+0x50`，这里用震动自己的时钟 **[推断]**（只差一个相位）。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Shake {
+    pub amplitude: f32,
+    pub decay: f32,
+    pub frequency: f32,
+    t: f32,
+}
+
+impl Shake {
+    pub fn new(amplitude: f32, decay: f32, frequency: f32) -> Self {
+        Self {
+            amplitude,
+            decay,
+            frequency,
+            t: 0.,
+        }
+    }
+
+    /// 震完了（幅度降到 0）。
+    pub fn finished(&self) -> bool {
+        self.amplitude <= 0.
+    }
+
+    /// 往前走 `dt` 秒，返回这一帧镜头 y 的偏移。
+    pub fn step(&mut self, dt: f32) -> f32 {
+        self.t += dt;
+        if self.amplitude <= 0. {
+            self.amplitude = 0.;
+            return 0.;
+        }
+        self.amplitude -= dt * self.decay;
+        if self.amplitude <= 0. {
+            self.amplitude = 0.;
+            return 0.;
+        }
+        (self.t * self.frequency).sin() * self.amplitude
+    }
+}
+
+#[cfg(test)]
+mod shake_tests {
+    use super::Shake;
+
+    #[test]
+    fn it_decays_to_nothing() {
+        // 幅度 10、每秒衰减 10：一秒后震完。
+        let mut s = Shake::new(10., 10., 90.);
+        let mut peak = 0f32;
+        for _ in 0..50 {
+            peak = peak.max(s.step(0.01).abs());
+        }
+        assert!(peak <= 10. && peak > 1., "{peak}");
+        for _ in 0..60 {
+            s.step(0.01);
+        }
+        assert!(s.finished());
+        assert_eq!(s.step(0.01), 0.);
+    }
+
+    #[test]
+    fn the_offset_follows_the_sine() {
+        let mut s = Shake::new(10., 0., 1.);
+        let off = s.step(1.0);
+        assert!((off - 1f32.sin() * 10.).abs() < 1e-5);
+    }
+}

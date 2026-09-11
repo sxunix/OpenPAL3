@@ -193,6 +193,11 @@ pub struct SceCommandCombat {
     settled: bool,
     /// 特效 `action` 类的动作提示（`combat::stage_action`）。
     cues: Vec<crate::openpal3::combat::stage_action::ActionCue>,
+    /// 特效 `quake` 类的镜头震动。
+    shake: Option<crate::openpal3::combat::camera::Shake>,
+    /// 特效 `bink` 类排着的 2D 动画，和正在播的那一段（源尺寸、贴图）。
+    movies: Vec<String>,
+    movie: Option<((u32, u32), Option<imgui::TextureId>)>,
 }
 
 /// 结算面板上的一个人。
@@ -435,6 +440,9 @@ impl SceCommandCombat {
             run: None,
             camera: None,
             cues: Vec::new(),
+            shake: None,
+            movies: Vec::new(),
+            movie: None,
             flexcam: None,
             linker: None,
             side_anchors: [Vec3::new(0., 0., 0.); 2],
@@ -557,7 +565,11 @@ impl SceCommandCombat {
         // 战斗外 143 播到 camera 类留下的请求，别让它顶掉开战镜头。
         let _ = state.take_combat_camera_requests();
         let _ = state.take_combat_action_requests();
+        let _ = state.take_combat_shake_request();
+        let _ = state.take_combat_movie_requests();
         self.cues.clear();
+        self.shake = None;
+        self.movies.clear();
         use crate::openpal3::combat::stage;
         use common::store_ext::StoreExt2;
         use mini_fs::StoreExt;
@@ -1917,6 +1929,46 @@ impl SceCommand for SceCommandCombat {
             return false;
         }
 
+        // 特效 `bink` 类（FUN_004c24b0 → FUN_0053c5a0）：原版是自带消息循环的阻塞全屏播放，
+        // 播完才回到战斗，所以播放期间整场战斗停住。Esc / 手柄 A 跳过，和 SCE 播片一样。
+        self.movies.extend(state.take_combat_movie_requests());
+        if self.movie.is_none() && !self.movies.is_empty() {
+            use mini_fs::StoreExt;
+            let name = self.movies.remove(0);
+            let path = std::path::PathBuf::from("/movie/movie/2deffect")
+                .join(&name)
+                .with_extension("bik");
+            if state.fast_forward() {
+                // 快进不播。
+            } else if state.asset_mgr().vfs().open(&path).is_err() {
+                log::warn!("Combat: 特效 2D 动画 {} 不在包里", path.display());
+            } else if let Some(size) = state.global_state_mut().play_movie(&name) {
+                log::info!("Combat: 特效 2D 动画 {name}");
+                self.movie = Some((size, None));
+            }
+        }
+        if let Some((size, texture)) = self.movie.as_mut() {
+            let skipped = state.fast_forward()
+                || state
+                    .input()
+                    .get_key_state(radiance::input::Key::Escape)
+                    .pressed()
+                || state
+                    .input()
+                    .get_key_state(radiance::input::Key::GamePadSouth)
+                    .pressed();
+            let player = state.global_state_mut().video_player();
+            if skipped {
+                player.stop();
+            }
+            if skipped || player.get_state() == radiance::video::VideoStreamState::Stopped {
+                self.movie = None;
+            } else {
+                *texture = crate::utils::play_movie(ui, player, *texture, *size, false);
+                return false;
+            }
+        }
+
         let Some(session) = self.session.as_mut() else {
             // No database or nothing to fight: report a win so the script
             // moves on.
@@ -1974,13 +2026,26 @@ impl SceCommand for SceCommandCombat {
                 self.camera = Some(player);
             }
         }
+        // 特效 `quake` 类：镜头每帧叠一个上下偏移（FUN_005054f0），震完那一帧再按原位姿摆一次。
+        if let Some([amp, decay, freq]) = state.take_combat_shake_request() {
+            self.shake = Some(crate::openpal3::combat::camera::Shake::new(
+                amp, decay, freq,
+            ));
+        }
+        let shake = self.shake.as_mut().map(|s| s.step(delta_sec));
+        if self.shake.is_some_and(|s| s.finished()) {
+            self.shake = None;
+        }
         if let (Some(player), Some(stage)) = (self.camera.as_mut(), self.stage.as_ref()) {
             let moving = !player.finished();
-            let pose = if moving {
+            let mut pose = if moving {
                 player.update(delta_sec)
             } else {
                 player.pose
             };
+            if let Some(dy) = shake {
+                pose.y += dy;
+            }
             match player.look_target() {
                 // 盯着人：朝他现在站的地方看（记录 +0x65 / +0x68）。
                 Some(target) => {
@@ -1993,7 +2058,7 @@ impl SceCommand for SceCommandCombat {
                         .unwrap_or(Vec3::new(0., 0., 0.));
                     Self::place_camera_looking_at(stage, pose, at);
                 }
-                None if moving => Self::place_camera(stage, pose),
+                None if moving || shake.is_some() => Self::place_camera(stage, pose),
                 None => {}
             }
         }

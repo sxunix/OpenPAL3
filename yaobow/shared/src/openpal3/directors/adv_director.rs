@@ -87,6 +87,7 @@ impl AdventureDirector {
                 flexeff_model: vec![],
                 flexeff_shock: vec![],
                 flexeff_cam: vec![],
+                flexeff_timed: vec![],
                 flexeff_meteor: vec![],
                 flexeff_audio: vec![],
                 flexeff_pending: vec![],
@@ -200,6 +201,7 @@ impl AdventureDirector {
                 flexeff_model: vec![],
                 flexeff_shock: vec![],
                 flexeff_cam: vec![],
+                flexeff_timed: vec![],
                 flexeff_meteor: vec![],
                 flexeff_audio: vec![],
                 flexeff_pending: vec![],
@@ -512,6 +514,8 @@ struct AdventureDirectorProps {
     )>,
     /// `camera` 实例：`(flexcam 序列号，≤ 0 = 只停；离起播还剩几秒)`。
     flexeff_cam: Vec<(i32, f32)>,
+    /// `quake` / `bink` 实例：到点才把请求交给战斗命令。`(离到点还剩几秒, 请求)`。
+    flexeff_timed: Vec<(f32, FlexTimed)>,
     /// `meteor` 实例：模型、头部面片实体（定义不画头部时没有）、拖尾实体。
     flexeff_meteor: Vec<(
         crate::openpal3::scene::flexeff_meteor::MeteorEffect,
@@ -524,6 +528,15 @@ struct AdventureDirectorProps {
     flexeff_pending: Vec<(i32, Vec3, f32, u8)>,
     /// 实体名的流水号，免得同名。
     flexeff_seq: usize,
+}
+
+/// 到点才交给战斗命令的特效请求。
+#[derive(Debug, Clone)]
+enum FlexTimed {
+    /// `quake`：`[幅度, 每秒衰减, 频率]`。
+    Quake([f32; 3]),
+    /// `bink`：`movie/2DEFFECT` 下的名字。
+    Movie(String),
 }
 
 /// `callback` 链的展开深度上限。实机最深 3 层且无环，留一点余量。
@@ -897,6 +910,33 @@ impl AdventureDirectorProps {
                     }
                     continue;
                 }
+                // `quake`（0x4d35e0）：这一步第一次进来就把 幅度 `+0`、衰减 `+4`、频率 `+8`
+                // 写进战斗镜头；`bink`（FUN_004c24b0）：这一步开始后过 `+4` 秒，播
+                // `"%s%03d.bik"`（资源前缀 `2DEFFECT\t` + `+0`）；`time`（FUN_004d53e0）改战斗
+                // 速度，移植端没有这个量，先不接。
+                if matches!(class, Some("quake") | Some("bink") | Some("time")) {
+                    if class == Some("time") {
+                        log::info!("CEft: time 类（改战斗速度）没接，跳过");
+                        continue;
+                    }
+                    let prefix = def.asset().rsplit('\\').next().unwrap_or("").to_string();
+                    for sidx in 0..GROUP_SUBS {
+                        if !group.sub_enabled(k, sidx) {
+                            continue;
+                        }
+                        let sub = group.sub(k, sidx).unwrap();
+                        let f = |o: usize| f32::from_le_bytes(sub[o..o + 4].try_into().unwrap());
+                        if class == Some("quake") {
+                            self.flexeff_timed
+                                .push((f(72).max(0.), FlexTimed::Quake([f(0), f(4), f(8)])));
+                        } else if f(0) != 0. {
+                            let name = format!("{prefix}{:03}", f(0).round_ties_even() as i32);
+                            self.flexeff_timed
+                                .push((f(72).max(0.) + f(4).max(0.), FlexTimed::Movie(name)));
+                        }
+                    }
+                    continue;
+                }
                 // `action`（FUN_004c0c10）：让舞台上的人做动作、走位、转身，交给战斗命令。
                 if class == Some("action") {
                     use crate::openpal3::combat::stage_action::ActionCue;
@@ -1204,6 +1244,33 @@ impl AdventureDirectorProps {
                 }
                 !over
             });
+        }
+
+        if !self.flexeff_timed.is_empty() {
+            let mut due = vec![];
+            self.flexeff_timed.retain_mut(|(left, cue)| {
+                *left -= delta_sec;
+                if *left <= 0. {
+                    due.push(cue.clone());
+                    false
+                } else {
+                    true
+                }
+            });
+            for cue in due {
+                match cue {
+                    FlexTimed::Quake([amp, decay, freq]) => {
+                        log::info!("CEft: 震动 幅度 {amp} 衰减 {decay} 频率 {freq}");
+                        self.sce_vm
+                            .state_mut()
+                            .request_combat_shake(amp, decay, freq);
+                    }
+                    FlexTimed::Movie(name) => {
+                        log::info!("CEft: 2D 动画 {name}");
+                        self.sce_vm.state_mut().request_combat_movie(name);
+                    }
+                }
+            }
         }
 
         if !self.flexeff_cam.is_empty() {

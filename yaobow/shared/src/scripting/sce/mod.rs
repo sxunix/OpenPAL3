@@ -120,6 +120,10 @@ pub struct SceState {
     combat_camera_requests: Vec<i32>,
     /// 特效 `action` 类要舞台上的人做的动作，同样由战斗命令每帧取走。
     combat_action_requests: Vec<crate::openpal3::combat::stage_action::ActionCue>,
+    /// 特效 `quake` 类要的镜头震动 `[幅度, 每秒衰减, 频率]`，只留最新一个。
+    combat_shake_request: Option<[f32; 3]>,
+    /// 特效 `bink` 类要播的 2D 动画（`movie/2DEFFECT` 下的名字，如 `t102`）。
+    combat_movie_requests: Vec<String>,
 }
 
 /// The dialog box's readable state — mirrors the agent contract's
@@ -176,6 +180,8 @@ impl SceState {
             effect_requests: vec![],
             combat_camera_requests: vec![],
             combat_action_requests: vec![],
+            combat_shake_request: None,
+            combat_movie_requests: vec![],
         }
     }
 
@@ -370,6 +376,27 @@ impl SceState {
             self.combat_action_requests.remove(0);
         }
         self.combat_action_requests.push(cue);
+    }
+
+    /// 特效 `quake` 类（0x4d35e0）：写战斗镜头的震动参数。
+    pub fn request_combat_shake(&mut self, amplitude: f32, decay: f32, frequency: f32) {
+        self.combat_shake_request = Some([amplitude, decay, frequency]);
+    }
+
+    pub fn take_combat_shake_request(&mut self) -> Option<[f32; 3]> {
+        self.combat_shake_request.take()
+    }
+
+    /// 特效 `bink` 类（FUN_004c24b0）：播一段 2D 动画。战斗外没人取，只留最近 8 条。
+    pub fn request_combat_movie(&mut self, name: String) {
+        if self.combat_movie_requests.len() >= 8 {
+            self.combat_movie_requests.remove(0);
+        }
+        self.combat_movie_requests.push(name);
+    }
+
+    pub fn take_combat_movie_requests(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.combat_movie_requests)
     }
 
     pub fn take_combat_action_requests(
