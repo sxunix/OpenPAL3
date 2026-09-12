@@ -16,9 +16,11 @@
 //!   扣掉的材料还回去。离开钮先说告别语，再点一次回菜单。
 //!
 //! 手柄：十字键上下选行，A 在有话时点那段话、否则按「是」，B 在问「确定吗」时
-//! 按「否」、否则按离开。还没做：开炉的火花（`FUN_0047a400`）、物品 3D 预览、
-//! 按钮音效、滚动条。
+//! 按「否」、否则按离开。开炉期间说明面板的黑框里冒火花（[`spark`]）。
+//!
+//! 还没做：物品 3D 预览、按钮音效、滚动条。
 
+use crate::openpal3::states::shop::ShopRng;
 use std::path::PathBuf;
 
 use super::appraise::{overlay, virtual_mouse};
@@ -152,6 +154,138 @@ struct Firing {
     elapsed: f32,
 }
 
+/// 开炉的火花。页面上有 60 个 UI 粒子（`+0x2a77c` 起，每个 0x248 字节，粒子类
+/// 构造 `FUN_004b4690`）。开炉时 `FUN_0047a400` 全部撒出去；之后每帧
+/// `FUN_0047b140` 挨个推：活着的走粒子类的模式 12（`FUN_004b5d20`，推一步再画），
+/// 死了的照撒的参数重撒（这一帧不画）。停炉（`+0x2a774 = 0`）就整个不画。
+mod spark {
+    /// 撒的范围（页面 `+0x3305c..+0x33068`）。
+    pub const AREA: (i32, i32, i32, i32) = (168, 168, 268, 328);
+    pub const COUNT: usize = 60;
+    /// 32×32（`FUN_004b48e0(0x20, 0x20)`），以 (x, y) 为中心画。
+    pub const HALF: f32 = 16.;
+    /// 每帧横移 `ftol(+0x90 × +0x244)` = `ftol(10 × 0.8)` = 8。
+    pub const DX: f32 = 8.;
+    /// `+0x244` = 0.8：上升速度的倍率。
+    pub const SCALE: f32 = 0.8;
+    /// `+0x84` = 1.6：每帧 alpha 减这么多，再截成整数。
+    pub const FADE: f32 = 1.6;
+    /// 原版按帧推，这里按 60 帧每秒折算 [推断]。
+    pub const FRAME: f32 = 1. / 60.;
+
+    #[derive(Debug, Clone, Copy)]
+    pub struct Spark {
+        pub x: f32,
+        pub y: f32,
+        /// 横向的三个状态（`+0x60`）：0 起步往右，1 往左，2 往右。
+        dir: u8,
+        x0: f32,
+        x1: f32,
+        top: f32,
+        bottom: f32,
+        /// 升了多高（`+0x94`，起始 2）。
+        rise: f32,
+        vy: f32,
+        pub alpha: u8,
+        pub rgb: [u8; 3],
+        /// `+0x80`。
+        pub alive: bool,
+        /// `+0x58`：升到顶了。
+        done: bool,
+        /// 这一帧画不画。
+        pub shown: bool,
+    }
+
+    impl Spark {
+        /// `FUN_0047a400` 里撒一颗。`rand` 是 MSVC 的 `rand()`（0..32767），调用
+        /// 顺序照原版：横坐标、B、G、R、alpha、上升速度、横向速度（模式 12 不用）。
+        pub fn spawn(rand: &mut dyn FnMut() -> i32) -> Self {
+            let (x0, y0, x1, y1) = AREA;
+            let half_w = (x1 - x0) / 2;
+            let x = (rand() % half_w + x0) as f32;
+            // B = rand%10 + 0xfc 写进一个字节，超过 255 的绕回 0..5——照原样。
+            let b = ((rand() % 10 + 0xfc) & 0xff) as u8;
+            let g = (rand() % 10 + 0x24) as u8;
+            let r = (rand() % 10 + 0xdb) as u8;
+            let alpha = (rand() % 0x87 + 0x78) as u8;
+            let vy = (rand() % 8 + 2) as f32;
+            let _vx = rand() % 8 + 2;
+            Self {
+                x,
+                y: y1 as f32,
+                dir: 0,
+                // `FUN_004b4b10(w, h)`：左右各 w/2，上边是撒的 y，下边 y + h。
+                x0: x - half_w as f32,
+                x1: x + half_w as f32,
+                top: y0 as f32,
+                bottom: y1 as f32,
+                rise: 2.,
+                vy,
+                alpha,
+                rgb: [r, g, b],
+                alive: true,
+                done: false,
+                shown: false,
+            }
+        }
+
+        /// 模式 12 的一帧（`FUN_004b5d20`）。返回这一帧画不画：活着、或者是淡没
+        /// 了（不是升到顶）的那一帧还画一次（alpha 已经是 0）。
+        pub fn step(&mut self) -> bool {
+            match self.dir {
+                0 => {
+                    self.x += DX;
+                    if self.x > self.x1 {
+                        self.dir = 1;
+                    }
+                    if self.x < self.x0 {
+                        self.dir = 2;
+                    }
+                }
+                1 => {
+                    self.x -= DX;
+                    if self.x <= self.x0 {
+                        self.dir = 2;
+                    }
+                }
+                _ => {
+                    self.x += DX;
+                    if self.x >= self.x1 {
+                        self.dir = 1;
+                    }
+                }
+            }
+            self.y = self.bottom - self.rise;
+            if self.y <= self.top + HALF {
+                self.done = true;
+                self.alive = false;
+            }
+            self.rise += self.vy * SCALE;
+            let a = self.alpha as f32 - FADE;
+            if a <= 0. {
+                self.alive = false;
+                self.done = false;
+                self.alpha = 0;
+            } else {
+                self.alpha = a as u8;
+            }
+            self.alive || !self.done
+        }
+    }
+}
+
+/// `Par_Effect\spark.tga` 是黑底、没有 alpha 的 RGB 图，原版用另一套渲染状态画
+/// （`FUN_005407a0` 传 `DAT_0189505c`，普通界面贴图是 `DAT_0189504c`），看样子是叠加
+/// [推断]。imgui 只有 alpha 混合，这里把亮度当 alpha、颜色填白，再乘顶点色，近似叠加。
+fn spark_texture(am: &crate::openpal3::asset_manager::AssetManager) -> Tex {
+    let mut image = am.read_picture("/basedata/basedata/ui/GameMainUI/Par_Effect/spark.tga")?;
+    for p in image.pixels_mut() {
+        let a = p[0].max(p[1]).max(p[2]);
+        *p = image::Rgba([255, 255, 255, a]);
+    }
+    Some(am.sprite_from_image(image))
+}
+
 #[derive(Clone, Default)]
 struct Skin {
     flag_t: Tex,
@@ -171,11 +305,13 @@ struct Skin {
     exit: [Tex; 3],
     arrow: [Tex; 2],
     dlg_bg: Tex,
+    spark: Tex,
 }
 
 impl Skin {
     fn load(state: &SceState) -> Self {
         let am = state.asset_mgr().clone();
+        let spark = spark_texture(&am);
         let mut t = UiTextures::new(&am);
         let mut three = |t: &mut UiTextures, base: &str| -> [Tex; 3] {
             std::array::from_fn(|k| t.get(&am, &format!("{base}{k}.tga")))
@@ -203,6 +339,7 @@ impl Skin {
             exit,
             arrow: [one("ui\\scene\\page0.tga"), one("ui\\scene\\page1.tga")],
             dlg_bg: one("UI\\GameMainUI\\MUIDialog\\Normal\\DlgBackground.tga"),
+            spark,
         }
     }
 }
@@ -230,6 +367,10 @@ pub struct SceCommandSmeltingMenu {
     lang: Vec<String>,
     skin: Skin,
     anim: f32,
+    sparks: Vec<spark::Spark>,
+    /// 攒不满一帧的时间。
+    spark_clock: f32,
+    rng: ShopRng,
     last_mouse: (f32, f32),
     chat: bool,
     loaded: bool,
@@ -260,6 +401,9 @@ impl SceCommandSmeltingMenu {
             lang: vec![],
             skin: Skin::default(),
             anim: 0.,
+            sparks: vec![],
+            spark_clock: 0.,
+            rng: ShopRng::new(0x2a77c),
             last_mouse: (-1., -1.),
             chat: false,
             loaded: false,
@@ -391,6 +535,11 @@ impl SceCommandSmeltingMenu {
                 // 开炉：`FUN_0047a400` 撒火花、`+0x2a774 = 1`。
                 if let Some(row) = self.cursor.and_then(|c| self.rows.get(c)).cloned() {
                     self.firing = Some(Firing { row, elapsed: 0. });
+                    let rng = &mut self.rng;
+                    self.sparks = (0..spark::COUNT)
+                        .map(|_| spark::Spark::spawn(&mut || rng.rand15()))
+                        .collect();
+                    self.spark_clock = 0.;
                 }
                 self.talk = Talk::None;
             }
@@ -408,6 +557,26 @@ impl SceCommandSmeltingMenu {
             self.screen = Screen::Menu;
         } else {
             self.talk = Talk::Bye;
+        }
+    }
+
+    /// 火花按帧推（见 [`spark`]）；停炉就清掉。
+    fn step_sparks(&mut self, dt: f32) {
+        if self.firing.is_none() {
+            self.sparks.clear();
+            return;
+        }
+        self.spark_clock += dt;
+        while self.spark_clock >= spark::FRAME {
+            self.spark_clock -= spark::FRAME;
+            let rng = &mut self.rng;
+            for s in &mut self.sparks {
+                if s.alive {
+                    s.shown = s.step();
+                } else {
+                    *s = spark::Spark::spawn(&mut || rng.rand15());
+                }
+            }
         }
     }
 
@@ -677,10 +846,14 @@ impl SceCommandSmeltingMenu {
             let frame = (self.anim * 2.) as usize % 2;
             blit(list, &sk.arrow[frame], rect::ARROW.0, rect::ARROW.1, at);
         }
-        if let Some(f) = &self.firing {
-            // 火花没做，先在文本框里写一行进度 [推断]。
-            let left = (SMELT_SECONDS - f.elapsed).max(0.).ceil();
-            label(list, rect::TALK, &format!("……{left:.0}"), at);
+        if let Some(tex) = sk.spark.as_deref() {
+            for s in self.sparks.iter().filter(|s| s.shown) {
+                let (x, y, h) = (s.x as i32, s.y as i32, spark::HALF as i32);
+                let [r, g, b] = s.rgb.map(|c| c as f32 / 255.);
+                list.add_image(tex.imgui_texture_id(), at(x - h, y - h), at(x + h, y + h))
+                    .col([r, g, b, s.alpha as f32 / 255.])
+                    .build();
+            }
         }
 
         button(list, &sk.yes, rect::YES, hover == Some(Hit::Yes), at);
@@ -737,6 +910,7 @@ impl SceCommand for SceCommandSmeltingMenu {
 
         self.anim += delta_sec;
         self.step_firing(state, delta_sec);
+        self.step_sparks(delta_sec);
 
         let (mx, my) = virtual_mouse(ui);
         let hover = self.hit(mx, my);
