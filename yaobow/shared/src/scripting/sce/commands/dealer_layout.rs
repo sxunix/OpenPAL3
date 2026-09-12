@@ -392,6 +392,57 @@ pub mod compare {
     }
 }
 
+// ------------------------------------------------------------ 物品 3D 预览
+
+/// 说明面板上方那块黑框里的物品模型。页面上有一个 3D 视图控件（买装备页
+/// `+0x16db0`、卖页 `+0x5328`，构造 `FUN_00439030`），选中一行时按物品换相机
+/// 参数（`0x46c42b` / `0x4703f0` 一带）、载入 `Item\<模型>\<模型>.pol`、
+/// 把贴图换成 `<模型><图标>.tga`（`gbGeomNode::ReplaceTexture`）。模型不转。
+pub mod preview {
+    use super::Rect;
+
+    /// 黑框范围（量的截图，`Info.tga` 在包里没找到散文件）。黑框实际到 411，
+    /// 但右上角压着「身体」页签（x ≥ 400、y < 188），预览只贴到 400，右边那
+    /// 一条面板本身也是黑的。
+    pub const BOX: Rect = (256, 159, 400, 340);
+
+    /// `FUN_00439930(x, y, 600)` 的 x、第三个参数。
+    pub const X: i32 = 330;
+    pub const HEIGHT: f32 = 600.;
+    /// 相机的 z（`FUN_00439930` 里写死的 1600）。
+    pub const EYE_Z: f32 = 1600.;
+
+    /// 这件物品的相机：（正交半宽，y）。
+    /// `weapon_type` 5 → (228, 280)；武器（类型 11）→ (228, 272)；
+    /// 8114 隐身符、8132 阎王令 → (180, 252)；其余 (180, 268)。
+    pub fn camera(id: u32, item_type: u8, weapon_type: u8) -> (f32, i32) {
+        if weapon_type == 5 {
+            (228., 280)
+        } else if item_type == 11 {
+            (228., 272)
+        } else if id == 0x1fb2 || id == 0x1fc4 {
+            (180., 252)
+        } else {
+            (180., 268)
+        }
+    }
+
+    /// 眼睛和注视点（`FUN_00439930`）：原点落在屏幕 (x, y) 附近。
+    /// 注意纵向也乘的是半宽，不是半高——照原样。
+    pub fn eye_target(size: f32, x: i32, y: i32) -> ([f32; 3], [f32; 3]) {
+        let dx = -((2. * x as f32 / 800. - 1.) * size);
+        let dy = (1. - 2. * y as f32 / 600.) * size;
+        ([dx, HEIGHT - dy, EYE_Z], [dx, -dy, 0.])
+    }
+
+    /// 原版是正交相机（`gbCamera` `+0` 视角 0、`+4` 正交半宽）。移植端的相机
+    /// 只有透视，用很窄的视角从同一个位置看：注视点处的半宽正好是 `size`。
+    pub fn fov43(size: f32) -> f32 {
+        let d = (HEIGHT * HEIGHT + EYE_Z * EYE_Z).sqrt();
+        2. * (size / d).atan()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -501,5 +552,21 @@ mod tests {
         assert_eq!(compare::bob(0.036 * 12. + 0.001), 12);
         assert_eq!(compare::bob(0.036 * 18. + 0.001), 6);
         assert_eq!(compare::bob(0.036 * 24. + 0.001), 0);
+    }
+
+    #[test]
+    fn the_preview_camera_follows_the_item() {
+        assert_eq!(preview::camera(6601, 11, 1), (228., 272));
+        assert_eq!(preview::camera(1, 11, 5), (228., 280));
+        assert_eq!(preview::camera(8114, 10, 0), (180., 252));
+        assert_eq!(preview::camera(8101, 10, 0), (180., 268));
+        let (eye, target) = preview::eye_target(180., 330, 268);
+        // 横向偏 (400 − 330) / 400 × 180 = 31.5。
+        assert!((eye[0] - 31.5).abs() < 1e-4 && (target[0] - 31.5).abs() < 1e-4);
+        assert!((eye[2] - 1600.).abs() < 1e-4 && target[2] == 0.);
+        assert!((eye[1] - target[1] - 600.).abs() < 1e-3);
+        // 视角：半宽 180、距离 √(600² + 1600²)。
+        let f = preview::fov43(180.);
+        assert!(((f / 2.).tan() * 1708.8 - 180.).abs() < 0.5);
     }
 }

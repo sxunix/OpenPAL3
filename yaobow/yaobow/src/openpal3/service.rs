@@ -420,6 +420,7 @@ impl Pal3Service {
         let engine_rc = self.app.engine();
         let engine = engine_rc.borrow();
         let component_factory = engine.rendering_component_factory();
+        let rendering_engine = engine.rendering_engine();
         drop(engine);
 
         let vfs = init_virtual_fs(&PathBuf::from(asset_path), None);
@@ -428,6 +429,7 @@ impl Pal3Service {
             Rc::new(vfs),
             self.last_game.get(),
         ));
+        am.set_rendering_engine(rendering_engine);
         self.asset_managers
             .borrow_mut()
             .insert(asset_path.to_string(), am.clone());

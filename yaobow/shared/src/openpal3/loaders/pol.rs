@@ -21,8 +21,23 @@ pub fn create_entity_from_pol_model<P: AsRef<Path>>(
     name: String,
     visible: bool,
 ) -> ComRc<IEntity> {
+    create_entity_from_pol_model_with_texture(component_factory, vfs, path, name, visible, None)
+}
+
+/// 同上，但每个材质的第一张贴图换成 `texture`（模型同目录下的文件名，
+/// `.tga` 找不到时照常退到同名 `.dds`）。原版物品预览就是这么做的：
+/// `gbGeomNode::ReplaceTexture("Item\<模型>\<模型><图标>.tga")`，同一个模型
+/// 按物品换颜色（`PJ` 目录里有 `pj1..pj4.dds`）。
+pub fn create_entity_from_pol_model_with_texture<P: AsRef<Path>>(
+    component_factory: &Rc<dyn ComponentFactory>,
+    vfs: &MiniFs,
+    path: P,
+    name: String,
+    visible: bool,
+    texture: Option<&str>,
+) -> ComRc<IEntity> {
     let entity = CoreEntity::create(name, visible);
-    let geometries = load_pol_model(vfs, path);
+    let geometries = load_pol_model(vfs, path, texture);
     let mesh_component =
         StaticMeshComponent::new(entity.clone(), geometries, component_factory.clone());
     entity.add_component(
@@ -32,7 +47,7 @@ pub fn create_entity_from_pol_model<P: AsRef<Path>>(
     entity
 }
 
-fn load_pol_model<P: AsRef<Path>>(vfs: &MiniFs, path: P) -> Vec<Geometry> {
+fn load_pol_model<P: AsRef<Path>>(vfs: &MiniFs, path: P, texture: Option<&str>) -> Vec<Geometry> {
     let mut reader = BufReader::new(vfs.open(&path).unwrap());
     let pol = read_pol(&mut reader).unwrap();
     let mut geometries = vec![];
@@ -48,7 +63,7 @@ fn load_pol_model<P: AsRef<Path>>(vfs: &MiniFs, path: P) -> Vec<Geometry> {
             let geometry = create_geometry(
                 &mesh.vertices,
                 &material.triangles,
-                load_material(&material, vfs, path.as_ref()),
+                load_material(&material, vfs, path.as_ref(), texture),
                 lit,
             );
 
@@ -59,12 +74,30 @@ fn load_pol_model<P: AsRef<Path>>(vfs: &MiniFs, path: P) -> Vec<Geometry> {
     geometries
 }
 
-fn load_material<P: AsRef<Path>>(material: &PolMaterialInfo, vfs: &MiniFs, path: P) -> MaterialDef {
+fn load_material<P: AsRef<Path>>(
+    material: &PolMaterialInfo,
+    vfs: &MiniFs,
+    path: P,
+    texture: Option<&str>,
+) -> MaterialDef {
     let texture_paths: Vec<PathBuf> = material
         .texture_names
         .iter()
-        .map(|name| {
-            let name = &name.as_str().unwrap();
+        .enumerate()
+        .map(|(i, name)| {
+            let own = name.as_str().unwrap();
+            // 换的那张在同目录下（`.tga` 或同名 `.dds`）找得到才换。
+            let exists = |n: &str| {
+                let mut dir = path.as_ref().to_owned();
+                dir.pop();
+                vfs.open(dir.join(PathBuf::from(n).with_extension("dds")))
+                    .is_ok()
+                    || vfs.open(dir.join(n)).is_ok()
+            };
+            let name = &match texture {
+                Some(t) if i == 0 && exists(t) => t.to_string(),
+                _ => own,
+            };
             let mut model_dir = path.as_ref().to_owned();
             model_dir.pop();
             let dds_name = PathBuf::from(name).with_extension("dds");

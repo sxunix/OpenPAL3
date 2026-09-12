@@ -6,7 +6,7 @@ use mini_fs::MiniFs;
 use mini_fs::prelude::*;
 use radiance::comdef::{IAnimatedMeshComponent, IEntity, IScene};
 use radiance::math::Vec3;
-use radiance::rendering::{ComponentFactory, Sprite};
+use radiance::rendering::{ComponentFactory, RenderingEngine, Sprite};
 use radiance::scene::{CoreScene, ISceneExt, SceneLight, SceneLighting};
 use radiance::utils::SeekRead;
 use std::io::BufReader;
@@ -60,6 +60,9 @@ pub struct AssetManager {
     /// `cbdata\flexeff.data` 的两张表，第一次要用时才解。整个包 9.3 MB，
     /// 解出来也是 9.3 MB，所以只解一次。`None` 表示试过但读不到。
     flexeff: std::cell::RefCell<Option<Option<Rc<FlexEff>>>>,
+    /// 渲染引擎，界面里要画离屏小场景（买装备页的物品预览）时用。宿主建好
+    /// 资源管理器后塞进来；测试和编辑器里可能没有。
+    renderer: std::cell::RefCell<Option<Rc<std::cell::RefCell<dyn RenderingEngine>>>>,
 }
 
 impl AssetManager {
@@ -80,6 +83,7 @@ impl AssetManager {
             game,
             basedata_path: PathBuf::from("/basedata/basedata"),
             flexeff: std::cell::RefCell::new(None),
+            renderer: std::cell::RefCell::new(None),
             scene_path: PathBuf::from("/scene"),
             music_path: PathBuf::from("/music/music/music"),
             movie_path: PathBuf::from("/movie/movie/movie"),
@@ -88,6 +92,16 @@ impl AssetManager {
             snd_path: PathBuf::from("/snd"),
             vfs,
         }
+    }
+
+    pub fn set_rendering_engine(&self, engine: Rc<std::cell::RefCell<dyn RenderingEngine>>) {
+        *self.renderer.borrow_mut() = Some(engine);
+    }
+
+    /// 界面在 `update` 里调用是安全的：引擎只在渲染阶段借用自己，
+    /// 这时候没有被借着（`CoreRadianceEngine::update`）。
+    pub fn rendering_engine(&self) -> Option<Rc<std::cell::RefCell<dyn RenderingEngine>>> {
+        self.renderer.borrow().clone()
     }
 
     pub fn vfs(&self) -> &MiniFs {
