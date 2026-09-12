@@ -16,7 +16,7 @@ class RoleController: IRoleController {}
 interface ICvdModel: IComponent {}
 
 [uuid(ac6e671f-79fc-4bee-bf31-65fd947d8244)]
-class CvdModel: IComponent {}
+class CvdModel: ICvdModel {}
 
 [uuid(77fe1a3d-05cf-47f9-b80a-08be6d19b0a4)]
 interface IScnSceneComponent: IComponent {

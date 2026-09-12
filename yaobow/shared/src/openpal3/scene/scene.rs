@@ -1,3 +1,6 @@
+use super::cvd_entity::{
+    CvdPlayMode, SCENE_CVD_SPEED, play_cvd_subtree, scene_object_initial_play,
+};
 use crate::openpal3::asset_manager::AssetManager;
 use crate::openpal3::comdef::IRoleController;
 use crate::openpal3::loaders::nav_loader::{NavFile, NavMapPoint};
@@ -575,6 +578,21 @@ impl ScnScene {
             entities.push(scn_object);
         }
 
+        // 场景自己的 `<场景名>.cvd`（水车、旗子之类，1134 个场景里 22 个有）：原版只找白天
+        // 那份（`FUN_0041fe30`，不看夜间的 `1\`），一直按 0.2 倍率循环。
+        let scene_cvd = self.asset_mgr.load_scn_cvd(
+            &self.cpk_name,
+            &self.scn_file.scn_base_name,
+            &format!("{}.cvd", self.scn_file.scn_base_name),
+            false,
+            u16::MAX - 1,
+        );
+        if let Some(cvd) = scene_cvd {
+            Self::apply_position_rotation(cvd.clone(), &Vec3::new(0., 0., 0.), 0.);
+            play_cvd_subtree(&cvd, CvdPlayMode::Loop, SCENE_CVD_SPEED);
+            entities.push(cvd);
+        }
+
         for obj in &self.scn_file.nodes {
             let mut entity: Option<ComRc<IEntity>> = None;
             if obj.nav_trigger_coord_min.0 != 0
@@ -677,6 +695,11 @@ impl ScnScene {
 
             if let Some(p) = entity {
                 Self::apply_position_rotation(p.clone(), &obj.position, obj.rotation.to_radians());
+                if let Some((mode, speed)) =
+                    scene_object_initial_play((obj.node_type & 0xff) as u8, obj.ladder_nav_coord1.1)
+                {
+                    play_cvd_subtree(&p, mode, speed);
+                }
                 entities.push(p);
             }
         }

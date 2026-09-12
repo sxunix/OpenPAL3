@@ -6,7 +6,9 @@ use crate::openpal3::loaders::cvd_loader::{
 use crosscom::ComRc;
 use mini_fs::{MiniFs, StoreExt};
 use radiance::comdef::{IAnimatedMeshComponent, IComponent, IComponentImpl, IEntity, IEntityExt};
-use radiance::components::mesh::{AnimatedMeshComponent, Geometry, MorphTarget};
+use radiance::components::mesh::{
+    AnimatedMeshComponent, Geometry, MorphAnimationState, MorphTarget,
+};
 use radiance::math::{Mat44, Quaternion, Vec2, Vec3};
 use radiance::rendering::{
     ComponentFactory, MaterialDef, Pal3PropMaterialDef, VertexBuffer, VertexComponents,
@@ -139,9 +141,10 @@ fn new_from_cvd_model_node<P: AsRef<Path>>(
 
         let animated = AnimatedMeshComponent::new(entity.clone(), component_factory.clone());
         animated.set_morph_targets(targets, 0.);
-        animated.set_loop_playback(true);
+        // 停在第 0 帧，播不播、怎么播由 `CvdModelComponent::play` 统一管——场景
+        // 加载时按物件类型定（`scene_object_initial_play`），开门、机关由命令触发。
+        animated.stop();
         let animated: ComRc<IAnimatedMeshComponent> = ComRc::from_object(animated);
-        animated.play(true);
         entity.add_component(
             IAnimatedMeshComponent::uuid(),
             animated.query_interface::<IComponent>().unwrap(),
@@ -315,14 +318,39 @@ impl CvdModelComponent {
         *self.play_mode.borrow_mut() = mode;
         self.speed.set(speed.max(0.001));
         self.elapsed.set(0.);
+        // 同一个节点的顶点变形跟着一起走（原版是同一个 `gbGeomNode` 的时间）。
+        if let Some(m) = self.morph() {
+            let a = m.inner::<AnimatedMeshComponent>();
+            match mode {
+                CvdPlayMode::Hold => a.stop(),
+                CvdPlayMode::Once | CvdPlayMode::Loop => {
+                    a.set_loop_playback(mode == CvdPlayMode::Loop);
+                    a.set_time_scale(speed.max(0.001));
+                    m.play(true);
+                }
+            }
+        }
+    }
+
+    fn morph(&self) -> Option<ComRc<IAnimatedMeshComponent>> {
+        self.entity
+            .get_component(IAnimatedMeshComponent::uuid())
+            .and_then(|c| c.query_interface::<IAnimatedMeshComponent>())
     }
 
     /// Whether a one-shot animation has run to its end. `SceneOpenDoor`
     /// blocks the script on this.
     pub fn finished(&self) -> bool {
+        let morph_busy = self.morph().is_some_and(|m| {
+            matches!(
+                m.inner::<AnimatedMeshComponent>().morph_animation_state(),
+                MorphAnimationState::Playing | MorphAnimationState::Holding
+            )
+        });
         matches!(*self.play_mode.borrow(), CvdPlayMode::Hold)
             || (matches!(*self.play_mode.borrow(), CvdPlayMode::Once)
-                && self.elapsed.get() >= self.duration())
+                && self.elapsed.get() >= self.duration()
+                && !morph_busy)
     }
 
     /// Longest timestamp across the three tracks.
@@ -549,5 +577,73 @@ mod tests {
         assert!(sample::<F>(None, 0., |x| x.0).is_none());
         let empty: Vec<F> = vec![];
         assert!(sample(Some(&empty), 0., |x| x.0).is_none());
+    }
+}
+
+/// 把一个物件下所有 CVD 节点按同一种方式播（关键帧和顶点变形一起）。返回有没有 CVD。
+pub fn play_cvd_subtree(entity: &ComRc<IEntity>, mode: CvdPlayMode, speed: f32) -> bool {
+    let mut any = false;
+    if let Some(c) = entity
+        .get_component(ICvdModel::uuid())
+        .and_then(|c| c.query_interface::<ICvdModel>())
+    {
+        c.inner::<CvdModelComponent>().play(mode, speed);
+        any = true;
+    }
+    for child in entity.children() {
+        any |= play_cvd_subtree(&child, mode, speed);
+    }
+    any
+}
+
+/// 场景加载时物件的 CVD 怎么播（`FUN_00423a70` `0x42405a` 起，按物件类型 `+0xf4`）。
+///
+/// 原版 `gbGeomNode` 载进来默认就是循环、倍率 1；建物件时再按类型改：
+///
+/// - 1、2、12、19、23、26、29、32、41（模型是 CVD 时）和 4、6、14：`SetTimeScale(0)`，停住，
+///   等交互或命令再播；
+/// - 17：参数 p1（记录 +0x50，运行时 +0xfc）非 0 时停住；为 0 时照默认循环（另外随机一个
+///   0..9 的数写进 +0x48，用途没追 [推断：错开相位]）；
+/// - 4、6、12、14、16、19、23、26、32、41 再 `SetAnimLoop(1)` 改成只播一遍——其中只有 16
+///   没被停住，所以调查点进场景播一遍就停；
+/// - 其余类型：循环。
+pub fn scene_object_initial_play(node_type: u8, p1: i32) -> Option<(CvdPlayMode, f32)> {
+    match node_type {
+        1 | 2 | 4 | 6 | 12 | 14 | 19 | 23 | 26 | 29 | 32 | 41 => None,
+        17 if p1 != 0 => None,
+        16 => Some((CvdPlayMode::Once, 1.)),
+        _ => Some((CvdPlayMode::Loop, 1.)),
+    }
+}
+
+/// 场景自己的 `<场景名>.cvd`（`FUN_0041fe30` 载、`FUN_004200a0` 每帧 `SetTimeScale(0.2)`）。
+pub const SCENE_CVD_SPEED: f32 = 0.2;
+
+#[cfg(test)]
+mod initial_play_tests {
+    use super::*;
+
+    #[test]
+    fn switches_and_doors_wait_everything_else_loops() {
+        assert_eq!(scene_object_initial_play(14, 0), None, "门");
+        assert_eq!(scene_object_initial_play(23, 0), None, "开关");
+        assert_eq!(scene_object_initial_play(26, 0), None, "宝箱");
+        assert_eq!(scene_object_initial_play(17, 1), None);
+        assert_eq!(
+            scene_object_initial_play(17, 0),
+            Some((CvdPlayMode::Loop, 1.))
+        );
+        assert_eq!(
+            scene_object_initial_play(16, 0),
+            Some((CvdPlayMode::Once, 1.))
+        );
+        assert_eq!(
+            scene_object_initial_play(25, 0),
+            Some((CvdPlayMode::Loop, 1.))
+        );
+        assert_eq!(
+            scene_object_initial_play(0, 0),
+            Some((CvdPlayMode::Loop, 1.))
+        );
     }
 }

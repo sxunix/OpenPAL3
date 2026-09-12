@@ -35,6 +35,8 @@ struct AnimatedMeshComponentProps {
     hold: bool,
     hold_enabled: bool,
     loop_playback: bool,
+    /// 时间倍率（PAL3 的 `gbVisNode::SetTimeScale`），默认 1。
+    time_scale: f32,
 }
 
 ComObject_AnimatedMeshComponent!(super::AnimatedMeshComponent);
@@ -52,6 +54,7 @@ impl AnimatedMeshComponent {
                 hold: false,
                 hold_enabled: true,
                 loop_playback: false,
+                time_scale: 1.,
             }),
         }
     }
@@ -110,6 +113,21 @@ impl AnimatedMeshComponent {
     /// final frame so an action settles on its true end pose. Defaults to off.
     pub fn set_loop_playback(&self, looping: bool) {
         self.props_mut().loop_playback = looping;
+    }
+
+    /// Scale the playback clock (PAL3 `gbVisNode::SetTimeScale`): the scene's
+    /// own CVD mesh runs at 0.2, doors and switches at 2.0.
+    pub fn set_time_scale(&self, scale: f32) {
+        self.props_mut().time_scale = scale;
+    }
+
+    /// Stop and rewind: the mesh stays on whatever frame it last rendered
+    /// (frame 0 right after loading) until `play` is called again.
+    pub fn stop(&self) {
+        let mut p = self.props_mut();
+        p.morph_animation_state = MorphAnimationState::NotStarted;
+        p.last_time = 0.;
+        p.hold = false;
     }
 
     pub fn is_to_hold(&self) -> bool {
@@ -387,7 +405,8 @@ impl IComponentImpl for AnimatedMeshComponent {
                 self.props_mut().morph_animation_state = MorphAnimationState::Holding;
                 self.set_morph_hold();
             } else {
-                self.add_morph_last_time(delta_sec);
+                let scale = self.props().time_scale;
+                self.add_morph_last_time(delta_sec * scale);
             }
 
             self.render(last_time);

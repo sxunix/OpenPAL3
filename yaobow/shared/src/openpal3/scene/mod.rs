@@ -16,7 +16,10 @@ mod scene;
 mod shadow;
 mod snow;
 
-pub use cvd_entity::{CvdModelComponent, CvdPlayMode, create_entity_from_cvd_model};
+pub use cvd_entity::{
+    CvdModelComponent, CvdPlayMode, SCENE_CVD_SPEED, create_entity_from_cvd_model,
+    play_cvd_subtree, scene_object_initial_play,
+};
 pub use effect::build_effect;
 pub use particles::{
     MAX_PARTICLES, Particle, ParticleEffect, ParticleGroup, build_particle_entity,
