@@ -20,7 +20,10 @@
 //! 买装备页左边是队里每人一张头像框的对比栏（`dealer_layout::compare`）；
 //! 说明面板上方的黑框里是选中物品的 3D 模型（`dealer_layout::preview`）。
 //!
-//! 还没做的：滚动条、按钮音效。
+//! 列表右边的滚动条照原版（`dealer_layout::Scrollbar`）：上下钮一行一行滚，点槽翻一页，
+//! 滑块可以拖。
+//!
+//! 还没做的：按钮音效。
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -29,7 +32,8 @@ use std::rc::Rc;
 
 use super::appraise::{overlay, virtual_mouse};
 use super::dealer_layout::{
-    self as lay, BUY_LIST, INK, ListGeom, MenuButton, Rect, SELL_LIST, compare as cmp, inside, page,
+    self as lay, BUY_LIST, INK, ListGeom, MenuButton, Rect, SELL_LIST, ScrollPart, compare as cmp,
+    inside, page,
 };
 use super::encamp::draw_sprite;
 use crate::openpal3::assis_lang;
@@ -271,6 +275,7 @@ enum Hit {
     Tab(usize),
     Add,
     Sub,
+    Scroll(ScrollPart),
 }
 
 /// 卖页六个页签（`FUN_0040d010` 的 0/1/2/3/4/6 号表，`shop.md` §5.2）。
@@ -326,6 +331,8 @@ struct Skin {
     unsub: Tex,
     tiers: [[Tex; 3]; TIERS],
     tabs: [[Tex; 3]; 6],
+    /// `scrollbar0..9.tga`，见 [`lay::Scrollbar`]。
+    scroll: [Tex; 10],
     heads: [Tex; 5],
     big: [Tex; 6],
     small: [Tex; 6],
@@ -367,7 +374,13 @@ impl Skin {
             .map(|n| one(&format!("{EQ}{n}_small.tga")));
         let up = ["W", "S", "F", "Y"].map(|n| one(&format!("{EQ}{n}_up.tga")));
         let down = ["W", "S", "F", "Y"].map(|n| one(&format!("{EQ}{n}_down.tga")));
+        let scroll = std::array::from_fn(|i| {
+            one(&format!(
+                "UI\\GameMainUI\\Communal\\Scroll\\scrollbar{i}.tga"
+            ))
+        });
         Self {
+            scroll,
             heads,
             big,
             small,
@@ -444,6 +457,10 @@ pub struct SceCommandDealerMenu {
     /// 预览的是哪件物品、建出来没有（模型缺了就是 `None`，不每帧重试）。
     preview: Option<(u32, Option<Rc<Preview>>)>,
     frame_dt: f32,
+    /// 正在拖滑块：鼠标离滑块上边多远。
+    drag: Option<f32>,
+    /// 鼠标左键按着（滚动条按钮画按下的样子）。
+    mouse_down: bool,
 }
 
 impl std::fmt::Debug for SceCommandDealerMenu {
@@ -487,6 +504,8 @@ impl SceCommandDealerMenu {
             clock: 0.,
             preview: None,
             frame_dt: 0.,
+            drag: None,
+            mouse_down: false,
         }
     }
 
@@ -684,6 +703,17 @@ impl SceCommandDealerMenu {
         } else if self.cursor >= self.top + vis {
             self.top = self.cursor + 1 - vis;
         }
+    }
+
+    /// 列表能往下滚几行。
+    fn scroll_range(&self) -> usize {
+        self.rows().len().saturating_sub(self.geom().visible_rows())
+    }
+
+    /// 只挪列表、不动选中行 [推断：原版上下钮是不是也挪选中行没追]。
+    fn scroll_by(&mut self, delta: isize) {
+        let range = self.scroll_range() as isize;
+        self.top = (self.top as isize + delta).clamp(0, range) as usize;
     }
 
     fn step(&mut self, delta: isize) {
@@ -1006,6 +1036,9 @@ impl SceCommandDealerMenu {
                 return Some(Hit::Sub);
             }
         }
+        if let Some(part) = self.geom().scroll.hit(x, y, self.top, self.scroll_range()) {
+            return Some(Hit::Scroll(part));
+        }
         self.geom()
             .row_at(x, y)
             .filter(|k| self.top + k < self.rows().len())
@@ -1049,6 +1082,21 @@ impl SceCommandDealerMenu {
             Hit::Tab(i) => self.set_tab(i),
             Hit::Add => self.adjust(1),
             Hit::Sub => self.adjust(-1),
+            Hit::Scroll(part) => {
+                let page = self.geom().visible_rows() as isize;
+                match part {
+                    ScrollPart::Up => self.scroll_by(-1),
+                    ScrollPart::Down => self.scroll_by(1),
+                    ScrollPart::PageUp => self.scroll_by(-page),
+                    ScrollPart::PageDown => self.scroll_by(page),
+                    ScrollPart::Thumb => {
+                        let sb = self.geom().scroll;
+                        if let Some((_, ty)) = sb.thumb_pos(self.top, self.scroll_range()) {
+                            self.drag = Some(self.last_mouse.1 - ty as f32);
+                        }
+                    }
+                }
+            }
         }
         false
     }
@@ -1305,6 +1353,36 @@ impl SceCommandDealerMenu {
             }
         }
 
+        // 滚动条：上下钮，能滚时再画滑块（槽那张图原版不画）。
+        let sb = geom.scroll;
+        let state = |part: ScrollPart, dragging: bool| -> usize {
+            if dragging {
+                2
+            } else if hover == Some(Hit::Scroll(part)) {
+                if self.mouse_down { 2 } else { 1 }
+            } else {
+                0
+            }
+        };
+        blit(
+            list,
+            &sk.scroll[4 + state(ScrollPart::Up, false)],
+            sb.up.0,
+            sb.up.1,
+            at,
+        );
+        blit(
+            list,
+            &sk.scroll[7 + state(ScrollPart::Down, false)],
+            sb.down.0,
+            sb.down.1,
+            at,
+        );
+        if let Some((tx, ty)) = sb.thumb_pos(self.top, self.scroll_range()) {
+            let k = state(ScrollPart::Thumb, self.drag.is_some());
+            blit(list, &sk.scroll[k], tx, ty, at);
+        }
+
         // 选中行上的「持有:N」和加减钮。
         if let (Some(a), Some(good)) = (self.cursor_anchor(), self.current()) {
             if !sell {
@@ -1532,6 +1610,15 @@ impl SceCommandDealerMenu {
     /// 一帧：鼠标、画、点击、按键。返回 true = 关店。
     fn frame(&mut self, ui: &Ui, state: &mut SceState) -> bool {
         let (mx, my) = virtual_mouse(ui);
+        self.mouse_down = ui.is_mouse_down(MouseButton::Left);
+        if let Some(grab) = self.drag {
+            if self.mouse_down {
+                let sb = self.geom().scroll;
+                self.top = sb.pos_at(my - grab, self.scroll_range());
+            } else {
+                self.drag = None;
+            }
+        }
         let hover = self.hit(mx, my);
         if (mx, my) != self.last_mouse {
             self.last_mouse = (mx, my);

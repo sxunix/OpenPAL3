@@ -147,6 +147,103 @@ pub struct ListGeom {
     pub grid_rows: usize,
     /// 各列宽（`FUN_0043e560`）。
     pub columns: &'static [i32],
+    /// 右边那一列的滚动条。
+    pub scroll: Scrollbar,
+}
+
+/// 列表右边的滚动条。列表控件 `FUN_0043e3b0(基名, rect, 38, 27, 0)` 建它，页面再用
+/// `FUN_00441380`（整条的 rect）、`FUN_00442170`（上下钮）、`FUN_00442230(27, 28)`
+/// （滑块宽高）摆好；画在 `0x4414f0`，命中在 `FUN_00441e30`。
+///
+/// 贴图 `Communal\Scroll\scrollbar0..9.tga`（`FUN_004413c0` 按 `%s%d.tga` 载十张）：
+/// 0/1/2 滑块（常态/悬停/按住），3 是 16×128 的槽——画的函数里没用到，
+/// 4/5/6 上钮，7/8/9 下钮。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scrollbar {
+    pub rect: Rect,
+    pub up: Rect,
+    pub down: Rect,
+    pub thumb_w: i32,
+    pub thumb_h: i32,
+}
+
+/// 滚动条上的哪一块（`FUN_00441e30` 的返回值 0..4）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScrollPart {
+    Up,
+    Down,
+    Thumb,
+    /// 滑块上面那段槽。
+    PageUp,
+    /// 滑块下面那段槽。
+    PageDown,
+}
+
+/// 两个买页（`0x45bd1d` / `0x46e274` 起）。
+pub const BUY_SCROLL: Scrollbar = Scrollbar {
+    rect: (731, 80, 769, 381),
+    up: (738, 94, 760, 120),
+    down: (738, 347, 760, 373),
+    thumb_w: 27,
+    thumb_h: 28,
+};
+
+/// 卖页（`0x471b5e` 起，每个页签一个列表，参数都一样）。
+pub const SELL_SCROLL: Scrollbar = Scrollbar {
+    rect: (732, 107, 770, 385),
+    up: (739, 120, 761, 146),
+    down: (739, 352, 761, 378),
+    thumb_w: 27,
+    thumb_h: 28,
+};
+
+impl Scrollbar {
+    /// 滑块能走的那一段有多长：`FUN_00442000` 的 `down.top − up.bottom − 高/2`。
+    fn span(&self) -> i32 {
+        self.down.1 - self.up.3 - self.thumb_h / 2
+    }
+
+    /// 滑块左上角。x = rect.x + (up.x − rect.x)（`+0x150`）；
+    /// y = span × pos / range + up.bottom（`FUN_00442000`），画的时候再夹到
+    /// [up.bottom, down.top − 高]（`0x441631` 起）。`range` 为 0 时不画滑块。
+    pub fn thumb_pos(&self, pos: usize, range: usize) -> Option<(i32, i32)> {
+        if range == 0 {
+            return None;
+        }
+        let y = self.span() * pos.min(range) as i32 / range as i32 + self.up.3;
+        Some((self.up.0, y.clamp(self.up.3, self.down.1 - self.thumb_h)))
+    }
+
+    /// `FUN_00441e30`：先上下钮，再滑块、滑块上面、滑块下面（这三样只在能滚时有）。
+    pub fn hit(&self, x: f32, y: f32, pos: usize, range: usize) -> Option<ScrollPart> {
+        if !inside(self.rect, x, y) {
+            return None;
+        }
+        if inside(self.up, x, y) {
+            return Some(ScrollPart::Up);
+        }
+        if inside(self.down, x, y) {
+            return Some(ScrollPart::Down);
+        }
+        let (_, ty) = self.thumb_pos(pos, range)?;
+        let (x0, x1) = (self.rect.0, self.rect.2);
+        if inside((x0, ty, x1, ty + self.thumb_h), x, y) {
+            Some(ScrollPart::Thumb)
+        } else if inside((x0, self.up.3, x1, ty), x, y) {
+            Some(ScrollPart::PageUp)
+        } else if inside((x0, ty, x1, self.down.1), x, y) {
+            Some(ScrollPart::PageDown)
+        } else {
+            None
+        }
+    }
+
+    /// 拖滑块：滑块上边在 `top` 时对应第几行，四舍五入 [推断：拖动那段
+    /// （`0x441772` 起）没逐条读]。
+    pub fn pos_at(&self, top: f32, range: usize) -> usize {
+        let t = (top - self.up.3 as f32) / self.span() as f32;
+        (t * range as f32).round().clamp(0., range as f32) as usize
+    }
 }
 
 /// 行高（`FUN_0043f640(0x17)`）。
@@ -161,6 +258,7 @@ pub const BUY_LIST: ListGeom = ListGeom {
     header: (476, 50, 782, 82),
     grid_rows: 13,
     columns: &[168, 51, 38],
+    scroll: BUY_SCROLL,
 };
 
 /// 卖页：`(472,106)` 起，高 278，12 行；列宽 131 / 52 / 36 / 36。
@@ -169,6 +267,7 @@ pub const SELL_LIST: ListGeom = ListGeom {
     header: (466, 82, 774, 114),
     grid_rows: 12,
     columns: &[131, 52, 36, 36],
+    scroll: SELL_SCROLL,
 };
 
 impl ListGeom {
@@ -568,5 +667,24 @@ mod tests {
         // 视角：半宽 180、距离 √(600² + 1600²)。
         let f = preview::fov43(180.);
         assert!(((f / 2.).tan() * 1708.8 - 180.).abs() < 0.5);
+    }
+
+    #[test]
+    fn the_thumb_runs_between_the_buttons() {
+        let sb = BUY_SCROLL;
+        assert_eq!(sb.thumb_pos(0, 0), None, "滚不动就没有滑块");
+        assert_eq!(sb.thumb_pos(0, 10), Some((738, 120)));
+        // 满格按公式是 120 + 213 = 333，夹到 347 − 28。
+        assert_eq!(sb.thumb_pos(10, 10), Some((738, 319)));
+        assert_eq!(sb.thumb_pos(5, 10), Some((738, 226)));
+        assert_eq!(sb.hit(749., 100., 0, 10), Some(ScrollPart::Up));
+        assert_eq!(sb.hit(749., 360., 0, 10), Some(ScrollPart::Down));
+        assert_eq!(sb.hit(749., 130., 0, 10), Some(ScrollPart::Thumb));
+        assert_eq!(sb.hit(749., 200., 0, 10), Some(ScrollPart::PageDown));
+        assert_eq!(sb.hit(749., 200., 10, 10), Some(ScrollPart::PageUp));
+        assert_eq!(sb.hit(749., 200., 0, 0), None);
+        assert_eq!(sb.pos_at(120., 10), 0);
+        assert_eq!(sb.pos_at(226.5, 10), 5);
+        assert_eq!(sb.pos_at(400., 10), 10);
     }
 }
