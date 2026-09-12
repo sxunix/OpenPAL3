@@ -130,6 +130,10 @@ pub mod page {
     pub const YES: Rect = (300, 569, 390, 594);
     pub const DICKER: Rect = (456, 569, 546, 594);
     pub const NO: Rect = (612, 569, 702, 594);
+    /// 买装备页的「装备 / 不装备」（`bEquipYes` 0x129 / `bEquipNo` 0x130，84×50），和商人的话
+    /// 那块重叠：亮出来时商人的话清空（`0x46bf0f` 起那段）。
+    pub const EQUIP_YES: Rect = (511, 492, 595, 542);
+    pub const EQUIP_NO: Rect = (635, 492, 719, 542);
     /// 卖页没有还价钮，「取消」挪到 (522,569)。
     pub const SELL_NO: Rect = (522, 569, 612, 594);
     /// 右下角 `StpCtl\Exit`：`(页宽 − 38, 页高 − 50, 页宽, 页高 − 2)`。

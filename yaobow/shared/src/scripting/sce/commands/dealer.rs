@@ -42,6 +42,7 @@ use crate::openpal3::states::attributes::{SLOT_ATTACK, SLOT_DEFENSE, SLOT_LUCK, 
 use crate::openpal3::states::game_db::PLAYER_ACTOR_IDS;
 use crate::openpal3::states::persistent_state::{
     SLOT_ADORN1, SLOT_ADORN2, SLOT_CLOTH, SLOT_HAT, SLOT_SHOES, SLOT_WEAPON,
+    equipment_slots_for_type,
 };
 use crate::openpal3::states::shop::{
     DealScript, Haggle, ShopRng, TIERS, buyable, haggle, price_to_pay, sell_price, sellable,
@@ -127,6 +128,21 @@ const SMALL_SLOTS: [usize; 6] = [
 ];
 
 /// 对比栏里一个人。
+/// 买的时候就穿上的那一件（原版 `FUN_00469eb0` 把它从这一行的数量里挪到「已穿」
+/// `+0x16d9c`，记下谁的哪一格 `+0x16d24`）。结账时一起付钱、穿上。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct Worn {
+    id: u32,
+    item_type: u8,
+    /// 角色号 0..4。
+    role: usize,
+    /// 身上哪一格（`SLOT_*`）。
+    slot: usize,
+}
+
+/// 没人能穿时说的话。原版这里显示 `DAT_00dd4a3c`（`FUN_00462120`），内容没查 [推断]。
+const NOBODY_CAN_WEAR: &str = "队中无人能装备此物";
+
 #[derive(Debug, Clone)]
 struct Card {
     role: usize,
@@ -175,6 +191,12 @@ enum Input {
 /// 鼠标落在什么上面。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Hit {
+    /// 买装备页「装备」（`bEquipYes`）。
+    EquipYes,
+    /// 「不装备」（`bEquipNo`）。
+    EquipNo,
+    /// 对比栏第几张卡的第几个小图标（选穿到谁的哪一格）。
+    Slot(usize, usize),
     Menu(usize),
     /// 列表第几个**可见**行。
     Row(usize),
@@ -233,6 +255,8 @@ struct Skin {
     tab_bar: Tex,
     yes: [Tex; 3],
     no: [Tex; 3],
+    equip_yes: [Tex; 3],
+    equip_no: [Tex; 3],
     dicker: [Tex; 3],
     undicker: Tex,
     exit: [Tex; 3],
@@ -275,6 +299,8 @@ impl Skin {
         let sub = three("UI\\Assistant\\Communal\\Sub");
         let tiers = std::array::from_fn(|k| three(&format!("UI\\Assistant\\Equip\\bDK{}", k + 5)));
         let tabs = std::array::from_fn(|k| three(SELL_TAB_TEX[k]));
+        let equip_yes = three("UI\\Assistant\\Equip\\bEquipYes");
+        let equip_no = three("UI\\Assistant\\Equip\\bEquipNo");
         drop(three);
         const EQ: &str = "UI\\Assistant\\Equip\\";
         let heads =
@@ -291,6 +317,8 @@ impl Skin {
             ))
         });
         Self {
+            equip_yes,
+            equip_no,
             scroll,
             heads,
             big,
@@ -374,6 +402,12 @@ pub struct SceCommandDealerMenu {
     mouse_down: bool,
     /// 这一帧要放的按钮音效。
     sfx: Option<&'static str>,
+    /// 「装备 / 不装备」亮着（`FUN_00462220(1)`）。
+    ask_equip: bool,
+    /// 点了「装备」，等点对比栏里某人的某一格（`+0x16d00`）。
+    wear_mode: bool,
+    /// 这一单里买了就穿的。
+    worn: Vec<Worn>,
 }
 
 impl std::fmt::Debug for SceCommandDealerMenu {
@@ -420,6 +454,9 @@ impl SceCommandDealerMenu {
             drag: None,
             mouse_down: false,
             sfx: None,
+            ask_equip: false,
+            wear_mode: false,
+            worn: vec![],
         }
     }
 
@@ -581,7 +618,120 @@ impl SceCommandDealerMenu {
                 let n = self.in_cart(g.id);
                 (n > 0).then(|| if sell { sell_price(g.price) } else { g.price } * n)
             })
-            .sum()
+            .sum::<i32>()
+            + if sell {
+                0
+            } else {
+                self.worn
+                    .iter()
+                    .map(|w| {
+                        self.equip_goods
+                            .iter()
+                            .find(|g| g.id == w.id)
+                            .map_or(0, |g| g.price)
+                    })
+                    .sum()
+            }
+    }
+
+    /// 选中行或数量变了：这一行在单子里、还没人穿，就亮「装备 / 不装备」，商人的话收起
+    /// （选行 0x46c2dc、加一个 0x46bce5 两处）；否则收起。
+    fn prompt_equip(&mut self) {
+        self.ask_equip = self.page() == Some(Page::Equip)
+            && matches!(self.mode, Mode::Browse)
+            && self
+                .current()
+                .is_some_and(|g| self.in_cart(g.id) > 0 && !self.worn.iter().any(|w| w.id == g.id));
+    }
+
+    /// 单子作废（取消、换页、离开，原版 `FUN_0046acd0`）：买了就穿的也一起撤掉。
+    fn reset_wear(&mut self) {
+        self.worn.clear();
+        self.ask_equip = false;
+        self.wear_mode = false;
+    }
+
+    /// 点了「装备」（0x129）：进选人状态。能穿的在队伍里只有一个、又不是饰品（两格要人挑）
+    /// 时直接给他穿上；一个都没有就说一句（`FUN_00462120`）。
+    fn equip_yes(&mut self, state: &SceState) {
+        self.ask_equip = false;
+        self.wear_mode = true;
+        let Some(g) = self.current().cloned() else {
+            return;
+        };
+        let who: Vec<usize> = {
+            let p = state.global_state().persistent_state();
+            (0..PLAYER_ACTOR_IDS.len())
+                .filter(|&r| g.applicable[r] && p.is_in_team(PLAYER_ACTOR_IDS[r]))
+                .collect()
+        };
+        match who.as_slice() {
+            [] => {
+                self.talk = NOBODY_CAN_WEAR.to_string();
+                self.wear_mode = false;
+            }
+            [r] if g.item_type != 10 => {
+                if let Some(&slot) = equipment_slots_for_type(g.item_type).first() {
+                    self.wear(*r, slot);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 手柄没有指针，按「装备」后有几个人能穿时给第一个能穿的穿上 [简化]。
+    fn wear_first_fit(&mut self, state: &SceState) {
+        let Some(g) = self.current().cloned() else {
+            return;
+        };
+        if self.worn.iter().any(|w| w.id == g.id) {
+            return;
+        }
+        let first = {
+            let p = state.global_state().persistent_state();
+            (0..PLAYER_ACTOR_IDS.len())
+                .find(|&r| g.applicable[r] && p.is_in_team(PLAYER_ACTOR_IDS[r]))
+        };
+        if let (Some(r), Some(&slot)) = (first, equipment_slots_for_type(g.item_type).first()) {
+            self.wear(r, slot);
+        }
+    }
+
+    /// 把选中那一行的一件给 `role` 穿到 `slot`（`FUN_00469eb0`）：从单子里的数量挪一件出来；
+    /// 那一格先前已经预订了别的，就把那件放回单子。不能穿、格子不对、单子里没有都不动。
+    fn wear(&mut self, role: usize, slot: usize) {
+        let Some(g) = self.current().cloned() else {
+            return;
+        };
+        if !g.applicable.get(role).copied().unwrap_or(false)
+            || !equipment_slots_for_type(g.item_type).contains(&slot)
+            || self.in_cart(g.id) <= 0
+        {
+            return;
+        }
+        if let Some(i) = self
+            .worn
+            .iter()
+            .position(|w| w.role == role && w.slot == slot)
+        {
+            if self.worn[i].id == g.id {
+                return;
+            }
+            let old = self.worn.remove(i);
+            *self.cart.entry(old.id).or_insert(0) += 1;
+        }
+        let n = self.in_cart(g.id) - 1;
+        if n <= 0 {
+            self.cart.remove(&g.id);
+        } else {
+            self.cart.insert(g.id, n);
+        }
+        self.worn.push(Worn {
+            id: g.id,
+            item_type: g.item_type,
+            role,
+            slot,
+        });
     }
 
     fn enter(&mut self, page: Page) {
@@ -590,6 +740,7 @@ impl SceCommandDealerMenu {
         self.cursor = 0;
         self.top = 0;
         self.cart.clear();
+        self.reset_wear();
         // 卖页读 `EntrySale` 的地方没在 exe 里找到，照字段意思用 [推断]。
         self.talk = match page {
             Page::Sell => self.shop.entry_sale.clone(),
@@ -601,6 +752,7 @@ impl SceCommandDealerMenu {
         self.screen = Screen::Menu;
         self.mode = Mode::Browse;
         self.cart.clear();
+        self.reset_wear();
     }
 
     fn select(&mut self, row: usize) {
@@ -618,6 +770,7 @@ impl SceCommandDealerMenu {
         } else if self.cursor >= self.top + vis {
             self.top = self.cursor + 1 - vis;
         }
+        self.prompt_equip();
     }
 
     /// 列表能往下滚几行。
@@ -660,6 +813,7 @@ impl SceCommandDealerMenu {
         } else {
             ui_sound::DENIED
         });
+        self.prompt_equip();
     }
 
     fn set_tab(&mut self, tab: usize) {
@@ -688,6 +842,13 @@ impl SceCommandDealerMenu {
         for (id, n) in self.cart.drain() {
             p_state.add_item(id, n.max(0) as u32);
         }
+        // 买了就穿的：先进背包再穿上，换下来的回背包。
+        for w in self.worn.drain(..) {
+            p_state.add_item(w.id, 1);
+            p_state.equip_in_slot(PLAYER_ACTOR_IDS[w.role], w.id, w.item_type, w.slot);
+        }
+        self.ask_equip = false;
+        self.wear_mode = false;
         for g in self
             .equip_goods
             .iter_mut()
@@ -900,6 +1061,13 @@ impl SceCommandDealerMenu {
                 Input::NextTab => {
                     if self.page() == Some(Page::Sell) {
                         self.set_tab(self.sell_tab + 1);
+                    } else if self.ask_equip {
+                        // 手柄：X 当「装备」。
+                        self.sfx = Some(ui_sound::CLICK);
+                        self.equip_yes(state);
+                        if self.wear_mode {
+                            self.wear_first_fit(state);
+                        }
                     }
                 }
                 Input::Cancel => self.back_to_menu(),
@@ -944,6 +1112,24 @@ impl SceCommandDealerMenu {
         if let Mode::Haggle { .. } = self.mode {
             if let Some(t) = (0..TIERS).find(|&t| inside(lay::tier_rect(t), x, y)) {
                 return Some(Hit::Tier(t));
+            }
+        }
+        if page == Page::Equip && self.ask_equip {
+            if inside(page::EQUIP_YES, x, y) {
+                return Some(Hit::EquipYes);
+            }
+            if inside(page::EQUIP_NO, x, y) {
+                return Some(Hit::EquipNo);
+            }
+        }
+        if page == Page::Equip && self.wear_mode {
+            for (c, card) in self.cards.iter().enumerate() {
+                for k in 0..SMALL_SLOTS.len() {
+                    let (ix, iy) = cmp::small_icon_pos(card.head, k);
+                    if inside((ix, iy, ix + 18, iy + 18), x, y) {
+                        return Some(Hit::Slot(c, k));
+                    }
+                }
             }
         }
         let no = if page == Page::Sell {
@@ -1004,6 +1190,8 @@ impl SceCommandDealerMenu {
             Hit::Menu(_)
                 | Hit::Yes
                 | Hit::No
+                | Hit::EquipYes
+                | Hit::EquipNo
                 | Hit::Dicker
                 | Hit::Exit
                 | Hit::Tier(_)
@@ -1031,6 +1219,19 @@ impl SceCommandDealerMenu {
                     self.mode = Mode::Browse;
                 } else {
                     self.cart.clear();
+                    self.reset_wear();
+                }
+            }
+            Hit::EquipYes => self.equip_yes(state),
+            Hit::EquipNo => {
+                self.ask_equip = false;
+                self.wear_mode = false;
+            }
+            Hit::Slot(c, k) => {
+                if self.wear_mode {
+                    if let Some(role) = self.cards.get(c).map(|card| card.role) {
+                        self.wear(role, SMALL_SLOTS[k]);
+                    }
                 }
             }
             Hit::Exit => self.back_to_menu(),
@@ -1382,6 +1583,22 @@ impl SceCommandDealerMenu {
         label(list, page::TOTAL, &format!("{total} {}", self.total()), at);
 
         match self.mode {
+            Mode::Browse if self.ask_equip => {
+                button(
+                    list,
+                    &sk.equip_yes,
+                    page::EQUIP_YES,
+                    hover == Some(Hit::EquipYes),
+                    at,
+                );
+                button(
+                    list,
+                    &sk.equip_no,
+                    page::EQUIP_NO,
+                    hover == Some(Hit::EquipNo),
+                    at,
+                );
+            }
             Mode::Browse => paragraph(list, page::TALK, &self.talk, at),
             Mode::Haggle { index } => {
                 for t in 0..TIERS {
@@ -1445,7 +1662,10 @@ impl SceCommandDealerMenu {
             self.cards.push(Card {
                 role,
                 head: cmp::head_rect(self.cards.len()),
-                small: SMALL_SLOTS.map(|s| p.equipped(id, s).is_some()),
+                small: SMALL_SLOTS.map(|s| {
+                    p.equipped(id, s).is_some()
+                        || self.worn.iter().any(|w| w.role == role && w.slot == s)
+                }),
                 groups,
             });
         }
@@ -1629,6 +1849,63 @@ fn read_gbk(vfs: &mini_fs::MiniFs, path: &std::path::Path) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn weapon(id: u32, price: i32) -> Good {
+        Good {
+            id,
+            name: String::new(),
+            description: String::new(),
+            item_type: 11,
+            weapon_type: 2,
+            price,
+            owned: 0,
+            stats: [0; cmp::STATS],
+            applicable: [true, true, false, false, false],
+        }
+    }
+
+    #[test]
+    fn a_piece_worn_at_the_counter_leaves_the_cart_but_not_the_bill() {
+        let mut m = SceCommandDealerMenu::new(String::new());
+        m.screen = Screen::Page(Page::Equip);
+        m.equip_goods = vec![weapon(10, 100), weapon(11, 30)];
+        m.cart.insert(10, 2);
+        m.prompt_equip();
+        assert!(m.ask_equip, "单子里有、还没人穿：问穿不穿");
+
+        m.wear(0, SLOT_WEAPON);
+        assert_eq!(m.in_cart(10), 1);
+        assert_eq!(m.worn.len(), 1);
+        assert_eq!(m.total(), 200, "穿上的那件照样算钱");
+        m.prompt_equip();
+        assert!(!m.ask_equip, "有人穿了就不再问");
+
+        // 同一格再穿同一件：不动；格子不对、这人不能穿：不动。
+        m.wear(0, SLOT_WEAPON);
+        m.wear(0, SLOT_HAT);
+        m.wear(3, SLOT_WEAPON);
+        assert_eq!((m.in_cart(10), m.worn.len()), (1, 1));
+
+        // 那一格改穿别的：先前那件回到单子里。
+        m.cart.insert(11, 1);
+        m.cursor = 1;
+        m.wear(0, SLOT_WEAPON);
+        assert_eq!((m.in_cart(10), m.in_cart(11)), (2, 0));
+        assert_eq!(
+            m.worn,
+            vec![Worn {
+                id: 11,
+                item_type: 11,
+                role: 0,
+                slot: SLOT_WEAPON
+            }]
+        );
+
+        // 取消：一起撤。
+        m.cart.clear();
+        m.reset_wear();
+        assert!(m.worn.is_empty() && !m.wear_mode);
+    }
 
     #[test]
     fn a_script_path_becomes_a_vfs_path() {

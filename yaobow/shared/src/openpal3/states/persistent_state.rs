@@ -17,7 +17,7 @@ pub const PAL3_APP_NAME: &str = "OpenPAL3";
 /// is the original role struct's (`role + 0x354`, 12 bytes per entry).
 pub const EQUIPMENT_SLOTS: usize = 6;
 
-/// 五灵阵法 has five standing positions.
+/// 阵法有六个站位：五灵五个加盘心。
 pub const LINEUP_POSITIONS: u8 = 6;
 
 /// 新游戏的阵形（`FUN_00408fd0` 写角色记录的 `+0x29a`）：景天 3 风、雪见 5 土、龙葵 1 水、
@@ -679,6 +679,28 @@ impl PersistentState {
         (previous != 0).then_some(previous)
     }
 
+    /// 穿到指定的那一格（饰品有两格，买装备页点的是哪一格就穿哪一格）。和 [`Self::equip`]
+    /// 一样从背包拿一件、换下来的放回背包；类型不配这一格、背包里没有、人不在都不动。
+    pub fn equip_in_slot(
+        &mut self,
+        actor_id: u32,
+        item_id: u32,
+        item_type: u8,
+        slot: usize,
+    ) -> Option<u32> {
+        if !equipment_slots_for_type(item_type).contains(&slot) || self.item_count(item_id) == 0 {
+            return None;
+        }
+        let role = self.roles.get_mut(&actor_id)?;
+        let previous = role.equipment[slot];
+        role.equipment[slot] = item_id;
+        self.remove_item(item_id, 1);
+        if previous != 0 {
+            self.add_item(previous, 1);
+        }
+        (previous != 0).then_some(previous)
+    }
+
     /// Take a slot's piece off and put it back in the inventory.
     pub fn unequip_to_inventory(&mut self, actor_id: u32, slot: usize) -> Option<u32> {
         let item_id = self.unequip(actor_id, slot)?;
@@ -1224,6 +1246,26 @@ mod tests {
         assert!(!state.set_lineup_position(3, 9), "只有六个阵位");
         state.clear_lineup_position(1);
         assert_eq!(state.lineup_occupant(2), None);
+    }
+
+    #[test]
+    fn a_piece_can_go_into_a_chosen_slot() {
+        let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
+        state.roles.insert(0, super::growth_test_role());
+        state.add_item(7001, 2);
+        // 饰品穿到第二格，第一格空着。
+        assert_eq!(state.equip_in_slot(0, 7001, 10, SLOT_ADORN2), None);
+        assert_eq!(state.equipped(0, SLOT_ADORN2), Some(7001));
+        assert_eq!(state.equipped(0, SLOT_ADORN1), None);
+        assert_eq!(state.item_count(7001), 1);
+        // 类型对不上这一格：不动。
+        assert_eq!(state.equip_in_slot(0, 7001, 10, SLOT_WEAPON), None);
+        assert_eq!(state.item_count(7001), 1);
+        // 同一格换一件：旧的回背包。
+        state.add_item(7002, 1);
+        assert_eq!(state.equip_in_slot(0, 7002, 10, SLOT_ADORN2), Some(7001));
+        assert_eq!(state.item_count(7001), 2);
+        assert_eq!(state.item_count(7002), 0);
     }
 
     #[test]
