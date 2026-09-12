@@ -814,6 +814,11 @@ impl CombatSession {
         self.notice = Some((text.to_string(), NOTICE_SECONDS));
     }
 
+    /// 在招式横幅上写一行字，停 `seconds` 秒（合击技开演时写它的名字，`0x4fd880`）。
+    pub fn announce(&mut self, text: &str, seconds: f32) {
+        self.notice = Some((text.to_string(), seconds));
+    }
+
     fn push_log(&mut self, line: String) {
         if self.log.len() >= LOG_LINES {
             self.log.pop_front();
@@ -1053,6 +1058,89 @@ impl CombatSession {
 mod tests {
     use super::*;
     use crate::openpal3::combat::actions::ATTRIBUTE_SLOTS;
+
+    /// 景天放洒金笺、雪见站土位拿刺带状态 15：「连环破斩」自己冒出来。
+    #[test]
+    fn a_matching_cast_turns_into_a_combo_by_itself() {
+        let build = |with_state: bool| {
+            let mut b = Battle::new(3);
+            let mut jt = fighter(Side::Party, 200, 100);
+            jt.actor_id = 101;
+            jt.element_position = 3;
+            jt.weapon_type = 2;
+            let mut xj = fighter(Side::Party, 200, 50);
+            xj.actor_id = 104;
+            xj.element_position = 5;
+            xj.weapon_type = 6;
+            xj.states[15].active = with_state;
+            b.place(0, jt);
+            b.place(1, xj);
+            b.place(5, fighter(Side::Enemy, 900, 1));
+            let skill = SkillChoice {
+                name: "洒金笺".into(),
+                effect: SkillEffect {
+                    id: 4102,
+                    sp_cost: 4,
+                    special_cost_type: -1,
+                    ..Default::default()
+                },
+            };
+            let profiles = vec![Profile {
+                name: "景天".into(),
+                skills: vec![skill],
+                reward: Reward::default(),
+            }];
+            let mut s = CombatSession::new(b, profiles, 3);
+            s.set_combos(vec![ComboDef {
+                id: 501,
+                name: "连环破斩".into(),
+                actors: [101, 104, 0, 0],
+                positions: [3, 5, 0, 0],
+                skill_id: 4102,
+                weapons: [2, 6, 0, 0],
+                states: [14, -1, -1],
+                range: 3,
+                hp_sign: -1,
+            }]);
+            s
+        };
+
+        let mut s = build(true);
+        s.commit(
+            Pending::Cast {
+                slot: 0,
+                target: 5,
+                skill: 0,
+            },
+            1,
+        );
+        assert_eq!(
+            s.pending,
+            Some(Pending::Combo {
+                slot: 0,
+                target: 5,
+                combo: 0
+            })
+        );
+        // 瞬发：出手条已经满了。
+        assert!(s.battle.get(0).unwrap().cast_gauge >= formulas::GAUGE_FULL);
+        let (hp, sp) = (s.battle.get(5).unwrap().hp, s.battle.get(0).unwrap().sp);
+        s.resolve_pending(0);
+        assert!(s.battle.get(5).unwrap().hp < hp, "打中了");
+        assert_eq!(s.battle.get(0).unwrap().sp, sp, "合击技不扣气");
+
+        // 雪见身上没那个状态：还是普通的仙术。
+        let mut s = build(false);
+        s.commit(
+            Pending::Cast {
+                slot: 0,
+                target: 5,
+                skill: 0,
+            },
+            1,
+        );
+        assert!(matches!(s.pending, Some(Pending::Cast { .. })));
+    }
     use crate::openpal3::combat::formulas;
     use crate::openpal3::combat::state::{Combatant, Phase};
 

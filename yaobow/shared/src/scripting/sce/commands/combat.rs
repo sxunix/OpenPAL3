@@ -178,6 +178,8 @@ pub struct SceCommandCombat {
     actors: Vec<Option<StageActor>>,
     /// 正在演的那一次行动（`CombatSession::staging`）。
     run: Option<StageRun>,
+    /// 合击技开演 / 收场时整屏压黑的程度，0..1（`0x502000` / `0x5020d0`）。
+    stage_fade: f32,
     /// 战斗镜头（`combat::camera`）：开战播一个序列，播完停在最后的机位。
     camera: Option<crate::openpal3::combat::camera::CamPlayer>,
     /// `flexcam.dat`，散场时还要播胜 / 败 / 逃的序列。
@@ -269,6 +271,8 @@ struct StageRun {
     target: Option<usize>,
     /// 第一 / 第二段特效放过没有。
     played: [bool; 2],
+    /// 合击技（编排任务 0x514220）：前后多几步渐黑 / 摆位 / 渐亮和名字横幅。
+    combo: bool,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -280,7 +284,30 @@ enum StageStep {
         t: f32,
     },
     WalkBack,
+    /// 合击技：渐黑（1 秒），黑到底时把人摆到阵位上。
+    ComboOpen {
+        t: f32,
+    },
+    /// 渐亮（1 秒）。
+    ComboShow {
+        t: f32,
+    },
+    /// 招式横幅写合击技的名字（1 秒，`0x4fd880`）。
+    ComboBanner {
+        t: f32,
+    },
+    /// 演完：渐黑（1 秒），黑到底时摆回原位（`0x4ff740`）。
+    ComboClose {
+        t: f32,
+    },
+    /// 渐亮（1 秒），然后放开时钟。
+    ComboReveal {
+        t: f32,
+    },
 }
+
+/// 合击技编排里渐黑 / 渐亮 / 横幅那几步各 1 秒（`FUN_004fc7d0` 的时长参数 1.0）。
+const COMBO_STEP_SECONDS: f32 = 1.;
 
 /// 舞台上的一个人，和上一帧看到的状态。
 #[derive(Clone)]
@@ -445,6 +472,7 @@ impl SceCommandCombat {
             hud: None,
             actors: Vec::new(),
             run: None,
+            stage_fade: 0.,
             camera: None,
             cues: Vec::new(),
             shake: None,
@@ -1339,6 +1367,7 @@ impl SceCommandCombat {
                 link,
                 target: None,
                 played: [false; 2],
+                combo: matches!(session.pending, Some(Pending::Combo { .. })),
             });
         }
         let target = match session.pending {
@@ -1377,7 +1406,108 @@ impl SceCommandCombat {
             run.step = StageStep::Strike { t: 0. };
         };
 
+        // 合击技摆位 / 复位要挪别人，等这一段借用结束后再做。
+        let mut moves: Vec<(usize, Vec3)> = Vec::new();
+        let mut restore_all = false;
         match run.step {
+            StageStep::Begin if run.combo => {
+                run.target = target;
+                run.step = StageStep::ComboOpen { t: 0. };
+            }
+            StageStep::ComboOpen { t } => {
+                let t = t + delta_sec;
+                self.stage_fade = (t / COMBO_STEP_SECONDS).min(1.);
+                if t < COMBO_STEP_SECONDS {
+                    run.step = StageStep::ComboOpen { t };
+                } else {
+                    // 0x4ff3d0：在场还站着的我方都挪到自己阵位对应的点上；范围 2 时目标挪到
+                    // 10 号位的原位。
+                    use crate::openpal3::combat::stage as st;
+                    use crate::openpal3::states::combat_data::StagePos;
+                    let range = match session.pending {
+                        Some(Pending::Combo { combo, .. }) => {
+                            session.combos().get(combo).map(|c| c.range)
+                        }
+                        _ => None,
+                    };
+                    if let Some(db) = state.global_state().game_db().cloned() {
+                        let data = db.combat();
+                        let ring = StagePos {
+                            x: data.five_lineup.x,
+                            z: data.five_lineup.z,
+                        };
+                        for s in 0..PARTY_SLOTS {
+                            let Some(c) = session.battle.get(s).filter(|c| c.in_play()) else {
+                                continue;
+                            };
+                            if let Some(p) =
+                                st::lineup_spot(&data.role_positions, ring, c.element_position)
+                            {
+                                moves.push((s, Vec3::new(p.x, 0., p.z)));
+                            }
+                        }
+                        if range == Some(2) {
+                            if let (Some(t), Some(p)) =
+                                (run.target, st::stage_position(&data.role_positions, 10))
+                            {
+                                if t >= PARTY_SLOTS {
+                                    moves.push((t, Vec3::new(p.x, 0., p.z)));
+                                }
+                            }
+                        }
+                    }
+                    run.step = StageStep::ComboShow { t: 0. };
+                }
+            }
+            StageStep::ComboShow { t } => {
+                let t = t + delta_sec;
+                self.stage_fade = (1. - t / COMBO_STEP_SECONDS).max(0.);
+                if t < COMBO_STEP_SECONDS {
+                    run.step = StageStep::ComboShow { t };
+                } else {
+                    let name = match session.pending {
+                        Some(Pending::Combo { combo, .. }) => {
+                            session.combos().get(combo).map(|c| c.name.clone())
+                        }
+                        _ => None,
+                    };
+                    if let Some(name) = name {
+                        session.announce(&name, COMBO_STEP_SECONDS);
+                    }
+                    run.step = StageStep::ComboBanner { t: 0. };
+                }
+            }
+            StageStep::ComboBanner { t } => {
+                let t = t + delta_sec;
+                if t < COMBO_STEP_SECONDS {
+                    run.step = StageStep::ComboBanner { t };
+                } else {
+                    // 出手者不摆出手动作：人怎么动由特效里的 action 提示管。
+                    rc.set_auto_play_idle(true);
+                    run.step = StageStep::Strike { t: 0. };
+                }
+            }
+            StageStep::ComboClose { t } => {
+                let t = t + delta_sec;
+                self.stage_fade = (t / COMBO_STEP_SECONDS).min(1.);
+                if t < COMBO_STEP_SECONDS {
+                    run.step = StageStep::ComboClose { t };
+                } else {
+                    restore_all = true;
+                    run.step = StageStep::ComboReveal { t: 0. };
+                }
+            }
+            StageStep::ComboReveal { t } => {
+                let t = t + delta_sec;
+                self.stage_fade = (1. - t / COMBO_STEP_SECONDS).max(0.);
+                if t >= COMBO_STEP_SECONDS {
+                    self.stage_fade = 0.;
+                    session.release();
+                    self.run = None;
+                } else {
+                    run.step = StageStep::ComboReveal { t };
+                }
+            }
             StageStep::Begin => match (run.kind, target_home) {
                 (ActKind::Attack, Some(to)) => {
                     let me = actor.home;
@@ -1434,7 +1564,9 @@ impl SceCommandCombat {
                 let done = t >= hit_at
                     && effects_done
                     && rc.state() != crate::openpal3::scene::RoleState::PlayingAnimation;
-                if done {
+                if done && run.combo {
+                    run.step = StageStep::ComboClose { t: 0. };
+                } else if done {
                     let at = actor.entity.transform().borrow().position();
                     let (dx, dz) = (at.x - actor.home.x, at.z - actor.home.z);
                     let away = (dx * dx + dz * dz).sqrt() > motion::ARRIVE_DISTANCE;
@@ -1454,6 +1586,19 @@ impl SceCommandCombat {
                     session.release();
                     self.run = None;
                 }
+            }
+        }
+        for (s, p) in moves {
+            if let Some(a) = self.actors.get_mut(s).and_then(|a| a.as_mut()) {
+                a.walk = None;
+                a.entity.transform().borrow_mut().set_position(&p);
+            }
+        }
+        if restore_all {
+            for a in self.actors.iter_mut().flatten() {
+                a.walk = None;
+                let home = a.home;
+                a.entity.transform().borrow_mut().set_position(&home);
             }
         }
     }
@@ -2144,6 +2289,16 @@ impl SceCommand for SceCommandCombat {
             Self::draw_result(ui, player, &self.result_panels, self.result_tex.as_ref());
         } else if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
             Self::draw(ui, session, hud);
+        }
+        if self.stage_fade > 0. {
+            let fade = self.stage_fade;
+            overlay(ui, "CombatStageFade", |ui, _, _| {
+                let list = ui.get_window_draw_list();
+                let [w, h] = ui.io().display_size;
+                list.add_rect([0., 0.], [w, h], [0., 0., 0., fade])
+                    .filled(true)
+                    .build();
+            });
         }
 
         match outcome {

@@ -130,11 +130,25 @@ pub fn parse_cameras(text: &str) -> Vec<CombatCamera> {
 
 /// 战斗位号 → `[RolePos]` 的下标。
 ///
-/// 我方五个位直接对应 `Role0..Role4`；敌方六个位接在后面，
-/// `Role5..Role10`。这和 `combat::state::SLOTS` 的排法一致（0..4 我方、
-/// 5..10 敌方）。
+/// 我方五个位对应 `Role0..Role4`，但原版读完 combat.ini 后把第 3、4 个我方坐标对调
+/// （`FUN_00511790` 末尾 swap `+0x80..+0x88` 和 `+0x8c..+0x94`）：2 号位站 `Role3`、
+/// 3 号位站 `Role2`。敌方六个位接在后面，`Role5..Role10`。
 pub fn stage_index(slot: usize) -> Option<usize> {
-    (slot < STAGE_SLOTS).then_some(slot)
+    match slot {
+        2 => Some(3),
+        3 => Some(2),
+        s => (s < STAGE_SLOTS).then_some(s),
+    }
+}
+
+/// 合击技开演时站到哪（`0x4ff3d0`）：舞台表 `+0x5c + 阵位 × 12`——阵位 1..5 就是我方
+/// 第 1..5 个站位（同样对调过），6 是 `[FiveLineup]` 的中心（`+0xa4`）；0 不挪。
+pub fn lineup_spot(positions: &[StagePos], ring_center: StagePos, element: u8) -> Option<StagePos> {
+    match element {
+        1..=5 => stage_position(positions, element as usize - 1),
+        6 => Some(ring_center),
+        _ => None,
+    }
 }
 
 /// 一个参战者摆在哪儿。`positions` 就是 `CombatData::role_positions`。
@@ -168,9 +182,11 @@ mod tests {
 
     #[test]
     fn the_first_five_slots_are_ours() {
-        for slot in 0..PARTY_SLOTS {
-            assert_eq!(stage_index(slot), Some(slot));
-        }
+        // 我方第 3、4 个坐标对调过。
+        assert_eq!(
+            (0..PARTY_SLOTS).map(stage_index).collect::<Vec<_>>(),
+            [Some(0), Some(1), Some(3), Some(2), Some(4)]
+        );
         // 敌方接在后面，一共十一个。
         assert_eq!(stage_index(5), Some(5));
         assert_eq!(stage_index(10), Some(10));
@@ -242,6 +258,18 @@ x=4.0
         assert_eq!(model_name(5, Some("null")), None);
         assert_eq!(model_name(5, Some("  ")), None);
         assert_eq!(model_name(5, None), None);
+    }
+
+    #[test]
+    fn a_combo_spot_follows_the_element_position() {
+        let positions: Vec<StagePos> = (0..11).map(|i| StagePos { x: i as f32, z: 0. }).collect();
+        let ring = StagePos { x: -162., z: -130. };
+        assert_eq!(lineup_spot(&positions, ring, 1).unwrap().x, 0.);
+        // 3 风、4 雷落在对调过的两个坐标上。
+        assert_eq!(lineup_spot(&positions, ring, 3).unwrap().x, 3.);
+        assert_eq!(lineup_spot(&positions, ring, 4).unwrap().x, 2.);
+        assert_eq!(lineup_spot(&positions, ring, 6), Some(ring));
+        assert_eq!(lineup_spot(&positions, ring, 0), None);
     }
 
     #[test]

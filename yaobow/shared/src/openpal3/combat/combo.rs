@@ -15,8 +15,9 @@ use super::state::{Battle, SLOTS};
 pub const PARTY_SLOTS: usize = 5;
 
 /// 状态要求里的 0x1a（`FUN_004f3cc0`）：战斗位 `+0x476..+0x47a` 五个字节里有一个是 1。
-/// 那五个字节是什么还没查；实机只有「十方封魔斩」要它，而那条本来就配不上（技能 id 0），
-/// 这里一律当不满足。
+/// 加减状态的 `FUN_004f3e20` 把第 k 个状态的标志写在 `+0x475 + k`，所以这五个字节就是
+/// 状态 1..5（五种毒）——而且这五个互斥，加一个先清五个。于是 0x1a =「中了随便哪一种」。
+/// 实机只有「十方封魔斩」要它（那条本来就配不上）。
 const STATE_ANY_OF_FIVE: i32 = 0x1a;
 
 /// 一条合击技，从 [`ComboSkillInfo`] 取判定和生效要用的字段。
@@ -127,7 +128,7 @@ pub fn eligible(def: &ComboDef, caster: usize, skill_id: u32, battle: &Battle) -
         if (0..STATE_ANY_OF_FIVE).contains(&st) && !c.has_state(st as usize + 1) {
             return false;
         }
-        if st == STATE_ANY_OF_FIVE {
+        if st == STATE_ANY_OF_FIVE && !(1..=5).any(|k| c.has_state(k)) {
             return false;
         }
     }
@@ -141,7 +142,8 @@ pub fn find(defs: &[ComboDef], caster: usize, skill_id: u32, battle: &Battle) ->
 }
 
 /// 打谁（`FUN_004f0360`）。1 我方全体、3 敌方全体，都只挑还站着的 [推断：原版另看战斗位
-/// `+0x598`，没查]；其余打选中的那个（范围 2 在选中的是自己人时会改挑一个，这里没做）。
+/// `+0x598`，没查]；其余打选中的那个。范围 2 选中的是自己人时改打敌方精最多的那个
+/// （`FUN_004f2bb0(i, 0)` 是当前精；原版先看战斗位 `+0x244`，置位的直接选它——那一位没查，这里不看）。
 pub fn targets(def: &ComboDef, chosen: usize, battle: &Battle) -> Vec<usize> {
     let standing = |r: std::ops::Range<usize>| -> Vec<usize> {
         r.filter(|s| battle.get(*s).is_some_and(|c| c.in_play()))
@@ -150,6 +152,17 @@ pub fn targets(def: &ComboDef, chosen: usize, battle: &Battle) -> Vec<usize> {
     match def.range {
         1 => standing(0..PARTY_SLOTS),
         3 => standing(PARTY_SLOTS..SLOTS),
+        2 if chosen < PARTY_SLOTS => standing(PARTY_SLOTS..SLOTS)
+            .into_iter()
+            .fold(None::<(usize, i32)>, |best, s| {
+                let hp = battle.get(s).map_or(0, |c| c.hp);
+                match best {
+                    Some((_, b)) if b >= hp => best,
+                    _ => Some((s, hp)),
+                }
+            })
+            .map(|(s, _)| vec![s])
+            .unwrap_or_else(|| vec![chosen]),
         _ => vec![chosen],
     }
 }
@@ -264,6 +277,35 @@ mod tests {
         assert_eq!(targets(&lianhuan(), 5, &b), vec![5, 6]);
         b.get_mut(6).unwrap().die();
         assert_eq!(targets(&lianhuan(), 5, &b), vec![5]);
+    }
+
+    #[test]
+    fn state_0x1a_means_any_of_the_five_poisons() {
+        let def = ComboDef {
+            states: [0x1a, -1, -1],
+            ..lianhuan()
+        };
+        let mut b = ready();
+        b.get_mut(1).unwrap().states[15].active = false;
+        assert!(!eligible(&def, 0, 4102, &b));
+        b.get_mut(1).unwrap().states[4].active = true;
+        assert!(eligible(&def, 0, 4102, &b));
+    }
+
+    #[test]
+    fn a_single_target_combo_aimed_at_a_friend_goes_for_the_toughest_enemy() {
+        let single = ComboDef {
+            range: 2,
+            ..lianhuan()
+        };
+        let mut b = ready();
+        b.get_mut(6).unwrap().hp = 800;
+        assert_eq!(targets(&single, 5, &b), vec![5], "选中的敌人照打");
+        assert_eq!(
+            targets(&single, 1, &b),
+            vec![6],
+            "选中自己人改打精最多的敌人"
+        );
     }
 
     #[test]
