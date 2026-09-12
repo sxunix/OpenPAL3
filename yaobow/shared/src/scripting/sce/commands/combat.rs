@@ -167,6 +167,11 @@ pub struct SceCommandCombat {
     combat_scene: Option<String>,
     /// 摆好的战斗舞台。压在场景栈上，散场时弹掉。
     stage: Option<ComRc<IScene>>,
+    /// 选目标时目标头顶的 3D 指针（`ui\combat\pointer\pointer.cvd`，`FUN_00510540` 载进
+    /// 舞台场景 `+0x268`），平时藏着。
+    pointer: Option<ComRc<radiance::comdef::IEntity>>,
+    /// 指针上下跳用的钟（原版用战斗时间 `+0x50`）。
+    pointer_clock: f32,
     /// 界面贴图，开战时一次读齐。
     hud: Option<HudTextures>,
     /// 舞台上每个战斗位的人（`SLOTS` 个，没人的是 `None`）。
@@ -336,7 +341,6 @@ struct HudTextures {
     magic_back: Tex,
     item_back: Tex,
     row_select: Tex,
-    trick_back: Tex,
     trick_back2: Tex,
 }
 
@@ -392,7 +396,6 @@ impl HudTextures {
             magic_back: tex(hud::MAGIC_BACK),
             item_back: tex(hud::ITEM_BACK),
             row_select: tex(hud::ROW_SELECT),
-            trick_back: tex(hud::TRICK_BACK),
             trick_back2: tex(hud::TRICK_BACK2),
         }
     }
@@ -437,6 +440,8 @@ impl SceCommandCombat {
             game_over_screen: GameOverScreen::default(),
             combat_scene: None,
             stage: None,
+            pointer: None,
+            pointer_clock: 0.,
             hud: None,
             actors: Vec::new(),
             run: None,
@@ -664,6 +669,26 @@ impl SceCommandCombat {
                 released: false,
                 alpha: 1.,
             });
+        }
+
+        // 选目标时的 3D 指针（`FUN_00510540`），自己的 CVD 动画一直循环；位置每帧在
+        // `place_pointer` 里摆。
+        let pointer_path =
+            std::path::PathBuf::from("/basedata/basedata/ui/combat/pointer/pointer.cvd");
+        if vfs.open(&pointer_path).is_ok() {
+            use crate::openpal3::scene::{
+                CvdPlayMode, create_entity_from_cvd_model, play_cvd_subtree,
+            };
+            let pointer = create_entity_from_cvd_model(
+                factory.clone(),
+                vfs,
+                &pointer_path,
+                "COMBAT_POINTER".into(),
+                false,
+            );
+            play_cvd_subtree(&pointer, CvdPlayMode::Loop, 1.);
+            scene.add_entity(pointer.clone());
+            self.pointer = Some(pointer);
         }
 
         // 相机：开战播 flexcam 的序列（combat::camera），先摆到第一帧。
@@ -1483,6 +1508,47 @@ impl SceCommandCombat {
         self.cues = cues;
     }
 
+    /// 选目标时把指针摆到目标头顶（`FUN_004fc3a0` 画舞台那段）：点取包围盒中心、y 取顶再
+    /// +10（`FUN_0050a9b0`；707 号怪再 −80），然后 +6 + 5·sin(10t + i) 上下跳、y 方向拉伸
+    /// 1 + 0.2·sin(…)。i 是舞台上那五个位的序号，这里取位号 mod 5 [推断]。
+    fn place_pointer(&mut self, delta_sec: f32) {
+        self.pointer_clock += delta_sec;
+        let Some(pointer) = self.pointer.clone() else {
+            return;
+        };
+        let target = self.session.as_ref().and_then(|s| match s.turn {
+            Some(crate::openpal3::combat::session::PlayerTurn {
+                menu: Menu::Target { index, .. },
+                ..
+            }) => s.targets().get(index).copied(),
+            _ => None,
+        });
+        let top = target.and_then(|slot| {
+            let actor = self.actors.get(slot)?.as_ref()?;
+            Some((slot, head_point(&actor.entity)?))
+        });
+        let Some((slot, top)) = top else {
+            pointer.set_visible(false);
+            return;
+        };
+        let mut y = top.y + 10.;
+        if self
+            .session
+            .as_ref()
+            .and_then(|s| s.battle.get(slot))
+            .is_some_and(|c| c.actor_id == 707)
+        {
+            y -= 80.;
+        }
+        let wave = (self.pointer_clock * 10. + (slot % 5) as f32).sin();
+        y += 6. + 5. * wave;
+        let mut t = radiance::math::Transform::new();
+        t.set_position(&Vec3::new(top.x, y, top.z))
+            .scale_local(&Vec3::new(1., 1. + 0.2 * wave, 1.));
+        pointer.transform().borrow_mut().set_matrix(*t.matrix());
+        pointer.set_visible(true);
+    }
+
     fn animate_stage(&mut self, delta_sec: f32) {
         let Some(session) = self.session.as_ref() else {
             return;
@@ -1740,15 +1806,8 @@ impl SceCommandCombat {
                         scale,
                     );
                 }
-                Menu::Target { index, .. } => {
-                    // 原版在目标头顶放一个 3D 指针（`ui\combat\pointer\pointer.cvd`），
-                    // CVD 还没移植；先把目标的名字写在招式名横幅上。
-                    let targets = session.targets();
-                    if let Some(&target) = targets.get(index) {
-                        let name = session.name(target).to_string();
-                        Self::draw_banner(ui, &list, tex.trick_back.as_deref(), &name, at, scale);
-                    }
-                }
+                // 目标头顶的 3D 指针在 `place_pointer` 里摆，界面上不另画东西。
+                Menu::Target { .. } => {}
             }
 
             if let Some((notice, _)) = session.notice.as_ref() {
@@ -1991,6 +2050,7 @@ impl SceCommand for SceCommandCombat {
         self.cues.extend(state.take_combat_action_requests());
         self.drive_cues(delta_sec);
         self.animate_stage(delta_sec);
+        self.place_pointer(delta_sec);
         // 特效 `camera` 类（adv_director 从 flexeff 转过来）：先停当前序列
         // （FUN_00505800，停在原地），序列号 > 0 再从当前机位播它（FUN_00505770）。
         for seq in state.take_combat_camera_requests() {
@@ -2181,4 +2241,39 @@ impl SceCommand for SceCommandGameOverScreen {
         }
         false
     }
+}
+
+/// 舞台角色包围盒的顶（世界坐标），x/z 取中心：把实体（和子实体）渲染对象的
+/// `local_aabb` 并起来，过实体的矩阵（原版 `FUN_0050a560` 取的是 OBB，这里用 AABB 近似）。
+fn head_point(entity: &ComRc<radiance::comdef::IEntity>) -> Option<Vec3> {
+    fn collect(
+        e: &ComRc<radiance::comdef::IEntity>,
+        lo: &mut [f32; 3],
+        hi: &mut [f32; 3],
+        any: &mut bool,
+    ) {
+        if let Some(rc) = e.get_rendering_component() {
+            for h in rc.render_objects() {
+                if let Some((a, b)) = h.as_dyn().local_aabb() {
+                    for k in 0..3 {
+                        lo[k] = lo[k].min(a[k]);
+                        hi[k] = hi[k].max(b[k]);
+                    }
+                    *any = true;
+                }
+            }
+        }
+        for c in e.children() {
+            collect(&c, lo, hi, any);
+        }
+    }
+    let (mut lo, mut hi, mut any) = ([f32::MAX; 3], [f32::MIN; 3], false);
+    collect(entity, &mut lo, &mut hi, &mut any);
+    if !any {
+        return None;
+    }
+    let m = *entity.transform().borrow().matrix().floats();
+    let c = [(lo[0] + hi[0]) / 2., hi[1], (lo[2] + hi[2]) / 2.];
+    let p = |r: usize| m[r][0] * c[0] + m[r][1] * c[1] + m[r][2] * c[2] + m[r][3];
+    Some(Vec3::new(p(0), p(1), p(2)))
 }
