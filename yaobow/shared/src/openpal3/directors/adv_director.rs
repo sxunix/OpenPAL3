@@ -445,6 +445,28 @@ impl AdventureDirector {
         ))
     }
 
+    /// 物件本身和子节点（先序，最多 8 个）的局部矩阵——调试用，看类型 17 的
+    /// 浮动 / 旋转 / 重播有没有在走。
+    pub fn object_transforms(&self, object_id: i32) -> Option<Vec<[[f32; 4]; 4]>> {
+        fn walk(e: &ComRc<radiance::comdef::IEntity>, out: &mut Vec<[[f32; 4]; 4]>) {
+            if out.len() >= 8 {
+                return;
+            }
+            out.push(*e.transform().borrow().matrix().floats());
+            for c in e.children() {
+                walk(&c, out);
+            }
+        }
+        let props = self.props.borrow();
+        let scene = props.scene_manager.scn_scene()?;
+        let entity = scene
+            .inner::<crate::openpal3::scene::ScnScene>()
+            .get_root_object(object_id)?;
+        let mut out = vec![];
+        walk(&entity, &mut out);
+        Some(out)
+    }
+
     /// Put items in the bag — a test aid for the smelting / shop UIs.
     pub fn add_item(&self, id: u32, count: u32) {
         self.props
@@ -2053,10 +2075,11 @@ impl AdventureDirectorProps {
 
         // Scenery slid by opcode 90 keeps moving during a cutscene, when
         // the world sim below is not running.
+        // 类型 17 物件的待机重播 / 浮动 / 旋转同样不受过场影响（FUN_00426eb0）。
         if let Some(scene_rc) = self.scene_manager.scn_scene() {
-            scene_rc
-                .inner::<crate::openpal3::scene::ScnScene>()
-                .step_object_moves(delta_sec);
+            let scn = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+            scn.step_object_moves(delta_sec);
+            scn.step_scene_objects(delta_sec);
         }
 
         // Weather is drawn over the whole frame in the original, after

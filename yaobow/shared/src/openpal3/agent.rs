@@ -427,6 +427,23 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: Some(serde_json::json!({ "render_objects": n })),
             })
         }
+        "object_transform" => {
+            // [物件 id] —— 物件和子节点的局部矩阵，隔一会儿读两次看它动没动。
+            let Some(id) = int_arg(0) else {
+                return AgentResponse::err(AgentError::bad_request(
+                    "object_transform needs args: [object_id]",
+                ));
+            };
+            let Some(m) = director.object_transforms(id as i32) else {
+                return AgentResponse::err(AgentError::bad_request(format!(
+                    "no such object: {id}"
+                )));
+            };
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: Some(serde_json::json!({ "matrices": m })),
+            })
+        }
         "dlg_sel" => {
             // [选项, ...] —— 直接弹一个 65 对话选择框，看它的版面和操作。
             let items: Vec<String> = params

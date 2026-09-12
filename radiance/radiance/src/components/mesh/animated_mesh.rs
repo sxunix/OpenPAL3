@@ -130,6 +130,13 @@ impl AnimatedMeshComponent {
         p.hold = false;
     }
 
+    /// Stop and show frame 0 (PAL3 `[vtbl+0x18](0)` on a `gbGeomNode`):
+    /// unlike [`Self::stop`], the mesh visibly snaps back to its first frame.
+    pub fn rewind(&self) {
+        self.stop();
+        self.render(0.);
+    }
+
     pub fn is_to_hold(&self) -> bool {
         self.props().hold_enabled
             && !self.props().hold

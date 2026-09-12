@@ -353,6 +353,31 @@ impl CvdModelComponent {
                 && !morph_busy)
     }
 
+    /// 从当前位置按 `speed` 播到这一轮结束就停（类型 17 等待到点时 `SetTimeScale(2.0)`，
+    /// 原版是默认循环、等一轮播完的消息）。和 [`Self::play`] 不同，不从头开始。
+    pub fn finish_cycle(&self, speed: f32) {
+        *self.play_mode.borrow_mut() = CvdPlayMode::Once;
+        self.speed.set(speed.max(0.001));
+        if let Some(m) = self.morph() {
+            let a = m.inner::<AnimatedMeshComponent>();
+            a.set_loop_playback(false);
+            a.set_time_scale(speed.max(0.001));
+            m.play(false);
+        }
+    }
+
+    /// 回到第 0 帧停住（`[vtbl+0x18](0)` + `SetTimeScale(0)`）。
+    pub fn rewind(&self) {
+        *self.play_mode.borrow_mut() = CvdPlayMode::Hold;
+        self.elapsed.set(0.);
+        if self.duration() > 0. {
+            self.apply_at(0.);
+        }
+        if let Some(m) = self.morph() {
+            m.inner::<AnimatedMeshComponent>().rewind();
+        }
+    }
+
     /// Longest timestamp across the three tracks.
     fn duration(&self) -> f32 {
         let last = |t: Option<f32>| t.unwrap_or(0.);
@@ -596,14 +621,94 @@ pub fn play_cvd_subtree(entity: &ComRc<IEntity>, mode: CvdPlayMode, speed: f32) 
     any
 }
 
+/// 物件下所有带 CVD 组件的节点（包括它自己）。
+pub fn cvd_components(entity: &ComRc<IEntity>, out: &mut Vec<ComRc<ICvdModel>>) {
+    if let Some(c) = entity
+        .get_component(ICvdModel::uuid())
+        .and_then(|c| c.query_interface::<ICvdModel>())
+    {
+        out.push(c);
+    }
+    for child in entity.children() {
+        cvd_components(&child, out);
+    }
+}
+
+/// 类型 17 物件（p1 为 0、模型是 CVD）的待机重播，`FUN_00426eb0` 的 case 0x11：
+///
+/// ```text
+/// +0x51 == 0: +0x44 += dt; 到了 +0x48 → +0x48 = rand%10 + 1, +0x44 = 0, +0x51 = 1, SetTimeScale(2.0)
+/// +0x51 == 1: 等「播完」消息（FUN_0042b1f0）→ +0x51 = 0, [vtbl+0x18](0), SetTimeScale(0)
+/// ```
+///
+/// 建物件时（`0x42409f`）`+0x44 = 0`、`+0x48 = rand % 10`，模型还是默认的循环、倍率 1，
+/// 所以第一次到点前它照常循环，到点后按 2 倍播完手上这一轮再回第 0 帧停住；之后每次
+/// 等 1–10 秒整从头按 2 倍播一遍。
+#[derive(Debug, Clone, PartialEq)]
+pub struct IdleReplay {
+    waited: f32,
+    wait: f32,
+    playing: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdleReplayStep {
+    Nothing,
+    /// 按 2 倍播到这一轮结束（[`CvdModelComponent::finish_cycle`]）。
+    Play,
+    /// 回第 0 帧停住（[`CvdModelComponent::rewind`]）。
+    Rewind,
+}
+
+/// 等待到点后播放的倍率。
+pub const IDLE_REPLAY_SPEED: f32 = 2.0;
+
+impl IdleReplay {
+    /// `first` 是建物件时抽的 `rand()`。
+    pub fn new(first: i32) -> Self {
+        Self {
+            waited: 0.,
+            wait: (first % 10) as f32,
+            playing: false,
+        }
+    }
+
+    /// 推一帧。`finished` 是物件的 CVD 这一轮播完没有；`rand` 只在到点时抽一次。
+    pub fn step(
+        &mut self,
+        delta_sec: f32,
+        finished: bool,
+        rand: impl FnOnce() -> i32,
+    ) -> IdleReplayStep {
+        if !self.playing {
+            self.waited += delta_sec;
+            if self.wait <= self.waited {
+                self.wait = (rand() % 10 + 1) as f32;
+                self.waited = 0.;
+                self.playing = true;
+                return IdleReplayStep::Play;
+            }
+        } else if finished {
+            self.playing = false;
+            return IdleReplayStep::Rewind;
+        }
+        IdleReplayStep::Nothing
+    }
+}
+
+/// 类型 17 的第三个参数（`+0x100`，scn 记录 +0x54）：1 上下浮动、2 绕竖轴转。
+/// 浮动 `y = sin(t) × 6 + 原高度`（t 从 0 起按秒累加，`+0x54`），转是每秒 80°（`+0xe0`）。
+pub const FLOAT_AMPLITUDE: f32 = 6.0;
+pub const SPIN_DEGREES_PER_SEC: f32 = 80.0;
+
 /// 场景加载时物件的 CVD 怎么播（`FUN_00423a70` `0x42405a` 起，按物件类型 `+0xf4`）。
 ///
 /// 原版 `gbGeomNode` 载进来默认就是循环、倍率 1；建物件时再按类型改：
 ///
 /// - 1、2、12、19、23、26、29、32、41（模型是 CVD 时）和 4、6、14：`SetTimeScale(0)`，停住，
 ///   等交互或命令再播；
-/// - 17：参数 p1（记录 +0x50，运行时 +0xfc）非 0 时停住；为 0 时照默认循环（另外随机一个
-///   0..9 的数写进 +0x48，用途没追 [推断：错开相位]）；
+/// - 17：参数 p1（记录 +0x50，运行时 +0xfc）非 0 时停住；为 0 时照默认循环，之后由
+///   [`IdleReplay`] 接管（`+0x48 = rand % 10` 是第一次重播前等的秒数）；
 /// - 4、6、12、14、16、19、23、26、32、41 再 `SetAnimLoop(1)` 改成只播一遍——其中只有 16
 ///   没被停住，所以调查点进场景播一遍就停；
 /// - 其余类型：循环。
@@ -622,6 +727,30 @@ pub const SCENE_CVD_SPEED: f32 = 0.2;
 #[cfg(test)]
 mod initial_play_tests {
     use super::*;
+
+    #[test]
+    fn idle_replay_waits_plays_then_rewinds() {
+        let mut r = IdleReplay::new(13); // 13 % 10 = 3 秒
+        let never = || -> i32 { panic!("没到点不该抽随机数") };
+        assert_eq!(r.step(1.0, true, never), IdleReplayStep::Nothing);
+        assert_eq!(r.step(1.5, true, never), IdleReplayStep::Nothing);
+        // 到 3 秒：抽下一次的等待（24 % 10 + 1 = 5 秒），开始播。
+        assert_eq!(r.step(0.5, false, || 24), IdleReplayStep::Play);
+        // 播放中不计时，只等播完。
+        assert_eq!(r.step(10.0, false, never), IdleReplayStep::Nothing);
+        assert_eq!(r.step(0.1, true, never), IdleReplayStep::Rewind);
+        // 回到等待，5 秒后再播。
+        assert_eq!(r.step(4.9, true, never), IdleReplayStep::Nothing);
+        assert_eq!(r.step(0.1, true, || 9), IdleReplayStep::Play);
+        assert_eq!(r.wait, 10.0, "9 % 10 + 1");
+    }
+
+    #[test]
+    fn idle_replay_with_zero_wait_plays_on_the_first_frame() {
+        let mut r = IdleReplay::new(20);
+        assert_eq!(r.step(0.016, false, || 0), IdleReplayStep::Play);
+        assert_eq!(r.wait, 1.0, "之后至少等 1 秒");
+    }
 
     #[test]
     fn switches_and_doors_wait_everything_else_loops() {

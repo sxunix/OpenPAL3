@@ -1,10 +1,13 @@
 use super::cvd_entity::{
-    CvdPlayMode, SCENE_CVD_SPEED, play_cvd_subtree, scene_object_initial_play,
+    CvdModelComponent, CvdPlayMode, FLOAT_AMPLITUDE, IDLE_REPLAY_SPEED, IdleReplay, IdleReplayStep,
+    SCENE_CVD_SPEED, SPIN_DEGREES_PER_SEC, cvd_components, play_cvd_subtree,
+    scene_object_initial_play,
 };
 use crate::openpal3::asset_manager::AssetManager;
-use crate::openpal3::comdef::IRoleController;
+use crate::openpal3::combat::encounter::CrtRand;
+use crate::openpal3::comdef::{ICvdModel, IRoleController};
 use crate::openpal3::loaders::nav_loader::{NavFile, NavMapPoint};
-use crate::openpal3::loaders::scn_loader::ScnFile;
+use crate::openpal3::loaders::scn_loader::{ScnFile, ScnNode};
 use crate::openpal3::scene::RoleController;
 use crosscom::ComRc;
 use radiance::comdef::{IComponentImpl, IEntity, IEntityExt, IScene, ISceneExt};
@@ -29,6 +32,10 @@ pub struct ScnScene {
     /// script run on, so these are stepped per frame rather than held by
     /// the command.
     object_moves: RefCell<Vec<ObjectMove>>,
+    /// 类型 17 物件的待机重播、浮动、旋转（`FUN_00426eb0` case 0x11），每帧推。
+    object_motions: RefCell<Vec<ObjectMotion>>,
+    /// 原版这里用的是 CRT 的 `rand()`，和别处共用一条序列；移植端单开一条，按时间播种。
+    object_rng: RefCell<CrtRand>,
 }
 
 ComObject_ScnSceneComponent!(super::ScnScene);
@@ -65,6 +72,13 @@ impl ScnScene {
             item_triggers: RefCell::new(vec![]),
             ladder_triggers: RefCell::new(vec![]),
             object_moves: RefCell::new(vec![]),
+            object_motions: RefCell::new(vec![]),
+            object_rng: RefCell::new(CrtRand::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos() ^ (d.as_secs() as u32))
+                    .unwrap_or(0x1234_5678),
+            )),
         }
     }
 
@@ -487,6 +501,78 @@ impl ScnScene {
         });
     }
 
+    /// 类型 17 物件每帧的动作（`FUN_00426eb0` case 0x11，见 `cvd_playback.md` §2.1）。
+    /// 和 [`Self::step_object_moves`] 一起每帧调。
+    pub fn step_scene_objects(&self, delta_sec: f32) {
+        let mut rng = self.object_rng.borrow_mut();
+        for m in self.object_motions.borrow_mut().iter_mut() {
+            if let Some(replay) = m.replay.as_mut() {
+                let finished = m
+                    .cvds
+                    .iter()
+                    .all(|c| c.inner::<CvdModelComponent>().finished());
+                match replay.step(delta_sec, finished, || rng.rand()) {
+                    IdleReplayStep::Play => {
+                        for c in &m.cvds {
+                            c.inner::<CvdModelComponent>()
+                                .finish_cycle(IDLE_REPLAY_SPEED);
+                        }
+                    }
+                    IdleReplayStep::Rewind => {
+                        for c in &m.cvds {
+                            c.inner::<CvdModelComponent>().rewind();
+                        }
+                    }
+                    IdleReplayStep::Nothing => {}
+                }
+            }
+            match m.motion {
+                1 => {
+                    m.clock += delta_sec;
+                    let transform = m.entity.transform();
+                    let mut t = transform.borrow_mut();
+                    let mut p = t.position();
+                    p.y = m.clock.sin() * FLOAT_AMPLITUDE + m.base_y;
+                    t.set_position(&p);
+                }
+                2 => {
+                    m.entity.transform().borrow_mut().rotate_axis_angle_local(
+                        &Vec3::UP,
+                        (delta_sec * SPIN_DEGREES_PER_SEC).to_radians(),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// 建物件时记下类型 17 要每帧做的事（`FUN_00423a70` `0x42409f`）。
+    fn register_object_motion(&self, entity: &ComRc<IEntity>, obj: &ScnNode) {
+        if obj.node_type != 17 {
+            return;
+        }
+        // 原版不管 p1 都抽一次 `+0x48 = rand % 10`。
+        let first = self.object_rng.borrow_mut().rand();
+        let mut cvds = vec![];
+        cvd_components(entity, &mut cvds);
+        // p1（+0xfc）为 0 且模型是 CVD 才重播；POL 物件没有 CVD 组件。
+        let replay =
+            (obj.ladder_nav_coord1.1 == 0 && !cvds.is_empty()).then(|| IdleReplay::new(first));
+        // p2（+0x100，scn 记录 +0x54）：1 浮动、2 旋转。
+        let motion = obj.ladder_nav_coord2.0;
+        if replay.is_none() && motion != 1 && motion != 2 {
+            return;
+        }
+        self.object_motions.borrow_mut().push(ObjectMotion {
+            entity: entity.clone(),
+            cvds,
+            replay,
+            motion,
+            clock: 0.,
+            base_y: obj.position.y,
+        });
+    }
+
     pub fn step_patrols(&self, delta_sec: f32) {
         // Default walk speed when the role record carries no per-role speed
         // (0x150 is zero for most patrol roles).
@@ -700,6 +786,7 @@ impl ScnScene {
                 {
                     play_cvd_subtree(&p, mode, speed);
                 }
+                self.register_object_motion(&p, obj);
                 entities.push(p);
             }
         }
@@ -1006,6 +1093,19 @@ pub struct TriggerTarget {}
 pub enum LadderTestResult {
     SceProc(u32),
     NewPosition((bool, Vec3)),
+}
+
+/// 一个类型 17 物件每帧要做的事，见 [`ScnScene::step_scene_objects`]。
+struct ObjectMotion {
+    entity: ComRc<IEntity>,
+    cvds: Vec<ComRc<ICvdModel>>,
+    replay: Option<IdleReplay>,
+    /// `+0x100`：1 浮动、2 旋转、其余不动。
+    motion: i32,
+    /// `+0x54`：浮动用的秒数。
+    clock: f32,
+    /// `+0xd8`：浮动的基准高度。
+    base_y: f32,
 }
 
 /// One in-flight opcode-90 slide.

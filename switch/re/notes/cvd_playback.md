@@ -14,7 +14,7 @@ n = 1 只播一遍）。CVD 的动画包括节点的位置/旋转/缩放关键�
 |---|---|---|
 | 1、2、12、19、23、26、29、32、41 | 0x424073 | 模型是 CVD（`[+0x58] == 3`）就 `SetTimeScale(0)` + `[vtbl+0x18](0)`，停住 |
 | 4、6、14 | 0x424175 | `SetTimeScale(0)`，停住（不看模型类型） |
-| 17 | 0x42409f | 参数 p1（`+0xfc`，scn 记录 +0x50）非 0 且是 CVD 才停住；另外 `+0x44 = 0`、`+0x48 = rand % 10` |
+| 17 | 0x42409f | 参数 p1（`+0xfc`，scn 记录 +0x50）非 0 且是 CVD 才停住；另外 `+0x44 = 0`、`+0x48 = (float)(rand % 10)`，见 §2.1 |
 | 13 | 0x4240f0 | 冲撞类：记下起点、按朝向算 280 长的位移、`+0x54 = rand % 300 × 常数` |
 | 5 | 0x42418f | 移动浮板：分配 0x1c28 的路径表 |
 | 其余 | — | 不动，照默认循环 |
@@ -22,6 +22,26 @@ n = 1 只播一遍）。CVD 的动画包括节点的位置/旋转/缩放关键�
 之后（0x4242e4）：模型是 CVD 且类型是 4、6、12、14、16、19、23、26、32、41 的，`SetAnimLoop(1)`
 改成只播一遍——这些都是等交互触发的（落物、陷阱、特技机关、门、调查点、吊桥、开关、宝箱……）。
 其中只有 16 没被停住，所以调查点进场景会播一遍再停。
+
+### 2.1 类型 17 每帧（`FUN_00426eb0` 的 case 0x11）
+
+    if (p1(+0xfc) == 0 && 模型是 CVD) {
+      if (+0x51 == 0) { +0x44 += dt; if (+0x48 <= +0x44) { +0x48 = rand%10 + 1; +0x44 = 0; +0x51 = 1; SetTimeScale(2.0); } }
+      else if (+0x51 == 1) { SetTimeScale(2.0); if (FUN_0042b1f0()) { +0x51 = 0; [vtbl+0x18](0); SetTimeScale(0); } }
+    }
+    if (p2(+0x100) == 1) { +0x54 += dt; y(+0x2c) = sin(+0x54) × 6 + 原高度(+0xd8); }
+    else if (p2 == 2)    { 朝向(+0xe0) += dt × 80; }        // 度
+
+`FUN_0042b1f0` 在节点的消息队列里找「播完」那条（按 CRC 比），类型 1、3 的节点才找。p2 在 scn 记录 +0x54
+（`ScnNode::ladder_nav_coord2.0`）。
+
+意思是：建好时还是默认的循环、倍率 1；等 0–9 秒（`rand % 10`）后改成 2 倍，等手上这一轮播完就回第 0 帧停住；
+之后每隔 1–10 秒整从头按 2 倍播一遍 [推断：循环模式下每轮结束也发「播完」消息，`[vtbl+0x18](0)` 是回到第 0 帧]。
+浮动和旋转和模型类型、p1 都无关，POL 物件也会动。
+
+实机分布（全部 1134 个场景）：非 `+` 特效的类型 17 物件 243 个——CVD p1=0 的 140 个（11 个同时浮动），
+CVD p1=1 的 51 个；p2=1 浮动的共 23 个（Q04/n01 的六个 `_01.cvd`、Q02/Q03/Q05 的 `jq38`/`jq40` 等），
+p2=2 旋转的 28 个全在 m11/1（`_h2.pol`）。`+` 特效节点 173 个，p1、p2 都是 0。
 
 交互时（`FUN_00424c20`，也按 `+0xf4` 分支）：1 → `SetTimeScale(1)` 播一遍；2 → `SetAnimLoop(1)` +
 `SetTimeScale(1)`；开关 23 和开门命令（87，`FUN_0042bea0`）都是 `SetTimeScale(2.0)`。
@@ -37,8 +57,8 @@ n = 1 只播一遍）。CVD 的动画包括节点的位置/旋转/缩放关键�
 Unity（`GameScene.cs` / `SceneObject.cs`）：场景 CVD 按 0.2 循环（和 exe 一致）；物件只有 `General`（25）循环，
 `AutoTrigger`（0）没有触发区域时循环，`StaticOrAnimated`（17）`Parameters[1] == 0` 时每隔 0.5–3.5 秒随机播一遍、
 `Parameters[2]` = 1 上下浮动 / 2 每秒转 80°。exe 是「默认都循环、少数类型停住」，比 Unity 宽；移植端照 exe。
-17 的 `+0x48 = rand % 10` 用途没追到（可能就是 Unity 那个随机等待），移植端先按默认循环 [推断]；
-Unity 的浮动 / 旋转在 exe 里没核对，没做。
+17 的随机等待 exe 是 0–9 秒（第一次）/ 1–10 秒整（之后），播放倍率 2，Unity 的 0.5–3.5 秒是自己定的；
+浮动（振幅 6、`sin(t)`）和旋转（80°/秒）与 Unity 一致（§2.1）。
 
 ## 5. 移植端
 
@@ -46,7 +66,16 @@ Unity 的浮动 / 旋转在 exe 里没核对，没做。
   把物件下所有 CVD 节点一起播。场景 CVD 在 `ScnScene::load_objects` 里按 §3 载、0.2 倍率循环。
 - 节点关键帧（`CvdModelComponent`）和顶点帧（radiance `AnimatedMeshComponent`，新加时间倍率和 `stop`）
   由 `CvdModelComponent::play` 统一驱动；以前顶点帧不管类型一律一载入就循环，门、开关也在动。
-- p1 在 `ScnNode` 里是 `ladder_nav_coord1.1`（参数六个 int 从记录 +0x4c 起，被读成两对坐标 + 一个层号）。
+- p1 在 `ScnNode` 里是 `ladder_nav_coord1.1`、p2 是 `ladder_nav_coord2.0`（参数六个 int 从记录 +0x4c 起，
+  被读成两对坐标 + 一个层号）。
+- 类型 17（§2.1）：`ScnScene::register_object_motion` 建物件时登记，`step_scene_objects` 每帧推
+  （`adv_director` 里和 opcode 90 的滑动放在一起，过场时也走）。重播的计时是 `cvd_entity::IdleReplay`，
+  到点调 `CvdModelComponent::finish_cycle(2.0)`（不回头、改成播完这一轮就停），播完调 `rewind`
+  （回第 0 帧；顶点帧用 radiance 新加的 `AnimatedMeshComponent::rewind`）。随机数用单独一条 `CrtRand`，按时间播种
+  （原版和别处共用 CRT `rand()`）。浮动只改 y，x、z 取当前值，所以 opcode 90 挪过的物件也照样浮。
+- 上机核对：agent 加了 `object_transform [id]`（物件和子节点的局部矩阵）。Q04/n01 物件 3、4 的根 y 在
+  42.6–54.5 之间变（原高度 48.58 ± 6），子节点在播放位和第 0 帧之间来回，两个物件时刻错开；m11/1 物件 4、5
+  每 1.5 秒转约 122°（≈80°/秒）。画面上没对着拍到（镜头看不到这些物件），和原版的观感没对过。
 - **修掉的一个老 bug**：`crosscom/idl/openpal3.idl` 里组件类写成了 `class CvdModel: IComponent {}`，没实现
   `ICvdModel`，所以 `get_component(ICvdModel::uuid())` 拿到组件后 `query_interface::<ICvdModel>()` 永远是空。
   开门（87，`open_door.rs`）、交互（124，`interact.rs` 的 1/2/23 类）、flexeff 模型的循环（`flexeff_model.rs`）
