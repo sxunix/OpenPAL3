@@ -563,8 +563,16 @@ swap(this->+0x80..+0x88, this->+0x8c..+0x94);
 - ~~移植里战败 game over 的去处~~ —— 通路已经有了：`SceState::request_title`
   → `AdventureDirector::take_title_request` → `Pal3Service::take_title_request`
   → `YaobowApplicationLoader::on_updating` 装标题 director，和 147 Switch2Menu
-  以及 102 `SwitchMode(15)` 走同一条。**仍然不同的是演出**：原版战败走
-  phase 7 的失败演出，移植只画一个"游戏结束"占位覆盖层。
+  以及 102 `SwitchMode(15)` 走同一条。
+- ~~战败的演出~~ —— 模式 15 的状态对象（`new(0xe8)` + `FUN_0044ffe0`，虚表 0x56b0b4，
+  布局 `FUN_004500f0`）：
+  - 全屏铺一层颜色 `(0xf3, 0xf5, 0xfd)`（按 ARGB 读是 RGB(0xfd,0xf5,0xf3)，近白），上面贴
+    `ui\GameOver\di.tga`（256×1024，竖排「胜败乃兵家常事　大侠请重新来过……」），rect
+    `((屏宽 − 256) / 2, 0, +256, 屏高)`；
+  - 绘制 `0x450230`：alpha = min(t × 0.2, 1) × 255，底色和图一起淡入，5 秒到满；
+  - 更新 `0x4501a0`：`t += dt`；t ≥ 4.5 秒后鼠标左键或右键按下（`0xbfc5e8/5f4`、
+    `0xbfc648/654` 两组按键状态）才 `SwitchMode(4)` 回标题。
+  移植端（`combat.rs` 的 `draw_game_over`）照这个做，另外让确定键 / A 也算按下。
 - ~~战后倒下的队员回到多少精~~ —— **回到 1 精**，`FUN_004ed870`，见第 9.8 节
   （该节先前写「没有这一步」是错的，已在节内更正）。
 - ~~我方的 `+0x470`（五灵阵位）找不到写入者~~ —— 是 `FUN_004ed250` 从冒险侧

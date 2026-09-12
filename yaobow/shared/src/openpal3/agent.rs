@@ -532,6 +532,16 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "game_over" => {
+            // [] —— 只弹战败画面，按一下回标题。
+            director.start_debug_command(Box::new(
+                crate::scripting::sce::commands::SceCommandGameOverScreen::default(),
+            ));
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "dealer" => {
             // ["DealScript\\WeaponShop\\q01weapon.txt"] —— 直接开一家店（SCE 100）。
             let shop = params

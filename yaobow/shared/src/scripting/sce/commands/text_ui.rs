@@ -4,9 +4,8 @@ use std::rc::Rc;
 
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
-use imgui::{Condition, Ui};
+use imgui::Ui;
 use radiance::comdef::ISceneManager;
-use radiance::input::Key;
 use radiance::rendering::Sprite;
 
 /// 68 显示提示框信息 — `LAB_00437170` → `FUN_00450bc0`.

@@ -34,7 +34,7 @@ use crate::openpal3::states::{attributes, skills};
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use fileformats::pal3::gdb::GameItemInfo;
-use imgui::{Condition, Ui};
+use imgui::Ui;
 use radiance::comdef::{IEntityExt, IScene, ISceneExt, ISceneManager};
 use radiance::imgui::{GameFontSize, game_font};
 use radiance::input::Key;
@@ -160,8 +160,9 @@ pub struct SceCommandCombat {
     /// its own back.
     switched_bgm: bool,
     game_over_on_loss: bool,
-    /// The 游戏结束 screen is up, waiting for a confirm.
+    /// The 游戏结束 screen is up (see [`GameOverScreen`]).
     game_over: bool,
+    game_over_screen: GameOverScreen,
     /// 这一场用哪张战场（`z**`），由 `combatScn.txt` 按脚下地面类型选出。
     combat_scene: Option<String>,
     /// 摆好的战斗舞台。压在场景栈上，散场时弹掉。
@@ -433,6 +434,7 @@ impl SceCommandCombat {
             switched_bgm: false,
             game_over_on_loss: true,
             game_over: false,
+            game_over_screen: GameOverScreen::default(),
             combat_scene: None,
             stage: None,
             hud: None,
@@ -1880,23 +1882,6 @@ impl SceCommandCombat {
             text,
         );
     }
-
-    fn draw_game_over(ui: &Ui) {
-        let [window_width, window_height] = ui.io().display_size;
-        ui.window("GameOver")
-            .collapsible(false)
-            .title_bar(false)
-            .resizable(false)
-            .always_auto_resize(true)
-            .position_pivot([0.5, 0.5])
-            .position([window_width / 2., window_height / 2.], Condition::Always)
-            .build(|| {
-                let _font = radiance::imgui::game_font(radiance::imgui::GameFontSize::LARGE)
-                    .map(|f| ui.push_font(f));
-                ui.text("游戏结束");
-                ui.text("按确定退出");
-            });
-    }
 }
 
 impl SceCommand for SceCommandCombat {
@@ -1918,10 +1903,9 @@ impl SceCommand for SceCommandCombat {
         delta_sec: f32,
     ) -> bool {
         if self.game_over {
-            Self::draw_game_over(ui);
-            // The original switches the game's state object to the
-            // title screen; the same request 147 Switch2Menu makes.
-            if Self::poll_input(state) == Some(Input::Confirm) || state.fast_forward() {
+            // 原版切到模式 15 的状态对象，点一下再 `SwitchMode(4)` 回标题；
+            // 移植端走和 147 Switch2Menu 同一条 `request_title`。
+            if self.game_over_screen.frame(ui, state, delta_sec) {
                 log::info!("Combat: 游戏结束，返回主菜单");
                 state.request_title();
                 return true;
@@ -2109,5 +2093,92 @@ impl SceCommand for SceCommandCombat {
                 }
             }
         }
+    }
+}
+
+/// 战败画面（模式 15：`FUN_0044ffe0` 构造、`FUN_004500f0` 布局，逆向见
+/// `switch/re/notes/combat_flow.md` §8）：全屏铺近白色 RGB(0xfd,0xf5,0xf3)，中间贴
+/// `ui\GameOver\di.tga`（竖排「胜败乃兵家常事　大侠请重新来过……」），两者 alpha 按
+/// `min(t × 0.2, 1)` 一起淡入（`0x450230`）；满 4.5 秒后按一下才回标题（`0x4501a0`，
+/// 原版只认鼠标左右键，这里确定键 / A 也算）。
+#[derive(Clone, Default)]
+pub struct GameOverScreen {
+    elapsed: f32,
+    texture: Option<Rc<Sprite>>,
+    loaded: bool,
+}
+
+impl GameOverScreen {
+    const FADE_RATE: f32 = 0.2;
+    const WAIT: f32 = 4.5;
+    const RECT: (i32, i32, i32, i32) = ((800 - 256) / 2, 0, (800 - 256) / 2 + 256, 600);
+    const GROUND: [f32; 3] = [0xfd as f32 / 255., 0xf5 as f32 / 255., 0xf3 as f32 / 255.];
+
+    /// 画一帧；返回 true = 该回标题了。
+    pub fn frame(&mut self, ui: &Ui, state: &SceState, dt: f32) -> bool {
+        if !self.loaded {
+            self.loaded = true;
+            let am = state.asset_mgr();
+            self.texture = am.load_ui_sprite(am.basedata_path().join("ui/GameOver/di.tga"));
+        }
+        if state.fast_forward() {
+            return true;
+        }
+        let a = (self.elapsed * Self::FADE_RATE).min(1.);
+        let texture = self.texture.clone();
+        overlay(ui, "GameOver", |ui, at, _scale| {
+            let list = ui.get_window_draw_list();
+            let [w, h] = ui.io().display_size;
+            let [r, g, b] = Self::GROUND;
+            list.add_rect([0., 0.], [w, h], [r, g, b, a])
+                .filled(true)
+                .build();
+            if let Some(t) = texture.as_deref() {
+                let rect = Self::RECT;
+                let (uv0, uv1) = super::encamp::sprite_uv(t, rect);
+                list.add_image(t.imgui_texture_id(), at(rect.0, rect.1), at(rect.2, rect.3))
+                    .uv_min(uv0)
+                    .uv_max(uv1)
+                    .col([1., 1., 1., a])
+                    .build();
+            }
+        });
+        let ready = self.elapsed >= Self::WAIT;
+        self.elapsed += dt;
+        let clicked = ui.is_mouse_clicked(imgui::MouseButton::Left)
+            || ui.is_mouse_clicked(imgui::MouseButton::Right);
+        let input = state.input();
+        let confirm = [Key::Space, Key::GamePadEast]
+            .iter()
+            .any(|k| input.get_key_state(*k).pressed());
+        ready && (clicked || confirm)
+    }
+}
+
+/// 调试口用：只弹战败画面，按一下回标题。
+#[derive(Clone, Default)]
+pub struct SceCommandGameOverScreen {
+    screen: GameOverScreen,
+}
+
+impl std::fmt::Debug for SceCommandGameOverScreen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("SceCommandGameOverScreen")
+    }
+}
+
+impl SceCommand for SceCommandGameOverScreen {
+    fn update(
+        &mut self,
+        _scene_manager: ComRc<ISceneManager>,
+        ui: &Ui,
+        state: &mut SceState,
+        delta_sec: f32,
+    ) -> bool {
+        if self.screen.frame(ui, state, delta_sec) {
+            state.request_title();
+            return true;
+        }
+        false
     }
 }

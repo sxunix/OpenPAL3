@@ -112,7 +112,7 @@ pub use cmp::{
 };
 pub use combat::{
     SceCommandCombat, SceCommandCombatMaxRound, SceCommandCombatMustFail,
-    SceCommandCombatNotGameOver,
+    SceCommandCombatNotGameOver, SceCommandGameOverScreen,
 };
 pub use combat_effect::{SceCommandPlayCombatEffect, SceCommandPreloadCombatEffect};
 pub use dealer::SceCommandDealerMenu;
@@ -255,4 +255,3 @@ impl Direction {
 
 /// 给 `SceState` 的浮层用（提示框）。
 pub(crate) use appraise::overlay;
-pub(crate) use encamp::draw_sprite;
