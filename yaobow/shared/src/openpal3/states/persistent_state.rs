@@ -217,6 +217,11 @@ pub struct PersistentState {
     hockshop_accrual: i32,
     #[serde(default)]
     hockshop_unhock: i32,
+    /// 死当物池：四种经营方针各一池，每件（物品 id，卖掉没有）。原版在经营对象 `+0x1f74`
+    /// 起（每件 0x328 字节：物品记录，`+0x320` 卖掉、`+0x321` 这次摆出来），当铺升级时
+    /// （增资页 `+0xf1c` 置位 → `FUN_0051f1b0` 0x5210ce）按这一级的 `PropNum` 重新摸，随存档保存。
+    #[serde(default)]
+    hockshop_pools: Vec<Vec<(u32, bool)>>,
     /// Per-scene-object state the story writes and later reads back —
     /// mazes remember which switches have been thrown. The original
     /// keeps a table in the save-state store at `DAT_017b1550`, looked up
@@ -337,6 +342,7 @@ impl PersistentState {
             hockshop_period: 0,
             hockshop_accrual: 0,
             hockshop_unhock: 0,
+            hockshop_pools: Vec::new(),
             scene_object_states: BTreeMap::new(),
             objects_not_from_save: BTreeSet::new(),
             scene_object_positions: BTreeMap::new(),
@@ -449,6 +455,38 @@ impl PersistentState {
         self.hockshop_capital += spent;
         self.add_money(-spent);
         spent
+    }
+
+    /// 某种经营方针的死当物池（空的时候是空切片）。
+    pub fn hockshop_pool(&self, mode: usize) -> &[(u32, bool)] {
+        self.hockshop_pools.get(mode).map_or(&[], |p| p.as_slice())
+    }
+
+    /// 摸过池子没有（旧存档、没升过级时没有）。
+    pub fn has_hockshop_pools(&self) -> bool {
+        !self.hockshop_pools.is_empty()
+    }
+
+    /// 换一套新池子，全部没卖。
+    pub fn set_hockshop_pools(&mut self, pools: Vec<Vec<u32>>) {
+        self.hockshop_pools = pools
+            .into_iter()
+            .map(|p| p.into_iter().map(|id| (id, false)).collect())
+            .collect();
+    }
+
+    /// 买走一件：那一池里第一件还没卖的这个 id 标成卖掉。返回找没找到。
+    pub fn mark_hockshop_sold(&mut self, mode: usize, id: u32) -> bool {
+        let Some(pool) = self.hockshop_pools.get_mut(mode) else {
+            return false;
+        };
+        match pool.iter_mut().find(|(i, sold)| *i == id && !*sold) {
+            Some(entry) => {
+                entry.1 = true;
+                true
+            }
+            None => false,
+        }
     }
 
     /// 分红：按当前等级和四个选择算一笔，加进钱里，返回分了多少
@@ -1266,6 +1304,19 @@ mod tests {
         assert_eq!(state.equip_in_slot(0, 7002, 10, SLOT_ADORN2), Some(7001));
         assert_eq!(state.item_count(7001), 2);
         assert_eq!(state.item_count(7002), 0);
+    }
+
+    #[test]
+    fn a_dead_pawn_sells_once() {
+        let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
+        assert!(!state.has_hockshop_pools());
+        state.set_hockshop_pools(vec![vec![5, 6], vec![7], vec![], vec![]]);
+        assert!(state.has_hockshop_pools());
+        assert!(state.mark_hockshop_sold(0, 6));
+        assert!(!state.mark_hockshop_sold(0, 6), "卖掉的不能再卖");
+        assert!(!state.mark_hockshop_sold(1, 5), "别的方针的池子里没有");
+        assert_eq!(state.hockshop_pool(0), &[(5, false), (6, true)]);
+        assert_eq!(state.hockshop_pool(9), &[]);
     }
 
     #[test]

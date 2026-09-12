@@ -27,7 +27,7 @@ use super::encamp::draw_sprite;
 use super::ui_sound;
 use crate::openpal3::assis_lang;
 use crate::openpal3::states::hockshop::{
-    HockShopLevels, PawnRng, Proportions, max_investment, pick_dead_pawn_items,
+    HockShopLevels, MODES, PawnRng, Proportions, max_investment, pick_dead_pawn_items, pick_display,
 };
 use crate::openpal3::states::shop::ShopRng;
 use crate::openpal3::ui_tex::UiTextures;
@@ -299,6 +299,14 @@ impl SceCommandMiniGamePawnshop {
             (p.money(), p.hockshop_capital())
         };
         self.rng = ShopRng::new(money as u32 ^ (capital as u32).rotate_left(7) ^ 0x9e37_79b9);
+        // 旧存档（或者这一套生效前升的级）没有池子：这一级该有货就先摸一套。
+        let level = self.level(state).clone();
+        if !state.global_state().persistent_state().has_hockshop_pools()
+            && level.buy
+            && level.prop_num > 0
+        {
+            self.regenerate_pools(state);
+        }
         self.rebuild_dead_pawn(state);
 
         // 进店分红（`0x523b90`）：`HockShop_Gut > 0` 才分，分到钱才清零。
@@ -340,33 +348,55 @@ impl SceCommandMiniGamePawnshop {
             .level(state.global_state().persistent_state().hockshop_level())
     }
 
-    /// 进店摆出来的死当物：件数在 `DisMinNum..=DisMaxNum` 之间，按当前经营重点
-    /// 的比例挑（`source.txt`），单价打这一级的 `BuyDiscount`。
+    /// 当铺升级时重摸四个死当物池（`FUN_0051f1b0` 0x5210ce 起）：每种经营方针各摸这一级的
+    /// `PropNum` 件，按那一方针的比例（`source.txt`）。
+    fn regenerate_pools(&mut self, state: &mut SceState) {
+        let Some(db) = state.global_state().game_db().cloned() else {
+            return;
+        };
+        let level = self.level(state).clone();
+        let table: Vec<(u32, u8)> = db.items().iter().map(|i| (i.id, i.item_type)).collect();
+        let pools = (0..MODES)
+            .map(|mode| {
+                let proportions = level
+                    .proportions
+                    .get(mode)
+                    .copied()
+                    .unwrap_or(Proportions::default());
+                let mut dice = PawnDice(&mut self.rng);
+                pick_dead_pawn_items(
+                    level.prop_num.max(0) as usize,
+                    proportions,
+                    &table,
+                    &mut dice,
+                )
+            })
+            .collect();
+        state
+            .global_state_mut()
+            .persistent_state_mut()
+            .set_hockshop_pools(pools);
+    }
+
+    /// 进店（和换经营方针）时摆出来的死当物：从当前方针的池子里挑没卖掉的
+    /// （[`pick_display`]），单价打这一级的 `BuyDiscount`。
     fn rebuild_dead_pawn(&mut self, state: &SceState) {
         self.dead_pawn.clear();
         let Some(db) = state.global_state().game_db().cloned() else {
             return;
         };
-        let mode = state
-            .global_state()
-            .persistent_state()
-            .hockshop_choice(0)
-            .max(0) as usize;
-        let level = self.level(state);
-        if !level.buy || level.display_max <= 0 {
+        let level = self.level(state).clone();
+        if !level.buy {
             return;
         }
-        let span = (level.display_max - level.display_min).max(0) + 1;
-        let count = level.display_min + (self.rng.rand15() % span);
-        let proportions = level
-            .proportions
-            .get(mode)
-            .copied()
-            .unwrap_or(Proportions::default());
-        let table: Vec<(u32, u8)> = db.items().iter().map(|i| (i.id, i.item_type)).collect();
+        let pool: Vec<(u32, bool)> = {
+            let p = state.global_state().persistent_state();
+            let mode = p.hockshop_choice(0).max(0) as usize;
+            p.hockshop_pool(mode).to_vec()
+        };
         let ids = {
             let mut dice = PawnDice(&mut self.rng);
-            pick_dead_pawn_items(count.max(0) as usize, proportions, &table, &mut dice)
+            pick_display(&pool, level.display_min, level.display_max, &mut dice)
         };
         self.dead_pawn = ids
             .into_iter()
@@ -375,6 +405,21 @@ impl SceCommandMiniGamePawnshop {
                 Some((id, (row.price as f32 * level.buy_discount) as i32))
             })
             .collect();
+    }
+
+    /// 买页里买走的死当物：池子里标成卖掉（`+0x320`），这一次的列表里也去掉。
+    fn sell_dead_pawn(&mut self, state: &mut SceState, ids: &[u32]) {
+        if ids.is_empty() {
+            return;
+        }
+        let mut p = state.global_state_mut().persistent_state_mut();
+        let mode = p.hockshop_choice(0).max(0) as usize;
+        for id in ids {
+            p.mark_hockshop_sold(mode, *id);
+            if let Some(i) = self.dead_pawn.iter().position(|(d, _)| d == id) {
+                self.dead_pawn.remove(i);
+            }
+        }
     }
 
     fn enabled(&self, state: &SceState, item: Item) -> bool {
@@ -473,10 +518,15 @@ impl SceCommandMiniGamePawnshop {
     fn invest(&mut self, state: &mut SceState) {
         self.sfx = Some(ui_sound::CLICK);
         if self.amount > 0 {
+            let before = state.global_state().persistent_state().hockshop_level();
             state
                 .global_state_mut()
                 .persistent_state_mut()
                 .hockshop_invest(self.amount);
+            // 升了级才重摸池子（增资页 `FUN_005249a0` 比新旧等级，高了才把 `+0xf1c` 置 1）。
+            if state.global_state().persistent_state().hockshop_level() > before {
+                self.regenerate_pools(state);
+            }
             self.rebuild_dead_pawn(state);
         }
         self.amount = 0;
@@ -847,6 +897,12 @@ impl SceCommand for SceCommandMiniGamePawnshop {
                 .hosted
                 .as_mut()
                 .is_none_or(|h| h.hosted_frame(ui, state));
+            let bought = self
+                .hosted
+                .as_mut()
+                .map(|h| h.take_bought())
+                .unwrap_or_default();
+            self.sell_dead_pawn(state, &bought);
             if done {
                 self.hosted = None;
                 self.screen = Screen::Business;

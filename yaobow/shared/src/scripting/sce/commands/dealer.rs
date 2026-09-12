@@ -408,6 +408,10 @@ pub struct SceCommandDealerMenu {
     wear_mode: bool,
     /// 这一单里买了就穿的。
     worn: Vec<Worn>,
+    /// 当铺借用的买页：每行是池子里的一件，最多买 1 个，买下就从列表里去掉。
+    single_each: bool,
+    /// 这次结账买下的物品 id（当铺拿去把池子里那件标成卖掉）。
+    bought: Vec<u32>,
 }
 
 impl std::fmt::Debug for SceCommandDealerMenu {
@@ -457,6 +461,8 @@ impl SceCommandDealerMenu {
             ask_equip: false,
             wear_mode: false,
             worn: vec![],
+            single_each: false,
+            bought: vec![],
         }
     }
 
@@ -599,6 +605,8 @@ impl SceCommandDealerMenu {
     fn cap(&self, g: &Good) -> i32 {
         if self.page() == Some(Page::Sell) {
             g.owned as i32
+        } else if self.single_each {
+            1
         } else {
             buyable(g.owned)
         }
@@ -839,8 +847,12 @@ impl SceCommandDealerMenu {
             return false;
         }
         p_state.add_money(-price);
+        let mut just = vec![];
         for (id, n) in self.cart.drain() {
             p_state.add_item(id, n.max(0) as u32);
+            if n > 0 {
+                just.push(id);
+            }
         }
         // 买了就穿的：先进背包再穿上，换下来的回背包。
         for w in self.worn.drain(..) {
@@ -856,7 +868,20 @@ impl SceCommandDealerMenu {
         {
             g.owned = p_state.item_count(g.id);
         }
+        drop(p_state);
+        if self.single_each {
+            self.prop_goods.retain(|g| !just.contains(&g.id));
+            let n = self.rows().len();
+            self.cursor = self.cursor.min(n.saturating_sub(1));
+            self.top = self.top.min(self.scroll_range());
+        }
+        self.bought.extend(just);
         true
+    }
+
+    /// 当铺取走这几次结账买下的东西。
+    pub(super) fn take_bought(&mut self) -> Vec<u32> {
+        std::mem::take(&mut self.bought)
     }
 
     /// 不还价，照原价买（底栏「确定」）。
@@ -1775,6 +1800,7 @@ impl SceCommandDealerMenu {
             })
             .collect();
         me.rebuild_stock(state);
+        me.single_each = page == HostedPage::Buy;
         me.enter(match page {
             HostedPage::Buy => Page::Prop,
             HostedPage::Sell => Page::Sell,

@@ -314,6 +314,32 @@ fn number(value: &str) -> f32 {
     value.trim().parse::<f32>().unwrap_or(0.)
 }
 
+/// 进店这一次摆哪几件（`FUN_0051f1b0` 0x51f574 起）：件数 = `DisMinNum + rand % (DisMaxNum − DisMinNum)`
+/// （上限取不到；两个相等时原版会除零，这里就取下限）。池里没卖掉的不够就全摆（按池里的
+/// 顺序）；够就随机挑、不重复。返回物品 id，按挑出来的顺序。
+pub fn pick_display(pool: &[(u32, bool)], min: i32, max: i32, rng: &mut impl PawnRng) -> Vec<u32> {
+    let count = if max > min {
+        min + rng.below((max - min) as usize) as i32
+    } else {
+        min
+    }
+    .max(0) as usize;
+    let mut left: Vec<u32> = pool
+        .iter()
+        .filter(|(id, sold)| *id != 0 && !*sold)
+        .map(|(id, _)| *id)
+        .collect();
+    if count >= left.len() {
+        return left;
+    }
+    let mut out = Vec::with_capacity(count);
+    while out.len() < count {
+        let k = rng.below(left.len());
+        out.push(left.remove(k));
+    }
+    out
+}
+
 /// 攻击/仙宝那一类里要排除的：五灵珠和土灵珠（`source.txt` 里写死的）。
 pub const EXCLUDED_ATTACK: [u32; 8] = [6119, 6120, 6121, 6122, 6123, 6124, 6125, 6427];
 /// 古董那一类里要排除的：五本仙术书。
@@ -618,5 +644,40 @@ end
         let t = HockShopLevels::parse(SAMPLE);
         assert_eq!(t.level(-3), t.level(0));
         assert_eq!(t.level(99), t.level(LEVELS as i32 - 1));
+    }
+}
+
+#[cfg(test)]
+mod display_tests {
+    use super::*;
+
+    /// 按给定顺序吐数的骰子。
+    struct Seq(Vec<usize>);
+    impl PawnRng for Seq {
+        fn chance(&mut self, _: f32) -> bool {
+            true
+        }
+        fn below(&mut self, n: usize) -> usize {
+            if self.0.is_empty() {
+                0
+            } else {
+                self.0.remove(0) % n.max(1)
+            }
+        }
+    }
+
+    #[test]
+    fn a_visit_shows_unsold_pieces_only() {
+        let pool = [(1, false), (2, true), (3, false), (4, false), (0, false)];
+        // 件数 2 + 1 = 3，没卖的正好 3 件：全摆，按池里的顺序。
+        assert_eq!(pick_display(&pool, 2, 4, &mut Seq(vec![1])), vec![1, 3, 4]);
+        // 件数 2：从 [1, 3, 4] 里挑下标 2、再挑剩下 [1, 3] 的下标 0。
+        assert_eq!(
+            pick_display(&pool, 2, 4, &mut Seq(vec![0, 2, 0])),
+            vec![4, 1]
+        );
+        // 上下限相等：就是下限。
+        assert_eq!(pick_display(&pool, 1, 1, &mut Seq(vec![1])).len(), 1);
+        assert!(pick_display(&[], 3, 5, &mut Seq(vec![])).is_empty());
     }
 }
