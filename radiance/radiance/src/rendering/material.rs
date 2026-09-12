@@ -2,7 +2,7 @@ use image::ImageFormat;
 
 use crate::rendering::texture::TextureStore;
 
-use super::{ShaderProgram, sampler::SamplerDef, texture::TextureDef};
+use super::{sampler::SamplerDef, texture::TextureDef, ShaderProgram};
 use std::{io::Read, sync::Arc};
 
 /// Color-blend mode for a material. Today every variant maps to a distinct
@@ -840,6 +840,28 @@ impl Pal3GeomMaterialDef {
     }
 }
 
+/// Decodes a CVD texture into the row order the original engine uploads.
+///
+/// gbengine's own TGA reader (`gbImage2D::LoadImageFile` → 0x1001ed50) always
+/// leaves the **bottom** row first in memory: a bottom-left-origin file
+/// (descriptor & 0x30 == 0) is read in one block, a top-left one (0x20) is read
+/// row by row from the last row back. D3D samples v = 0 from that first row, so
+/// CVD UVs put v = 0 at the bottom of the picture. `image` hands a TGA back
+/// top row first, hence the flip; retail `.dds` are already stored bottom-up
+/// and decode as is. (MV3 actors get the same correction by negating v.)
+fn decode_pal3_prop_texture(buf: &[u8]) -> Option<image::RgbaImage> {
+    let is_dds = matches!(image::guess_format(buf), Ok(ImageFormat::Dds));
+    let img = image::load_from_memory(buf)
+        .or_else(|_| image::load_from_memory_with_format(buf, ImageFormat::Tga))
+        .ok()?
+        .to_rgba8();
+    Some(if is_dds {
+        img
+    } else {
+        image::imageops::flip_vertical(&img)
+    })
+}
+
 /// Builds a PAL3 static prop material ([`ShaderProgram::Pal3Prop`]) for CVD
 /// items: ambient-only (texture × scene ambient), no per-vertex directional
 /// term, matching the original `gfxscript/geom.gbf` no-light pass.
@@ -854,10 +876,7 @@ impl Pal3PropMaterialDef {
                 Some(mut r) => {
                     let mut buf = Vec::new();
                     r.read_to_end(&mut buf).unwrap();
-                    image::load_from_memory(&buf)
-                        .or_else(|_| image::load_from_memory_with_format(&buf, ImageFormat::Tga))
-                        .and_then(|img| Ok(img.to_rgba8()))
-                        .ok()
+                    decode_pal3_prop_texture(&buf)
                 }
                 _ => None,
             });
@@ -988,5 +1007,36 @@ impl GradientYMaterialDef {
             .blend(BlendMode::Opaque)
             .params(params)
             .build()
+    }
+}
+
+#[cfg(test)]
+mod pal3_prop_texture_tests {
+    use super::decode_pal3_prop_texture;
+
+    /// A 1×2 32-bit TGA whose file rows are red then blue.
+    fn tga(descriptor: u8) -> Vec<u8> {
+        let mut t = vec![
+            0, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 2, 0, 32, descriptor,
+        ];
+        t.extend_from_slice(&[0, 0, 255, 255]); // BGRA red
+        t.extend_from_slice(&[255, 0, 0, 255]); // BGRA blue
+        t
+    }
+
+    #[test]
+    fn a_bottom_left_tga_keeps_the_file_row_order() {
+        // gbengine reads it in one block: the first file row (the bottom) comes first.
+        let img = decode_pal3_prop_texture(&tga(0x08)).unwrap();
+        assert_eq!(img.get_pixel(0, 0).0, [255, 0, 0, 255]);
+        assert_eq!(img.get_pixel(0, 1).0, [0, 0, 255, 255]);
+    }
+
+    #[test]
+    fn a_top_left_tga_is_turned_bottom_row_first() {
+        // gbengine reads it from the last row back, so the bottom row comes first here too.
+        let img = decode_pal3_prop_texture(&tga(0x28)).unwrap();
+        assert_eq!(img.get_pixel(0, 0).0, [0, 0, 255, 255]);
+        assert_eq!(img.get_pixel(0, 1).0, [255, 0, 0, 255]);
     }
 }

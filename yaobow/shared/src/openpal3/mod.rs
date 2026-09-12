@@ -11,6 +11,7 @@ pub mod comdef {
 pub mod directors;
 pub mod encamp;
 pub mod loaders;
+pub mod model_view;
 pub mod scene;
 pub mod states;
 pub mod ui_atlas;

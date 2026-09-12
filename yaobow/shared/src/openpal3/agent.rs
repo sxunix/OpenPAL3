@@ -646,11 +646,28 @@ fn handle_set_status_menu(ctx: &Pal3DispatchCtx, params: StatusMenuParams) -> Ag
     // player has control — i.e. no SCE proc is running. Toggling the
     // flag is always safe; it takes visible effect on the next idle
     // frame.
-    director
-        .sce_vm()
-        .state()
-        .status_renderer()
-        .set_menu_open(params.open);
+    let renderer = director.sce_vm().state().status_renderer();
+    match params.page.as_deref() {
+        Some(page) => {
+            let index = match page {
+                "state" => 0,
+                "prop" => 1,
+                "equip" => 2,
+                "magic" => 3,
+                "array" | "lineup" => 4,
+                "sword" => 5,
+                "book" | "justicebook" => 6,
+                "system" => 7,
+                other => {
+                    return AgentResponse::err(AgentError::bad_request(format!(
+                        "unknown page `{other}`"
+                    )));
+                }
+            };
+            renderer.set_menu_page(if params.open { index } else { -1 });
+        }
+        None => renderer.set_menu_open(params.open),
+    }
     AgentResponse::Ok
 }
 

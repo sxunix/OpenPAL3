@@ -161,6 +161,7 @@ const PREVIEW_CAMERA: PreviewCamera = PreviewCamera {
     size: 210.,
     x: 198,
     y: 264,
+    tilt: Some(600.),
 };
 
 /// 预览贴到的那一块：说明面板（`rect::INFO`）的黑框，和买卖页一样是面板里

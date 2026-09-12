@@ -38,10 +38,9 @@ use radiance_scripting::comdef::services::IVideoHandle;
 use radiance_scripting::services::AudioSource;
 use radiance_scripting::services::ImguiTextureCache;
 use radiance_scripting::services::SpriteService;
-use shared::GameType;
 use shared::agent_common::AgentBridge;
 use shared::loaders::video_handle::VideoHandle;
-use shared::openpal3::agent::{Pal3DispatchCtx, dispatch_pal3_command};
+use shared::openpal3::agent::{dispatch_pal3_command, Pal3DispatchCtx};
 use shared::openpal3::asset_manager::AssetManager;
 use shared::openpal3::comdef::{
     IAdventureDirector, IPal3DialogRenderer, IPal3ScriptFactory, IPal3Service, IPal3ServiceImpl,
@@ -51,12 +50,13 @@ use shared::openpal3::directors::{AdventureDirector, SceneManagerExtensions};
 use shared::openpal3::scene::ScnScene;
 use shared::openpal3::states::game_db::GameDb;
 use shared::openpal3::states::item_use::{
-    self, EARTH_PEARL_PROC, TargetPick, UseContext, UseOutcome,
+    self, TargetPick, UseContext, UseOutcome, EARTH_PEARL_PROC,
 };
-use shared::openpal3::states::persistent_state::{PAL3_APP_NAME, PersistentState};
+use shared::openpal3::states::persistent_state::{PersistentState, PAL3_APP_NAME};
 use shared::openpal3::ui_atlas::{AtlasManifest, Pal3UiAtlas};
 use shared::scripting::sce::vm::SceExecutionOptions;
 use shared::ydirs;
+use shared::GameType;
 
 use crate::openpal3::debug_layer::OpenPal3DebugLayer;
 use crate::openpal3::sce_proc_hooks::SceRestHooks;
@@ -183,6 +183,16 @@ pub struct Pal3Service {
     /// boot by `YaobowApplicationLoader::on_loading`; the loaders return
     /// `None` when this slot is empty.
     texture_cache: RefCell<Option<Rc<RefCell<ImguiTextureCache>>>>,
+    /// 纹理缓存的两条队列（外部纹理登记 / 释放），`draw_model_view` 在界面帧里用——
+    /// 那时缓存本身被借着，只能往队列里推。
+    texture_sinks: RefCell<
+        Option<(
+            Rc<RefCell<Vec<(i64, imgui::TextureId)>>>,
+            Rc<RefCell<Vec<i64>>>,
+        )>,
+    >,
+    /// `draw_model_view` 的视图，按脚本给的 key 存。
+    model_views: RefCell<HashMap<i32, ModelViewSlot>>,
     /// Script-side factory (`IPal3ScriptFactory`) QI'd from the
     /// reverse-wrapped app root. Used by `create_director` to mint
     /// the scripted start menu. Cleared on app unload to break the
@@ -262,6 +272,8 @@ impl Pal3Service {
             app,
             asset_managers: RefCell::new(HashMap::new()),
             texture_cache: RefCell::new(None),
+            texture_sinks: RefCell::new(None),
+            model_views: RefCell::new(HashMap::new()),
             script_factory: RefCell::new(None),
             last_asset_path: RefCell::new(None),
             last_game: Cell::new(GameType::PAL3),
@@ -283,6 +295,10 @@ impl Pal3Service {
     /// Install the imgui texture cache so the sprite/atlas loaders and
     /// dialog renderer can upload UI textures. Called once at boot.
     pub fn set_texture_cache(&self, cache: Rc<RefCell<ImguiTextureCache>>) {
+        *self.texture_sinks.borrow_mut() = Some({
+            let c = cache.borrow();
+            (c.pending_external_updates_sink(), c.pending_forgets_sink())
+        });
         *self.texture_cache.borrow_mut() = Some(cache);
     }
 
@@ -756,6 +772,41 @@ impl Pal3Service {
     }
 
     /// Pull one text field off a combat actor's database row.
+    /// `draw_model_view` 的模型串：`.pol` / `.cvd` 是 basedata 下的路径，`actor:<id>`
+    /// 是战斗角色的模型（播待机，怪物那套的 50 号），其余当角色名。
+    fn model_source(&self, model: &str) -> Option<shared::openpal3::model_view::ModelSource> {
+        use shared::openpal3::combat::motion::{Motion, MotionSet};
+        use shared::openpal3::model_view::ModelSource;
+        let idle = MotionSet::Monster
+            .name(Motion::Idle)
+            .unwrap_or("z1")
+            .to_string();
+        if let Some(id) = model.strip_prefix("actor:") {
+            let id: i32 = id.trim().parse().ok()?;
+            let name = self.actor_text(id, |a| a.model_id.as_str().ok())?;
+            let name = name.trim().to_string();
+            if name.is_empty() || name.eq_ignore_ascii_case("null") {
+                return None;
+            }
+            return Some(ModelSource::Role { name, action: idle });
+        }
+        let lower = model.to_ascii_lowercase();
+        let path = || PathBuf::from(format!("/basedata/basedata/{}", model.replace('\\', "/")));
+        if lower.ends_with(".cvd") {
+            Some(ModelSource::Cvd(path()))
+        } else if lower.ends_with(".pol") {
+            Some(ModelSource::Pol {
+                path: path(),
+                texture: None,
+            })
+        } else {
+            Some(ModelSource::Role {
+                name: model.to_string(),
+                action: idle,
+            })
+        }
+    }
+
     fn actor_text(
         &self,
         actor_id: i32,
@@ -1425,6 +1476,98 @@ impl IPal3ServiceImpl for Pal3Service {
         }
     }
 
+    fn draw_model_view(
+        &self,
+        ui: ComRc<IUiHost>,
+        key: i32,
+        model: &str,
+        size: f32,
+        look_x: f32,
+        look_y: f32,
+        yaw: f32,
+        frontal: bool,
+        mode: i32,
+        speed: f32,
+        serial: i32,
+        ox: f32,
+        oy: f32,
+        scale: f32,
+    ) -> bool {
+        use shared::openpal3::model_view::{v_range, ModelView, ViewCamera};
+        use shared::openpal3::scene::CvdPlayMode;
+        let Some(asset_path) = self.last_asset_path.borrow().clone() else {
+            return false;
+        };
+        let Some(sinks) = self.texture_sinks.borrow().clone() else {
+            return false;
+        };
+        let mut views = self.model_views.borrow_mut();
+        if views.get(&key).is_none_or(|v| v.model != model) {
+            if let Some(old) = views.remove(&key) {
+                sinks.1.borrow_mut().push(old.com_id);
+            }
+            let am = self.asset_manager_for(&asset_path);
+            let camera = ViewCamera {
+                size,
+                x: look_x as i32,
+                y: look_y as i32,
+                tilt: (!frontal).then_some(600.),
+            };
+            let view = self
+                .model_source(model)
+                .and_then(|src| ModelView::build(&am, &src, camera, yaw));
+            let Some(view) = view else {
+                return false;
+            };
+            views.insert(
+                key,
+                ModelViewSlot {
+                    model: model.to_string(),
+                    view,
+                    com_id: next_model_view_com_id(),
+                    serial: i32::MIN,
+                    last: std::time::Instant::now(),
+                },
+            );
+        }
+        let Some(slot) = views.get_mut(&key) else {
+            return false;
+        };
+        if slot.serial != serial {
+            slot.serial = serial;
+            let mode = match mode {
+                1 => CvdPlayMode::Once,
+                2 => CvdPlayMode::Loop,
+                _ => CvdPlayMode::Hold,
+            };
+            slot.view.play(mode, speed);
+        }
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(slot.last).as_secs_f32().min(0.1);
+        slot.last = now;
+        slot.view.render(dt);
+        if let Some(tex) = slot.view.texture_id() {
+            sinks
+                .0
+                .borrow_mut()
+                .push((slot.com_id, imgui::TextureId::new(tex as usize)));
+            let (u0, u1) = (0., 1.);
+            let (v0, v1) = v_range(0., 1.);
+            ui.image_rect(
+                slot.com_id as i32,
+                ox,
+                oy,
+                ox + 800. * scale,
+                oy + 600. * scale,
+                u0,
+                v0,
+                u1,
+                v1,
+            );
+        }
+        slot.view.finished()
+    }
+
     fn draw_combat_actor_name(
         &self,
         ui: ComRc<IUiHost>,
@@ -1708,4 +1851,20 @@ mod tests {
         let lines = wrap_widget_text("abcdefgh", 16., 32.);
         assert_eq!(lines, vec!["abcd", "efgh"]);
     }
+}
+
+/// `draw_model_view` 的一个视图。
+struct ModelViewSlot {
+    model: String,
+    view: shared::openpal3::model_view::ModelView,
+    /// 在纹理缓存里的 id。和 `next_handle_com_id` 的负数区段错开。
+    com_id: i64,
+    serial: i32,
+    last: std::time::Instant,
+}
+
+fn next_model_view_com_id() -> i64 {
+    use std::sync::atomic::{AtomicI64, Ordering};
+    static NEXT: AtomicI64 = AtomicI64::new(0);
+    -1_000_000_000 - NEXT.fetch_add(1, Ordering::Relaxed)
 }

@@ -167,7 +167,11 @@ impl RenderingEngine for SwitchGLRenderingEngine {
         unsafe {
             glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer());
             glViewport(0, 0, tw as i32, th as i32);
+            // Offscreen targets clear to transparent (UI lays them over other
+            // art); the swapchain keeps its opaque black.
+            glClearColor(0., 0., 0., 0.);
             glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+            glClearColor(0., 0., 0., 1.);
             glEnable(GL_DEPTH_TEST);
             glDepthFunc(GL_LESS);
         }

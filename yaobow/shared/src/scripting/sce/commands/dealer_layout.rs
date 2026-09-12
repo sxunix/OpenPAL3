@@ -519,7 +519,12 @@ pub mod preview {
         } else {
             (180., 268)
         };
-        PreviewCamera { size, x: 330, y }
+        PreviewCamera {
+            size,
+            x: 330,
+            y,
+            tilt: Some(600.),
+        }
     }
 }
 

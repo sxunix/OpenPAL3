@@ -267,10 +267,15 @@ pub struct FastForwardParams {
 }
 
 /// `set_status_menu` toggle. PAL3-specific: open/close the in-game
-/// character-status (状态) menu overlay.
-#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+/// character-status (状态) menu overlay. With `page` set (`state`, `prop`,
+/// `equip`, `magic`, `array`, `sword`, `book`, `system`) it opens that
+/// full-screen page directly instead — the pages are otherwise reached
+/// only by clicking the toolbar.
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StatusMenuParams {
     pub open: bool,
+    #[serde(default)]
+    pub page: Option<String>,
 }
 
 /// Slot index. Matches the existing `Pal4PersistentState::save` shape.

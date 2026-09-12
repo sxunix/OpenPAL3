@@ -265,6 +265,20 @@ interface IPal3Service: IUnknown {
     // 20 尸块ID. 0 for an unknown actor or field.
     int combat_actor_info(int actor_id, int field);
 
+    // Draw a 3D view (the original's 3D view control, `FUN_00439030`) over
+    // the 800x600 canvas at (ox, oy) scaled by `scale`. `model` is a
+    // basedata-relative `.pol`/`.cvd` path, `actor:<id>` for a combat
+    // actor's model playing its idle action, or a bare role name. Camera:
+    // ortho half-width `size` looking at screen point (look_x, look_y) —
+    // `frontal` picks `FUN_00439850` (straight on) over `FUN_00439930`
+    // (tilted down from 600). `yaw` in degrees. `mode` 0 hold / 1 once /
+    // 2 loop at `speed`; the animation restarts whenever `serial` changes.
+    // Views are cached by `key` and rebuilt when `model` changes. Returns
+    // whether a once-played animation has finished.
+    bool draw_model_view(IUiHost ui, int key, &str model, float size,
+        float look_x, float look_y, float yaw, bool frontal, int mode,
+        float speed, int serial, float ox, float oy, float scale);
+
     void draw_combat_actor_name(IUiHost ui, int actor_id, float x, float y,
         float size, float r, float g, float b, float a);
     void draw_combat_actor_description(IUiHost ui, int actor_id, float x,
@@ -401,6 +415,12 @@ interface IPal3StatusRenderer: IUnknown {
     // (状态) menu overlay. Lets the agent server pop the menu without a
     // synthetic avatar click. Idempotent.
     void set_menu_open(bool open);
+
+    // Open one full-screen menu page directly (the toolbar's page index:
+    // 0 状态 · 1 道具 · 2 装备 · 3 仙术 · 4 阵法 · 5 御剑 · 6 侠义榜 · 7 系统),
+    // closing whatever else is open. For the agent server; players reach
+    // the pages through the toolbar.
+    void set_menu_page(int page);
 
     // Whether the character-status menu overlay is currently open. The
     // adventure director reads this each frame to freeze the game world

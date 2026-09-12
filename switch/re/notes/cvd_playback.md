@@ -77,5 +77,40 @@ exe 里载了两份：
 原来「在招式横幅上写目标名」的临时做法去掉了。M01/1（战场 z08）实机截图看到指针在敌人头顶上下跳；
 和原版截图的大小、颜色还没对过。
 
-还没做的界面 CVD：阵法页的 `ui\GameMainUI\Lineup\pointer.cvd`（`FUN_00483650`，先建 5 个再建 6 个）、
-仙剑谱翻页的 `JusticeBook\CVD\pgup / pgdw / close.CVD`（`FUN_00480600` 等）。
+还没做的界面 CVD：阵法页的 `ui\GameMainUI\Lineup\pointer.cvd`（`FUN_00483650`，先建 5 个再建 6 个）。
+
+## 7. 贴图的行序
+
+gbengine 不用 D3DX 读图，TGA 由自己的 `gbImage2D::LoadImageFile`（0x1001e490，按扩展名 `.tga` 分到
+0x1001ed50，`.bmp` 分到 0x1001eb80）读。读像素那段按 `descriptor & 0x30` 查跳转表（0x1001ef84 / 0x1001ef74）：
+
+| descriptor & 0x30 | 走哪支 | 结果 |
+|---|---|---|
+| 0x00（左下原点） | 0x1001eef7：整块一次读进来 | 文件第一行（图的最下一行）在前 |
+| 0x20（左上原点） | 0x1001ef0b：从最后一行往前逐行读 | 同样是最下一行在前 |
+| 0x10 / 0x30 | 0x1001eed0 | 读失败 |
+
+所以不管文件怎么存，内存里总是**最下一行在前**，D3D 的 v = 0 取的就是图的底边。零售 `.dds` 本来就是自下而上存的，
+原样读也一样。Pal3.Unity 的 TGA 读取同样不看原点、按文件行序拷进 Unity（Unity 的 v = 0 在底边），uv 原样用。
+
+移植端的 image crate 解 TGA 会按原点把图摆正（上行在前），和 `.dds` 反着。MV3 角色在 `role_controller.rs`
+里把 v 取负补回来；CVD 以前没补，贴图只有 `.tga`（没有同名 `.dds`）的 CVD 就上下颠倒——侠义榜的书
+（`close.CVD` 封面 `a.tga`，封面节点 `scale_factor = −1`）画出来「降妖谱」三个字是倒的。现在
+`Pal3PropMaterialDef`（只有 CVD 用）解出非 `.dds` 的图后整张 flipv，截图看封面已经正了。
+POL 用到纯 `.tga` 的地方还没核对。
+
+## 8. 界面上的 3D 视图
+
+原版视图控件（构造 `FUN_00439030`，虚表 0x56ac20）自带一台正交 `gbCamera`，`FUN_0043a070(s)` 设半宽，
+`FUN_00439230` 按扩展名载 `pol` / `cvd` / 角色。相机两种放法：
+
+    dx = −(2x/800 − 1)·s        fy = (1 − 2y/600)·s
+    FUN_00439850(x, y)     正面：eye (dx, −fy, 1600) → (dx, −fy, 0)，up (0,1,0)
+    FUN_00439930(x, y, h)  俯视：eye (dx, h − fy, 1600) → (dx, −fy, 0)，up (0,1,0)
+
+`FUN_0043a0e0(deg)` 写 `+0xf8`，是模型绕竖轴转的角度。gbengine 和 radiance 都是右手系（Pal3.Unity 把 GameBox
+坐标 x 取反才进 Unity），照抄就行，不用额外镜像。
+
+移植端在 `openpal3/model_view.rs`：一个只放这一个模型的离屏场景，每帧画进渲染目标（背景清成透明），
+正交用窄视角透视近似 [近似]。物品预览（`item_preview.rs`）和 p7 菜单（`IPal3Service::draw_model_view`）共用；
+侠义榜的书和怪物走后者。

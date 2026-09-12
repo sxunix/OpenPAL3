@@ -248,7 +248,8 @@ Attack/Smelt/Ancient` 和 `GameMainUI\Equip\Cloth`（`<基名>0/1/2.tga`），�
 移植端：radiance 的界面总画在 3D 之上，不能照原版在主画面上直接画。改成一个只放这件物品的离屏场景，每帧
 `render_scene_to_target` 画进 1024×768 的渲染目标，再把黑框那一块 (256,159)-(400,340) 贴到界面上（黑框右上角
 压着「身体」页签，所以只贴到 400）。相机只有透视，用 `2·atan(s / √(600²+1600²))` 的窄视角在同一位置近似正交
-[近似]；光照用满环境光 [推断]。渲染引擎句柄挂在 `AssetManager` 上（宿主建资源管理器时塞进去）。代码在 `commands/item_preview.rs`（冶炼页共用，相机和贴的范围按页面传）。
+[近似]；光照用满环境光 [推断]。渲染引擎句柄挂在 `AssetManager` 上（宿主建资源管理器时塞进去）。代码在 `commands/item_preview.rs`（冶炼页共用，相机和贴的范围按页面传），
+离屏场景和相机本身已经挪到 `openpal3/model_view.rs`，和侠义榜的 3D 视图共用（见 `cvd_playback.md` §8）。
 
 **坑：离屏目标不能在画完的同一帧释放。** Vulkan 的 `render_scene_to_target` 当场提交，把目标自己的「画完」
 信号量放进引擎的 `pending_offscreen_waits`，本帧主画面提交时等它。界面在 `update` 里画了预览、同一帧又被关掉

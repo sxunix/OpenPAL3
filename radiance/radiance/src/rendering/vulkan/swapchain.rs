@@ -861,7 +861,9 @@ impl SwapChain {
         let clear_values = [
             vk::ClearValue {
                 color: vk::ClearColorValue {
-                    float32: [0f32, 0f32, 0f32, 1f32],
+                    // Offscreen targets clear to transparent so a UI can lay them over
+                    // other art (PAL3 3D views: shop preview, compendium book).
+                    float32: [0f32, 0f32, 0f32, 0f32],
                 },
             },
             vk::ClearValue {

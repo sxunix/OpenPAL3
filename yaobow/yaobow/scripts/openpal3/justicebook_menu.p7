@@ -84,10 +84,22 @@ pub let TO_MAGIC: int = -6;
 pub let TO_SWORD: int = -7;
 pub let TO_ARRAY: int = -8;
 
-// Packed state: category * 1000 + page index within it.
+// Packed state: turn * 10000 + category * 1000 + page index within it.
+// `turn` is which way the last page turn went (0 none yet, 1 forward /
+// Pgdw, 2 back / Pgup): it picks the book's CVD (`close` / `pgdw` /
+// `pgup`, `FUN_00480600` keeps the loaded one in `this+0x27bc4`).
 pub fn pack(category: int, page: int) -> int { return category * 1000 + page; }
-pub fn category_of(state: int) -> int { return state / 1000; }
-pub fn page_of(state: int) -> int { return state - category_of(state) * 1000; }
+pub fn turn_of(state: int) -> int { return state / 10000; }
+fn place_of(state: int) -> int { return state - turn_of(state) * 10000; }
+pub fn category_of(state: int) -> int { return place_of(state) / 1000; }
+pub fn page_of(state: int) -> int { return place_of(state) - category_of(state) * 1000; }
+
+// --- 3D (the original's two 3D view controls, notes §1) -----------------
+let BOOK_CLOSE: string = "ui/GameMainUI/JusticeBook/CVD/close.CVD";
+let BOOK_PGUP: string = "ui/GameMainUI/JusticeBook/CVD/pgup.CVD";
+let BOOK_PGDW: string = "ui/GameMainUI/JusticeBook/CVD/pgdw.CVD";
+let VIEW_BOOK: int = 1;
+let VIEW_MONSTER: int = 2;
 
 pub fn paint_justicebook_menu(
     ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
@@ -112,6 +124,26 @@ pub fn paint_justicebook_menu(
     let mut category = category_of(state);
     if category < 0 || category > 5 { category = 0; }
     let mut page = page_of(state);
+
+    // ---- 3D: the book, then the monster on it --------------------------
+    // Book: `FUN_0043a070(126)` + `FUN_00439850(566, 298)`. Held on its
+    // closed frame (`SetTimeScale(0)`) until the first page turn; a turn
+    // loads `pgdw`/`pgup` and plays it once at 2.0 (`SetAnimLoop(1)`,
+    // `SetTimeScale(2.0)`), restarting on every turn.
+    let turn = turn_of(state);
+    let book = if turn == 1 { BOOK_PGDW } else if turn == 2 { BOOK_PGUP } else { BOOK_CLOSE };
+    let book_mode = if turn == 0 { 0 } else { 1 };
+    let _book_done = pal3.draw_model_view(ui, VIEW_BOOK, book, 126.0, 566.0, 298.0, 0.0,
+        true, book_mode, 2.0, place_of(state), ox, oy, s);
+    // Monster: `FUN_0043a070(220)` + `FUN_00439850(228, 368)`, turned 25°
+    // (`FUN_0043a0e0`), playing its idle (action 0x32).
+    if recorded_in_category(pal3, TAB_TYPE[category]) > 0 {
+        let shown = nth_recorded(pal3, TAB_TYPE[category], page);
+        if shown >= 0 {
+            let _m = pal3.draw_model_view(ui, VIEW_MONSTER, "actor:" + chrome.int_str(shown),
+                220.0, 228.0, 368.0, 25.0, true, 2, 1.0, shown, ox, oy, s);
+        }
+    }
 
     // Shared header only — this page has no dragon frame of its own.
     chrome.sprite(ui, atlas, chrome.SPR_TIMEMONEY, ox + chrome.TM_X * s, oy + chrome.TM_Y * s, s);
@@ -225,7 +257,13 @@ pub fn paint_justicebook_menu(
     if hit == chrome.PAGE_ARRAY { return TO_ARRAY; }
     if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
 
-    return pack(category, page);
+    // Remember which way this frame turned the page (if it did).
+    let old_place = place_of(state);
+    let new_place = pack(category, page);
+    let mut new_turn = turn;
+    if new_place > old_place { new_turn = 1; }
+    if new_place < old_place { new_turn = 2; }
+    return new_turn * 10000 + new_place;
 }
 
 // How many recorded monsters have this `CombatActorType`.
