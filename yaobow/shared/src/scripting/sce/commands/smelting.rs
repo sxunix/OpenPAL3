@@ -35,7 +35,8 @@ use std::rc::Rc;
 use super::appraise::{overlay, virtual_mouse};
 use super::dealer::{Tex, bar, blit, button, label, paragraph};
 use super::dealer_layout::{
-    self as lay, INK, flag_bottom_rect, flag_mid_rect, flag_top_rect, inside, menu_button_rect,
+    self as lay, INK, ScrollPart, Scrollbar, flag_bottom_rect, flag_mid_rect, flag_top_rect,
+    inside, menu_button_rect,
 };
 use super::encamp::draw_sprite;
 use crate::openpal3::assis_lang;
@@ -154,7 +155,19 @@ enum Hit {
     Exit,
     Talk,
     ResultYes,
+    Scroll(ScrollPart),
 }
+
+/// 列表右边的滚动条（`FUN_00479890` 0x479fc1 起：列表 `FUN_0043e3b0(基名, rect, 38, 27, 0)`，
+/// 整条 `FUN_00441380` = (x2 − 38, y1 + 1, x2, y2 − 7)，上下钮 `FUN_00442170`，滑块
+/// `FUN_00442230(27, 28)`）。和买卖页是同一个控件，见 `dealer_layout.md` §4。
+const SCROLL: Scrollbar = Scrollbar {
+    rect: (660, 69, 698, 361),
+    up: (667, 83, 689, 109),
+    down: (667, 326, 689, 352),
+    thumb_w: 27,
+    thumb_h: 28,
+};
 
 /// 冶炼页的预览相机（`FUN_00479890`：`0x47a249` / `0x47a25f`）。
 const PREVIEW_CAMERA: PreviewCamera = PreviewCamera {
@@ -327,6 +340,8 @@ struct Skin {
     arrow: [Tex; 2],
     dlg_bg: Tex,
     spark: Tex,
+    /// `Communal\Scroll\scrollbar0..9.tga`：0/1/2 滑块、4/5/6 上钮、7/8/9 下钮。
+    scroll: [Tex; 10],
 }
 
 impl Skin {
@@ -355,6 +370,11 @@ impl Skin {
             list_frame: one("UI\\GameMainUI\\Magic\\ListFrame.tga"),
             grid: one("UI\\Assistant\\Smelting\\List_Grid.tga"),
             selected: one("UI\\assistant\\Communal\\ListBoxSelPic.tga"),
+            scroll: std::array::from_fn(|i| {
+                one(&format!(
+                    "UI\\GameMainUI\\Communal\\Scroll\\scrollbar{i}.tga"
+                ))
+            }),
             yes,
             no,
             exit,
@@ -397,6 +417,10 @@ pub struct SceCommandSmeltingMenu {
     spark_clock: f32,
     rng: ShopRng,
     last_mouse: (f32, f32),
+    /// 正在拖滑块：鼠标离滑块上边多远。
+    drag: Option<f32>,
+    /// 鼠标左键按着（滚动条按钮画按下的样子）。
+    mouse_down: bool,
     chat: bool,
     loaded: bool,
 }
@@ -432,6 +456,8 @@ impl SceCommandSmeltingMenu {
             spark_clock: 0.,
             rng: ShopRng::new(0x2a77c),
             last_mouse: (-1., -1.),
+            drag: None,
+            mouse_down: false,
             chat: false,
             loaded: false,
         }
@@ -652,6 +678,33 @@ impl SceCommandSmeltingMenu {
             ItemPreview::build(state, done.row.recipe.product, PREVIEW_CAMERA, PREVIEW_AREA);
     }
 
+    /// 列表能往下滚几行。
+    fn scroll_range(&self) -> usize {
+        self.rows.len().saturating_sub(rect::ROWS)
+    }
+
+    /// 只挪列表、不动选中行（同买卖页）。
+    fn scroll_by(&mut self, delta: isize) {
+        let range = self.scroll_range() as isize;
+        self.top = (self.top as isize + delta).clamp(0, range) as usize;
+    }
+
+    /// 点滚动条：上下钮一行、槽里一页、按住滑块开始拖。
+    fn scroll(&mut self, part: ScrollPart) {
+        let page = rect::ROWS as isize;
+        match part {
+            ScrollPart::Up => self.scroll_by(-1),
+            ScrollPart::Down => self.scroll_by(1),
+            ScrollPart::PageUp => self.scroll_by(-page),
+            ScrollPart::PageDown => self.scroll_by(page),
+            ScrollPart::Thumb => {
+                if let Some((_, ty)) = SCROLL.thumb_pos(self.top, self.scroll_range()) {
+                    self.drag = Some(self.last_mouse.1 - ty as f32);
+                }
+            }
+        }
+    }
+
     fn select(&mut self, row: usize) {
         // 列表选行那一支（`0x47baaf`）先把有模型标记清掉 [推断：按分支位置]。
         self.preview = None;
@@ -690,6 +743,9 @@ impl SceCommandSmeltingMenu {
                 if self.talk != Talk::None && inside(rect::TALK, x, y) {
                     return Some(Hit::Talk);
                 }
+                if let Some(part) = SCROLL.hit(x, y, self.top, self.scroll_range()) {
+                    return Some(Hit::Scroll(part));
+                }
                 (0..rect::ROWS)
                     .find(|&k| inside(grid_rect(k), x, y) && self.top + k < self.rows.len())
                     .map(Hit::Row)
@@ -718,6 +774,7 @@ impl SceCommandSmeltingMenu {
             Hit::Exit => self.leave(),
             Hit::Talk => self.tap_talk(),
             Hit::ResultYes => self.result = None,
+            Hit::Scroll(part) => self.scroll(part),
         }
         false
     }
@@ -875,6 +932,40 @@ impl SceCommandSmeltingMenu {
             }
         }
 
+        // 滚动条：上下钮，能滚时再画滑块（槽那张图原版不画）。
+        let press = |part: ScrollPart, dragging: bool| -> usize {
+            if dragging {
+                2
+            } else if hover == Some(Hit::Scroll(part)) {
+                if self.mouse_down { 2 } else { 1 }
+            } else {
+                0
+            }
+        };
+        blit(
+            list,
+            &sk.scroll[4 + press(ScrollPart::Up, false)],
+            SCROLL.up.0,
+            SCROLL.up.1,
+            at,
+        );
+        blit(
+            list,
+            &sk.scroll[7 + press(ScrollPart::Down, false)],
+            SCROLL.down.0,
+            SCROLL.down.1,
+            at,
+        );
+        if let Some((tx, ty)) = SCROLL.thumb_pos(self.top, self.scroll_range()) {
+            blit(
+                list,
+                &sk.scroll[press(ScrollPart::Thumb, self.drag.is_some())],
+                tx,
+                ty,
+                at,
+            );
+        }
+
         // 说明面板：选中行的产物（`FUN_0047b140`）。
         if let Some(row) = self.cursor.and_then(|c| self.rows.get(c)) {
             let (desc, stat) = row
@@ -966,6 +1057,14 @@ impl SceCommand for SceCommandSmeltingMenu {
         }
 
         let (mx, my) = virtual_mouse(ui);
+        self.mouse_down = ui.is_mouse_down(MouseButton::Left);
+        if let Some(grab) = self.drag {
+            if self.mouse_down {
+                self.top = SCROLL.pos_at(my - grab, self.scroll_range());
+            } else {
+                self.drag = None;
+            }
+        }
         let hover = self.hit(mx, my);
         if (mx, my) != self.last_mouse {
             self.last_mouse = (mx, my);
