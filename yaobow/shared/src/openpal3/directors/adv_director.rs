@@ -455,6 +455,16 @@ impl AdventureDirector {
             .add_item(id, count);
     }
 
+    /// Put characters into the party — a test aid for the shop's compare panel.
+    pub fn add_to_team(&self, actor_id: u32) {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .global_state_mut()
+            .persistent_state_mut()
+            .add_to_team(actor_id);
+    }
+
     /// Give (or take, if negative) money — a test aid for the shop UI.
     pub fn add_money(&self, amount: i32) {
         self.props

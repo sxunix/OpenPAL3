@@ -521,6 +521,18 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "team_add" => {
+            // [角色号…] —— 往队里加人（0 景天 … 4 长卿），测买装备页的对比栏用。
+            for i in 0..params.args.len() {
+                if let Some(id) = int_arg(i) {
+                    director.add_to_team(id.max(0) as u32);
+                }
+            }
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "smelting" => {
             // [过程号] —— 直接开冶炼（146）。
             let proc_id = int_arg(0).unwrap_or(0) as i32;

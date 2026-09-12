@@ -275,6 +275,123 @@ pub fn wrap(text: &str, width_px: i32) -> Vec<String> {
     lines
 }
 
+// ------------------------------------------------------------ 五人装备对比
+
+/// 买装备页左边的对比栏：队里每人一张头像框；选中一件装备时，在能穿的人旁边
+/// 亮出这件装备的大图标和武/速/防/运四个升降箭头。控件在 `FUN_0045b990` 里建，
+/// 头像由 `FUN_0045b200..680` 排、其余由 `FUN_0045e9f0` 排，比较在
+/// `FUN_004623a0`，箭头跳动在 `FUN_0046b040`。
+pub mod compare {
+    use super::Rect;
+
+    /// `FUN_0045a7b0`：`+0x66dc` = 68，`+0x66e0` = 屏高 / 4 = 150，
+    /// `+0x66e4/+0x66e8` = 65×86（`AttFrameHead*.tga` 的尺寸）。
+    pub const HEAD_X: i32 = 68;
+    pub const HEAD_STEP: i32 = 150;
+    pub const HEAD_W: i32 = 65;
+    pub const HEAD_H: i32 = 86;
+    /// 最多排四个人（`FUN_00459fa0`：已经有四个再加就不显示）。
+    pub const MAX_HEADS: usize = 4;
+
+    /// 第 k 个显示的人（按角色号从小到大数）的头像框：
+    /// y = (150 − 86) / 2 + 150k。
+    pub fn head_rect(k: usize) -> Rect {
+        let y = (HEAD_STEP - HEAD_H) / 2 + HEAD_STEP * k as i32;
+        (HEAD_X, y, HEAD_X + HEAD_W, y + HEAD_H)
+    }
+
+    /// 衣服、武器、饰品一在左边，帽子、鞋、饰品二在右边。
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum Side {
+        Left,
+        Right,
+    }
+
+    /// 大图标：左 (x − 24, y + 36)，右 (x2 + 18, y + 36)。
+    pub fn big_icon_pos(head: Rect, side: Side) -> (i32, i32) {
+        match side {
+            Side::Left => (head.0 - 24, head.1 + 36),
+            Side::Right => (head.2 + 18, head.1 + 36),
+        }
+    }
+
+    /// 头像下面一排六个小图标，x − 6 起每格 18，贴着头像底边。
+    /// 顺序：衣、帽、鞋、武器、饰品、饰品。
+    pub fn small_icon_pos(head: Rect, k: usize) -> (i32, i32) {
+        (head.0 - 6 + 18 * k as i32, head.3)
+    }
+
+    /// 箭头的四个格：0 左上、1 右上、2 左下、3 右下。左边一组 x − 30 / x − 2，
+    /// 右边一组 x2 + 4 / x2 + 32；上一行 y + 12，下一行 y2 − 38。
+    pub fn arrow_pos(head: Rect, side: Side, cell: usize) -> (i32, i32) {
+        let x0 = match side {
+            Side::Left => head.0 - 30,
+            Side::Right => head.2 + 4,
+        };
+        let x = x0 + if cell % 2 == 1 { 28 } else { 0 };
+        let y = if cell < 2 { head.1 + 12 } else { head.3 - 38 };
+        (x, y)
+    }
+
+    /// 箭头每 36 ms 往上挪 1 像素，挪满 12 再挪回来（`FUN_0046b040` 给每个
+    /// 箭头的周期写 0x24，`FUN_00478880` 的往返模式）。返回往上偏了几像素。
+    pub const BOB_PX: i32 = 12;
+    pub const BOB_TICK: f32 = 0.036;
+
+    pub fn bob(t: f32) -> i32 {
+        let step = (t.max(0.) / BOB_TICK) as i32 % (2 * BOB_PX);
+        if step <= BOB_PX {
+            step
+        } else {
+            2 * BOB_PX - step
+        }
+    }
+
+    /// 四项，也是 `W/S/F/Y_up.tga` 的顺序：武、速、防、运。
+    pub const STATS: usize = 4;
+
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct Arrow {
+        pub stat: usize,
+        pub up: bool,
+        pub cell: usize,
+    }
+
+    /// 新装备减去身上那件（没穿就当 0），按武速防运。大了亮向上箭头（上一行），
+    /// 小了亮向下箭头（下一行），相等不亮。武、速偏左格，防、运偏右格：速只在
+    /// 武没占左格时去左格，运只在防没占右格时去右格（`FUN_004623a0` 的
+    /// `+0x10474..` 四个占位标记；速和运不记占位，所以四项全涨时速和防叠在右上，
+    /// 照原样）。
+    pub fn arrows(delta: [i32; STATS]) -> Vec<Arrow> {
+        let mut out = Vec::new();
+        let (mut tl, mut tr, mut bl, mut br) = (false, false, false, false);
+        let mut put = |stat: usize, d: i32, up_cell: usize, down_cell: usize| {
+            if d > 0 {
+                out.push(Arrow {
+                    stat,
+                    up: true,
+                    cell: up_cell,
+                });
+            } else if d < 0 {
+                out.push(Arrow {
+                    stat,
+                    up: false,
+                    cell: down_cell,
+                });
+            }
+        };
+        put(0, delta[0], 0, 2);
+        tl |= delta[0] > 0;
+        bl |= delta[0] < 0;
+        put(1, delta[1], if tl { 1 } else { 0 }, if bl { 3 } else { 2 });
+        put(2, delta[2], 1, 3);
+        tr |= delta[2] > 0;
+        br |= delta[2] < 0;
+        put(3, delta[3], if tr { 0 } else { 1 }, if br { 2 } else { 3 });
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -345,5 +462,44 @@ mod tests {
     fn text_wraps_like_the_widget() {
         assert_eq!(wrap("甲乙丙", 32), ["甲乙", "丙"]);
         assert_eq!(wrap("ab$cd", 100), ["ab", "cd"]);
+    }
+
+    #[test]
+    fn heads_stack_every_150() {
+        assert_eq!(compare::head_rect(0), (68, 32, 133, 118));
+        assert_eq!(compare::head_rect(3), (68, 482, 133, 568));
+        let h = compare::head_rect(0);
+        // 数值和 layout_trace 跑 FUN_0045e9f0 得到的一致。
+        assert_eq!(compare::big_icon_pos(h, compare::Side::Left), (44, 68));
+        assert_eq!(compare::big_icon_pos(h, compare::Side::Right), (151, 68));
+        assert_eq!(compare::small_icon_pos(h, 0), (62, 118));
+        assert_eq!(compare::small_icon_pos(h, 5), (152, 118));
+        assert_eq!(compare::arrow_pos(h, compare::Side::Left, 0), (38, 44));
+        assert_eq!(compare::arrow_pos(h, compare::Side::Left, 3), (66, 80));
+        assert_eq!(compare::arrow_pos(h, compare::Side::Right, 1), (165, 44));
+        assert_eq!(compare::arrow_pos(h, compare::Side::Right, 2), (137, 80));
+    }
+
+    #[test]
+    fn arrows_pack_toward_their_side() {
+        use compare::{Arrow, arrows};
+        let a = |stat, up, cell| Arrow { stat, up, cell };
+        // 只涨速：左格空着，速去左上。
+        assert_eq!(arrows([0, 3, 0, 0]), [a(1, true, 0)]);
+        // 武涨速涨：速让到右上。
+        assert_eq!(arrows([1, 1, 0, 0]), [a(0, true, 0), a(1, true, 1)]);
+        // 只降运：右下。防也降就让到左下。
+        assert_eq!(arrows([0, 0, 0, -2]), [a(3, false, 3)]);
+        assert_eq!(arrows([0, 0, -1, -2]), [a(2, false, 3), a(3, false, 2)]);
+        // 相等不亮。
+        assert!(arrows([0; 4]).is_empty());
+    }
+
+    #[test]
+    fn arrows_bob_up_twelve_and_back() {
+        assert_eq!(compare::bob(0.), 0);
+        assert_eq!(compare::bob(0.036 * 12. + 0.001), 12);
+        assert_eq!(compare::bob(0.036 * 18. + 0.001), 6);
+        assert_eq!(compare::bob(0.036 * 24. + 0.001), 0);
     }
 }

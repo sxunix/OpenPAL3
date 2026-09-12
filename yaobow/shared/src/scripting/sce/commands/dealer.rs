@@ -17,8 +17,9 @@
 //! 操作：十字键上下选行、左右调数量，A（空格）确定，Y（Q）还价，
 //! X（E）换卖页的页签，B（Esc）回上一层。鼠标和原版一样点按钮。
 //!
-//! 还没做的：买装备页左边五个人的装备对比（每人六格、四项升降箭头，
-//! `FUN_0046b040`）、物品的 3D 预览、滚动条、按钮音效。
+//! 买装备页左边是队里每人一张头像框的对比栏（`dealer_layout::compare`）。
+//!
+//! 还没做的：物品的 3D 预览、滚动条、按钮音效。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -26,10 +27,15 @@ use std::rc::Rc;
 
 use super::appraise::{overlay, virtual_mouse};
 use super::dealer_layout::{
-    self as lay, BUY_LIST, INK, ListGeom, MenuButton, Rect, SELL_LIST, inside, page,
+    self as lay, BUY_LIST, INK, ListGeom, MenuButton, Rect, SELL_LIST, compare as cmp, inside, page,
 };
 use super::encamp::draw_sprite;
 use crate::openpal3::assis_lang;
+use crate::openpal3::states::attributes::{SLOT_ATTACK, SLOT_DEFENSE, SLOT_LUCK, SLOT_SPEED};
+use crate::openpal3::states::game_db::PLAYER_ACTOR_IDS;
+use crate::openpal3::states::persistent_state::{
+    SLOT_ADORN1, SLOT_ADORN2, SLOT_CLOTH, SLOT_HAT, SLOT_SHOES, SLOT_WEAPON,
+};
 use crate::openpal3::states::shop::{
     DealScript, Haggle, ShopRng, TIERS, buyable, haggle, price_to_pay, sell_price, sellable,
 };
@@ -74,6 +80,53 @@ struct Good {
     price: i32,
     /// 背包里已经有几个——每种最多买到 99 个（`FUN_0045b7a0`）。
     owned: u32,
+    /// 武速防运（对比栏用），见 [`stats_of`]。
+    stats: [i32; cmp::STATS],
+    /// 五个人谁能穿（gdb `+0x266`）。
+    applicable: [bool; 5],
+}
+
+/// 物品的武、速、防、运：gdb `attribute_impact_value` 的 3、5、4、6 格
+/// （`+0x28a/+0x28e/+0x28c/+0x290`，`FUN_004623a0` 按这个顺序比）。
+fn stats_of(row: &fileformats::pal3::gdb::GameItemInfo) -> [i32; cmp::STATS] {
+    [SLOT_ATTACK, SLOT_SPEED, SLOT_DEFENSE, SLOT_LUCK].map(|k| row.attribute_impact_value[k] as i32)
+}
+
+/// 一类装备在对比栏里占哪几组：（身上哪一格、左右、大图标号）。大图标号是
+/// [`Skin::big`] 的下标（衣、武器、饰品、帽、鞋、饰品——`FUN_0045b990` 建控件的
+/// 顺序）。饰品有两格，两边各比一次。
+fn compare_groups(item_type: u8) -> &'static [(usize, cmp::Side, usize)] {
+    use cmp::Side::{Left, Right};
+    match item_type {
+        7 => &[(SLOT_CLOTH, Left, 0)],
+        8 => &[(SLOT_HAT, Right, 3)],
+        9 => &[(SLOT_SHOES, Right, 4)],
+        10 => &[(SLOT_ADORN1, Left, 2), (SLOT_ADORN2, Right, 5)],
+        11 => &[(SLOT_WEAPON, Left, 1)],
+        _ => &[],
+    }
+}
+
+/// 头像下那排小图标对应身上哪一格（衣、帽、鞋、武器、饰品、饰品）。
+const SMALL_SLOTS: [usize; 6] = [
+    SLOT_CLOTH,
+    SLOT_HAT,
+    SLOT_SHOES,
+    SLOT_WEAPON,
+    SLOT_ADORN1,
+    SLOT_ADORN2,
+];
+
+/// 对比栏里一个人。
+#[derive(Debug, Clone)]
+struct Card {
+    role: usize,
+    head: Rect,
+    /// 小图标亮不亮：那一格穿着东西 [推断]——原版在买下并穿上时点亮
+    /// （`FUN_00469eb0`），进页时怎么初始化没有追。
+    small: [bool; 6],
+    /// 这件装备能穿时：（左右、大图标号、箭头）。
+    groups: Vec<(cmp::Side, usize, Vec<cmp::Arrow>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -179,6 +232,11 @@ struct Skin {
     unsub: Tex,
     tiers: [[Tex; 3]; TIERS],
     tabs: [[Tex; 3]; 6],
+    heads: [Tex; 5],
+    big: [Tex; 6],
+    small: [Tex; 6],
+    up: [Tex; cmp::STATS],
+    down: [Tex; cmp::STATS],
 }
 
 impl Skin {
@@ -206,7 +264,21 @@ impl Skin {
         let tiers = std::array::from_fn(|k| three(&format!("UI\\Assistant\\Equip\\bDK{}", k + 5)));
         let tabs = std::array::from_fn(|k| three(SELL_TAB_TEX[k]));
         drop(three);
+        const EQ: &str = "UI\\Assistant\\Equip\\";
+        let heads =
+            std::array::from_fn(|i| one(&format!("UI\\GameMainUI\\Communal\\AttFrameHead{i}.tga")));
+        let big = ["Cloth", "Weapon", "Adorn", "Hat", "Shoes", "Adorn"]
+            .map(|n| one(&format!("{EQ}{n}.tga")));
+        let small = ["Cloth", "Hat", "Shoes", "Weapon", "Adorn", "Adorn"]
+            .map(|n| one(&format!("{EQ}{n}_small.tga")));
+        let up = ["W", "S", "F", "Y"].map(|n| one(&format!("{EQ}{n}_up.tga")));
+        let down = ["W", "S", "F", "Y"].map(|n| one(&format!("{EQ}{n}_down.tga")));
         Self {
+            heads,
+            big,
+            small,
+            up,
+            down,
             flag_t: one("UI\\Assistant\\Deal\\FlagT.tga"),
             flag_m: one("UI\\Assistant\\Deal\\FlagM.tga"),
             flag_b: one("UI\\Assistant\\Deal\\FlagB.tga"),
@@ -271,6 +343,10 @@ pub struct SceCommandDealerMenu {
     last_mouse: (f32, f32),
     /// 点了「聊天」：关店后跑商人的过程（`FUN_00432170(M_ID)`）。
     chat_proc: Option<u16>,
+    /// 买装备页左边的对比栏，每帧从队伍和身上的装备重算。
+    cards: Vec<Card>,
+    /// 箭头跳动用的钟，换选中行时归零。
+    clock: f32,
 }
 
 impl std::fmt::Debug for SceCommandDealerMenu {
@@ -310,6 +386,8 @@ impl SceCommandDealerMenu {
             skin: Skin::default(),
             last_mouse: (-1., -1.),
             chat_proc: None,
+            cards: vec![],
+            clock: 0.,
         }
     }
 
@@ -363,6 +441,8 @@ impl SceCommandDealerMenu {
             item_type: row.item_type,
             price: row.price,
             owned,
+            stats: stats_of(row),
+            applicable: row.applicable_actors.map(|a| a != 0),
         })
     }
 
@@ -494,6 +574,9 @@ impl SceCommandDealerMenu {
         let n = self.rows().len();
         if n == 0 {
             return;
+        }
+        if self.cursor != row.min(n - 1) {
+            self.clock = 0.;
         }
         self.cursor = row.min(n - 1);
         let vis = self.geom().visible_rows();
@@ -1047,6 +1130,9 @@ impl SceCommandDealerMenu {
             Page::Prop => blit(list, &sk.prop_word, page::WORD.0, page::WORD.1, at),
             Page::Sell => {}
         }
+        if page == Page::Equip {
+            self.draw_cards(list, at);
+        }
 
         // 卖页的页签条。
         if sell {
@@ -1191,6 +1277,68 @@ impl SceCommandDealerMenu {
     }
 }
 
+impl SceCommandDealerMenu {
+    /// 对比栏：队里的人按角色号排，最多四个；选中的是这件装备、这个人能穿，
+    /// 就拿它和身上那一格比（`FUN_004623a0`）。
+    fn build_cards(&mut self, state: &SceState) {
+        self.cards.clear();
+        if self.page() != Some(Page::Equip) {
+            return;
+        }
+        let Some(db) = state.global_state().game_db().cloned() else {
+            return;
+        };
+        let good = self.current().cloned();
+        let p = state.global_state().persistent_state();
+        for (role, &id) in PLAYER_ACTOR_IDS.iter().enumerate() {
+            if !p.is_in_team(id) || self.cards.len() == cmp::MAX_HEADS {
+                continue;
+            }
+            let mut groups = vec![];
+            if let Some(g) = good.as_ref().filter(|g| g.applicable[role]) {
+                for &(slot, side, big) in compare_groups(g.item_type) {
+                    let worn = p
+                        .equipped(id, slot)
+                        .and_then(|e| db.item(e))
+                        .map(stats_of)
+                        .unwrap_or_default();
+                    let delta = std::array::from_fn(|k| g.stats[k] - worn[k]);
+                    groups.push((side, big, cmp::arrows(delta)));
+                }
+            }
+            self.cards.push(Card {
+                role,
+                head: cmp::head_rect(self.cards.len()),
+                small: SMALL_SLOTS.map(|s| p.equipped(id, s).is_some()),
+                groups,
+            });
+        }
+    }
+
+    fn draw_cards(&self, list: &imgui::DrawListMut<'_>, at: &dyn Fn(i32, i32) -> [f32; 2]) {
+        let sk = &self.skin;
+        let lift = cmp::bob(self.clock);
+        for c in &self.cards {
+            blit(list, &sk.heads[c.role], c.head.0, c.head.1, at);
+            for (k, lit) in c.small.iter().enumerate() {
+                if *lit {
+                    let (x, y) = cmp::small_icon_pos(c.head, k);
+                    blit(list, &sk.small[k], x, y, at);
+                }
+            }
+            for (side, big, arrows) in &c.groups {
+                let (x, y) = cmp::big_icon_pos(c.head, *side);
+                blit(list, &sk.big[*big], x, y, at);
+                for a in arrows {
+                    let (x, y) = cmp::arrow_pos(c.head, *side, a.cell);
+                    let tex = if a.up { &sk.up } else { &sk.down };
+                    blit(list, &tex[a.stat], x, y - lift, at);
+                }
+            }
+        }
+    }
+}
+
 impl SceCommand for SceCommandDealerMenu {
     fn initialize(&mut self, _scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
         self.skin = Skin::load(state);
@@ -1201,8 +1349,9 @@ impl SceCommand for SceCommandDealerMenu {
         _scene_manager: ComRc<ISceneManager>,
         ui: &Ui,
         state: &mut SceState,
-        _delta_sec: f32,
+        delta_sec: f32,
     ) -> bool {
+        self.clock += delta_sec;
         if !self.loaded {
             self.load(state);
             if self.shop.merchant_name.is_empty() && self.buttons.is_empty() {
@@ -1276,6 +1425,7 @@ impl SceCommandDealerMenu {
             }
         }
 
+        self.build_cards(state);
         let money = state.global_state().persistent_state().money();
         self.draw(ui, money, hover);
 
