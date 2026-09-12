@@ -18,10 +18,15 @@
 //! 手柄：十字键上下选行，A 在有话时点那段话、否则按「是」，B 在问「确定吗」时
 //! 按「否」、否则按离开。开炉期间说明面板的黑框里冒火花（[`spark`]）。
 //!
-//! 还没做：物品 3D 预览、按钮音效、滚动条。
+//! 出货后黑框里摆产物的 3D 模型（[`ItemPreview`]，冶炼页那台相机是固定的），换一行
+//! 就收掉。
+//!
+//! 还没做：按钮音效、滚动条。
 
+use super::item_preview::{ItemPreview, PreviewCamera};
 use crate::openpal3::states::shop::ShopRng;
 use std::path::PathBuf;
+use std::rc::Rc;
 
 use super::appraise::{overlay, virtual_mouse};
 use super::dealer::{Tex, bar, blit, button, label, paragraph};
@@ -146,6 +151,17 @@ enum Hit {
     Talk,
     ResultYes,
 }
+
+/// 冶炼页的预览相机（`FUN_00479890`：`0x47a249` / `0x47a25f`）。
+const PREVIEW_CAMERA: PreviewCamera = PreviewCamera {
+    size: 210.,
+    x: 198,
+    y: 264,
+};
+
+/// 预览贴到的那一块：说明面板（`rect::INFO`）的黑框，和买卖页一样是面板里
+/// (38,17)-(182,198)（右上角压着页签，只贴到 182）。
+const PREVIEW_AREA: (i32, i32, i32, i32) = (80 + 38, 132 + 17, 80 + 182, 132 + 198);
 
 /// 正在炼的那一件。
 #[derive(Debug, Clone)]
@@ -368,6 +384,8 @@ pub struct SceCommandSmeltingMenu {
     skin: Skin,
     anim: f32,
     sparks: Vec<spark::Spark>,
+    /// 出货后黑框里的产物模型（原版 `+0x2a650`，有模型标记 `+0x2a654`）。
+    preview: Option<Rc<ItemPreview>>,
     /// 攒不满一帧的时间。
     spark_clock: f32,
     rng: ShopRng,
@@ -402,6 +420,7 @@ impl SceCommandSmeltingMenu {
             skin: Skin::default(),
             anim: 0.,
             sparks: vec![],
+            preview: None,
             spark_clock: 0.,
             rng: ShopRng::new(0x2a77c),
             last_mouse: (-1., -1.),
@@ -453,6 +472,7 @@ impl SceCommandSmeltingMenu {
         self.rebuild(state);
         self.screen = Screen::Page;
         self.cursor = None;
+        self.preview = None;
         self.top = 0;
         self.talk = if self.rows.is_empty() {
             Talk::Nothing
@@ -612,9 +632,15 @@ impl SceCommandSmeltingMenu {
         self.talk = Talk::Done;
         self.cursor = None;
         self.rebuild(state);
+        // 出货那一支（`0x47b44a` 起）载产物模型：相机是页面初始化时定死的
+        // `FUN_0043a070(210)` + `FUN_00439930(198, 264, 600)`。
+        self.preview =
+            ItemPreview::build(state, done.row.recipe.product, PREVIEW_CAMERA, PREVIEW_AREA);
     }
 
     fn select(&mut self, row: usize) {
+        // 列表选行那一支（`0x47baaf`）先把有模型标记清掉 [推断：按分支位置]。
+        self.preview = None;
         if self.rows.is_empty() || self.firing.is_some() || self.talk == Talk::Sure {
             return;
         }
@@ -783,6 +809,9 @@ impl SceCommandSmeltingMenu {
         bar(list, &sk.frame_bar, rect::FRAME_BAR, 30, at);
         blit(list, &sk.flag, rect::FLAG.0, rect::FLAG.1, at);
         blit(list, &sk.info, rect::INFO.0, rect::INFO.1, at);
+        if let Some(p) = &self.preview {
+            p.draw(list, at);
+        }
         blit(list, &sk.word, rect::WORD.0, rect::WORD.1, at);
         blit(
             list,
@@ -911,6 +940,9 @@ impl SceCommand for SceCommandSmeltingMenu {
         self.anim += delta_sec;
         self.step_firing(state, delta_sec);
         self.step_sparks(delta_sec);
+        if let Some(p) = &self.preview {
+            p.render(delta_sec);
+        }
 
         let (mx, my) = virtual_mouse(ui);
         let hover = self.hit(mx, my);

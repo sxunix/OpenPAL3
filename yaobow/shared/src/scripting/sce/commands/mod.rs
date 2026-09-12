@@ -38,6 +38,7 @@ mod idle;
 mod if_in_team;
 mod interact;
 mod inventory;
+mod item_preview;
 mod killflyer;
 mod load_scene;
 mod main_menu;

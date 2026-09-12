@@ -25,7 +25,6 @@
 //!
 //! 还没做的：按钮音效。
 
-use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -36,6 +35,7 @@ use super::dealer_layout::{
     inside, page,
 };
 use super::encamp::draw_sprite;
+use super::item_preview::ItemPreview;
 use crate::openpal3::assis_lang;
 use crate::openpal3::states::attributes::{SLOT_ATTACK, SLOT_DEFENSE, SLOT_LUCK, SLOT_SPEED};
 use crate::openpal3::states::game_db::PLAYER_ACTOR_IDS;
@@ -49,13 +49,10 @@ use crate::openpal3::ui_tex::UiTextures;
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use imgui::{MouseButton, Ui};
-use radiance::comdef::IScene;
 use radiance::comdef::ISceneManager;
 use radiance::imgui::{GameFontSize, game_font};
 use radiance::input::Key;
-use radiance::math::Vec3;
-use radiance::rendering::{RenderTarget, RenderingEngine, Sprite};
-use radiance::scene::{CoreScene, ISceneExt, SceneLighting};
+use radiance::rendering::Sprite;
 
 const LANG_PATH: &str = "/basedata/basedata/AssisLang.lang";
 const LANG_SECTION: &str = "sec1";
@@ -86,6 +83,8 @@ struct Good {
     name: String,
     description: String,
     item_type: u8,
+    /// 预览相机按它挑（`weapon_type` 5 另有一档）。
+    weapon_type: u8,
     price: i32,
     /// 背包里已经有几个——每种最多买到 99 个（`FUN_0045b7a0`）。
     owned: u32,
@@ -136,95 +135,6 @@ struct Card {
     small: [bool; 6],
     /// 这件装备能穿时：（左右、大图标号、箭头）。
     groups: Vec<(cmp::Side, usize, Vec<cmp::Arrow>)>,
-}
-
-/// 物品 3D 预览：一个只放这件物品的离屏小场景，每帧画进渲染目标，再把黑框
-/// 那一块贴到界面上。原版是在主画面上直接用另一台正交相机画（见
-/// `dealer_layout::preview`）；移植端的界面总在 3D 之上，只能绕这一道。
-struct Preview {
-    scene: ComRc<IScene>,
-    target: RefCell<Box<dyn RenderTarget>>,
-    engine: Rc<RefCell<dyn RenderingEngine>>,
-}
-
-/// 渲染目标的大小：4:3，和 800×600 的界面同比例，只取黑框那一块。
-const PREVIEW_TARGET: (u32, u32) = (1024, 768);
-
-impl Preview {
-    fn build(state: &SceState, id: u32) -> Option<Rc<Self>> {
-        use mini_fs::StoreExt;
-        let am = state.asset_mgr().clone();
-        let engine = am.rendering_engine()?;
-        let db = state.global_state().game_db().cloned()?;
-        let row = db.item(id)?;
-        let model = row.model_name.as_str().unwrap_or_default();
-        // 原版拿模型名和一个全局串比，相等就写 "NONE"、什么也不载 [推断：空名]。
-        if model.is_empty() || model.eq_ignore_ascii_case("NONE") {
-            return None;
-        }
-        let icon = row.icon_name.as_str().unwrap_or_default();
-        let path = PathBuf::from(format!("/basedata/basedata/item/{model}/{model}.pol"));
-        if am.vfs().open(&path).is_err() {
-            return None;
-        }
-        let entity = crate::openpal3::loaders::pol::create_entity_from_pol_model_with_texture(
-            &am.component_factory(),
-            am.vfs(),
-            &path,
-            format!("DEALER_PREVIEW_{id}"),
-            true,
-            Some(&format!("{model}{icon}.tga")),
-        );
-        let scene = CoreScene::create();
-        // 原版给这个视图挂了一盏方向光（绕 X 45°、绕 Y 90°）；这里和鉴宝一样
-        // 用满环境光 [推断]。
-        scene.set_lighting(SceneLighting::new([1., 1., 1.], vec![]));
-        entity.load();
-        scene.add_entity(entity);
-
-        let (size, y) = lay::preview::camera(id, row.item_type, row.weapon_type);
-        let (eye, at) = lay::preview::eye_target(size, lay::preview::X, y);
-        {
-            let mut camera = scene.camera_mut();
-            camera.set_fov43(lay::preview::fov43(size));
-            camera.set_aspect(4. / 3.);
-            camera
-                .transform_mut()
-                .set_position(&Vec3::new(eye[0], eye[1], eye[2]))
-                .look_at(&Vec3::new(at[0], at[1], at[2]));
-        }
-        let target = am
-            .component_factory()
-            .create_render_target(PREVIEW_TARGET.0, PREVIEW_TARGET.1);
-        Some(Rc::new(Self {
-            scene,
-            target: RefCell::new(target),
-            engine,
-        }))
-    }
-
-    fn render(&self, delta_sec: f32) {
-        self.scene.update(delta_sec);
-        self.engine
-            .borrow_mut()
-            .render_scene_to_target(self.scene.clone(), self.target.borrow_mut().as_mut());
-    }
-
-    /// 把渲染目标里黑框那一块贴到黑框上。GL 的离屏纹理是自下而上的，Switch
-    /// 上要把 v 翻过来 [推断：还没在机器上看过]。
-    fn draw(&self, list: &imgui::DrawListMut<'_>, at: &dyn Fn(i32, i32) -> [f32; 2]) {
-        let (x0, y0, x1, y1) = lay::preview::BOX;
-        let id = imgui::TextureId::new(self.target.borrow().imgui_texture_id() as usize);
-        let (u0, u1) = (x0 as f32 / 800., x1 as f32 / 800.);
-        let (mut v0, mut v1) = (y0 as f32 / 600., y1 as f32 / 600.);
-        if cfg!(switchgl) {
-            (v0, v1) = (1. - v0, 1. - v1);
-        }
-        list.add_image(id, at(x0, y0), at(x1, y1))
-            .uv_min([u0, v0])
-            .uv_max([u1, v1])
-            .build();
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -455,7 +365,7 @@ pub struct SceCommandDealerMenu {
     /// 箭头跳动用的钟，换选中行时归零。
     clock: f32,
     /// 预览的是哪件物品、建出来没有（模型缺了就是 `None`，不每帧重试）。
-    preview: Option<(u32, Option<Rc<Preview>>)>,
+    preview: Option<(u32, Option<Rc<ItemPreview>>)>,
     frame_dt: f32,
     /// 正在拖滑块：鼠标离滑块上边多远。
     drag: Option<f32>,
@@ -557,6 +467,7 @@ impl SceCommandDealerMenu {
                 .map(|d| d.to_string())
                 .unwrap_or_default(),
             item_type: row.item_type,
+            weapon_type: row.weapon_type,
             price: row.price,
             owned,
             stats: stats_of(row),
@@ -1500,7 +1411,13 @@ impl SceCommandDealerMenu {
     fn update_preview(&mut self, state: &SceState) {
         let want = self.page().and_then(|_| self.current()).map(|g| g.id);
         if self.preview.as_ref().map(|(id, _)| *id) != want {
-            self.preview = want.map(|id| (id, Preview::build(state, id)));
+            self.preview = want.map(|id| {
+                let camera = self
+                    .current()
+                    .map(|g| lay::preview::camera(g.id, g.item_type, g.weapon_type))
+                    .unwrap_or(lay::preview::camera(id, 0, 0));
+                (id, ItemPreview::build(state, id, camera, lay::preview::BOX))
+            });
         }
         if let Some((_, Some(p))) = &self.preview {
             p.render(self.frame_dt);
