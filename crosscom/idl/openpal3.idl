@@ -287,6 +287,11 @@ interface IPal3Service: IUnknown {
 
     // ---- 阵法 (五灵 formation) ----
 
+    // 阵法页的 3D 五灵盘（wl.pol、在队角色、空站位上的指针），画满 800x600 画布；
+    // 鼠标按住在盘上上下拖改俯角。
+    void draw_lineup_disc(IUiHost ui, float mx, float my, bool down, float ox, float oy,
+        float scale);
+
     // The formation position (0..=4) this character stands in, or -1.
     int lineup_position(int actor_id);
 

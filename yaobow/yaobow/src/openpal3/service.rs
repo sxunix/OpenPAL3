@@ -193,6 +193,7 @@ pub struct Pal3Service {
     >,
     /// `draw_model_view` 的视图，按脚本给的 key 存。
     model_views: RefCell<HashMap<i32, ModelViewSlot>>,
+    lineup_disc: RefCell<Option<LineupDiscSlot>>,
     /// Script-side factory (`IPal3ScriptFactory`) QI'd from the
     /// reverse-wrapped app root. Used by `create_director` to mint
     /// the scripted start menu. Cleared on app unload to break the
@@ -274,6 +275,7 @@ impl Pal3Service {
             texture_cache: RefCell::new(None),
             texture_sinks: RefCell::new(None),
             model_views: RefCell::new(HashMap::new()),
+            lineup_disc: RefCell::new(None),
             script_factory: RefCell::new(None),
             last_asset_path: RefCell::new(None),
             last_game: Cell::new(GameType::PAL3),
@@ -1568,6 +1570,92 @@ impl IPal3ServiceImpl for Pal3Service {
         slot.view.finished()
     }
 
+    fn draw_lineup_disc(
+        &self,
+        ui: ComRc<IUiHost>,
+        mx: f32,
+        my: f32,
+        down: bool,
+        ox: f32,
+        oy: f32,
+        scale: f32,
+    ) -> () {
+        use shared::openpal3::lineup_disc::LineupDisc;
+        use shared::openpal3::model_view::v_range;
+        let Some(asset_path) = self.last_asset_path.borrow().clone() else {
+            return;
+        };
+        let Some(sinks) = self.texture_sinks.borrow().clone() else {
+            return;
+        };
+        let team: Vec<u32> =
+            self.with_persistent_state(vec![], |s| s.team().iter().map(|id| *id as u32).collect());
+        let lineup: Vec<(u32, Option<u8>)> = self.with_persistent_state(vec![], |s| {
+            team.iter()
+                .map(|id| (*id, s.lineup_position(*id)))
+                .collect()
+        });
+
+        let mut slot = self.lineup_disc.borrow_mut();
+        if slot.as_ref().is_none_or(|d| d.disc.team() != team) {
+            let pitch = slot.as_ref().map(|d| d.disc.pitch());
+            if let Some(old) = slot.take() {
+                sinks.1.borrow_mut().push(old.com_id);
+            }
+            let am = self.asset_manager_for(&asset_path);
+            let Some(mut disc) = LineupDisc::build(&am, &team) else {
+                return;
+            };
+            if let Some(p) = pitch {
+                disc.set_pitch(p);
+            }
+            *slot = Some(LineupDiscSlot {
+                disc,
+                com_id: next_model_view_com_id(),
+                last: std::time::Instant::now(),
+                last_y: None,
+            });
+        }
+        let Some(slot) = slot.as_mut() else {
+            return;
+        };
+
+        // 按住在盘上时，鼠标纵向位移（按 800×600 画布算）加到俯角上（`0x485230`）。
+        let (x, y) = ((mx - ox) / scale, (my - oy) / scale);
+        if down && slot.disc.hits_disc(x, y) {
+            if let Some(last) = slot.last_y {
+                let pitch = slot.disc.pitch() + (y - last);
+                slot.disc.set_pitch(pitch);
+            }
+        }
+        slot.last_y = down.then_some(y);
+
+        slot.disc
+            .place(|id| lineup.iter().find(|(i, _)| *i == id).and_then(|(_, p)| *p));
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(slot.last).as_secs_f32().min(0.1);
+        slot.last = now;
+        slot.disc.render(dt);
+        if let Some(tex) = slot.disc.texture_id() {
+            sinks
+                .0
+                .borrow_mut()
+                .push((slot.com_id, imgui::TextureId::new(tex as usize)));
+            let (v0, v1) = v_range(0., 1.);
+            ui.image_rect(
+                slot.com_id as i32,
+                ox,
+                oy,
+                ox + 800. * scale,
+                oy + 600. * scale,
+                0.,
+                v0,
+                1.,
+                v1,
+            );
+        }
+    }
+
     fn draw_combat_actor_name(
         &self,
         ui: ComRc<IUiHost>,
@@ -1861,6 +1949,15 @@ struct ModelViewSlot {
     com_id: i64,
     serial: i32,
     last: std::time::Instant,
+}
+
+/// 阵法页的五灵盘。
+struct LineupDiscSlot {
+    disc: shared::openpal3::lineup_disc::LineupDisc,
+    com_id: i64,
+    last: std::time::Instant,
+    /// 上一帧按着时鼠标的纵坐标（画布坐标）；松开就是 `None`。
+    last_y: Option<f32>,
 }
 
 fn next_model_view_com_id() -> i64 {

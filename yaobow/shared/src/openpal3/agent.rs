@@ -533,6 +533,20 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "lineup_set" => {
+            // [角色号, 站位, 角色号, 站位…] —— 排阵法站位（0..4），测五灵盘用。
+            let mut i = 0;
+            while i + 1 < params.args.len() {
+                if let (Some(id), Some(pos)) = (int_arg(i), int_arg(i + 1)) {
+                    director.set_lineup_position(id.max(0) as u32, pos.max(0) as u8);
+                }
+                i += 2;
+            }
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "smelting" => {
             // [过程号] —— 直接开冶炼（146）。
             let proc_id = int_arg(0).unwrap_or(0) as i32;

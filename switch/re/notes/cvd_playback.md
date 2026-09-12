@@ -97,7 +97,9 @@ gbengine 不用 D3DX 读图，TGA 由自己的 `gbImage2D::LoadImageFile`（0x10
 里把 v 取负补回来；CVD 以前没补，贴图只有 `.tga`（没有同名 `.dds`）的 CVD 就上下颠倒——侠义榜的书
 （`close.CVD` 封面 `a.tga`，封面节点 `scale_factor = −1`）画出来「降妖谱」三个字是倒的。现在
 `Pal3PropMaterialDef`（只有 CVD 用）解出非 `.dds` 的图后整张 flipv，截图看封面已经正了。
-POL 用到纯 `.tga` 的地方还没核对。
+单贴图 POL 的 `Pal3GeomMaterialDef` 也改成一样（阵法页的 `wl.pol` 由此对上，见 `lineup_page_layout.md` §3.3）。
+**没改**：带光照图的 POL（`LightMapMaterialDef`，和别的游戏共用），场景里只有 `.tga` 的漫反射贴图
+是不是也倒着，还没核。
 
 ## 8. 界面上的 3D 视图
 

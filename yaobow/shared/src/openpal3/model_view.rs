@@ -97,6 +97,16 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
 }
 
+/// 把场景和渲染目标挂到退役表上，等下一次建视图时再释放（原因见上）。
+pub(crate) fn retire(scene: ComRc<IScene>, target: Box<dyn RenderTarget>) {
+    RETIRED.with(|r| r.borrow_mut().push((scene, target)));
+}
+
+/// 下一次建视图时先把退役表清掉——那时至少隔了一帧主画面。
+pub(crate) fn clear_retired() {
+    RETIRED.with(|r| r.borrow_mut().clear());
+}
+
 pub struct ModelView {
     scene: ComRc<IScene>,
     entity: ComRc<IEntity>,

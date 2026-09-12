@@ -13,9 +13,11 @@
 //   * one panel per party member down the right side, each carrying six
 //     阵位 buttons in 2 columns x 3 rows.
 //
-// The 五灵 formation itself is 3D in the original (`wl.pol` plus five
-// `pointer.cvd` markers at hard-coded world positions), so the ring in
-// the middle of the screen is not reproduced here.
+// The 五灵 formation itself is 3D in the original (`wl.pol`, the party
+// standing on it, `pointer.cvd` markers on the empty positions); the
+// service renders it (`draw_lineup_disc`) and this page draws on top.
+// Dragging characters onto the disc is not reproduced — the 阵位 buttons
+// are the way to move them.
 //
 // Which 阵位 index corresponds to which 五灵 is not in the code — the
 // original addresses them by index only — so this page numbers them and
@@ -101,6 +103,10 @@ pub fn paint_lineup_menu(
     let oy = canvas.y;
 
     ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
+
+    // ---- 3D: the 五灵 disc under everything else --------------------------
+    // The original draws its 3D nodes (`0x4850e0`) before the 2D widgets.
+    pal3.draw_lineup_disc(ui, mx, my, down, ox, oy, s);
 
     // ---- Frame and header ------------------------------------------------
     chrome.sprite(ui, atlas, SPR_FRAME, ox + FR_X * s, oy + FR_Y * s, s);

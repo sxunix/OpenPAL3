@@ -465,6 +465,16 @@ impl AdventureDirector {
             .add_to_team(actor_id);
     }
 
+    /// Put a character on a formation position — a test aid for the 五灵 disc.
+    pub fn set_lineup_position(&self, actor_id: u32, position: u8) {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .global_state_mut()
+            .persistent_state_mut()
+            .set_lineup_position(actor_id, position);
+    }
+
     /// Give (or take, if negative) money — a test aid for the shop UI.
     pub fn add_money(&self, amount: i32) {
         self.props

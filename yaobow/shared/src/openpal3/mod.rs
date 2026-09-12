@@ -10,6 +10,7 @@ pub mod comdef {
 }
 pub mod directors;
 pub mod encamp;
+pub mod lineup_disc;
 pub mod loaders;
 pub mod model_view;
 pub mod scene;
