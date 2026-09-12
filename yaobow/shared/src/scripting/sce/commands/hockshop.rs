@@ -1,113 +1,197 @@
-//! 103 当铺经营 — `LAB_00436c60`，模式 7。
+//! 103 当铺 — `LAB_00436c60`，模式 7。
 //!
-//! 账目在 `openpal3::states::hockshop`（等级表来自
-//! `SubGame/HockShop/Data/HockShopLevel.hsl`，算式照 `FUN_00524e00` /
-//! `FUN_0051f130`，死当物的挑法照同目录 `source.txt` 那段原版源码），见
-//! `switch/re/notes/hockshop.md`。
+//! 账目在 `openpal3::states::hockshop`（等级表 `HockShopLevel.hsl`，算式照
+//! `FUN_00524e00` / `FUN_0051f130`，死当物照同目录 `source.txt`），逆向记录在
+//! `switch/re/notes/hockshop.md`。命令在当铺期间阻塞脚本（原版是模式 7 + 等待任务）。
 //!
-//! 命令在当铺期间阻塞脚本（原版是模式 7 + 等待任务），关掉时跑参数里的那个
-//! 过程——参数是过程号，原版存进 `DAT_00dba244`，离开当铺时
-//! `FUN_00432170(DAT_00dba244, 0)`。
+//! 界面照原版（`FUN_005232b0` 建的模式对象，控件位置用 `switch/re/layout_trace.py`
+//! 从布局函数里算出来）：
 //!
-//! 界面是文字浮层，不是原版那五页；卖东西沿用买卖那边的规则（`price / 2`）。
+//! * 进店（`0x523b90`）：脚本变量 `HockShop_Gut`（`init.scs` 第 49 个，即 −32719）
+//!   大于 0 就按 `FUN_0051f130` 分一笔红利、清零、弹「您巳得到当铺的分红: N」；
+//!   资本为 0 进增资页，否则进经营主页。
+//! * 经营主页（`FUN_0051dfd0`）：竖幡上「典当 / 收购 / 经营 / 增资 / 聊天 / 退出」，
+//!   按等级开放；「经营」展开四个设定（当期 / 利率 / 拆当率 / 经营重点），每个再展开
+//!   它的选项。**只有「聊天」跑参数里的过程**（0xa01b05），「退出」什么都不跑。
+//! * 增资页（`FUN_00524230`）：`Invest_Frame` 上五个数、拖动条、确定 / 取消。
+//! * 典当 / 收购：原版挂的就是买卖界面的卖页和买道具页，这里借 `dealer` 那两页。
+//!
+//! 手柄：十字键上下挑、右键进下一列、左键退回，A 确定，B 返回；增资页左右调数目。
 
 use std::path::PathBuf;
 
+use super::appraise::{overlay, virtual_mouse};
+use super::dealer::{HostedPage, SceCommandDealerMenu, Tex, blit, button, text_width};
+use super::dealer_layout::{self as lay, INK, inside};
+use super::encamp::draw_sprite;
+use crate::openpal3::assis_lang;
 use crate::openpal3::states::hockshop::{
-    HockShopLevels, Level, MODES, PawnRng, Proportions, TIERS, max_investment, pick_dead_pawn_items,
+    HockShopLevels, PawnRng, Proportions, max_investment, pick_dead_pawn_items,
 };
-use crate::openpal3::states::shop::{ShopRng, sell_price, sellable};
+use crate::openpal3::states::shop::ShopRng;
+use crate::openpal3::ui_tex::UiTextures;
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
-use imgui::{Condition, Ui};
+use imgui::{MouseButton, Ui};
 use radiance::comdef::ISceneManager;
+use radiance::imgui::{GameFontSize, game_font};
 use radiance::input::Key;
 
 const HSL_PATH: &str = "/basedata/basedata/SubGame/HockShop/Data/HockShopLevel.hsl";
-/// 增资拖动条一格多少钱 `[推断: 原版是拖动条，没有格子]`。
-const INVEST_STEP: i32 = 1_000;
+const LANG_PATH: &str = "/basedata/basedata/AssisLang.lang";
+/// `HockShop_Gut`：`init.scs` 的命名变量表里排第 49 个（`g_story` 是第 0 个 = −32768）
+/// [推断：编号按表里的次序排]。
+const GUT_VAR: i16 = -32768 + 49;
 
-const LEVEL_NAMES: [&str; 5] = ["E", "D", "C", "B", "A"];
-const MODE_NAMES: [&str; MODES] = ["灵丹妙药", "南北杂货", "奇珍异宝", "来者不拒"];
-const TIER_NAMES: [&str; TIERS] = ["低", "中", "高"];
-const CHOICE_NAMES: [&str; 4] = ["经营方针", "当期", "利率", "拆当率"];
+type Rect = (i32, i32, i32, i32);
 
-/// 一行可卖 / 可买的东西。
-#[derive(Debug, Clone)]
-struct Row {
-    id: u32,
-    name: String,
-    price: i32,
-    owned: u32,
+mod lang {
+    pub const DIVIDEND: usize = 75;
+    /// 等级名：E 戊 · D 丁 · C 丙 · B 乙 · A 甲。
+    pub const LEVEL_E: usize = 387;
+    pub const HEADERS: [usize; 4] = [167, 168, 169, 170];
+    pub const OPTIONS: [&[usize]; 4] = [
+        &[171, 172, 173],
+        &[174, 175, 176],
+        &[174, 175, 176],
+        &[177, 178, 179, 180],
+    ];
 }
 
+/// 经营设定四列各对应存档里的哪个选择（0 方针 · 1 当期 · 2 利率 · 3 拆当率）。
+const HEADER_CHOICE: [usize; 4] = [1, 2, 3, 0];
+
+/// 主页菜单（`FUN_0051dfd0`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Page {
-    Menu,
-    /// 增资。
-    Invest,
-    /// 经营：挑四个选择中的第 `which` 个。
-    DealIn {
-        which: usize,
-    },
-    /// 买死当物。
+enum Item {
+    Pawn,
     Buy,
-    /// 卖东西。
-    Sell,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Input {
-    Up,
-    Down,
-    Left,
-    Right,
-    Confirm,
-    Cancel,
-}
-
-/// 菜单项，按等级开放。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Entry {
-    Invest,
-    Dividend,
     DealIn,
-    Buy,
-    Sell,
+    Invest,
+    Chat,
     Leave,
 }
 
-impl Entry {
-    fn label(self) -> &'static str {
-        match self {
-            Entry::Invest => "增资",
-            Entry::Dividend => "分红",
-            Entry::DealIn => "经营",
-            Entry::Buy => "买死当物",
-            Entry::Sell => "卖东西",
-            Entry::Leave => "离开",
-        }
+const MENU: [(Item, usize, &str); 6] = [
+    (Item::Pawn, 159, "典 当"),
+    (Item::Buy, 160, "收 购"),
+    (Item::DealIn, 161, "经 营"),
+    (Item::Invest, 162, "增 资"),
+    (Item::Chat, 163, "聊 天"),
+    (Item::Leave, 166, "退 出"),
+];
+
+mod rect {
+    use super::Rect;
+    pub const FLAG_T: (i32, i32) = (182, 78);
+    pub const FLAG_B: (i32, i32) = (182, 266);
+    pub fn menu(k: usize) -> Rect {
+        let y = 110 + 26 * k as i32;
+        (172, y, 262, y + 26)
+    }
+    pub fn flag_mid(k: usize) -> (i32, i32) {
+        (173, 111 + 26 * k as i32)
+    }
+    pub fn header(h: usize) -> Rect {
+        let y = 162 + 28 * h as i32;
+        (264, y, 354, y + 26)
+    }
+    pub fn option(h: usize, k: usize) -> Rect {
+        let y = 162 + 28 * (h + k) as i32;
+        (356, y, 446, y + 26)
+    }
+    // 增资页（`FUN_00524230`）。
+    pub const FRAME: (i32, i32) = (112, 84);
+    pub const LEVEL: Rect = (400, 84, 528, 116);
+    pub const CAP: Rect = (284, 126, 412, 158);
+    pub const TOTAL: Rect = (558, 126, 686, 158);
+    pub const MONEY: Rect = (284, 166, 412, 198);
+    pub const AMOUNT: Rect = (558, 166, 686, 198);
+    pub const BAR: Rect = (186, 216, 589, 254);
+    pub const YES: Rect = (238, 287, 328, 313);
+    pub const NO: Rect = (428, 287, 518, 313);
+    /// 进店分红那个框（`FUN_005232b0`：(250,200) 种类 0）。
+    pub const NOTE: Rect = (250, 200, 250 + 0x134, 200 + 0x6d);
+    pub fn note_yes() -> Rect {
+        let x = NOTE.0 + (NOTE.2 - NOTE.0) / 2 - 89 / 2;
+        let y = NOTE.3 - 25 - 6;
+        (x, y, x + 89, y + 25)
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct SceCommandMiniGamePawnshop {
-    /// 关掉当铺之后要跑的过程（原版 `DAT_00dba244`）。
-    end_proc: i32,
-    table: HockShopLevels,
-    page: Page,
-    cursor: usize,
-    /// 增资这一单打算投多少。
-    amount: i32,
-    /// 死当物（进店时按等级和经营方针随机摸的）。
-    dead_pawn: Vec<Row>,
-    /// 背包里能卖的东西。
-    stock: Vec<Row>,
-    notice: String,
-    /// 这一趟分过红没有——原版隔多久能再分还没读出来 `[推断]`。
-    paid_dividend: bool,
-    rng: ShopRng,
-    loaded: bool,
+/// 增资页数字的颜色：`0xffeab1` / `0xb1eaff` 两种写法都落到 RGB(0xb1,0xea,0xff)。
+const INVEST_INK: [f32; 4] = [0xb1 as f32 / 255., 0xea as f32 / 255., 1., 1.];
+const NOTE_INK: [f32; 4] = [1.0, 0xfb as f32 / 255., 0x1f as f32 / 255., 1.0];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Screen {
+    Business,
+    Invest,
+    Hosted,
+}
+
+/// 手柄的焦点在哪一列。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Menu,
+    Header,
+    Option,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Hit {
+    Menu(usize),
+    Header(usize),
+    Option(usize),
+    Bar,
+    Yes,
+    No,
+    NoteYes,
+}
+
+#[derive(Clone, Default)]
+struct Skin {
+    flag_t: Tex,
+    flag_m: Tex,
+    flag_b: Tex,
+    rawbtn: [Tex; 3],
+    rawbtn2: Tex,
+    unrawbtn: Tex,
+    frame: Tex,
+    bar: Tex,
+    thumb: [Tex; 3],
+    yes: [Tex; 3],
+    no: [Tex; 3],
+    note_bg: Tex,
+}
+
+impl Skin {
+    fn load(state: &SceState) -> Self {
+        let am = state.asset_mgr().clone();
+        let mut t = UiTextures::new(&am);
+        let three = |t: &mut UiTextures, base: &str| -> [Tex; 3] {
+            std::array::from_fn(|k| t.get(&am, &format!("{base}{k}.tga")))
+        };
+        let rawbtn = three(&mut t, "SubGame\\HockShop\\Control\\rawbtn");
+        let thumb = three(&mut t, "UI\\GameMainUI\\Communal\\Scroll\\scrollbar");
+        let yes = three(&mut t, "UI\\GameMainUI\\MUIDialog\\Normal\\Yes");
+        let no = three(&mut t, "UI\\GameMainUI\\MUIDialog\\Normal\\No");
+        let mut one = |n: &str| t.get(&am, n);
+        Self {
+            flag_t: one("UI\\Assistant\\Deal\\FlagT.tga"),
+            flag_m: one("UI\\Assistant\\Deal\\FlagM.tga"),
+            flag_b: one("UI\\Assistant\\Deal\\FlagB.tga"),
+            rawbtn2: rawbtn[2].clone(),
+            rawbtn,
+            unrawbtn: one("SubGame\\HockShop\\Control\\unrawbtn.tga"),
+            frame: one("SubGame\\HockShop\\Invest\\Invest_Frame.tga"),
+            bar: one("SubGame\\HockShop\\Invest\\DragBar_bk.tga"),
+            thumb,
+            yes,
+            no,
+            note_bg: one("UI\\GameMainUI\\MUIDialog\\Normal\\DlgBackground.tga"),
+        }
+    }
 }
 
 /// 把 `ShopRng` 接到死当物生成上：概率掷法和还价、逃跑同一套。
@@ -125,57 +209,144 @@ impl PawnRng for PawnDice<'_> {
     }
 }
 
+#[derive(Clone)]
+pub struct SceCommandMiniGamePawnshop {
+    /// 点「聊天」时跑的过程（原版 `DAT_00dba244`）。
+    end_proc: i32,
+    table: HockShopLevels,
+    lang: Vec<String>,
+    skin: Skin,
+    screen: Screen,
+    hosted: Option<Box<SceCommandDealerMenu>>,
+    menu_cursor: usize,
+    focus: Focus,
+    dealin_open: bool,
+    header_cursor: usize,
+    header_open: Option<usize>,
+    option_cursor: usize,
+    /// 增资这一单打算投多少（`+0x148c`）。
+    amount: i32,
+    dragging: bool,
+    /// 分红框里的字。
+    note: Option<String>,
+    /// 死当物（id, 单价）：进店时按等级和经营重点摸的。
+    dead_pawn: Vec<(u32, i32)>,
+    rng: ShopRng,
+    last_mouse: (f32, f32),
+    chat: bool,
+    loaded: bool,
+}
+
+impl std::fmt::Debug for SceCommandMiniGamePawnshop {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SceCommandMiniGamePawnshop")
+            .field("end_proc", &self.end_proc)
+            .field("screen", &self.screen)
+            .finish()
+    }
+}
+
 impl SceCommandMiniGamePawnshop {
     pub fn new(end_proc: i32) -> Self {
         Self {
             end_proc,
             table: HockShopLevels::default(),
-            page: Page::Menu,
-            cursor: 0,
+            lang: vec![],
+            skin: Skin::default(),
+            screen: Screen::Business,
+            hosted: None,
+            menu_cursor: 0,
+            focus: Focus::Menu,
+            dealin_open: false,
+            header_cursor: 0,
+            header_open: None,
+            option_cursor: 0,
             amount: 0,
-            dead_pawn: Vec::new(),
-            stock: Vec::new(),
-            notice: String::new(),
-            paid_dividend: false,
+            dragging: false,
+            note: None,
+            dead_pawn: vec![],
             rng: ShopRng::new(0x1357_9bdf),
+            last_mouse: (-1., -1.),
+            chat: false,
             loaded: false,
         }
     }
 
+    fn text(&self, slot: usize, fallback: &str) -> String {
+        self.lang
+            .get(slot)
+            .filter(|s| !s.is_empty())
+            .cloned()
+            .unwrap_or_else(|| fallback.to_string())
+    }
+
     fn load(&mut self, state: &mut SceState) {
         self.loaded = true;
-        if let Some(text) = read_gbk(state.asset_mgr().vfs(), &PathBuf::from(HSL_PATH)) {
-            self.table = HockShopLevels::parse(&text);
-        } else {
-            log::error!("当铺：读不到 {HSL_PATH}");
+        let vfs = state.asset_mgr().vfs();
+        match read_gbk(vfs, &PathBuf::from(HSL_PATH)) {
+            Some(text) => self.table = HockShopLevels::parse(&text),
+            None => log::error!("当铺：读不到 {HSL_PATH}"),
         }
+        self.lang = read_gbk(vfs, &PathBuf::from(LANG_PATH))
+            .map(|t| assis_lang::parse_section(&t, "sec1"))
+            .unwrap_or_default();
         let (money, capital) = {
             let p = state.global_state().persistent_state();
             (p.money(), p.hockshop_capital())
         };
         self.rng = ShopRng::new(money as u32 ^ (capital as u32).rotate_left(7) ^ 0x9e37_79b9);
-        self.amount = INVEST_STEP.min(max_investment(capital, money));
         self.rebuild_dead_pawn(state);
-        self.rebuild_stock(state);
+
+        // 进店分红（`0x523b90`）：`HockShop_Gut > 0` 才分，分到钱才清零。
+        let gut = state
+            .global_state()
+            .persistent_state()
+            .get_global(GUT_VAR)
+            .unwrap_or(0);
+        if gut > 0 {
+            let table = self.table.clone();
+            let paid = state
+                .global_state_mut()
+                .persistent_state_mut()
+                .hockshop_dividend(&table);
+            if paid > 0 {
+                state
+                    .global_state_mut()
+                    .persistent_state_mut()
+                    .set_global(GUT_VAR, 0);
+                self.note = Some(format!(
+                    "{}: {}",
+                    self.text(lang::DIVIDEND, "您巳得到当铺的分红"),
+                    paid
+                ));
+            }
+        }
+        self.screen = if capital > 0 {
+            Screen::Business
+        } else {
+            Screen::Invest
+        };
     }
 
-    fn level(&self, state: &SceState) -> &Level {
-        self.table
+    fn level(&self, state: &SceState) -> crate::openpal3::states::hockshop::Level {
+        *self
+            .table
             .level(state.global_state().persistent_state().hockshop_level())
     }
 
-    /// 进店摆出来的死当物：件数在 `DisMinNum..=DisMaxNum` 之间，按当前经营
-    /// 方针的比例挑（`source.txt`）。
+    /// 进店摆出来的死当物：件数在 `DisMinNum..=DisMaxNum` 之间，按当前经营重点
+    /// 的比例挑（`source.txt`），单价打这一级的 `BuyDiscount`。
     fn rebuild_dead_pawn(&mut self, state: &SceState) {
         self.dead_pawn.clear();
         let Some(db) = state.global_state().game_db().cloned() else {
             return;
         };
-        let (level_idx, mode) = {
-            let p = state.global_state().persistent_state();
-            (p.hockshop_level(), p.hockshop_choice(0).max(0) as usize)
-        };
-        let level = *self.table.level(level_idx);
+        let mode = state
+            .global_state()
+            .persistent_state()
+            .hockshop_choice(0)
+            .max(0) as usize;
+        let level = self.level(state);
         if !level.buy || level.display_max <= 0 {
             return;
         }
@@ -186,416 +357,453 @@ impl SceCommandMiniGamePawnshop {
             .get(mode)
             .copied()
             .unwrap_or(Proportions::default());
-
         let table: Vec<(u32, u8)> = db.items().iter().map(|i| (i.id, i.item_type)).collect();
         let ids = {
             let mut dice = PawnDice(&mut self.rng);
             pick_dead_pawn_items(count.max(0) as usize, proportions, &table, &mut dice)
         };
-
-        let p_state = state.global_state().persistent_state();
         self.dead_pawn = ids
             .into_iter()
             .filter_map(|id| {
                 let row = db.item(id)?;
-                Some(Row {
-                    id,
-                    name: row
-                        .name
-                        .as_str()
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|_| format!("道具#{id}")),
-                    // 买死当物按这一级的折扣（`BuyDiscount`）。
-                    price: (row.price as f32 * level.buy_discount) as i32,
-                    owned: p_state.item_count(id),
-                })
+                Some((id, (row.price as f32 * level.buy_discount) as i32))
             })
             .collect();
     }
 
-    fn rebuild_stock(&mut self, state: &SceState) {
-        self.stock.clear();
-        let Some(db) = state.global_state().game_db().cloned() else {
-            return;
-        };
-        let p_state = state.global_state().persistent_state();
-        self.stock = p_state
-            .inventory()
-            .iter()
-            .filter(|(_, count)| **count > 0)
-            .filter_map(|(id, count)| {
-                let row = db.item(*id)?;
-                if !sellable(row.item_type) {
-                    return None;
-                }
-                Some(Row {
-                    id: *id,
-                    name: row
-                        .name
-                        .as_str()
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|_| format!("道具#{id}")),
-                    price: sell_price(row.price),
-                    owned: *count,
-                })
-            })
-            .collect();
-    }
-
-    /// 这一级开放哪些菜单项。
-    fn entries(&self, state: &SceState) -> Vec<Entry> {
+    fn enabled(&self, state: &SceState, item: Item) -> bool {
         let lv = self.level(state);
-        let mut out = Vec::new();
-        if lv.invest {
-            out.push(Entry::Invest);
+        match item {
+            Item::Pawn => lv.sale,
+            Item::Buy => lv.buy,
+            Item::DealIn => lv.deal_in,
+            Item::Invest => lv.invest,
+            Item::Chat | Item::Leave => true,
         }
-        if lv.melon_cutting {
-            out.push(Entry::Dividend);
-        }
-        if lv.deal_in {
-            out.push(Entry::DealIn);
-        }
-        if lv.buy {
-            out.push(Entry::Buy);
-        }
-        if lv.sale {
-            out.push(Entry::Sell);
-        }
-        out.push(Entry::Leave);
-        out
     }
 
-    fn poll_input(state: &SceState) -> Option<Input> {
-        let input = state.input();
-        let pressed = |k: Key| input.get_key_state(k).pressed();
-        if pressed(Key::Up) || pressed(Key::GamePadDPadUp) {
-            Some(Input::Up)
-        } else if pressed(Key::Down) || pressed(Key::GamePadDPadDown) {
-            Some(Input::Down)
-        } else if pressed(Key::Left) || pressed(Key::GamePadDPadLeft) {
-            Some(Input::Left)
-        } else if pressed(Key::Right) || pressed(Key::GamePadDPadRight) {
-            Some(Input::Right)
-        } else if pressed(Key::Space) || pressed(Key::GamePadEast) {
-            Some(Input::Confirm)
-        } else if pressed(Key::Escape) || pressed(Key::GamePadSouth) {
-            Some(Input::Cancel)
+    fn max_amount(state: &SceState) -> i32 {
+        let p = state.global_state().persistent_state();
+        max_investment(p.hockshop_capital(), p.money())
+    }
+
+    /// 返回 true = 关店。
+    fn activate(&mut self, state: &mut SceState, item: Item) -> bool {
+        if !self.enabled(state, item) {
+            return false;
+        }
+        match item {
+            Item::Pawn | Item::Buy => {
+                let page = if item == Item::Pawn {
+                    HostedPage::Sell
+                } else {
+                    HostedPage::Buy
+                };
+                self.hosted = Some(Box::new(SceCommandDealerMenu::hosted(
+                    state,
+                    page,
+                    &self.dead_pawn,
+                )));
+                self.screen = Screen::Hosted;
+            }
+            Item::DealIn => {
+                self.dealin_open = !self.dealin_open;
+                self.header_open = None;
+                self.focus = if self.dealin_open {
+                    Focus::Header
+                } else {
+                    Focus::Menu
+                };
+            }
+            Item::Invest => {
+                self.amount = 0;
+                self.screen = Screen::Invest;
+            }
+            Item::Chat => {
+                self.chat = true;
+                return true;
+            }
+            Item::Leave => return true,
+        }
+        false
+    }
+
+    fn open_header(&mut self, state: &SceState, h: usize) {
+        if self.header_open == Some(h) {
+            self.header_open = None;
+            self.focus = Focus::Header;
         } else {
-            None
+            self.header_open = Some(h);
+            self.option_cursor = state
+                .global_state()
+                .persistent_state()
+                .hockshop_choice(HEADER_CHOICE[h])
+                .max(0) as usize;
+            self.focus = Focus::Option;
+        }
+        self.header_cursor = h;
+    }
+
+    fn choose(&mut self, state: &mut SceState, k: usize) {
+        let Some(h) = self.header_open else { return };
+        let which = HEADER_CHOICE[h];
+        state
+            .global_state_mut()
+            .persistent_state_mut()
+            .set_hockshop_choice(which, k as i32);
+        if which == 0 {
+            self.rebuild_dead_pawn(state);
+        }
+        self.header_open = None;
+        self.focus = Focus::Header;
+    }
+
+    /// 增资确定（`FUN_005249a0` 的 0xa00b07）。
+    fn invest(&mut self, state: &mut SceState) {
+        if self.amount > 0 {
+            state
+                .global_state_mut()
+                .persistent_state_mut()
+                .hockshop_invest(self.amount);
+            self.rebuild_dead_pawn(state);
+        }
+        self.amount = 0;
+        if state.global_state().persistent_state().hockshop_capital() > 0 {
+            self.screen = Screen::Business;
+        }
+    }
+
+    /// 返回 true = 关店（资本还是 0 时点取消就直接出店）。
+    fn cancel_invest(&mut self, state: &SceState) -> bool {
+        self.amount = 0;
+        if state.global_state().persistent_state().hockshop_capital() > 0 {
+            self.screen = Screen::Business;
+            false
+        } else {
+            true
+        }
+    }
+
+    fn bar_value(&self, state: &SceState, mx: f32) -> i32 {
+        let r = rect::BAR;
+        let (x0, x1) = ((r.0 + 16 + 13) as f32, (r.2 - 16 - 13) as f32);
+        let t = ((mx - x0) / (x1 - x0)).clamp(0., 1.);
+        (t * Self::max_amount(state) as f32).round() as i32
+    }
+
+    fn thumb_rect(&self, state: &SceState) -> Rect {
+        let r = rect::BAR;
+        let max = Self::max_amount(state).max(1);
+        let t = self.amount as f32 / max as f32;
+        let x = r.0 + 16 + ((r.2 - r.0 - 32 - 26) as f32 * t) as i32;
+        let y = r.1 + (r.3 - r.1 - 28) / 2;
+        (x, y, x + 26, y + 28)
+    }
+
+    fn hit(&self, state: &SceState, x: f32, y: f32) -> Option<Hit> {
+        if self.note.is_some() {
+            return inside(rect::note_yes(), x, y).then_some(Hit::NoteYes);
+        }
+        match self.screen {
+            Screen::Hosted => None,
+            Screen::Invest => [
+                (rect::YES, Hit::Yes),
+                (rect::NO, Hit::No),
+                (rect::BAR, Hit::Bar),
+            ]
+            .into_iter()
+            .find(|(r, _)| inside(*r, x, y))
+            .map(|(_, h)| h),
+            Screen::Business => {
+                if let Some(h) = self.header_open {
+                    let n = lang::OPTIONS[h].len();
+                    if let Some(k) = (0..n).find(|&k| inside(rect::option(h, k), x, y)) {
+                        return Some(Hit::Option(k));
+                    }
+                }
+                if self.dealin_open {
+                    if let Some(h) = (0..4).find(|&h| inside(rect::header(h), x, y)) {
+                        return Some(Hit::Header(h));
+                    }
+                }
+                let _ = state;
+                (0..MENU.len())
+                    .find(|&k| inside(rect::menu(k), x, y))
+                    .map(Hit::Menu)
+            }
         }
     }
 
     /// 返回 true = 关店。
-    fn handle(&mut self, state: &mut SceState, input: Input) -> bool {
-        match self.page {
-            Page::Menu => {
-                let entries = self.entries(state);
-                let n = entries.len().max(1);
-                match input {
-                    Input::Up => self.cursor = (self.cursor + n - 1) % n,
-                    Input::Down => self.cursor = (self.cursor + 1) % n,
-                    Input::Confirm => match entries.get(self.cursor).copied() {
-                        Some(Entry::Invest) => {
-                            let (capital, money) = {
-                                let p = state.global_state().persistent_state();
-                                (p.hockshop_capital(), p.money())
-                            };
-                            self.amount = INVEST_STEP.min(max_investment(capital, money));
-                            self.page = Page::Invest;
-                        }
-                        Some(Entry::Dividend) => self.pay_dividend(state),
-                        Some(Entry::DealIn) => {
-                            self.page = Page::DealIn { which: 0 };
-                        }
-                        Some(Entry::Buy) => {
-                            self.cursor = 0;
-                            self.page = Page::Buy;
-                        }
-                        Some(Entry::Sell) => {
-                            self.cursor = 0;
-                            self.page = Page::Sell;
-                        }
-                        _ => return true,
-                    },
-                    Input::Cancel => return true,
-                    _ => {}
+    fn click(&mut self, state: &mut SceState, hit: Hit, mx: f32) -> bool {
+        match hit {
+            Hit::NoteYes => self.note = None,
+            Hit::Menu(k) => {
+                self.menu_cursor = k;
+                self.focus = Focus::Menu;
+                return self.activate(state, MENU[k].0);
+            }
+            Hit::Header(h) => self.open_header(state, h),
+            Hit::Option(k) => self.choose(state, k),
+            Hit::Bar => {
+                self.dragging = true;
+                self.amount = self.bar_value(state, mx);
+            }
+            Hit::Yes => self.invest(state),
+            Hit::No => return self.cancel_invest(state),
+        }
+        false
+    }
+
+    /// 返回 true = 关店。
+    fn keys(&mut self, state: &mut SceState) -> bool {
+        let (up, down, left, right, confirm, cancel) = {
+            let input = state.input();
+            let p = |k: Key| input.get_key_state(k).pressed();
+            (
+                p(Key::Up) || p(Key::GamePadDPadUp),
+                p(Key::Down) || p(Key::GamePadDPadDown),
+                p(Key::Left) || p(Key::GamePadDPadLeft),
+                p(Key::Right) || p(Key::GamePadDPadRight),
+                p(Key::Space) || p(Key::GamePadEast),
+                p(Key::Escape) || p(Key::GamePadSouth),
+            )
+        };
+        if self.note.is_some() {
+            if confirm || cancel {
+                self.note = None;
+            }
+            return false;
+        }
+        match self.screen {
+            Screen::Hosted => {}
+            Screen::Invest => {
+                let max = Self::max_amount(state);
+                let step = (max / 20).max(1);
+                if left || down {
+                    self.amount = (self.amount - step).clamp(0, max);
+                } else if right || up {
+                    self.amount = (self.amount + step).clamp(0, max);
+                } else if confirm {
+                    self.invest(state);
+                } else if cancel {
+                    return self.cancel_invest(state);
                 }
             }
-            Page::Invest => {
-                let (capital, money) = {
-                    let p = state.global_state().persistent_state();
-                    (p.hockshop_capital(), p.money())
-                };
-                let cap = max_investment(capital, money);
-                match input {
-                    Input::Left | Input::Down => {
-                        self.amount = (self.amount - INVEST_STEP).clamp(0, cap)
-                    }
-                    Input::Right | Input::Up => {
-                        self.amount = (self.amount + INVEST_STEP).clamp(0, cap)
-                    }
-                    Input::Confirm => {
-                        let spent = state
-                            .global_state_mut()
-                            .persistent_state_mut()
-                            .hockshop_invest(self.amount);
-                        let level = state.global_state().persistent_state().hockshop_level();
-                        self.notice = format!(
-                            "投了 {spent} 文，当铺现在是 {} 级",
-                            LEVEL_NAMES[level as usize]
-                        );
-                        self.rebuild_dead_pawn(state);
-                        self.page = Page::Menu;
-                    }
-                    Input::Cancel => self.page = Page::Menu,
-                }
-            }
-            Page::DealIn { which } => match input {
-                Input::Up => {
-                    self.page = Page::DealIn {
-                        which: (which + 3) % 4,
+            Screen::Business => match self.focus {
+                Focus::Menu => {
+                    let n = MENU.len();
+                    if up {
+                        self.menu_cursor = (self.menu_cursor + n - 1) % n;
+                    } else if down {
+                        self.menu_cursor = (self.menu_cursor + 1) % n;
+                    } else if right && self.dealin_open {
+                        self.focus = Focus::Header;
+                    } else if confirm {
+                        return self.activate(state, MENU[self.menu_cursor].0);
+                    } else if cancel {
+                        if self.dealin_open {
+                            self.dealin_open = false;
+                        } else {
+                            return true;
+                        }
                     }
                 }
-                Input::Down => {
-                    self.page = Page::DealIn {
-                        which: (which + 1) % 4,
+                Focus::Header => {
+                    if up {
+                        self.header_cursor = (self.header_cursor + 3) % 4;
+                    } else if down {
+                        self.header_cursor = (self.header_cursor + 1) % 4;
+                    } else if confirm || right {
+                        self.open_header(state, self.header_cursor);
+                    } else if left || cancel {
+                        self.header_open = None;
+                        self.focus = Focus::Menu;
                     }
                 }
-                Input::Left | Input::Right => {
-                    let span = if which == 0 { MODES } else { TIERS } as i32;
-                    let mut p_state = state.global_state_mut().persistent_state_mut();
-                    let cur = p_state.hockshop_choice(which);
-                    let next = if input == Input::Left {
-                        (cur + span - 1) % span
-                    } else {
-                        (cur + 1) % span
-                    };
-                    p_state.set_hockshop_choice(which, next);
-                    drop(p_state);
-                    if which == 0 {
-                        self.rebuild_dead_pawn(state);
+                Focus::Option => {
+                    let n = self.header_open.map_or(1, |h| lang::OPTIONS[h].len());
+                    if up {
+                        self.option_cursor = (self.option_cursor + n - 1) % n;
+                    } else if down {
+                        self.option_cursor = (self.option_cursor + 1) % n;
+                    } else if confirm {
+                        self.choose(state, self.option_cursor);
+                    } else if left || cancel {
+                        self.header_open = None;
+                        self.focus = Focus::Header;
                     }
                 }
-                Input::Confirm | Input::Cancel => self.page = Page::Menu,
-            },
-            Page::Buy => match input {
-                Input::Up => {
-                    let n = self.dead_pawn.len().max(1);
-                    self.cursor = (self.cursor + n - 1) % n;
-                }
-                Input::Down => {
-                    let n = self.dead_pawn.len().max(1);
-                    self.cursor = (self.cursor + 1) % n;
-                }
-                Input::Confirm => self.buy(state),
-                Input::Cancel => {
-                    self.cursor = 0;
-                    self.page = Page::Menu;
-                }
-                _ => {}
-            },
-            Page::Sell => match input {
-                Input::Up => {
-                    let n = self.stock.len().max(1);
-                    self.cursor = (self.cursor + n - 1) % n;
-                }
-                Input::Down => {
-                    let n = self.stock.len().max(1);
-                    self.cursor = (self.cursor + 1) % n;
-                }
-                Input::Confirm => self.sell(state),
-                Input::Cancel => {
-                    self.cursor = 0;
-                    self.page = Page::Menu;
-                }
-                _ => {}
             },
         }
         false
     }
 
-    fn pay_dividend(&mut self, state: &mut SceState) {
-        if self.paid_dividend {
-            self.notice = "这一趟已经分过红了".to_string();
-            return;
-        }
-        let table = self.table.clone();
-        let paid = state
-            .global_state_mut()
-            .persistent_state_mut()
-            .hockshop_dividend(&table);
-        self.paid_dividend = true;
-        self.notice = format!("分了 {paid} 文");
-    }
-
-    fn buy(&mut self, state: &mut SceState) {
-        let Some(row) = self.dead_pawn.get(self.cursor).cloned() else {
-            return;
-        };
-        {
-            let mut p_state = state.global_state_mut().persistent_state_mut();
-            if p_state.money() < row.price {
-                drop(p_state);
-                self.notice = "钱不够".to_string();
-                return;
+    fn draw(&self, ui: &Ui, state: &SceState, hover: Option<Hit>) {
+        overlay(ui, "HockShop", |ui, at, _scale| {
+            let list = ui.get_window_draw_list();
+            let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
+            match self.screen {
+                Screen::Business => self.draw_business(&list, at, state, hover),
+                Screen::Invest => self.draw_invest(&list, at, state, hover),
+                Screen::Hosted => {}
             }
-            p_state.add_money(-row.price);
-            p_state.add_item(row.id, 1);
-        }
-        self.dead_pawn.remove(self.cursor);
-        if self.cursor >= self.dead_pawn.len() {
-            self.cursor = self.dead_pawn.len().saturating_sub(1);
-        }
-        self.notice = format!("买下了 {}，付 {} 文", row.name, row.price);
-        self.rebuild_stock(state);
-    }
-
-    fn sell(&mut self, state: &mut SceState) {
-        let Some(row) = self.stock.get(self.cursor).cloned() else {
-            return;
-        };
-        {
-            let mut p_state = state.global_state_mut().persistent_state_mut();
-            if p_state.item_count(row.id) == 0 {
-                return;
+            if let Some(text) = &self.note {
+                let r = rect::NOTE;
+                draw_sprite(&list, self.skin.note_bg.as_deref(), r, at);
+                list.add_text(at(r.0 + 6 + 8, r.1 + 6 + 8), NOTE_INK, text);
+                button(
+                    &list,
+                    &self.skin.yes,
+                    rect::note_yes(),
+                    hover == Some(Hit::NoteYes),
+                    at,
+                );
             }
-            p_state.remove_item(row.id, 1);
-            p_state.add_money(row.price);
-        }
-        self.notice = format!("卖了 {}，得 {} 文", row.name, row.price);
-        self.rebuild_stock(state);
-        if self.cursor >= self.stock.len() {
-            self.cursor = self.stock.len().saturating_sub(1);
+        });
+    }
+
+    fn centered(
+        list: &imgui::DrawListMut<'_>,
+        r: Rect,
+        s: &str,
+        at: &dyn Fn(i32, i32) -> [f32; 2],
+    ) {
+        let w = text_width(s);
+        list.add_text(
+            at(
+                r.0 + (r.2 - r.0 - w) / 2,
+                r.1 + (r.3 - r.1 - lay::GLYPH) / 2,
+            ),
+            INK,
+            s,
+        );
+    }
+
+    fn rawbutton(
+        &self,
+        list: &imgui::DrawListMut<'_>,
+        r: Rect,
+        lit: bool,
+        on: bool,
+        enabled: bool,
+        at: &dyn Fn(i32, i32) -> [f32; 2],
+    ) {
+        let sk = &self.skin;
+        if !enabled {
+            blit(list, &sk.unrawbtn, r.0, r.1, at);
+        } else if on {
+            blit(list, &sk.rawbtn2, r.0, r.1, at);
+        } else {
+            button(list, &sk.rawbtn, r, lit, at);
         }
     }
 
-    fn draw(&self, ui: &Ui, state: &SceState) {
-        let (money, capital, level_idx) = {
+    fn draw_business(
+        &self,
+        list: &imgui::DrawListMut<'_>,
+        at: &dyn Fn(i32, i32) -> [f32; 2],
+        state: &SceState,
+        hover: Option<Hit>,
+    ) {
+        let sk = &self.skin;
+        blit(list, &sk.flag_t, rect::FLAG_T.0, rect::FLAG_T.1, at);
+        blit(list, &sk.flag_b, rect::FLAG_B.0, rect::FLAG_B.1, at);
+        for k in 0..MENU.len() {
+            let (x, y) = rect::flag_mid(k);
+            blit(list, &sk.flag_m, x, y, at);
+        }
+        for (k, (item, slot, fallback)) in MENU.iter().enumerate() {
+            let r = rect::menu(k);
+            let lit =
+                hover == Some(Hit::Menu(k)) || (self.focus == Focus::Menu && k == self.menu_cursor);
+            let on = *item == Item::DealIn && self.dealin_open;
+            self.rawbutton(list, r, lit, on, self.enabled(state, *item), at);
+            Self::centered(list, r, &self.text(*slot, fallback), at);
+        }
+        if !self.dealin_open {
+            return;
+        }
+        let p = state.global_state().persistent_state();
+        for h in 0..4 {
+            let r = rect::header(h);
+            let lit = hover == Some(Hit::Header(h))
+                || (self.focus == Focus::Header && h == self.header_cursor);
+            self.rawbutton(list, r, lit, self.header_open == Some(h), true, at);
+            Self::centered(list, r, &self.text(lang::HEADERS[h], ""), at);
+        }
+        if let Some(h) = self.header_open {
+            let current = p.hockshop_choice(HEADER_CHOICE[h]).max(0) as usize;
+            for (k, slot) in lang::OPTIONS[h].iter().enumerate() {
+                let r = rect::option(h, k);
+                let lit = hover == Some(Hit::Option(k))
+                    || (self.focus == Focus::Option && k == self.option_cursor);
+                self.rawbutton(list, r, lit, k == current, true, at);
+                Self::centered(list, r, &self.text(*slot, ""), at);
+            }
+        }
+    }
+
+    fn draw_invest(
+        &self,
+        list: &imgui::DrawListMut<'_>,
+        at: &dyn Fn(i32, i32) -> [f32; 2],
+        state: &SceState,
+        hover: Option<Hit>,
+    ) {
+        let sk = &self.skin;
+        if let Some(frame) = sk.frame.as_deref() {
+            let r = (
+                rect::FRAME.0,
+                rect::FRAME.1,
+                rect::FRAME.0 + 543,
+                rect::FRAME.1 + 234,
+            );
+            draw_sprite(list, Some(frame), r, at);
+        }
+        let (money, capital, level) = {
             let p = state.global_state().persistent_state();
             (p.money(), p.hockshop_capital(), p.hockshop_level())
         };
-        let lv = *self.table.level(level_idx);
-        let choices: Vec<i32> = (0..4)
-            .map(|i| state.global_state().persistent_state().hockshop_choice(i))
-            .collect();
-        let entries = self.entries(state);
-
-        let [window_width, _] = ui.io().display_size;
-        ui.window("HockShop")
-            .collapsible(false)
-            .title_bar(false)
-            .resizable(false)
-            .always_auto_resize(true)
-            .position([16., 16.], Condition::Always)
-            .size_constraints([window_width * 0.45, 0.], [window_width * 0.9, f32::MAX])
-            .build(|| {
-                let _font = radiance::imgui::game_font(radiance::imgui::GameFontSize::LARGE)
-                    .map(|f| ui.push_font(f));
-
-                ui.text(format!(
-                    "永安当（{} 级）　资本 {} 文　身上 {} 文",
-                    LEVEL_NAMES[level_idx as usize], capital, money
-                ));
-                ui.text(format!(
-                    "经营方针 {}　当期 {}　利率 {}　拆当率 {}",
-                    MODE_NAMES[choices[0].clamp(0, 3) as usize],
-                    TIER_NAMES[choices[1].clamp(0, 2) as usize],
-                    TIER_NAMES[choices[2].clamp(0, 2) as usize],
-                    TIER_NAMES[choices[3].clamp(0, 2) as usize],
-                ));
-                if !self.notice.is_empty() {
-                    ui.text_colored([1.0, 0.85, 0.35, 1.0], &self.notice);
-                }
-                ui.separator();
-
-                match self.page {
-                    Page::Menu => {
-                        for (i, e) in entries.iter().enumerate() {
-                            let marker = if i == self.cursor { "▶" } else { "  " };
-                            ui.text(format!("{marker}{}", e.label()));
-                        }
-                    }
-                    Page::Invest => {
-                        let after = capital + self.amount;
-                        ui.text(format!(
-                            "投入 {} 文（左右调，最多 {}）",
-                            self.amount,
-                            max_investment(capital, money)
-                        ));
-                        ui.text(format!(
-                            "投完资本 {} 文 → {} 级（满格 {} 文）",
-                            after,
-                            LEVEL_NAMES[crate::openpal3::states::hockshop::level_for_capital(after)
-                                as usize],
-                            crate::openpal3::states::hockshop::CAPITAL_FOR_TOP
-                        ));
-                        ui.text("确定：投　取消：回去");
-                    }
-                    Page::DealIn { which } => {
-                        for i in 0..4 {
-                            let marker = if i == which { "▶" } else { "  " };
-                            let value = if i == 0 {
-                                MODE_NAMES[choices[0].clamp(0, 3) as usize]
-                            } else {
-                                TIER_NAMES[choices[i].clamp(0, 2) as usize]
-                            };
-                            ui.text(format!("{marker}{}　{}", CHOICE_NAMES[i], value));
-                        }
-                        let rate = lv.dividend_rate(
-                            choices[0].max(0) as usize,
-                            choices[1].max(0) as usize,
-                            choices[2].max(0) as usize,
-                            choices[3].max(0) as usize,
-                        );
-                        ui.text(format!(
-                            "这套配法的红利：资本的 {:.1}%（下次分红 {} 文）",
-                            rate * 100.,
-                            (capital as f32 * rate) as i32
-                        ));
-                        ui.text("左右换　确定/取消：回去");
-                    }
-                    Page::Buy => {
-                        if self.dead_pawn.is_empty() {
-                            ui.text("今天没有死当物。");
-                        }
-                        for (i, row) in self.dead_pawn.iter().enumerate() {
-                            let marker = if i == self.cursor { "▶" } else { "  " };
-                            ui.text(format!(
-                                "{marker}{}　{} 文　已有 {}",
-                                row.name, row.price, row.owned
-                            ));
-                        }
-                        ui.text(format!(
-                            "（{} 级打 {:.0} 折）确定：买一件　取消：回去",
-                            LEVEL_NAMES[level_idx as usize],
-                            lv.buy_discount * 10.
-                        ));
-                    }
-                    Page::Sell => {
-                        if self.stock.is_empty() {
-                            ui.text("身上没有能卖的东西。");
-                        }
-                        for (i, row) in self.stock.iter().enumerate() {
-                            let marker = if i == self.cursor { "▶" } else { "  " };
-                            ui.text(format!(
-                                "{marker}{}　{} 文　有 {}",
-                                row.name, row.price, row.owned
-                            ));
-                        }
-                        ui.text("确定：卖一件　取消：回去");
-                    }
-                }
-            });
+        let label = |r: Rect, s: String| {
+            list.add_text(
+                at(r.0 + lay::TEXT_INSET, r.1 + lay::TEXT_INSET),
+                INVEST_INK,
+                s,
+            );
+        };
+        label(
+            rect::LEVEL,
+            self.text(lang::LEVEL_E - level.clamp(0, 4) as usize, "戊"),
+        );
+        label(
+            rect::CAP,
+            crate::openpal3::states::hockshop::CAPITAL_FOR_TOP.to_string(),
+        );
+        label(rect::TOTAL, (capital + self.amount).to_string());
+        label(rect::MONEY, (money - self.amount).to_string());
+        label(rect::AMOUNT, self.amount.to_string());
+        draw_sprite(list, sk.bar.as_deref(), rect::BAR, at);
+        let t = self.thumb_rect(state);
+        let lit = usize::from(self.dragging || hover == Some(Hit::Bar));
+        blit(list, &sk.thumb[lit], t.0, t.1, at);
+        button(list, &sk.yes, rect::YES, hover == Some(Hit::Yes), at);
+        button(list, &sk.no, rect::NO, hover == Some(Hit::No), at);
     }
 
-    fn finish(&mut self, state: &mut SceState) {
-        if self.end_proc > 0 {
+    fn finish(&mut self, state: &mut SceState) -> bool {
+        if self.chat && self.end_proc > 0 {
             state.call_proc(self.end_proc as u32);
         }
+        true
     }
 }
 
 impl SceCommand for SceCommandMiniGamePawnshop {
+    fn initialize(&mut self, _scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
+        self.skin = Skin::load(state);
+    }
+
     fn update(
         &mut self,
         _scene_manager: ComRc<ISceneManager>,
@@ -607,23 +815,50 @@ impl SceCommand for SceCommandMiniGamePawnshop {
             self.load(state);
         }
         if state.fast_forward() {
-            self.finish(state);
             return true;
         }
-
-        self.draw(ui, state);
-
-        if let Some(input) = Self::poll_input(state) {
-            if self.handle(state, input) {
-                self.finish(state);
-                return true;
+        if self.screen == Screen::Hosted {
+            let done = self
+                .hosted
+                .as_mut()
+                .is_none_or(|h| h.hosted_frame(ui, state));
+            if done {
+                self.hosted = None;
+                self.screen = Screen::Business;
             }
+            return false;
+        }
+
+        let (mx, my) = virtual_mouse(ui);
+        let hover = self.hit(state, mx, my);
+        if self.dragging {
+            if ui.is_mouse_down(MouseButton::Left) {
+                self.amount = self.bar_value(state, mx);
+            } else {
+                self.dragging = false;
+            }
+        }
+        if (mx, my) != self.last_mouse {
+            self.last_mouse = (mx, my);
+            if let Some(Hit::Menu(k)) = hover {
+                self.menu_cursor = k;
+            }
+        }
+        self.draw(ui, state, hover);
+        if ui.is_mouse_clicked(MouseButton::Left) {
+            if let Some(h) = hover {
+                if self.click(state, h, mx) {
+                    return self.finish(state);
+                }
+            }
+        }
+        if self.keys(state) {
+            return self.finish(state);
         }
         false
     }
 }
 
-/// 读一个 GBK 文本文件。
 fn read_gbk(vfs: &mini_fs::MiniFs, path: &std::path::Path) -> Option<String> {
     use common::store_ext::StoreExt2;
     use encoding::Encoding;

@@ -1216,6 +1216,57 @@ impl SceCommand for SceCommandDealerMenu {
             return true;
         }
 
+        self.frame(ui, state)
+    }
+}
+
+/// 当铺借用的两页：原版当铺的模式对象下挂的就是买卖这两个类（`FUN_005232b0`：
+/// `FUN_0046d140` 买道具页、`FUN_00470a60` 卖页），见 `switch/re/notes/hockshop.md`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum HostedPage {
+    Buy,
+    Sell,
+}
+
+impl SceCommandDealerMenu {
+    /// 直接开在买道具页或卖页上；`goods` 是（物品 id，单价）。不还价、商人不说话。
+    pub(super) fn hosted(state: &SceState, page: HostedPage, goods: &[(u32, i32)]) -> Self {
+        let mut me = Self::new(String::new());
+        me.loaded = true;
+        me.skin = Skin::load(state);
+        me.lang = read_gbk(state.asset_mgr().vfs(), &PathBuf::from(LANG_PATH))
+            .map(|t| assis_lang::parse_section(&t, LANG_SECTION))
+            .unwrap_or_default();
+        let owned: Vec<u32> = {
+            let p = state.global_state().persistent_state();
+            goods.iter().map(|(id, _)| p.item_count(*id)).collect()
+        };
+        me.prop_goods = goods
+            .iter()
+            .zip(owned)
+            .filter_map(|((id, price), n)| {
+                let mut g = Self::good(state, *id, n)?;
+                g.price = *price;
+                Some(g)
+            })
+            .collect();
+        me.rebuild_stock(state);
+        me.enter(match page {
+            HostedPage::Buy => Page::Prop,
+            HostedPage::Sell => Page::Sell,
+        });
+        me.talk.clear();
+        me
+    }
+
+    /// 画一帧、处理输入；返回 true = 玩家离开了这一页（原版回当铺主页）。
+    pub(super) fn hosted_frame(&mut self, ui: &Ui, state: &mut SceState) -> bool {
+        self.frame(ui, state);
+        self.screen == Screen::Menu
+    }
+
+    /// 一帧：鼠标、画、点击、按键。返回 true = 关店。
+    fn frame(&mut self, ui: &Ui, state: &mut SceState) -> bool {
         let (mx, my) = virtual_mouse(ui);
         let hover = self.hit(mx, my);
         if (mx, my) != self.last_mouse {

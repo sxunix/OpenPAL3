@@ -542,6 +542,17 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "hockshop" => {
+            // [过程号] —— 直接开当铺（103）。
+            let proc_id = int_arg(0).unwrap_or(0) as i32;
+            director.start_debug_command(Box::new(
+                crate::scripting::sce::commands::SceCommandMiniGamePawnshop::new(proc_id),
+            ));
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "dealer" => {
             // ["DealScript\\WeaponShop\\q01weapon.txt"] —— 直接开一家店（SCE 100）。
             let shop = params
