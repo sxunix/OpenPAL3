@@ -413,6 +413,25 @@ pub fn pack_color(color: [f32; 4]) -> (f32, f32) {
     (packed, color[3].clamp(0., 1.))
 }
 
+/// 粒子的顶点色。原版画粒子是 `SRCBLEND = ONE`、`DESTBLEND = ONE`，颜色只取贴图 ×
+/// 顶点色的 RGB，alpha 不参与混合——VertexAlpha 轨道在原版里不影响画面。移植端的
+/// 加法是「ONE/ONE + 着色器预乘 alpha」，所以这里把 alpha 钉成 1，结果就是原版的 ONE/ONE。
+pub fn particle_color(color: [f32; 4]) -> (f32, f32) {
+    pack_color([color[0], color[1], color[2], 1.])
+}
+
+/// 贴图的 alpha 同理不参与：整张改成不透明。存进纹理缓存时换个名字（`#rgb`），
+/// 免得和按 alpha 混合的 quad 用到同一张图时互相顶掉。
+pub fn opaque_particle_texture(
+    texture_name: &str,
+    mut texture: image::RgbaImage,
+) -> (String, image::RgbaImage) {
+    for px in texture.pixels_mut() {
+        px.0[3] = 255;
+    }
+    (format!("{texture_name}#rgb"), texture)
+}
+
 /// Build the mesh one group draws through: `MAX_PARTICLES` quads whose
 /// vertices are rewritten every frame, host-dynamic like the snow's.
 ///
@@ -443,8 +462,9 @@ pub fn build_particle_entity(
         indices.extend_from_slice(&[b, b + 1, b + 2, b, b + 2, b + 3]);
     }
 
+    let (texture_name, texture) = opaque_particle_texture(texture_name, texture);
     let material =
-        ParticleMaterialDef::create_with_image(texture_name, Some(texture), BlendMode::Additive);
+        ParticleMaterialDef::create_with_image(&texture_name, Some(texture), BlendMode::Additive);
     let geometry = Geometry::new(&verts, None, &[uv, packed], indices, material);
 
     let object = factory.create_render_object(
@@ -512,7 +532,7 @@ pub fn write_particle_mesh(
                                 corner(-1., 1.),
                             ],
                             [(u0, 1.), (u0 + cell, 1.), (u0 + cell, 0.), (u0, 0.)],
-                            pack_color(p.color),
+                            particle_color(p.color),
                         )
                     }
                 };
@@ -537,6 +557,21 @@ pub fn write_particle_mesh(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn particle_alpha_never_reaches_the_blend() {
+        // 顶点色：RGB 照打包，alpha 一律 1。
+        let (rgb, a) = particle_color([1., 0.5, 0., 0.2]);
+        assert_eq!((rgb, a), (pack_color([1., 0.5, 0., 1.]).0, 1.));
+        // 贴图：alpha 全改 255，RGB 不动，缓存名换掉。
+        let mut img = image::RgbaImage::new(2, 1);
+        img.put_pixel(0, 0, image::Rgba([10, 20, 30, 0]));
+        img.put_pixel(1, 0, image::Rgba([40, 50, 60, 128]));
+        let (name, out) = opaque_particle_texture("a.tga", img);
+        assert_eq!(name, "a.tga#rgb");
+        assert_eq!(out.get_pixel(0, 0).0, [10, 20, 30, 255]);
+        assert_eq!(out.get_pixel(1, 0).0, [40, 50, 60, 255]);
+    }
     use fileformats::pal3::par::{ParEmitter, ParGroupParam};
 
     fn constant(v: f32) -> Vec<(f32, f32)> {

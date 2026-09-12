@@ -1945,6 +1945,10 @@ impl SceCommandCombat {
 
 impl SceCommand for SceCommandCombat {
     fn initialize(&mut self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
+        // 打仗时冒险模式整个停住（和对话、动画一样关掉冒险输入）；命令都跑完后 VM 会再打开。
+        // 不关的话，没有先放过对话就进战斗时（调试口开战、或脚本一上来就打），冒险导演
+        // 还会每帧去挪主角，而栈顶的战斗舞台里没有主角。
+        state.global_state_mut().set_adv_input_enabled(false);
         self.start(scene_manager.clone(), state);
         // 战场和参战的人。规则层不碰这些实体，摆不出来也照打。
         self.build_stage(&scene_manager, state);

@@ -1868,10 +1868,13 @@ impl AdventureDirectorProps {
         moving_direction: &Vec3,
         throw: f32,
     ) {
-        let role = scene_manager
-            .get_resolved_role(self.sce_vm.state(), -1)
-            .unwrap();
-        let role_controller = RoleController::get_role_controller(role.clone()).unwrap();
+        // 栈顶不是冒险场景（比如战斗舞台压上来了）时找不到主角，这一帧就不挪。
+        let Some(role) = scene_manager.get_resolved_role(self.sce_vm.state(), -1) else {
+            return;
+        };
+        let Some(role_controller) = RoleController::get_role_controller(role.clone()) else {
+            return;
+        };
         let mut position = role.transform().borrow().position();
 
         let nav_layer = role_controller.inner::<RoleController>().nav_layer();
