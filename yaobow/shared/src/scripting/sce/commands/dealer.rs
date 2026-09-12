@@ -23,7 +23,7 @@
 //! 列表右边的滚动条照原版（`dealer_layout::Scrollbar`）：上下钮一行一行滚，点槽翻一页，
 //! 滑块可以拖。
 //!
-//! 还没做的：按钮音效。
+//! 按钮音效照原版（[`ui_sound`]）：按钮 wa001，加减数量动了 wa005、动不了 wa004。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -36,6 +36,7 @@ use super::dealer_layout::{
 };
 use super::encamp::draw_sprite;
 use super::item_preview::ItemPreview;
+use super::ui_sound;
 use crate::openpal3::assis_lang;
 use crate::openpal3::states::attributes::{SLOT_ATTACK, SLOT_DEFENSE, SLOT_LUCK, SLOT_SPEED};
 use crate::openpal3::states::game_db::PLAYER_ACTOR_IDS;
@@ -371,6 +372,8 @@ pub struct SceCommandDealerMenu {
     drag: Option<f32>,
     /// 鼠标左键按着（滚动条按钮画按下的样子）。
     mouse_down: bool,
+    /// 这一帧要放的按钮音效。
+    sfx: Option<&'static str>,
 }
 
 impl std::fmt::Debug for SceCommandDealerMenu {
@@ -416,6 +419,7 @@ impl SceCommandDealerMenu {
             frame_dt: 0.,
             drag: None,
             mouse_down: false,
+            sfx: None,
         }
     }
 
@@ -634,16 +638,28 @@ impl SceCommandDealerMenu {
         }
     }
 
-    fn adjust(&mut self, delta: i32) {
+    /// 返回数量变没变。
+    fn adjust(&mut self, delta: i32) -> bool {
         let Some(g) = self.current().cloned() else {
-            return;
+            return false;
         };
-        let n = (self.in_cart(g.id) + delta).clamp(0, self.cap(&g).max(0));
+        let before = self.in_cart(g.id);
+        let n = (before + delta).clamp(0, self.cap(&g).max(0));
         if n == 0 {
             self.cart.remove(&g.id);
         } else {
             self.cart.insert(g.id, n);
         }
+        n != before
+    }
+
+    /// 加减钮 / 左右键：动了放 wa005，到头了放 wa004（`0x46bdc8` / `0x46c04c` 那两对分支）。
+    fn nudge(&mut self, delta: i32) {
+        self.sfx = Some(if self.adjust(delta) {
+            ui_sound::TICK
+        } else {
+            ui_sound::DENIED
+        });
     }
 
     fn set_tab(&mut self, tab: usize) {
@@ -844,6 +860,21 @@ impl SceCommandDealerMenu {
 
     /// 返回 true = 关店，脚本继续。
     fn handle(&mut self, state: &mut SceState, input: Input) -> bool {
+        // 键盘 / 手柄按到的也是那几个按钮，音效同鼠标。
+        let click = match (self.screen, self.mode, input) {
+            (Screen::Menu, _, Input::Confirm) => true,
+            (Screen::Page(_), Mode::Browse, Input::Confirm | Input::Dicker | Input::Cancel) => true,
+            (Screen::Page(Page::Sell), Mode::Browse, Input::NextTab) => true,
+            (
+                Screen::Page(_),
+                Mode::Haggle { .. },
+                Input::Confirm | Input::Cancel | Input::Dicker,
+            ) => true,
+            _ => false,
+        };
+        if click {
+            self.sfx = Some(ui_sound::CLICK);
+        }
         match (self.screen, self.mode) {
             (Screen::Menu, _) => {
                 let n = self.buttons.len().max(1);
@@ -862,8 +893,8 @@ impl SceCommandDealerMenu {
             (Screen::Page(_), Mode::Browse) => match input {
                 Input::Up => self.step(-1),
                 Input::Down => self.step(1),
-                Input::Left => self.adjust(-1),
-                Input::Right => self.adjust(1),
+                Input::Left => self.nudge(-1),
+                Input::Right => self.nudge(1),
                 Input::Confirm => self.confirm(state),
                 Input::Dicker => self.start_haggle(),
                 Input::NextTab => {
@@ -966,6 +997,20 @@ impl SceCommandDealerMenu {
 
     /// 返回 true = 关店。
     fn click(&mut self, state: &mut SceState, hit: Hit) -> bool {
+        // 菜单（`FUN_0045a600`）和子页上的按钮（`0x46b8dc` 起那一串）点下都放 wa001；
+        // 列表行和滚动条原版这里不放。
+        if matches!(
+            hit,
+            Hit::Menu(_)
+                | Hit::Yes
+                | Hit::No
+                | Hit::Dicker
+                | Hit::Exit
+                | Hit::Tier(_)
+                | Hit::Tab(_)
+        ) {
+            self.sfx = Some(ui_sound::CLICK);
+        }
         match hit {
             Hit::Menu(k) => {
                 if let Some(b) = self.buttons.get(k).copied() {
@@ -991,8 +1036,8 @@ impl SceCommandDealerMenu {
             Hit::Exit => self.back_to_menu(),
             Hit::Tier(t) => self.haggle_at(state, t),
             Hit::Tab(i) => self.set_tab(i),
-            Hit::Add => self.adjust(1),
-            Hit::Sub => self.adjust(-1),
+            Hit::Add => self.nudge(1),
+            Hit::Sub => self.nudge(-1),
             Hit::Scroll(part) => {
                 let page = self.geom().visible_rows() as isize;
                 match part {
@@ -1549,17 +1594,23 @@ impl SceCommandDealerMenu {
         let money = state.global_state().persistent_state().money();
         self.draw(ui, money, hover);
 
+        let mut done = false;
         if ui.is_mouse_clicked(MouseButton::Left) {
             if let Some(h) = hover {
-                if self.click(state, h) {
-                    return self.finish(state);
-                }
+                done = self.click(state, h);
             }
         }
-        if let Some(input) = Self::poll_input(state) {
-            if self.handle(state, input) {
-                return self.finish(state);
+        if !done {
+            if let Some(input) = Self::poll_input(state) {
+                done = self.handle(state, input);
             }
+        }
+        // 先放音效再关店，离开钮那一下才听得见。
+        if let Some(name) = self.sfx.take() {
+            ui_sound::play(state, name);
+        }
+        if done {
+            return self.finish(state);
         }
         false
     }

@@ -21,9 +21,13 @@
 //! 出货后黑框里摆产物的 3D 模型（[`ItemPreview`]，冶炼页那台相机是固定的），换一行
 //! 就收掉。
 //!
-//! 还没做：按钮音效、滚动条。
+//! 音效（[`ui_sound`]）：菜单钮 wa001，「是」放上材料 wa003、放不上 wa004，「否」wa001，
+//! 开炉 wa026。
+//!
+//! 还没做：滚动条。
 
 use super::item_preview::{ItemPreview, PreviewCamera};
+use super::ui_sound;
 use crate::openpal3::states::shop::ShopRng;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -386,6 +390,8 @@ pub struct SceCommandSmeltingMenu {
     sparks: Vec<spark::Spark>,
     /// 出货后黑框里的产物模型（原版 `+0x2a650`，有模型标记 `+0x2a654`）。
     preview: Option<Rc<ItemPreview>>,
+    /// 攒到下一帧开头放的音效（`update` 开头、`finish` 里放）。
+    sfx: Option<&'static str>,
     /// 攒不满一帧的时间。
     spark_clock: f32,
     rng: ShopRng,
@@ -421,6 +427,7 @@ impl SceCommandSmeltingMenu {
             anim: 0.,
             sparks: vec![],
             preview: None,
+            sfx: None,
             spark_clock: 0.,
             rng: ShopRng::new(0x2a77c),
             last_mouse: (-1., -1.),
@@ -496,6 +503,8 @@ impl SceCommandSmeltingMenu {
 
     /// 「是」（0x1114）/ 双击行：当场扣材料，问「你确定吗？」（`FUN_0047aab0`）。
     fn take(&mut self, state: &mut SceState) {
+        // `0x47b8e0` 起：放上了 wa003，放不上 wa004 [推断：几种放不上的情况都归 wa004]。
+        self.sfx = Some(ui_sound::DENIED);
         if self.firing.is_some() || self.talk == Talk::Sure {
             return;
         }
@@ -513,6 +522,7 @@ impl SceCommandSmeltingMenu {
         // 原版在这一行上直接减数（`FUN_0047aab0`），不重排列表。
         self.bump(-1);
         self.talk = Talk::Sure;
+        self.sfx = Some(ui_sound::NOTE);
     }
 
     /// 「否」（0x1115）：把刚扣的还回去（`FUN_0047adf0`），说 358。
@@ -520,6 +530,8 @@ impl SceCommandSmeltingMenu {
         if self.firing.is_some() {
             return;
         }
+        // `0x47b767`：还回去之后放 wa001。
+        self.sfx = Some(ui_sound::CLICK);
         if self.talk == Talk::Sure {
             if let Some(row) = self.cursor.and_then(|c| self.rows.get(c)).cloned() {
                 let mut p = state.global_state_mut().persistent_state_mut();
@@ -555,6 +567,7 @@ impl SceCommandSmeltingMenu {
                 // 开炉：`FUN_0047a400` 撒火花、`+0x2a774 = 1`。
                 if let Some(row) = self.cursor.and_then(|c| self.rows.get(c)).cloned() {
                     self.firing = Some(Firing { row, elapsed: 0. });
+                    self.sfx = Some(ui_sound::FORGE);
                     let rng = &mut self.rng;
                     self.sparks = (0..spark::COUNT)
                         .map(|_| spark::Spark::spawn(&mut || rng.rand15()))
@@ -685,6 +698,10 @@ impl SceCommandSmeltingMenu {
 
     /// 返回 true = 关掉冶炼。
     fn act(&mut self, state: &mut SceState, hit: Hit) -> bool {
+        // 菜单三个钮（`FUN_0047c430`）都放 wa001。
+        if let Hit::Menu(_) = hit {
+            self.sfx = Some(ui_sound::CLICK);
+        }
         match hit {
             Hit::Menu(0) => self.enter_page(state),
             Hit::Menu(1) => {
@@ -938,6 +955,9 @@ impl SceCommand for SceCommandSmeltingMenu {
         }
 
         self.anim += delta_sec;
+        if let Some(name) = self.sfx.take() {
+            ui_sound::play(state, name);
+        }
         self.step_firing(state, delta_sec);
         self.step_sparks(delta_sec);
         if let Some(p) = &self.preview {
@@ -972,6 +992,9 @@ impl SceCommand for SceCommandSmeltingMenu {
 impl SceCommandSmeltingMenu {
     /// 关掉冶炼：点的是「聊天」就跑参数里的过程（`FUN_0047c430` 的 0x403）。
     fn finish(&mut self, state: &mut SceState) -> bool {
+        if let Some(name) = self.sfx.take() {
+            ui_sound::play(state, name);
+        }
         if self.chat && self.end_proc > 0 {
             state.call_proc(self.end_proc as u32);
         }

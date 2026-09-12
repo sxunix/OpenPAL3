@@ -24,6 +24,7 @@ use super::appraise::{overlay, virtual_mouse};
 use super::dealer::{HostedPage, SceCommandDealerMenu, Tex, blit, button, text_width};
 use super::dealer_layout::{self as lay, INK, inside};
 use super::encamp::draw_sprite;
+use super::ui_sound;
 use crate::openpal3::assis_lang;
 use crate::openpal3::states::hockshop::{
     HockShopLevels, PawnRng, Proportions, max_investment, pick_dead_pawn_items,
@@ -227,6 +228,8 @@ pub struct SceCommandMiniGamePawnshop {
     /// 增资这一单打算投多少（`+0x148c`）。
     amount: i32,
     dragging: bool,
+    /// 这一帧要放的音效。
+    sfx: Option<&'static str>,
     /// 分红框里的字。
     note: Option<String>,
     /// 死当物（id, 单价）：进店时按等级和经营重点摸的。
@@ -263,6 +266,7 @@ impl SceCommandMiniGamePawnshop {
             option_cursor: 0,
             amount: 0,
             dragging: false,
+            sfx: None,
             note: None,
             dead_pawn: vec![],
             rng: ShopRng::new(0x1357_9bdf),
@@ -314,6 +318,8 @@ impl SceCommandMiniGamePawnshop {
                     .global_state_mut()
                     .persistent_state_mut()
                     .set_global(GUT_VAR, 0);
+                // 进店弹红利框（`FUN_00523820` `0x523c3f`）放 wa003。
+                self.sfx = Some(ui_sound::NOTE);
                 self.note = Some(format!(
                     "{}: {}",
                     self.text(lang::DIVIDEND, "您巳得到当铺的分红"),
@@ -389,9 +395,12 @@ impl SceCommandMiniGamePawnshop {
 
     /// 返回 true = 关店。
     fn activate(&mut self, state: &mut SceState, item: Item) -> bool {
+        // `FUN_0051f1b0`：置灰的钮点了放 wa004，其余 wa001。
         if !self.enabled(state, item) {
+            self.sfx = Some(ui_sound::DENIED);
             return false;
         }
+        self.sfx = Some(ui_sound::CLICK);
         match item {
             Item::Pawn | Item::Buy => {
                 let page = if item == Item::Pawn {
@@ -429,6 +438,7 @@ impl SceCommandMiniGamePawnshop {
     }
 
     fn open_header(&mut self, state: &SceState, h: usize) {
+        self.sfx = Some(ui_sound::CLICK);
         if self.header_open == Some(h) {
             self.header_open = None;
             self.focus = Focus::Header;
@@ -445,6 +455,7 @@ impl SceCommandMiniGamePawnshop {
     }
 
     fn choose(&mut self, state: &mut SceState, k: usize) {
+        self.sfx = Some(ui_sound::CLICK);
         let Some(h) = self.header_open else { return };
         let which = HEADER_CHOICE[h];
         state
@@ -460,6 +471,7 @@ impl SceCommandMiniGamePawnshop {
 
     /// 增资确定（`FUN_005249a0` 的 0xa00b07）。
     fn invest(&mut self, state: &mut SceState) {
+        self.sfx = Some(ui_sound::CLICK);
         if self.amount > 0 {
             state
                 .global_state_mut()
@@ -475,12 +487,21 @@ impl SceCommandMiniGamePawnshop {
 
     /// 返回 true = 关店（资本还是 0 时点取消就直接出店）。
     fn cancel_invest(&mut self, state: &SceState) -> bool {
+        self.sfx = Some(ui_sound::CLICK);
         self.amount = 0;
         if state.global_state().persistent_state().hockshop_capital() > 0 {
             self.screen = Screen::Business;
             false
         } else {
             true
+        }
+    }
+
+    /// 拖动条动了一格放 wa005（`FUN_005249a0` `0x524ab1`）。
+    fn set_amount(&mut self, v: i32) {
+        if v != self.amount {
+            self.amount = v;
+            self.sfx = Some(ui_sound::TICK);
         }
     }
 
@@ -537,7 +558,10 @@ impl SceCommandMiniGamePawnshop {
     /// 返回 true = 关店。
     fn click(&mut self, state: &mut SceState, hit: Hit, mx: f32) -> bool {
         match hit {
-            Hit::NoteYes => self.note = None,
+            Hit::NoteYes => {
+                self.sfx = Some(ui_sound::CLICK);
+                self.note = None;
+            }
             Hit::Menu(k) => {
                 self.menu_cursor = k;
                 self.focus = Focus::Menu;
@@ -547,7 +571,8 @@ impl SceCommandMiniGamePawnshop {
             Hit::Option(k) => self.choose(state, k),
             Hit::Bar => {
                 self.dragging = true;
-                self.amount = self.bar_value(state, mx);
+                let v = self.bar_value(state, mx);
+                self.set_amount(v);
             }
             Hit::Yes => self.invest(state),
             Hit::No => return self.cancel_invest(state),
@@ -581,9 +606,9 @@ impl SceCommandMiniGamePawnshop {
                 let max = Self::max_amount(state);
                 let step = (max / 20).max(1);
                 if left || down {
-                    self.amount = (self.amount - step).clamp(0, max);
+                    self.set_amount((self.amount - step).clamp(0, max));
                 } else if right || up {
-                    self.amount = (self.amount + step).clamp(0, max);
+                    self.set_amount((self.amount + step).clamp(0, max));
                 } else if confirm {
                     self.invest(state);
                 } else if cancel {
@@ -833,7 +858,8 @@ impl SceCommand for SceCommandMiniGamePawnshop {
         let hover = self.hit(state, mx, my);
         if self.dragging {
             if ui.is_mouse_down(MouseButton::Left) {
-                self.amount = self.bar_value(state, mx);
+                let v = self.bar_value(state, mx);
+                self.set_amount(v);
             } else {
                 self.dragging = false;
             }
@@ -845,14 +871,19 @@ impl SceCommand for SceCommandMiniGamePawnshop {
             }
         }
         self.draw(ui, state, hover);
+        let mut done = false;
         if ui.is_mouse_clicked(MouseButton::Left) {
             if let Some(h) = hover {
-                if self.click(state, h, mx) {
-                    return self.finish(state);
-                }
+                done = self.click(state, h, mx);
             }
         }
-        if self.keys(state) {
+        if !done {
+            done = self.keys(state);
+        }
+        if let Some(name) = self.sfx.take() {
+            ui_sound::play(state, name);
+        }
+        if done {
             return self.finish(state);
         }
         false

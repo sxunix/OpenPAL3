@@ -86,6 +86,7 @@ mod switch_mode;
 mod team;
 mod testgoto;
 mod text_ui;
+mod ui_sound;
 pub mod vars;
 mod water_magic;
 mod world_rotate;
