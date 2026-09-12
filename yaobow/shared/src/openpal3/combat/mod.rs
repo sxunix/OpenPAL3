@@ -13,6 +13,7 @@
 pub mod actions;
 pub mod ai;
 pub mod camera;
+pub mod combo;
 pub mod encounter;
 pub mod formulas;
 pub mod hud;

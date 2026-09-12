@@ -18,7 +18,11 @@ pub const PAL3_APP_NAME: &str = "OpenPAL3";
 pub const EQUIPMENT_SLOTS: usize = 6;
 
 /// 五灵阵法 has five standing positions.
-pub const LINEUP_POSITIONS: u8 = 5;
+pub const LINEUP_POSITIONS: u8 = 6;
+
+/// 新游戏的阵形（`FUN_00408fd0` 写角色记录的 `+0x29a`）：景天 3 风、雪见 5 土、龙葵 1 水、
+/// 紫萱 2 火、长卿 4 雷。这里存格子号，也就是值 − 1（阵法页写回时 `FUN_004845f0` 是格子号 + 1）。
+pub const DEFAULT_LINEUP: [(u32, u8); 5] = [(0, 2), (1, 4), (2, 0), (3, 1), (4, 3)];
 
 pub const SLOT_HAT: usize = 0;
 pub const SLOT_CLOTH: usize = 1;
@@ -166,8 +170,9 @@ pub struct PersistentState {
     /// Elapsed play time in seconds; shown on the status page.
     #[serde(default)]
     play_time: f32,
-    /// 阵法: which of the five 五灵 formation positions each character
-    /// stands in. A position holds at most one character.
+    /// 阵法: which of the six formation positions (0..5 = 水火风雷土 + the
+    /// middle of the disc) each character stands in. A position holds at
+    /// most one character.
     #[serde(default)]
     lineup: HashMap<u32, u8>,
     /// Combat actors recorded in the 侠义榜. Populated when a monster is
@@ -320,7 +325,7 @@ impl PersistentState {
             money: 0,
             favor: HashMap::new(),
             play_time: 0.,
-            lineup: HashMap::new(),
+            lineup: DEFAULT_LINEUP.into_iter().collect(),
             seen_monsters: BTreeSet::new(),
             features: BTreeSet::new(),
             longkui_mode: 0,
@@ -1216,7 +1221,7 @@ mod tests {
         assert_eq!(state.lineup_occupant(2), Some(1));
         assert_eq!(state.lineup_position(0), None);
 
-        assert!(!state.set_lineup_position(3, 9), "只有五个阵位");
+        assert!(!state.set_lineup_position(3, 9), "只有六个阵位");
         state.clear_lineup_position(1);
         assert_eq!(state.lineup_occupant(2), None);
     }

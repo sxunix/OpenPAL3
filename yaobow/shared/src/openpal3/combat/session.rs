@@ -7,15 +7,16 @@
 //! per-frame `FUN_004db7a0` / `FUN_004f7910` pair) is: fill gauges, let
 //! whoever is ready act, test the outcome after every action. The menu
 //! is `FUN_00500d50`. Only the entries that have a rules-side
-//! implementation are offered: 攻击 / 仙术 / 道具 / 防御 / 逃跑. 合击 is
-//! not yet ported and is simply absent from the list — a placeholder,
-//! not a claim about the original's menu. The order the five sit in is
+//! implementation are offered: 攻击 / 仙术 / 道具 / 防御 / 逃跑. 合击 has no
+//! entry of its own: as in the original, a 仙术 turns into a 合击 by itself
+//! when a combo's conditions hold (see [`super::combo`]). The order the five sit in is
 //! not read off the original either `[推断]`.
 
 use std::collections::VecDeque;
 
 use super::actions::{ATTR_HP, ItemEffect, SPECIAL_COST_GU, SPECIAL_COST_MONEY, SkillEffect};
 use super::ai::{self, Decision, SkillOption};
+use super::combo::{self, ComboDef};
 use super::formulas::CombatRng;
 use super::hud;
 use super::settlement::{self, DefeatedEnemy, Spoils, Survivor};
@@ -160,6 +161,9 @@ pub struct PlayerTurn {
     pub menu: Menu,
 }
 
+/// 合击技开演用的出手速度倍率：大于 3 就是瞬发（`FUN_00514870` 里 `FUN_004db750(k, 0, 11500, 1)`）。
+const COMBO_MULTIPLIER: i32 = 4;
+
 /// How many log lines are kept for the overlay.
 pub const LOG_LINES: usize = 8;
 
@@ -187,6 +191,13 @@ pub enum Pending {
     Escape {
         slot: usize,
     },
+    /// 合击技（行动码 0x10e）。`combo` 是 [`CombatSession::combos`] 的下标，`target` 是
+    /// 原先那个仙术选的目标。
+    Combo {
+        slot: usize,
+        target: usize,
+        combo: usize,
+    },
 }
 
 impl Pending {
@@ -195,6 +206,7 @@ impl Pending {
             Pending::Attack { slot, .. }
             | Pending::Cast { slot, .. }
             | Pending::Item { slot, .. }
+            | Pending::Combo { slot, .. }
             | Pending::Escape { slot } => *slot,
         }
     }
@@ -227,6 +239,8 @@ pub struct CombatSession {
     items: Vec<ItemChoice>,
     /// 用掉的道具 id，散场时写回背包（五灵珠扣充能，其余扣数量）。
     pub used_items: Vec<u32>,
+    /// 合击技表（gdb 里的顺序），开战时给。
+    combos: Vec<ComboDef>,
     /// 选好了但还在出手段的那个行动，见 [`Pending`]。同一时刻只可能有一个
     /// ——调度器一次只排一个行动任务。
     pub pending: Option<Pending>,
@@ -264,6 +278,7 @@ impl CombatSession {
             casts: Vec::new(),
             items: Vec::new(),
             used_items: Vec::new(),
+            combos: Vec::new(),
             finished: None,
         }
     }
@@ -277,6 +292,40 @@ impl CombatSession {
 
     pub fn items(&self) -> &[ItemChoice] {
         &self.items
+    }
+
+    /// 合击技表，按数据库里的顺序（配的时候先到先得）。
+    pub fn set_combos(&mut self, combos: Vec<ComboDef>) {
+        self.combos = combos;
+    }
+
+    pub fn combos(&self) -> &[ComboDef] {
+        &self.combos
+    }
+
+    /// 调试：轮到我方有人选行动时，不看条件直接放 `id` 这条合击技，打第一个还站着的
+    /// 敌人。不是我方回合、或者表里没有这条时返回 false。
+    pub fn debug_combo(&mut self, id: u32) -> bool {
+        let Some(slot) = self.turn.map(|t| t.slot) else {
+            return false;
+        };
+        let Some(combo) = self.combos.iter().position(|c| c.id == id) else {
+            return false;
+        };
+        let Some(target) = self.standing(Side::Enemy).first().copied() else {
+            return false;
+        };
+        self.turn = None;
+        self.push_log(format!("合击「{}」（调试）", self.combos[combo].name));
+        self.commit(
+            Pending::Combo {
+                slot,
+                target,
+                combo,
+            },
+            COMBO_MULTIPLIER,
+        );
+        true
     }
 
     /// 还有没有得用（`FUN_004f6fb0`：拿着就行，五灵珠看充能）。
@@ -501,6 +550,11 @@ impl CombatSession {
                 skill,
             } => self.cast(slot, target, skill),
             Pending::Item { slot, target, item } => self.use_item(slot, target, item),
+            Pending::Combo {
+                slot,
+                target,
+                combo,
+            } => self.combo(slot, target, combo),
             Pending::Escape { slot } => {
                 let ok = self.battle.try_escape(slot);
                 self.push_log(format!(
@@ -519,6 +573,24 @@ impl CombatSession {
     /// 登记一个行动并进入出手段。`multiplier` 是 `FUN_004f76c0` 给的出手速度
     /// 倍率，普通攻击没有技能可查，按 1 走。
     fn commit(&mut self, action: Pending, multiplier: i32) {
+        // 合击技：原版在行动任务开头（`FUN_00514870`）先问 `FUN_004eea70`，配上了就把
+        // 行动改成 0x10e、复位行动条、交给 0x514220 直接开演，不走出手段。这里用瞬发
+        // （倍率 > 3，出手条直接满）让它下一帧就开演 [近似]。
+        let (action, multiplier) = match self.combo_for(&action) {
+            Some((combo, target)) => {
+                let slot = action.slot();
+                self.push_log(format!("合击「{}」", self.combos[combo].name));
+                (
+                    Pending::Combo {
+                        slot,
+                        target,
+                        combo,
+                    },
+                    COMBO_MULTIPLIER,
+                )
+            }
+            None => (action, multiplier),
+        };
         let slot = action.slot();
         self.pending = Some(action);
         match action {
@@ -816,6 +888,41 @@ impl CombatSession {
             self.name(target),
             moved
         ));
+        self.note_deaths(slot);
+    }
+
+    /// 这次仙术配不配得上一条合击技；配上了给 (合击技下标, 目标)。
+    fn combo_for(&self, action: &Pending) -> Option<(usize, usize)> {
+        let Pending::Cast {
+            slot,
+            target,
+            skill,
+        } = *action
+        else {
+            return None;
+        };
+        let id = self.skills(slot).get(skill)?.effect.id;
+        combo::find(&self.combos, slot, id, &self.battle).map(|c| (c, target))
+    }
+
+    /// 合击技生效（`FUN_004ef8b0` → `FUN_004f1c40`）：每个目标按 `FUN_004eef20` 的
+    /// 0x10e 分支改精，扣了精的让它出手段从头来；不扣任何消耗，原来那个仙术也不算用过。
+    fn combo(&mut self, slot: usize, target: usize, i: usize) {
+        let Some(def) = self.combos.get(i).cloned() else {
+            return;
+        };
+        for t in combo::targets(&def, target, &self.battle) {
+            let delta = combo::hp_delta(&def, t, &mut self.battle);
+            let moved = self
+                .battle
+                .get_mut(t)
+                .map(|c| c.change_hp(delta))
+                .unwrap_or(0);
+            if moved < 0 {
+                self.battle.restart_cast(t);
+            }
+            self.push_log(format!("{} → {} 精{:+}", def.name, self.name(t), moved));
+        }
         self.note_deaths(slot);
     }
 

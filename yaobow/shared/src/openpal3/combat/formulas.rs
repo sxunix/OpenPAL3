@@ -47,7 +47,7 @@ impl CombatRng {
 }
 
 /// C's float→int conversion: truncate toward zero.
-fn ftol(v: f32) -> i32 {
+pub(crate) fn ftol(v: f32) -> i32 {
     v as i32
 }
 

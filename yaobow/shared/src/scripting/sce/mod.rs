@@ -124,6 +124,8 @@ pub struct SceState {
     combat_action_requests: Vec<crate::openpal3::combat::stage_action::ActionCue>,
     /// 特效 `quake` 类要的镜头震动 `[幅度, 每秒衰减, 频率]`，只留最新一个。
     combat_shake_request: Option<[f32; 3]>,
+    /// 调试口要战斗里直接放的合击技 id（agent `combat_combo`）。
+    combat_combo_request: Option<u32>,
     /// 特效 `bink` 类要播的 2D 动画（`movie/2DEFFECT` 下的名字，如 `t102`）。
     combat_movie_requests: Vec<String>,
 }
@@ -183,6 +185,7 @@ impl SceState {
             combat_camera_requests: vec![],
             combat_action_requests: vec![],
             combat_shake_request: None,
+            combat_combo_request: None,
             combat_movie_requests: vec![],
         }
     }
@@ -381,6 +384,15 @@ impl SceState {
     }
 
     /// 特效 `quake` 类（0x4d35e0）：写战斗镜头的震动参数。
+    /// 调试：让战斗在下一个我方回合直接放这条合击技（不管条件）。
+    pub fn request_combat_combo(&mut self, id: u32) {
+        self.combat_combo_request = Some(id);
+    }
+
+    pub fn take_combat_combo_request(&mut self) -> Option<u32> {
+        self.combat_combo_request.take()
+    }
+
     pub fn request_combat_shake(&mut self, amplitude: f32, decay: f32, frequency: f32) {
         self.combat_shake_request = Some([amplitude, decay, frequency]);
     }

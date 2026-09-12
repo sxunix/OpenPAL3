@@ -19,11 +19,10 @@
 // Dragging characters onto the disc is not reproduced — the 阵位 buttons
 // are the way to move them.
 //
-// Which 阵位 index corresponds to which 五灵 is not in the code — the
-// original addresses them by index only — so this page numbers them and
-// stores a character's chosen position as 0..4. The sixth button of each
-// panel is the original's master switch (state byte 5), not a position,
-// and is drawn but inert.
+// A character's position is stored as the button's index 0..5. On the
+// way back to the role record the original writes index + 1
+// (`FUN_004845f0`): 1..5 水火风雷土, 6 the middle of the disc; 合击技
+// check those values (`combat/combo.rs`).
 
 import radiance;
 import shared.openpal3;
@@ -158,11 +157,10 @@ pub fn paint_lineup_menu(
 
             // `Lineup<n>1.tga` is the selected art, `<n>0` the normal one.
             let mut variant = "0";
-            if n < 5 && n == here { variant = "1"; }
+            if n == here { variant = "1"; }
             chrome.sprite(ui, atlas, SPR_SLOT + chrome.int_str(n) + variant + ".tga", bx, by, s);
 
-            // Button 5 is the original's master switch, not a position.
-            if n < 5 && click
+            if click
                 && mx >= bx && mx <= bx + BTN_W * s
                 && my >= by && my <= by + BTN_H * s {
                 let _ = pal3.set_lineup_position(role, n);

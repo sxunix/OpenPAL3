@@ -949,9 +949,22 @@ impl SceCommandCombat {
                 for (i, v) in eff.elements.iter().enumerate() {
                     c.elements[i + 1] = *v > 0;
                 }
-                // 五灵阵位：原版 `FUN_004ed250` 从冒险侧记录的 `+0x29a`
-                // 搬进战斗位的 `+0x470`，那就是阵法页存的位。
-                c.element_position = persistent.lineup_position(actor_id).unwrap_or(0);
+                // 五灵阵位：原版 `FUN_004ed250` 从冒险侧记录的 `+0x29a` 搬进战斗位的
+                // `+0x470`。阵法页写回时（`FUN_004845f0`）存的是「格子号 + 1」：1..5 水火
+                // 风雷土、6 盘心；移植端存的是格子号 0..5。
+                c.element_position = persistent
+                    .lineup_position(actor_id)
+                    .map(|p| p + 1)
+                    .unwrap_or(0);
+                // 手上武器的类型（战斗位 `+0x288`），合击技按它比对。
+                c.weapon_type = persistent
+                    .equipped(
+                        actor_id,
+                        crate::openpal3::states::persistent_state::SLOT_WEAPON,
+                    )
+                    .and_then(|id| db.item(id))
+                    .map(|i| i.weapon_type)
+                    .unwrap_or(0);
                 if c.hp <= 0 {
                     c.alive = false;
                 }
@@ -1064,6 +1077,12 @@ impl SceCommandCombat {
         }
         let mut session = CombatSession::new(battle, profiles, seed.rotate_left(13) ^ 0x5bd1_e995);
         session.set_items(items);
+        session.set_combos(
+            db.combo_skills()
+                .iter()
+                .map(crate::openpal3::combat::combo::ComboDef::from_gdb)
+                .collect(),
+        );
         self.session = Some(session);
     }
 
@@ -1291,7 +1310,7 @@ impl SceCommandCombat {
         if self.run.map(|r| r.slot) != Some(slot) {
             let kind = match session.pending {
                 Some(Pending::Attack { .. }) => ActKind::Attack,
-                Some(Pending::Cast { .. }) => ActKind::Cast,
+                Some(Pending::Cast { .. }) | Some(Pending::Combo { .. }) => ActKind::Cast,
                 Some(Pending::Item { target, .. }) => ActKind::Item {
                     hostile: (target < PARTY_SLOTS) != (slot < PARTY_SLOTS),
                 },
@@ -1305,6 +1324,8 @@ impl SceCommandCombat {
                     session.skills(slot).get(skill).map(|s| s.effect.id)
                 }
                 Some(Pending::Item { item, .. }) => session.items().get(item).map(|i| i.effect.id),
+                // 合击技的特效挂在链接表里它自己的 id 下（501..510）。
+                Some(Pending::Combo { combo, .. }) => session.combos().get(combo).map(|c| c.id),
                 _ => None,
             };
             let link = link_id.and_then(|id| self.linker.as_ref()?.find(id));
@@ -1323,7 +1344,8 @@ impl SceCommandCombat {
         let target = match session.pending {
             Some(Pending::Attack { target, .. })
             | Some(Pending::Cast { target, .. })
-            | Some(Pending::Item { target, .. }) => Some(target),
+            | Some(Pending::Item { target, .. })
+            | Some(Pending::Combo { target, .. }) => Some(target),
             _ => None,
         };
         let target_home = target
@@ -1568,7 +1590,7 @@ impl SceCommandCombat {
             };
             let acting = pending.filter(|p| p.slot() == slot).map(|p| match p {
                 Pending::Attack { .. } => ActKind::Attack,
-                Pending::Cast { .. } => ActKind::Cast,
+                Pending::Cast { .. } | Pending::Combo { .. } => ActKind::Cast,
                 Pending::Item { target, .. } => ActKind::Item {
                     hostile: (target < PARTY_SLOTS) != (slot < PARTY_SLOTS),
                 },
@@ -2075,6 +2097,13 @@ impl SceCommand for SceCommandCombat {
             }
         }
         // 特效 `quake` 类：镜头每帧叠一个上下偏移（FUN_005054f0），震完那一帧再按原位姿摆一次。
+        if let Some(id) = state.take_combat_combo_request() {
+            if let Some(session) = self.session.as_mut() {
+                if !session.debug_combo(id) {
+                    log::warn!("Combat: 调试合击 {id} 没放出去（不是我方回合或没有这条）");
+                }
+            }
+        }
         if let Some([amp, decay, freq]) = state.take_combat_shake_request() {
             self.shake = Some(crate::openpal3::combat::camera::Shake::new(
                 amp, decay, freq,

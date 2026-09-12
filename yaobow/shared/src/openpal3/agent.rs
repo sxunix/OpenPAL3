@@ -533,6 +533,16 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "combat_combo" => {
+            // [合击技 id] —— 战斗里轮到我方时直接放这条合击技（不看条件），看演出用。
+            if let Some(id) = int_arg(0) {
+                director.request_combat_combo(id.max(0) as u32);
+            }
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "lineup_set" => {
             // [角色号, 站位, 角色号, 站位…] —— 排阵法站位（0..4），测五灵盘用。
             let mut i = 0;

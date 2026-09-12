@@ -465,6 +465,15 @@ impl AdventureDirector {
             .add_to_team(actor_id);
     }
 
+    /// Ask the running battle to fire a 合击技 on the next party turn — a test aid.
+    pub fn request_combat_combo(&self, id: u32) {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .state_mut()
+            .request_combat_combo(id);
+    }
+
     /// Put a character on a formation position — a test aid for the 五灵 disc.
     pub fn set_lineup_position(&self, actor_id: u32, position: u8) {
         self.props

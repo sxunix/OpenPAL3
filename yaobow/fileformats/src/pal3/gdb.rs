@@ -337,8 +337,12 @@ pub struct ComboSkillInfo {
     pub target_range_type: u8,
     /// Per-[`ActorAttributeType`] [`AttributeImpactType`].
     pub attribute_impact_type: [u8; ATTRIBUTE_COUNT],
-    _pad_0: [u8; 3],
+    _pad_0: u8,
+    /// `+0x25e`：`FUN_004eef20` 的 0x10e 分支按 `combo+0x25e+i*2` 取。实机只有精
+    /// （下标 0）一格非零：九条是 −300..−1200，「珠联璧合」是 +500。原版只拿它的
+    /// **正负号**，数值由 `FUN_004f2800` 算。（以前按 3 字节填充读在 0x260，读偏了。）
     pub attribute_impact_value: [i16; ATTRIBUTE_COUNT],
+    _pad_1: [u8; 2],
 }
 
 macro_rules! primitive_enum {

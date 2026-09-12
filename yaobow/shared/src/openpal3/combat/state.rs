@@ -159,6 +159,8 @@ pub struct Combatant {
     /// 只是序号。合击技的位置要求（`ComboSkillInfo::element_position_requirements`）
     /// 拿它比对——见 `combat_flow.md` 第 9.7 节。
     pub element_position: u8,
+    /// 手上武器的类型（原版战斗位 `+0x288`，gdb `WeaponType`），合击技按它比对；0 = 没拿。
+    pub weapon_type: u8,
     /// 蓄力条（原版 `+0x20`）。
     pub gauge: f32,
     /// 出手条（原版 `+0x24`）。原版是两条独立的条，不是一条复用。
@@ -192,6 +194,7 @@ impl Combatant {
             earth_poison_acc: 0.,
             defending: false,
             element_position: 0,
+            weapon_type: 0,
             gauge: 0.,
             cast_gauge: 0.,
             cast_rate: 0,
@@ -890,6 +893,35 @@ impl Battle {
 
     /// A plain physical attack from `attacker` onto `target`.
     pub fn basic_attack(&mut self, attacker: usize, target: usize) -> i32 {
+        let delta = self.physical_hit(attacker, target);
+        // The original does not clamp a negative-damage (defence-heavy)
+        // result here; the HP path decides what happens.
+        self.get_mut(target)
+            .map(|t| t.change_hp(delta))
+            .unwrap_or(0)
+    }
+
+    /// `FUN_004f2800`：几个人各打 `target` 一下（`FUN_004ef7e0`，不落到身上）加起来
+    /// 翻倍，再 ±10%（`round(和 × 0.1)` 以内，两次随机决定加还是减）。合击技用。
+    pub fn joint_physical(&mut self, attackers: &[usize], target: usize) -> i32 {
+        let sum: i32 = attackers
+            .iter()
+            .map(|a| self.physical_hit(*a, target))
+            .sum();
+        let mut v = sum * 2;
+        if formulas::SPREAD_ENABLED {
+            let spread = formulas::ftol(v as f32 * 0.1).abs();
+            if spread != 0 {
+                let r = self.rng.below(spread);
+                v += if self.rng.coin() { r } else { -r };
+            }
+        }
+        v
+    }
+
+    /// One physical blow's HP delta (negative is damage) without landing it
+    /// — `FUN_004ef7e0`'s dodge test plus the kind-7 formula.
+    pub fn physical_hit(&mut self, attacker: usize, target: usize) -> i32 {
         let (level, atk, attacker_element) = {
             let Some(a) = self.get(attacker) else {
                 return 0;
@@ -911,12 +943,7 @@ impl Battle {
         }
 
         let relation = formulas::element_relation(attacker_element, &defender_elements);
-        let delta = formulas::physical_damage(&mut self.rng, level, atk, def, false, relation);
-        // The original does not clamp a negative-damage (defence-heavy)
-        // result here; the HP path decides what happens.
-        self.get_mut(target)
-            .map(|t| t.change_hp(delta))
-            .unwrap_or(0)
+        formulas::physical_damage(&mut self.rng, level, atk, def, false, relation)
     }
 }
 

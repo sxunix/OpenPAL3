@@ -313,11 +313,13 @@ impl LineupDisc {
                 }
                 _ => [0., 0., 0.],
             };
+            // 站盘心的另外转 90°（`FUN_00485980` 的 case 6 写节点 `+0x38 = 90`）。
+            let extra = if position_of(*id) == Some(5) { 90. } else { 0. };
             e.transform()
                 .borrow_mut()
                 .clear_rotation()
                 .set_position(&Vec3::new(pos[0], pos[1], pos[2]))
-                .rotate_axis_angle_local(&Vec3::UP, facing(pos).to_radians());
+                .rotate_axis_angle_local(&Vec3::UP, (facing(pos) + extra).to_radians());
         }
         for (k, p) in self.pointers.iter().enumerate() {
             p.set_visible(!taken[k]);
