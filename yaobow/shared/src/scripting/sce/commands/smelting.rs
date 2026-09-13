@@ -24,7 +24,7 @@
 //! 音效（[`ui_sound`]）：菜单钮 wa001，「是」放上材料 wa003、放不上 wa004，「否」wa001，
 //! 开炉 wa026。
 //!
-//! 还没做：滚动条。
+//! 滚动条照原版（`SCROLL`，见 `switch/re/notes/smelting.md`）。
 
 use super::item_preview::{ItemPreview, PreviewCamera};
 use super::ui_sound;

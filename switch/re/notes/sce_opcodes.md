@@ -116,21 +116,21 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 22 | `00435080` | int string int | ActorPerformActionCommand | ✓ SceCommandRoleShowAction | 使角色执行一个动作，第三个参数是循环次数：>0 播几遍、−1 无限循环（不阻塞脚本）、−2 播完保持末帧 |
 | 23 | `00436190` | int int | ActorSetFacingDirectionCommand | ✓ SceCommandRoleSetFace | 瞬间使角色面向的方向改变， |
 | 24 | `00436280` | int int | ActorRotateFacingCommand | ✓ SceCommandRoleTurnFace | 转动角色面向的方向， |
-| 25 | `004365a0` | （无） | TeamOpenCommand | 桩 TeamOpen | 玩家队伍散开 |
-| 26 | `004365b0` | （无） | TeamCloseCommand | 桩 TeamClose | 玩家队伍合并 |
+| 25 | `004365a0` | （无） | TeamOpenCommand | ✓ SceCommandTeamOpen | 玩家队伍散开 |
+| 26 | `004365b0` | （无） | TeamCloseCommand | ✓ SceCommandTeamClose | 玩家队伍合并 |
 | 27 | `004365e0` | int | PlayerEnableInputCommand | ✓ SceCommandRoleInput | 是否允许玩家控制当前主角， |
 | 28 | `00436600` | int int | ActorActivateCommand | ✓ SceCommandRoleActive | 设置角色是否激活， |
 | 29 | `00436680` | int int | ActorSetScriptCommand | ✓ SceCommandRoleScript | 设置角色的对话脚本， |
-| 30 | `00435320` | int | CameraFocusOnActorCommand | 桩 CameraFocusRole | 设置摄像机锁定角色， |
-| 31 | `004352d0` | float float float | CameraFocusOnPositionCommand | 桩 CameraFocusPoint | 设置摄像机视角锁定一个定点， |
-| 32 | `004353a0` | float float int | CameraPushCommand | 桩 CameraPush | 镜头推动作， |
+| 30 | `00435320` | int | CameraFocusOnActorCommand | ✓ SceCommandCameraFocusRole | 设置摄像机锁定角色， |
+| 31 | `004352d0` | float float float | CameraFocusOnPositionCommand | ✓ SceCommandCameraFocusPoint | 设置摄像机视角锁定一个定点， |
+| 32 | `004353a0` | float float int | CameraPushCommand | ✓ SceCommandCameraPush | 镜头推动作， |
 | 33 | `004353f0` | float float float int | CameraOrbitCommand | ✓ SceCommandCameraRotate | 镜头环绕LookAt位置旋转（LookAt点固定）， |
-| 34 | `004354f0` | float float float float int | CameraMoveCommand | —  | 镜头当前位置移动（保持当前角度）， |
-| 35 | `00435470` | float float float int | CameraRotateCommand | 桩 CameraWag | 镜头摇动（from点固定）， |
-| 36 | `00435570` | float float float float float float | CameraSetTransformCommand | —  | 设置镜头参数， |
+| 34 | `004354f0` | float float float float int | CameraMoveCommand | ✓ SceCommandCameraMove | 镜头当前位置移动（保持当前角度）， |
+| 35 | `00435470` | float float float int | CameraRotateCommand | ✓ SceCommandCameraSwing | 镜头摇动（from点固定）， |
+| 36 | `00435570` | float float float float float float | CameraSetTransformCommand | ✓ SceCommandCameraSet | 设置镜头参数， |
 | 37 | `004356c0` | int | CameraSetDefaultTransformCommand | ✓ SceCommandCameraDefault | 调用默认镜头参数， |
-| 38 | `00435710` | （无） | CameraPushStateCommand | 桩 CameraPushState | 保存镜头状态 |
-| 39 | `00435720` | （无） | CameraPopStateCommand | 桩 CameraPopState | 取出镜头状态 |
+| 38 | `00435710` | （无） | CameraPushStateCommand | ✓ SceCommandCameraPushState | 保存镜头状态 |
+| 39 | `00435720` | （无） | CameraPopStateCommand | ✓ SceCommandCameraPopState | 取出镜头状态 |
 | 40 | `00435730` | int int int | — | —  |  |
 | 41 | `00435770` | int int int | ActorSetAttributeValueCommand | ✓ SceCommandSetRoleAtt | 设置角色某项属性值的数值 |
 | 42 | `00436b40` | int | LongKuiSwitchModeCommand | ✓ SceCommandLongKuiMode | 设置龙葵形象， |
@@ -143,8 +143,8 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 49 | `00437610` | int | ScriptVarSetMoneyCommand | ✓ SceCommandGetMoney | 取出当前金钱数并赋值给变量， |
 | 50 | `004375e0` | int int | ScriptVarSetActorFavorCommand | ✓ SceCommandGetFavor | 取出好感值并赋值给变量， |
 | 51 | `00437550` | int int | ActorAddSkillCommand | ✓ SceCommandAddSkill | 某个主角学会新特技， |
-| 52 | `004376a0` | int | ScriptVarSetMostFavorableActorIdCommand | —  | 取得主角对谁的好感最高并赋值给变量， |
-| 53 | `004376f0` | int | ScriptVarSetLeastFavorableActorIdCommand | —  | 取得主角对谁的好感最低并赋值给变量， |
+| 52 | `004376a0` | int | ScriptVarSetMostFavorableActorIdCommand | ✓ SceCommandGetFavorite | 取得主角对谁的好感最高并赋值给变量， |
+| 53 | `004376f0` | int | ScriptVarSetLeastFavorableActorIdCommand | ✓ SceCommandGetFavorite | 取得主角对谁的好感最低并赋值给变量， |
 | 54 | `004357b0` | int int | ActorSetAttributeToFullCommand | ✓ SceCommandFullRoleAtt | 设置主角的某项属性为满值，例如精加满， |
 | 55 | `-` | （无） | — | —  |  |
 | 60 | `00436440` | int int | — | —  |  |
@@ -159,9 +159,9 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 69 | `00437190` | （无） | CameraFadeOutCommand | ✓ SceCommandFadeOut | 屏幕淡出 |
 | 70 | `004371b0` | （无） | CameraFadeInCommand | ✓ SceCommandFadeIn | 屏幕淡入 |
 | 71 | `00435170` | int | ActorStopActionAndStandCommand | ✓ SceCommandRoleStop | 使角色结束当前行为，并站立在当前位置， |
-| 72 | `00437210` | int int | ActorShowEmojiCommand | 桩 RoleEmote | 在角色头顶出现表情符号， |
+| 72 | `00437210` | int int | ActorShowEmojiCommand | ✓ SceCommandRoleEmote | 在角色头顶出现表情符号， |
 | 73 | `00437280` | int int int int | CombatEnterNormalFightCommand | ✓ SceCommandCombat | 进入普通战斗 |
-| 74 | `00437440` | int int | ActorPerformClimbActionCommand | 桩 Climb | 使当前玩家操纵角色攀爬场景物品， |
+| 74 | `00437440` | int int | ActorPerformClimbActionCommand | ✓ SceCommandClimb | 使当前玩家操纵角色攀爬场景物品， |
 | 75 | `-` | （无） | — | —  |  |
 | 76 | `004374a0` | string | DialogueRenderTextWithTimeLimitCommand | ✓ SceCommandDlgTime | 显示对话，等待用户确定后或者时间结束时脚本继续 |
 | 77 | `004374e0` | int | ScriptVarSetLimitTimeDialogueSelectionResultCommand | ✓ SceCommandGetTimeSel | 取得限时选择结果并赋值给变量， |
@@ -174,20 +174,20 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 84 | `00437740` | int | — | —  |  |
 | 85 | `004377f0` | int int | SceneActivateObjectCommand | ✓ SceCommandObjectActive | 设置某个物件出现或隐藏， |
 | 86 | `00437b20` | string int | UIDisplayCaptionCommand | ✓ SceCommandCaption | 显示全屏字幕（例如显示诗句等）， |
-| 87 | `00437a80` | int | SceneOpenDoorCommand | 桩 OpenDoor | 播放门打开的动画 |
+| 87 | `00437a80` | int | SceneOpenDoorCommand | ✓ SceCommandOpenDoor | 播放门打开的动画 |
 | 88 | `00437b90` | int | HuaYingSwitchBehaviourModeCommand | ✓ SceCommandHuaYingMode | 设置花盈的行为模式, |
-| 89 | `00437bb0` | float float float | FlyingActorFlyToCommand | —  | 让花盈飞到某空间点 |
-| 90 | `004378e0` | int float float float float | SceneMoveObjectCommand | 桩 ObjectMove | 移动场景物体到某处， |
+| 89 | `00437bb0` | float float float | FlyingActorFlyToCommand | ✓ SceCommandHyFly | 让花盈飞到某空间点 |
+| 90 | `004378e0` | int float float float float | SceneMoveObjectCommand | ✓ SceCommandObjectMove | 移动场景物体到某处， |
 | 91 | `004371f0` | （无） | CameraFadeInWhiteCommand | ✓ SceCommandFadeInWhite | 屏幕淡入(白色） |
 | 92 | `-` | （无） | — | —  |  |
 | 100 | `00436c00` | string | UIShowDealerMenuCommand | ✓ SceCommandDealerMenu（买卖、还价；原版像素布局，见 `dealer_layout.md`） | 调用买卖系统， |
 | 101 | `00436cb0` | int | ScriptVarSetPawnshopLevelCommand | ✓ SceCommandGetPawnshopLevel | 取出当前当铺经营游戏的当铺等级并赋值给变量， |
-| 102 | `00436f90` | int | GameSwitchRenderingStateCommand | 桩 SwitchRS | **实为 `SwitchMode(n)` 全局模式切换**，不是渲染状态；13 = 大地图、0 = 回冒险、15 = 回标题。见 [`bigmap.md`](bigmap.md) |
+| 102 | `00436f90` | int | GameSwitchRenderingStateCommand | ✓ SceCommandSwitchMode | **实为 `SwitchMode(n)` 全局模式切换**，不是渲染状态；13 = 大地图、0 = 回冒险、15 = 回标题。见 [`bigmap.md`](bigmap.md) |
 | 103 | `00436c60` | int | MiniGameStartPawnshopCommand | ✓ SceCommandMiniGamePawnshop（文字浮层，陈列/休息没做）| 进入当铺经营游戏，参数是**过程号** |
 | 104 | `00437080` | （无） | MiniGameStartAppraisalsCommand | ✓ SceCommandAppraise | 进入鉴定游戏。见 [`appraise_minigame.md`](appraise_minigame.md) |
 | 105 | `004370e0` | （无） | MiniGameStartSwatAFlyCommand | ✓ SceCommandMiniGameSwatAFly（方块占位，没接贴图）| 进入打苍蝇游戏 |
 | 106 | `00437120` | int | MiniGameStartEncampCommand | ✓ SceCommandEncamp | 进入宿营游戏，参数是四方象枢方位号 0–3。见 [`encamp.md`](encamp.md) |
-| 107 | `00436f40` | int | MiniGameStartSkiCommand | 半桩 SceCommandMiniGameSki（跑收尾过程，滑道与收集品没做）| 进入滑雪游戏，参数是**过程号** |
+| 107 | `00436f40` | int | MiniGameStartSkiCommand | ✓ SceCommandMiniGameSki（规则全；画面是示意雪道，3D 滑坡没接） | 进入滑雪游戏，参数是**过程号** |
 | 108 | `004370c0` | int | ScriptVarSetAppraisalsResultCommand | ✓ SceCommandGetAppr | 取出鉴定小游戏的结果并设置给变量 |
 | 109 | `00436fb0` | int | FeatureEnableSwordPurifyingCommand | ✓ SceCommandEnableFeature | 打开或关闭魔剑养成功能， |
 | 110 | `00436fe0` | int | FeatureEnableJusticeBookCommand | ✓ SceCommandEnableFeature | 打开或关闭降妖谱功能， |
@@ -196,47 +196,47 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 113 | `00437c30` | （无） | MiniGameStartHideFightCommand | ✓ SceCommandStartHideFight | 使当前场景进入<当铺&刺使府夜间特殊战斗关>状态 |
 | 114 | `00437c40` | （无） | — | —  |  |
 | 115 | `00437c50` | string | PlayVideoCommand | ✓ SceCommandMovie | 播放动画 |
-| 116 | `00437ff0` | int string | ActorChangeTextureCommand | 桩 SetRoleTexture | 给角色更换纹理贴图 |
-| 117 | `00438030` | int int int | SceneRotateWorldCommand | 桩 Rotate | 旋转整个场景， |
+| 116 | `00437ff0` | int string | ActorChangeTextureCommand | ✓ SceCommandSetRoleTexture | 给角色更换纹理贴图 |
+| 117 | `00438030` | int int int | SceneRotateWorldCommand | ✓ SceCommandRotateWorldBack | 旋转整个场景， |
 | 118 | `00438310` | float float | CameraShakeEffectCommand | ✓ SceCommandQuake | 摇晃镜头（模拟地震）效果， |
-| 119 | `004369c0` | string int int int | UIShowHotelMenuCommand | —  | 显示客栈入住菜单 |
+| 119 | `004369c0` | string int int int | UIShowHotelMenuCommand | ✓ SceCommandShowChatRest（客栈，见 inn.md） | 显示客栈入住菜单 |
 | 120 | `00436d30` | int | ScriptVarSetPawnshopManageTypeCommand | ✓ SceCommandGetPawnshopManage | 取出当前当铺经营游戏的当前Manage类型并赋值给变量， |
 | 121 | `00436db0` | int | ScriptVarSetPawnshopPeriodTypeCommand | ✓ SceCommandGetPawnshopPeriod | 取出当前当铺经营游戏的当前Period类型并赋值给变量， |
 | 122 | `00436e10` | int | ScriptVarSetPawnshopAccrualTypeCommand | ✓ SceCommandGetPawnshopAccrual | 取出当前当铺经营游戏的当前Accrual类型并赋值给变量， |
 | 123 | `00436e70` | int | ScriptVarSetPawnshopUnHockTypeCommand | ✓ SceCommandGetPawnshopUnHock | 取出当前当铺经营游戏的当前UnHock类型并赋值给变量， |
-| 124 | `00438350` | int | PlayerInteractWithObjectCommand | 桩 Trigger | 与指定场景物品交互， |
+| 124 | `00438350` | int | PlayerInteractWithObjectCommand | ✓ SceCommandInteractWithObject | 与指定场景物品交互， |
 | 125 | `00436bd0` | int int | WorldMapEnableRegionCommand | ✓ SceCommandSetBigMapElement | 大地图打开或关闭某个区域， |
 | 126 | `00438390` | string int int | ScriptVarSetMazeSwitchStatusCommand | ✓ SceCommandGetSwitch | 脚本检查迷宫开关状态并赋值给变量， |
 | 127 | `00436ed0` | int int | MiniGameStartSailingCommand | ✓ SceCommandEntryRow | 进入行船游戏 |
-| 128 | `004381e0` | int int int | SceneRotateWorldInverseCommand | 桩 RotateInv | 反方向旋转整个场景， |
+| 128 | `004381e0` | int int int | SceneRotateWorldInverseCommand | ✓ SceCommandRotateWorld | 反方向旋转整个场景， |
 | 129 | `00436f40` | int | — | —  |  |
 | 130 | `004363e0` | int int | ScriptVarDistractAnotherVarCommand | ✓ SceCommandVarDistract | 变量A减去B，如果减去后A小于零则A取反，并把结算结果重新赋值给变量A |
 | 131 | `00438440` | （无） | CombatSetNoGameOverWhenLoseCommand | ✓ SceCommandCombatNotGameOver | 设置战斗失败不显示结束游戏 |
 | 132 | `00438450` | int | ScriptVarSetCombatResultCommand | ✓ SceCommandGetCombat | 取得战斗结果（0输1赢）并赋值给变量， |
 | 133 | `00438470` | string int | PlayMusicCommand | ✓ SceCommandMusic | 播放剧情音乐 |
 | 134 | `004384b0` | （无） | StopMusicCommand | ✓ SceCommandStopMusic | 停止剧情音乐 |
-| 135 | `004384d0` | int | ActorFadeOutCommand | 桩 RoleFadeOut | 角色淡出 |
-| 136 | `004385a0` | int | ActorFadeInCommand | 桩 RoleFadeIn | 角色淡入 |
+| 135 | `004384d0` | int | ActorFadeOutCommand | ✓ SceCommandRoleFadeOut | 角色淡出 |
+| 136 | `004385a0` | int | ActorFadeInCommand | ✓ SceCommandRoleFadeIn | 角色淡入 |
 | 137 | `004368c0` | int | ScriptEvaluateVarIfActorInTeamCommand | ✓ SceCommandIfInTeam | 检测角色是否在队伍里并与临时变量计算结果， |
 | 138 | `00437010` | int | FeatureEnableSwordSkillCommand | ✓ SceCommandEnableFeature | 打开或关闭魔剑技功能， |
 | 139 | `004386c0` | float int int int | — | —  |  |
-| 140 | `004387b0` | int | EffectShowSnowCommand | 桩 Snow | 开启下雪特效， |
-| 141 | `004388c0` | int | EffectSetScreenEffectCommand | 桩 ScrEft | 设置全局镜头（屏幕）特效， |
+| 140 | `004387b0` | int | EffectShowSnowCommand | ✓ SceCommandSnow | 开启下雪特效， |
+| 141 | `004388c0` | int | EffectSetScreenEffectCommand | ✓ SceCommandScreenEffect | 设置全局镜头（屏幕）特效， |
 | 142 | `00438930` | float float float | EffectSetPositionCommand | ✓ SceCommandEffectPosition | 设置VFX特效位置， |
-| 143 | `004389a0` | int | EffectPlayCommand | 桩 CEft | 播放VFX特效， |
+| 143 | `004389a0` | int | EffectPlayCommand | ✓ SceCommandPlayCombatEffect | 播放VFX特效， |
 | 144 | `004389d0` | int | EffectAttachToActorCommand | ✓ SceCommandEffectAtRole | 在角色位置播放特效， |
 | 145 | `00438840` | int int | PlayerSetActorLevelCommand | ✓ SceCommandAverageLevel | 设置目标角色等级（所有当前角色等级的平均值+增加值）， |
 | 146 | `00436a10` | int | UIShowSmeltingMenuCommand | ✓ SceCommandSmeltingMenu（界面是文字浮层）| 打开冶炼菜单，参数是**过程号** |
-| 147 | `00438a20` | （无） | GameSwitchToMainMenuCommand | 桩 Switch2Menu | 退出游戏到主菜单 |
-| 148 | `00438980` | int | EffectPreLoadCommand | 桩 CEft_Load | 预加载VFX特效Group， |
+| 147 | `00438a20` | （无） | GameSwitchToMainMenuCommand | ✓ SceCommandSwitchToMainMenu | 退出游戏到主菜单 |
+| 148 | `00438980` | int | EffectPreLoadCommand | ✓ SceCommandPreloadCombatEffect | 预加载VFX特效Group， |
 | 149 | `00438a30` | int | ScriptVarSetLongKuiDressIdCommand | ✓ SceCommandGiveCloth | 把背包里所获的的服装给龙葵， |
 | 150 | `00438b00` | int string | ActorLoadActionCommand | ✓ SceCommandLoadAction | 使角色预加载一个动作， |
 | 151 | `00438b40` | int | — | —  |  |
-| 152 | `00438b60` | int | EffectShowWaterMagicCommand | 桩 WaterMagic | 在玩家角色周身渲染水特效， |
+| 152 | `00438b60` | int | EffectShowWaterMagicCommand | ✓ SceCommandWaterMagic | 在玩家角色周身渲染水特效， |
 | 153 | `00438b80` | （无） | TeamSetAttributeToFullCommand | ✓ SceCommandFullTeamAtt | 瞬间回满全队精气神 |
-| 154 | `00438ba0` | int int int | NavigationBeeFlyToCommand | ✓ SceCommandNavigationBeeFlyTo | 控制引路蜂飞向指定位置 |
-| 155 | `00438d00` | float | CameraSetYawCommand | 桩 CameraYaw | 相机设置Yaw角度 |
-| 156 | `00438d20` | （无） | UIDisplayXueJianPictureCommand | 桩 XJ_Pic | UI展示雪见图片 |
+| 154 | `00438ba0` | int int int | NavigationBeeFlyToCommand | 跳过 SceCommandNavigationBeeFlyTo（引路蜂，纯提示装饰） | 控制引路蜂飞向指定位置 |
+| 155 | `00438d00` | float | CameraSetYawCommand | ✓ SceCommandCameraYaw | 相机设置Yaw角度 |
+| 156 | `00438d20` | （无） | UIDisplayXueJianPictureCommand | ✓ SceCommandShowXueJianPicture | UI展示雪见图片 |
 | 157 | `00438f10` | string | MiniGamePawnshopShowNoteCommand | ✓ SceCommandMiniGamePawnshopNote | 显示一条提示（`FUN_00410360`，和 68 同一个控件；名字里的「当铺」是误会）|
 | 158 | `00438f30` | int | SceneObjectDoNotLoadFromSaveStateCommand | ✓ SceCommandObjectNotFromSave | 设置某个物件出场时候的不从存档里拿状态， |
 | 159 | `00438f50` | （无） | SceneInitDivineTreeFlowerCommand | ✓ SceCommandInitFlower | 初始化神树之花 |
@@ -270,24 +270,24 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 198 | `—` | （无） | UnknownCommand198 | —  | ??? |
 | 199 | `—` | （无） | NanGongHuangEnableTransformEffectCommand | —  | 开启南宫煌身体异常时（快要变身）的特效 |
 | 200 | `—` | （无） | NanGongHuangDisableTransformEffectCommand | —  | 关闭南宫煌身体异常时（快要变身）的特效 |
-| 201 | `00434ed0` | int int int int | ActorMoveOutOfScreenCommand | —  | 使角色向指定位置走,直到走出屏幕（不一定走到指定的点）， |
+| 201 | `00434ed0` | int int int int | ActorMoveOutOfScreenCommand | ✓ SceCommandRolePathOut | 使角色向指定位置走,直到走出屏幕（不一定走到指定的点）， |
 | 202 | `004351a0` | int int | TeamAddOrRemoveActorCommand | ✓ SceCommandInTeam | 设置某个主角是否在队伍中出现， |
 | 203 | `00434e50` | int int | ActorSetNavLayerCommand | ✓ SceCommandRoleSetLayer | 设置角色所在的地层， |
 | 204 | `00437ac0` | int | ActorEnablePlayerControlCommand | ✓ SceCommandRoleCtrl | 设置玩家控制哪个主角， |
 | 205 | `00437ae0` | int int | — | ✓ SceCommandRoleOverlap |  |
 | 206 | `00434e90` | int float | ActorChangeScaleCommand | ✓ SceCommandRoleScale | 指定角色的缩放系数， |
-| 207 | `004350f0` | int int | ActorAutoStandCommand | —  | 指定角色是否在PerformAction指令完成后自动切换成站立的动作， |
+| 207 | `004350f0` | int int | ActorAutoStandCommand | ✓ SceCommandRoleActAutoStand | 指定角色是否在PerformAction指令完成后自动切换成站立的动作， |
 | 208 | `00436240` | int float | ActorMoveBackwardsCommand | ✓ SceCommandRoleMoveBack | 角色向后平移， |
 | 209 | `004362d0` | int int | ActorLookAtActorCommand | ✓ SceCommandRoleFaceRole | 设定一个角色面向另一个角色（的位置）， |
 | 210 | `00436130` | int int | ActorRotateFacingDirectionCommand | ✓ SceCommandRoleSetFace | 转动角色的方向， |
-| 211 | `004365c0` | （无） | TeamOpenOnSceneChangeCommand | 桩 TeamOpenA | 进入情节关时队伍散开 |
-| 212 | `004365d0` | （无） | TeamCloseOnSceneChangeCommand | 桩 TeamCloseA | 出情节关时队伍合并 |
+| 211 | `004365c0` | （无） | TeamOpenOnSceneChangeCommand | ✓ SceCommandTeamOpenOnSceneChange | 进入情节关时队伍散开 |
+| 212 | `004365d0` | （无） | TeamCloseOnSceneChangeCommand | ✓ SceCommandTeamCloseOnSceneChange | 出情节关时队伍合并 |
 | 213 | `004387d0` | int float float float | — | —  |  |
 | 214 | `00435010` | int int int int | ActorMoveToCommand | ✓ SceCommandRoleMoveTo | 直线移动到TileMap上（X，Y），第四参数 0走/1跑/2站姿，见 `role_move.md`。原文「移动中使用指定 |
 | 215 | `-` | （无） | — | —  |  |
 | 216 | `—` | （无） | UnknownCommand216 | —  | ??? |
 | 221 | `00435130` | int | ActorStopActionCommand | ✓ SceCommandRoleEndAction | ActorPerformActionCommand的循环次数为-1或-2时需要用 |
 | 222 | `-` | （无） | — | —  |  |
-| 250 | `00435380` | int | CameraFollowPlayerCommand | 桩 CameraFree | 镜头是否锁定并跟随在主角身上， |
-| 251 | `00435350` | int | CameraFocusOnSceneObjectCommand | 桩 CameraFocusOnSceneObject | 设置摄像机锁定场景物品， |
+| 250 | `00435380` | int | CameraFollowPlayerCommand | ✓ SceCommandCameraFollowPlayer | 镜头是否锁定并跟随在主角身上， |
+| 251 | `00435350` | int | CameraFocusOnSceneObjectCommand | ✓ SceCommandCameraFocusObject | 设置摄像机锁定场景物品， |
 | 252 | `-` | （无） | — | —  |  |

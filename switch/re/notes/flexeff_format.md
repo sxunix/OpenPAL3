@@ -492,10 +492,10 @@ sprintf(buf, "%s%03d", 前缀, (int)号码)      // 格式串在 0x5d4e54
 441 个落在 1..560，只有 6 个为零），整张图**无环、无自引用、最深 4 层**，288 个
 组有出边。`+8` 和 `+44` 有负值，不是组号，是别的东西，未跟。
 
-## `grid` / `meteor`：只导出了字段图，没做
+## `grid` / `meteor`
 
-两个都占得很少——脚本会播的 130 条里 `grid` 2 条、`meteor` 1 条——而类本身是
-4280 / 4304 字节，性价比不划算，所以先停在字段图这一步。
+（2026-09-13 更新）两个类后来都照原版做了：`grid` 见 7718235（`scene/flexeff_grid.rs`），`meteor` 见 f7a669c
+（`scene/flexeff_meteor.rs`）。下面是当时导出的字段图，留作对照。
 
 **`grid`**：原型 `new(4280)` + `FUN_004c9550`，vtable 0x56f920
 （`+0x08` 更新 0x4c9750、`+0x18` 渲染 0x4c9ca0、`+0x30` 建实例 0x4ca1d0）。
@@ -525,7 +525,7 @@ sprintf(buf, "%s%03d", 前缀, (int)号码)      // 格式串在 0x5d4e54
 
 * `Top/BottomShrink`（定义 236/240）搬进了对象但用法没跟。
 * `callback` 子块的 `+8` / `+44`（有负值）没跟。
-* `grid` / `meteor` 的几何和补间（见上）。
+* ~~`grid` / `meteor` 的几何和补间~~ —— 已做（见上）。
 * 实例本身由特效管理器什么时候回收，没跟；移植里按「两条时间线都到期」
   收尾 `[推断]`。
 
@@ -533,4 +533,7 @@ sprintf(buf, "%s%03d", 前缀, (int)号码)      // 格式串在 0x5d4e54
 
 * 子块 124 字节里各类自己那部分的字段语义——要逐个类跟它们的 update。
 * 定义表里 `[推断]` 那些字段没有逐个回到指令核对，只核了取值合理性。
-* `flexcam.dat` / `efflinker.dat` 两张表。
+* ~~`flexcam.dat` / `efflinker.dat` 两张表~~ —— 都已接：flexcam 镜头（c54839a）、efflinker 链接表（c472d60）。
+
+15 个类的移植现状（2026-09-13）：`adv_director.rs` 按类名分派，15 个全接了——particle、quad、action、camera、
+time（和 quake / bink 一起）、cylinder、model、callback、grid、explosive、meteor、audio、shock、bink、quake。

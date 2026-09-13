@@ -614,8 +614,7 @@ struct AdventureDirectorProps {
         Vec<ComRc<radiance::comdef::IEntity>>,
     )>,
     water_magic_failed: bool,
-    /// 143 播出去的战斗特效：`quad` 那一支的模型加它画成的实体。
-    /// 其余类（meteor / audio / callback …）还没做。
+    /// 143 播出去的战斗特效：`quad` 那一支的模型加它画成的实体（别的类各有自己的列表）。
     flexeff: Vec<(
         crate::openpal3::scene::flexeff_quad::QuadEffect,
         ComRc<radiance::comdef::IEntity>,

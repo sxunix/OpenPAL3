@@ -804,3 +804,36 @@ needs the original's polar camera state (yaw, pitch, roll, distance,
 look-at, plus a state stack) since radiance's Transform has no notion of
 a distance or a look-at point; the party-follow commands; and anything
 needing CVD animation, per-role alpha, world rotation or a VFX system.
+
+---
+
+# Stage 19 — where things stand (2026-09-13)
+
+This log stopped at stage 18; the commit history carries the detail since.
+In short, between 2026-09-03 and 2026-09-13:
+
+- **Scripts.** Every opcode the shipped scripts use now has a real command
+  except 154 (the guide bee, a pure hint, skipped). The camera family
+  (30–39, 155, 250, 251) runs on a polar camera state with a push/pop stack.
+  `re/notes/sce_opcodes.md` is back in sync with `vm.rs`.
+- **Combat.** Stage actors play the original action tables, walk out and
+  back, and settle on the efflinker timings; the HUD is the original CBUI
+  layout; the camera reads `EditorCam*` and plays flexcam sequences; all 15
+  flexeff classes draw; the result screen, defeat screen and combo skills
+  (合击技) follow the original timelines.
+- **Menus and mini-games.** Shop, smelting, pawnshop, inn, big map, dialog
+  choice, notes and captions follow the original pixel layouts; the status
+  menu's lineup page has the 3D 五灵盘 with click-to-swap; the 侠义榜 shows
+  its book and monsters in 3D.
+- **Rendering fixes.** CVD playback follows the original per-type rules
+  (including type-17 idle replay, bobbing and spinning); texture row order
+  matches gbengine for CVD, single-texture POL and lightmapped POL — the
+  last also fixed `.tga` diffuse maps that used to fail to load at all.
+
+Still missing for a full playthrough, in the order they are being done:
+the combat ring's 特技 / 阵 / AI / 援 / 魔 buttons, the level-up
+"learned" messages, dodge / near-death / special-skill actions, the
+pawnshop's 陈列 / 休息, and the remaining combat camera moves. Visual gaps
+that do not block play: the ski slope and swat-a-fly art, the inn's
+original layout, the screen trail effect. And the Switch build still needs
+someone to look at the off-screen render targets on real hardware.

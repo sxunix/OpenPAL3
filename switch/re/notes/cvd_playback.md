@@ -106,7 +106,7 @@ exe 里载了两份：
 原来「在招式横幅上写目标名」的临时做法去掉了。M01/1（战场 z08）实机截图看到指针在敌人头顶上下跳；
 和原版截图的大小、颜色还没对过。
 
-还没做的界面 CVD：阵法页的 `ui\GameMainUI\Lineup\pointer.cvd`（`FUN_00483650`，先建 5 个再建 6 个）。
+阵法页的 `ui\GameMainUI\Lineup\pointer.cvd`（`FUN_00483650`）也已做，见 `lineup_page_layout.md` §3。
 
 ## 7. 贴图的行序
 

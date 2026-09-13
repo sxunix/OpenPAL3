@@ -16,16 +16,10 @@
 //!
 //! # 这里做到哪一步
 //!
-//! 定义表、特效组表、15 个特效类的注册表都解开了，所以这两条指令已经能把
-//! 特效组**解析**出来：每一条是什么类、指向什么资源、延迟多久。真正要画出
-//! 来还差各个类自己的实现——脚本用到的组里 `quad` 占 64 条、`cylinder` 19
-//! 条，这两个类是 4272 / 4292 字节、带子对象和两条时间线回调的东西，还没
-//! 读通。**没读通就不画**：一个静态 quad 该亮多久完全由那条时间线决定，
-//! 猜出来的画面比不画更误导。
-//!
-//! 已经能做的一类是 `particle`——它指向 `.par`，而 `.par` 的运行时是现成的
-//! （152 水特效在用）。这里先把该播的 `.par` 报出来，接进画面那一步跟
-//! `quad` 一起做。
+//! 定义表、特效组表、15 个特效类的注册表都解开了，15 个类也都有了实现：两条指令把特效组
+//! 交给导演（`AdventureDirector` 里按类名分派，particle / quad / cylinder / model / grid /
+//! explosive / meteor / shock / audio / camera / action / time / quake / bink / callback），
+//! 各类的画法在 `openpal3::scene::flexeff_*`。
 
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;

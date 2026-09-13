@@ -646,10 +646,10 @@ swap(this->+0x80..+0x88, this->+0x8c..+0x94);
   `LookAt(Vector3.zero)`）。朝原点是有依据的：十一个站位的重心在
   (−24, 16)。FOV 39° 取自 Unity，exe 侧没查，是 **[推断]**。
 
-  切镜头（十八台怎么选、`flexcam.dat`）还没接。
-- **动作**。所有人都摆成 `z1` 站着不动，攻击/受击/施法都没有。
-- 五灵环（`[FiveLineup]` / `[EnemyFiveLineup]` 的位置和半径已解析，没画）。
-- 战场光照 `.lgt` 没读，现在给的是白色环境光。
+  ~~切镜头~~ —— 已接：照原版读 `EditorCam*`、开战播 flexcam 0 号序列（a85e04d，见 `combat_camera.md`）。
+- ~~动作~~ —— 已做（4826615 起，按原版动作名表播待机 / 攻击 / 挨打 / 仙术 / 防御 / 倒下，见 `combat_motion.md`）。
+- 五灵环（`[FiveLineup]` / `[EnemyFiveLineup]` 的位置和半径已解析，没画；合击技摆位用到了中心点）。
+- 战场光照：`stage.rs` 能拼出 `.lgt` 路径，但舞台仍给白色环境光，没按 `.lgt` 打灯。
 - ~~升级成长曲线本身~~ —— 五条曲线（`FUN_004fa210` / `004fa280` / `004fa330` /
   `004fa3a0` / `004fa440`）和经验门槛表（`FUN_004fa4e0`）移植里都已实现，
   见 `states/growth.rs` 与 `GameDb::level_for_exp`。
