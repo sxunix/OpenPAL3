@@ -13,12 +13,12 @@
 //!
 //! 时序照原版：出手段里原地摆 z061 等出手条满（`FUN_00514870` 调
 //! `FUN_0050a8e0(4)`），条满后才排走位、出手、结算（任务 0x514ae0）。攻击
-//! 走位照 `FUN_0050da90`（480/秒、停在离目标 42 处）。出手动作开始后隔多久
-//! 结算是 **[推断]**（[`HIT_DELAY`]），原版由步骤函数按数据表的时间点触发，
-//! 还没逆。演出由舞台驱动（`combat.rs`），这里只放规则和常量。逆向记录在
+//! 走位照 `FUN_0050da90`（480/秒、停在离目标 42 处）。普攻在攻击动作 MV3 的
+//! `work` / `work1` 标记处结算（[`attack_hits`]，`FUN_0050e550`）；仙术、道具按
+//! efflinker 写的时刻。演出由舞台驱动（`combat.rs`），这里只放规则和常量。逆向记录在
 //! `switch/re/notes/combat_motion.md`。
 
-use super::state::{Combatant, K_SLEEP, Phase};
+use super::state::{Combatant, K_SLEEP, PARTY_SLOTS, Phase};
 
 /// `PTR_DAT_0056fdac`：动作编号 → 名字，59 项（0x56fdac..0x56fe98）。
 /// 和 Pal3.Unity 的 `ActorConstants.ActionToNameMap` 逐项一致。
@@ -281,10 +281,53 @@ pub fn strike_motion(kind: ActKind) -> Option<Motion> {
     }
 }
 
-/// 出手动作开始后多久结算（对方挨打、掉血）**[推断]**：原版由步骤函数按
-/// 数据表里的时间点触发（道具编排 `FUN_00500550` 读 `+0x9a8` 那一格），攻击
-/// 那一格还没逆。
+/// 动作里没有 `work` / `work1` 标记时的退路（出手动作开始后多久结算）。普攻正常走
+/// [`attack_hits`]；仙术、道具有 efflinker 时按它写的时刻。
 pub const HIT_DELAY: f32 = 0.3;
+
+/// 普攻打几下、各在什么时候（攻击任务的动作回调 `FUN_0050e550`）。攻击动作的 MV3 里有
+/// `work` 标记（有的人还有 `work1`，MV3 的 tick 每秒 4580），动作播到标记时回调收到它名字
+/// 的 CRC32，和舞台角色开场存的 `+0x19f8`（`work`）/ `+0x19fc`（`work1`）比（`FUN_005092b0`）：
+///
+/// * 敌方（位 5..10）只在 `work` 结算一次；
+/// * 龙葵（2 号位）武器类型 5 时 `work` 不算；每个标记结算武器 `combo_count` 次（≤ 1 按 1 次）；
+/// * 其余我方每个标记结算一次——所以动作里有 `work1` 的人普攻打两下。
+///
+/// 每次结算都是完整的一次 `FUN_004f0a10`（暴击各掷各的）。返回（时刻, 次数），按时刻排；
+/// 一个标记都用不上时退回 [`HIT_DELAY`] 一次。
+pub fn attack_hits(
+    slot: usize,
+    work: Option<f32>,
+    work1: Option<f32>,
+    weapon_type: u8,
+    weapon_hits: i32,
+) -> Vec<(f32, u32)> {
+    let mut hits = Vec::new();
+    if slot >= PARTY_SLOTS {
+        if let Some(t) = work {
+            hits.push((t, 1));
+        }
+    } else {
+        let n = if slot == 2 {
+            weapon_hits.max(1) as u32
+        } else {
+            1
+        };
+        if let Some(t) = work {
+            if !(slot == 2 && weapon_type == 5) {
+                hits.push((t, n));
+            }
+        }
+        if let Some(t) = work1 {
+            hits.push((t, n));
+        }
+    }
+    if hits.is_empty() {
+        hits.push((HIT_DELAY, 1));
+    }
+    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
+    hits
+}
 
 // ---------------------------------------------------------------- 走位
 
@@ -598,5 +641,29 @@ mod tests {
         assert_eq!(MotionSet::Party.index(Motion::Evade), Some(44));
         assert_eq!(MotionSet::Party.name(Motion::Evade), Some("z15"));
         assert_eq!(MotionSet::Monster.index(Motion::Evade), None);
+    }
+
+    #[test]
+    fn attack_hits_follow_the_work_tags() {
+        // 景天只有 work。
+        assert_eq!(attack_hits(0, Some(0.664), None, 2, 0), vec![(0.664, 1)]);
+        // 雪见 work + work1：打两下。
+        assert_eq!(
+            attack_hits(1, Some(0.699), Some(1.048), 6, 0),
+            vec![(0.699, 1), (1.048, 1)]
+        );
+        // 怪物只认 work。
+        assert_eq!(
+            attack_hits(5, Some(0.105), Some(0.5), 0, 0),
+            vec![(0.105, 1)]
+        );
+        // 龙葵：武器连击 3，类型 5 时 work 不算。
+        assert_eq!(attack_hits(2, Some(0.3), Some(0.6), 5, 3), vec![(0.6, 3)]);
+        assert_eq!(
+            attack_hits(2, Some(0.3), Some(0.6), 7, 0),
+            vec![(0.3, 1), (0.6, 1)]
+        );
+        // 没标记退回固定时刻。
+        assert_eq!(attack_hits(5, None, None, 0, 0), vec![(HIT_DELAY, 1)]);
     }
 }

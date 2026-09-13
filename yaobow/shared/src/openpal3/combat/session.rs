@@ -704,6 +704,23 @@ impl CombatSession {
         self.settle_outcome();
     }
 
+    /// 普攻除最后一下之外的那几下（动作里 `work` / `work1` 两个标记、龙葵的武器连击，见
+    /// `motion::attack_hits`）：照样结算一次 `FUN_004f0a10`，行动留着等最后一下 [`Self::strike`]。
+    pub fn attack_hit(&mut self) {
+        let Some(st) = self.staging else {
+            return;
+        };
+        if st.landed {
+            return;
+        }
+        if let Some(Pending::Attack { slot, target }) = self.pending {
+            if slot == st.slot {
+                self.attack(slot, target);
+                self.settle_outcome();
+            }
+        }
+    }
+
     /// 舞台演完（人走回去了）：放开时钟。没结算过的先结算。
     pub fn release(&mut self) {
         self.strike();

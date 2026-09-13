@@ -213,6 +213,9 @@ pub struct Combatant {
     /// boss（战斗位 `+0x244`）：gdb 模型名以 b/B 开头的敌人（`FUN_004ed250`）。合击技范围 2
     /// 先挑它（`FUN_004f0360`），开局永久避毒。
     pub boss: bool,
+    /// 手上武器的 `combo_count`（gdb 物品 `+0x2fc`）：龙葵普攻每个动作标记结算这么多次
+    /// （`FUN_0050e550`，见 `motion::attack_hits`）。
+    pub weapon_hits: i32,
     /// 普攻顺手偷的几率（`+0x2b8`）：五件装备里每件特殊类型 0x17 的 +5（`FUN_004ee430`）。
     pub steal_chance: i32,
     /// 饰品栏戴着青铜护镜（0x1fae，`+0x2bd`，`FUN_004edf10` 末尾）：挨普攻时 41/1024 弹回去。
@@ -304,6 +307,7 @@ impl Combatant {
             exp_bonus: 0,
             money_bonus: 0,
             boss: false,
+            weapon_hits: 0,
             steal_chance: 0,
             reflect: false,
             sp_on_hit: 0,
