@@ -430,6 +430,29 @@ impl Pal3Service {
             .cloned()
     }
 
+    /// 阵法页换位 / 挪位的音效（`shared::openpal3::lineup_disc::SWAP_SOUND`），放一遍。
+    fn play_lineup_sound(
+        &self,
+        asset_path: &str,
+        sounds: &mut Vec<Box<dyn radiance::audio::AudioMemorySource>>,
+    ) {
+        let asset_mgr = self.asset_manager_for(asset_path);
+        let data = match asset_mgr.load_snd_data(shared::openpal3::lineup_disc::SWAP_SOUND) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("阵法页音效读不出来: {e:?}");
+                return;
+            }
+        };
+        let engine_rc = self.app.engine();
+        let audio_engine = engine_rc.borrow().audio_engine();
+        drop(engine_rc);
+        let mut source = audio_engine.create_source();
+        source.set_data(data, AudioCodec::Wav);
+        source.play(false);
+        sounds.push(source);
+    }
+
     fn asset_manager_for(&self, asset_path: &str) -> Rc<AssetManager> {
         if let Some(am) = self.asset_managers.borrow().get(asset_path) {
             return am.clone();
@@ -1596,14 +1619,18 @@ impl IPal3ServiceImpl for Pal3Service {
                 .collect()
         });
 
+        let longkui = self.with_persistent_state(0, |s| s.longkui_mode());
         let mut slot = self.lineup_disc.borrow_mut();
-        if slot.as_ref().is_none_or(|d| d.disc.team() != team) {
+        if slot
+            .as_ref()
+            .is_none_or(|d| d.disc.team() != team || d.disc.longkui_mode() != longkui)
+        {
             let pitch = slot.as_ref().map(|d| d.disc.pitch());
             if let Some(old) = slot.take() {
                 sinks.1.borrow_mut().push(old.com_id);
             }
             let am = self.asset_manager_for(&asset_path);
-            let Some(mut disc) = LineupDisc::build(&am, &team) else {
+            let Some(mut disc) = LineupDisc::build(&am, &team, longkui) else {
                 return;
             };
             if let Some(p) = pitch {
@@ -1615,6 +1642,7 @@ impl IPal3ServiceImpl for Pal3Service {
                 last: std::time::Instant::now(),
                 last_y: None,
                 prev_down: false,
+                sounds: vec![],
             });
         }
         let Some(slot) = slot.as_mut() else {
@@ -1653,13 +1681,39 @@ impl IPal3ServiceImpl for Pal3Service {
         let (cx, cy) = debug_click.unwrap_or((x, y));
         slot.prev_down = down;
         slot.disc.step(dt);
+
+        // 手柄：方向键左右挪光标、A 键等于点光标那一格（移植端加的，原版只有鼠标）。
+        let (pad_left, pad_right, pad_a) = {
+            use radiance::input::Key;
+            let input = self.input_engine_for_director();
+            let input = input.borrow();
+            (
+                input.get_key_state(Key::GamePadDPadLeft).pressed(),
+                input.get_key_state(Key::GamePadDPadRight).pressed(),
+                input.get_key_state(Key::GamePadEast).pressed(),
+            )
+        };
+        if pad_left {
+            slot.disc.pad_move(-1);
+        }
+        if pad_right {
+            slot.disc.pad_move(1);
+        }
+
         let mut lineup = lineup;
-        if click {
+        let pos = |id: u32, l: &[(u32, Option<u8>)]| {
+            l.iter().find(|(i, _)| *i == id).and_then(|(_, p)| *p)
+        };
+        let action = if click {
+            slot.disc.click(cx, cy)
+        } else if pad_a {
+            slot.disc.pad_activate(|id| pos(id, &lineup))
+        } else {
+            shared::openpal3::lineup_disc::DiscAction::None
+        };
+        {
             use shared::openpal3::lineup_disc::DiscAction;
-            let pos = |id: u32, l: &[(u32, Option<u8>)]| {
-                l.iter().find(|(i, _)| *i == id).and_then(|(_, p)| *p)
-            };
-            let changes: Vec<(u32, u8)> = match slot.disc.click(cx, cy) {
+            let changes: Vec<(u32, u8)> = match action {
                 DiscAction::Swap(a, b) => match (pos(a, &lineup), pos(b, &lineup)) {
                     (Some(pa), Some(pb)) => vec![(a, pb), (b, pa)],
                     (None, Some(pb)) => vec![(a, pb)],
@@ -1669,6 +1723,9 @@ impl IPal3ServiceImpl for Pal3Service {
                 DiscAction::Move(a, k) => vec![(a, k)],
                 _ => vec![],
             };
+            if !changes.is_empty() {
+                self.play_lineup_sound(&asset_path, &mut slot.sounds);
+            }
             for (id, p) in changes {
                 if self.set_lineup_position(id as i32, p as i32) {
                     for e in lineup.iter_mut() {
@@ -1679,6 +1736,15 @@ impl IPal3ServiceImpl for Pal3Service {
                         }
                     }
                 }
+            }
+        }
+
+        {
+            use radiance::audio::AudioSourceState;
+            slot.sounds
+                .retain(|s| s.state() != AudioSourceState::Stopped);
+            for s in slot.sounds.iter_mut() {
+                s.update();
             }
         }
 
@@ -2009,6 +2075,8 @@ struct LineupDiscSlot {
     last_y: Option<f32>,
     /// 上一帧按着没有，用来认出点下的那一帧。
     prev_down: bool,
+    /// 还在放的音效（换位 / 挪位）。
+    sounds: Vec<Box<dyn radiance::audio::AudioMemorySource>>,
 }
 
 fn next_model_view_com_id() -> i64 {

@@ -193,6 +193,7 @@ pub use smelting::SceCommandSmeltingMenu;
 pub use snow::SceCommandSnow;
 pub use start_hidefight::SceCommandStartHideFight;
 pub use stop_music::SceCommandStopMusic;
+pub use story_flags::longkui_model;
 pub use story_flags::{
     SceCommandAverageLevel, SceCommandEnableFeature, SceCommandGiveCloth, SceCommandHuaYingMode,
     SceCommandLearnCompose, SceCommandLoadAction, SceCommandLongKuiMode, SceCommandRoleOverlap,

@@ -72,9 +72,24 @@ const FOV: f32 = 50.;
 /// 角色节点载入时的动作：`FUN_0047cb90(模型名, 0x10)`，16 号是 `j01`。
 pub const ROLE_ACTION: &str = "j01";
 
-/// 我方五人的模型目录，下标是角色号（景天、雪见、龙葵、紫萱、长卿）。原版从角色记录里
-/// 取模型名（`&DAT_00c0600e` 起跨 0x2200），龙葵换形象后会跟着变；这里先用固定的 [推断]。
+/// 我方五人的模型目录，下标是角色号（景天、雪见、龙葵、紫萱、长卿）——新游戏
+/// `FUN_00408fd0` 抄进角色记录 `&DAT_00c0600e`（跨 0x2200）的默认值。
 pub const ROLE_MODELS: [&str; 5] = ["101", "104", "105", "107", "102"];
+
+/// 角色节点用哪个模型：原版取角色记录里的模型名（`FUN_00483650` 从 `&DAT_00c0600e` 起跨 0x2200），
+/// 龙葵换形象（opcode 42 改的就是这个名字）以后跟着变，所以 2 号按存档里的龙葵形象取。
+pub fn role_model(id: u32, longkui_mode: i32) -> Option<&'static str> {
+    if id == 2 {
+        return Some(crate::scripting::sce::commands::longkui_model(longkui_mode));
+    }
+    ROLE_MODELS.get(id as usize).copied()
+}
+
+/// 换位、挪位时的音效（`0x485718`：`FUN_0053e2e0("wa028", 1)`，取消选中那一支不放）。
+pub const SWAP_SOUND: &str = "wa028";
+
+/// 手柄光标的标记比平常的指针再高这么多，免得和选中的头顶指针叠在一起（移植端加的）。
+const PAD_CURSOR_GAP: f32 = 20.;
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct DiscCamera {
@@ -276,6 +291,10 @@ pub struct LineupDisc {
     /// 选中的人头顶那个指针（原版每个角色节点各挂一个，`+0x15` 置位才画）。
     head_pointer: Option<ComRc<IEntity>>,
     selected: Option<u32>,
+    /// 手柄光标停在哪个站位（0..5），没用过手柄是 `None`。原版只有鼠标，这是移植端加的。
+    pad_cursor: Option<usize>,
+    pad_marker: Option<ComRc<IEntity>>,
+    longkui_mode: i32,
     /// 整盘转了多少度、要转到多少度。
     spin: f32,
     spin_to: f32,
@@ -285,8 +304,9 @@ pub struct LineupDisc {
 }
 
 impl LineupDisc {
-    /// `team` 是在队角色号（0..4）。没有渲染引擎、盘不在包里时是 `None`。
-    pub fn build(am: &Rc<AssetManager>, team: &[u32]) -> Option<Self> {
+    /// `team` 是在队角色号（0..4），`longkui_mode` 是存档里的龙葵形象。没有渲染引擎、
+    /// 盘不在包里时是 `None`。
+    pub fn build(am: &Rc<AssetManager>, team: &[u32], longkui_mode: i32) -> Option<Self> {
         use mini_fs::StoreExt;
         clear_retired();
         let engine = am.rendering_engine()?;
@@ -319,7 +339,7 @@ impl LineupDisc {
         let mut roles = vec![];
         let mut role_bounds = vec![];
         for &id in team {
-            let Some(model) = ROLE_MODELS.get(id as usize) else {
+            let Some(model) = role_model(id, longkui_mode) else {
                 continue;
             };
             let Some(e) = am.load_role(model, ROLE_ACTION, format!("LINEUP_ROLE_{id}"), true)
@@ -339,6 +359,7 @@ impl LineupDisc {
 
         let mut pointers = vec![];
         let mut head_pointer = None;
+        let mut pad_marker = None;
         if am.vfs().open(POINTER_MODEL).is_ok() {
             let make = |name: String| {
                 let p = create_entity_from_cvd_model(
@@ -359,6 +380,9 @@ impl LineupDisc {
             let head = make("LINEUP_HEAD_POINTER".into());
             head.set_visible(false);
             head_pointer = Some(head);
+            let marker = make("LINEUP_PAD_CURSOR".into());
+            marker.set_visible(false);
+            pad_marker = Some(marker);
         }
         let pointer_bounds = pointers.first().and_then(local_bounds);
 
@@ -373,6 +397,9 @@ impl LineupDisc {
             pointer_bounds,
             head_pointer,
             selected: None,
+            pad_cursor: None,
+            pad_marker,
+            longkui_mode,
             spin: 0.,
             spin_to: 0.,
             target: RefCell::new(Some(target)),
@@ -381,6 +408,10 @@ impl LineupDisc {
         };
         disc.apply_camera();
         Some(disc)
+    }
+
+    pub fn longkui_mode(&self) -> i32 {
+        self.longkui_mode
     }
 
     pub fn team(&self) -> Vec<u32> {
@@ -461,7 +492,46 @@ impl LineupDisc {
         } else {
             None
         };
+        // 用鼠标点了就收起手柄光标。
+        self.pad_cursor = None;
         let action = resolve_click(self.selected, role, slot);
+        self.apply(action);
+        action
+    }
+
+    /// 手柄方向键左右：光标在六个站位间走（0→1→2→3→4 正好绕盘一圈，5 是盘心）。
+    /// 第一次按先出现在 0 号站位。
+    pub fn pad_move(&mut self, step: i32) {
+        let n = POSITIONS.len() as i32;
+        self.pad_cursor = Some(match self.pad_cursor {
+            Some(k) => (k as i32 + step).rem_euclid(n) as usize,
+            None => 0,
+        });
+    }
+
+    /// 手柄 A 键：当作点了光标所在的那一格——有人就是点那个人，空着就是点那格的指针。
+    pub fn pad_activate(&mut self, position_of: impl Fn(u32) -> Option<u8>) -> DiscAction {
+        let Some(k) = self.pad_cursor else {
+            self.pad_cursor = Some(0);
+            return DiscAction::None;
+        };
+        if self.spinning() {
+            return DiscAction::None;
+        }
+        let occupant = self
+            .roles
+            .iter()
+            .map(|(id, _)| *id)
+            .find(|id| position_of(*id) == Some(k as u8));
+        let empty = occupant.is_none()
+            && self.selected.is_some()
+            && self.pointers.get(k).is_some_and(|p| p.visible());
+        let action = resolve_click(self.selected, occupant, empty.then_some(k as u8));
+        self.apply(action);
+        action
+    }
+
+    fn apply(&mut self, action: DiscAction) {
         match action {
             DiscAction::Select(id) => {
                 self.selected = Some(id);
@@ -471,6 +541,11 @@ impl LineupDisc {
                     if let Some(to) = spin_target(unspun, self.spin) {
                         self.spin_to = to;
                     }
+                    // 选中时把站立动作从头再放一遍（`FUN_00536c50(节点 +0x94, 0)`，
+                    // `+0x94` 是载入时的 0x10 = j01）[推断：重设同一个动作即从头播]。
+                    if let Some(rc) = RoleController::get_role_controller(e.clone()) {
+                        rc.inner::<RoleController>().replay_anim();
+                    }
                 }
             }
             DiscAction::Deselect | DiscAction::Swap(..) | DiscAction::Move(..) => {
@@ -478,7 +553,6 @@ impl LineupDisc {
             }
             DiscAction::None => {}
         }
-        action
     }
 
     /// 转盘往目标走一帧（`FUN_0047d690`）。
@@ -507,13 +581,16 @@ impl LineupDisc {
             .rotate_axis_angle_local(&Vec3::UP, (-self.spin).to_radians());
 
         let mut taken = [false; 6];
+        let mut tops = [None; 6];
         let mut head = None;
         for ((id, e), b) in self.roles.iter().zip(&self.role_bounds) {
             let slot = position_of(*id).map(usize::from);
             let pos = match slot {
                 Some(p) if p < POSITIONS.len() => {
                     taken[p] = true;
-                    self.slot_at(p)
+                    let at = self.slot_at(p);
+                    tops[p] = Some(at[1] + b.map(|(_, hi)| hi[1]).unwrap_or(0.));
+                    at
                 }
                 _ => CENTER,
             };
@@ -547,6 +624,18 @@ impl LineupDisc {
             h.set_visible(head.is_some());
             if let Some([x, y, z]) = head {
                 h.transform().borrow_mut().set_position(&Vec3::new(x, y, z));
+            }
+        }
+        if let Some(m) = &self.pad_marker {
+            m.set_visible(self.pad_cursor.is_some());
+            if let Some(k) = self.pad_cursor {
+                let at = self.slot_at(k);
+                let top = tops[k].unwrap_or(at[1]);
+                m.transform().borrow_mut().set_position(&Vec3::new(
+                    at[0],
+                    top + POINTER_LIFT + PAD_CURSOR_GAP,
+                    at[2],
+                ));
             }
         }
     }
@@ -620,6 +709,14 @@ mod tests {
         let f3 = spun(o3, to3);
         assert!(f3[0].abs() < 1e-3 && f3[2] > 0.);
         assert!((to3 - to).abs() <= 180.);
+    }
+
+    #[test]
+    fn longkui_follows_the_saved_form() {
+        assert_eq!(role_model(2, 0), Some("105"));
+        assert_eq!(role_model(2, 1), Some("106"));
+        assert_eq!(role_model(0, 1), Some("101"));
+        assert_eq!(role_model(5, 0), None);
     }
 
     #[test]
