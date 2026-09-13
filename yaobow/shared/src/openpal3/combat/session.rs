@@ -556,6 +556,35 @@ impl CombatSession {
         }
     }
 
+    /// 选目标时亮起来的战斗位：目标选择 0x4fd3d0 用 `FUN_00503ae0` 按指令标志把光标展开
+    /// 进 `+0x5c`。标志在控制盘状态 `FUN_004dc760` 里定：仙术 / 特技 / 道具按
+    /// `target_range`（2 / 4 全体 → 整边能选的，其余只有光标那个）；普攻 1 | 横排 4（`+0x289`）
+    /// / 竖列 8（`+0x28a`）/ 单体 0x10，横排竖列用的就是结算用的 `FUN_004efd70` /
+    /// `FUN_004efe90`，所以等于 [`Battle::attack_targets`]。
+    pub fn highlighted(&self) -> Vec<usize> {
+        let Some(PlayerTurn {
+            slot,
+            menu: Menu::Target { action, index },
+        }) = self.turn
+        else {
+            return Vec::new();
+        };
+        let targets = self.targets();
+        let Some(&cursor) = targets.get(index) else {
+            return Vec::new();
+        };
+        let everyone = match action {
+            Action::Attack => return self.battle.attack_targets(slot, cursor),
+            Action::Cast(i) => self.skills(slot).get(i).is_some_and(|c| c.hits_everyone()),
+            Action::Special(i) => self
+                .specials(slot)
+                .get(i)
+                .is_some_and(|c| c.hits_everyone()),
+            Action::UseItem(i) => self.items().get(i).is_some_and(|c| c.hits_everyone()),
+        };
+        if everyone { targets } else { vec![cursor] }
+    }
+
     /// Whether `slot` can pay for its `i`-th skill right now.
     ///
     /// 气/神那两项是 `FUN_004f7480`；第三项消耗是 `FUN_004f7200` 的
@@ -2033,6 +2062,28 @@ mod tests {
         assert_eq!(spoils.loot, vec![(3001, 1)]);
         assert_eq!(spoils.experience.len(), 1);
         assert!(spoils.experience[0].1 > 12, "最后一击有三成加成");
+    }
+
+    #[test]
+    fn highlighted_follows_the_cursor_and_the_attack_pattern() {
+        let mut b = Battle::new(1);
+        b.place(0, fighter(Side::Party, 200, 100));
+        b.place(5, fighter(Side::Enemy, 60, 1));
+        b.place(8, fighter(Side::Enemy, 60, 1));
+        let mut profiles = vec![Profile::default(); 9];
+        profiles[0].skills = vec![heal()];
+        let mut s = CombatSession::new(b, profiles, 7);
+        run_until_turn(&mut s);
+        assert!(s.highlighted().is_empty(), "盘上没有目标亮");
+        s.input(Input::Confirm); // 攻击
+        assert_eq!(s.targets(), vec![5, 8]);
+        assert_eq!(s.highlighted(), vec![5], "单体只亮光标那个");
+        s.battle.get_mut(0).unwrap().pattern = crate::openpal3::combat::state::HitPattern::Column;
+        assert_eq!(
+            s.highlighted(),
+            vec![5, 8],
+            "竖列 {{5, 8}} 一起亮（FUN_004efe90）"
+        );
     }
 
     #[test]

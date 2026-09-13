@@ -173,7 +173,8 @@ pub struct SceCommandCombat {
     stage: Option<ComRc<IScene>>,
     /// 选目标时目标头顶的 3D 指针（`ui\combat\pointer\pointer.cvd`，`FUN_00510540` 载进
     /// 舞台场景 `+0x268`），平时藏着。
-    pointer: Option<ComRc<radiance::comdef::IEntity>>,
+    /// 原版只载一份、每帧对亮着的位各画一次；这里每个我方位一个实体。
+    pointers: Vec<ComRc<radiance::comdef::IEntity>>,
     /// 战斗时钟（战斗系统 `+0x50`）：开战 `FUN_00512580` 清零，每帧战斗更新
     /// `FUN_00513060` 一开头 += dt × 倍率 `+0x6c`。倍率默认 1.0（`DAT_00570054`），
     /// 只有 `time` 类特效（`FUN_004d53e0`，移植端没接）和调试对话框
@@ -621,7 +622,7 @@ impl SceCommandCombat {
             game_over_screen: GameOverScreen::default(),
             combat_scene: None,
             stage: None,
-            pointer: None,
+            pointers: Vec::new(),
             battle_clock: 0.,
             hud: None,
             actors: Vec::new(),
@@ -916,16 +917,19 @@ impl SceCommandCombat {
             use crate::openpal3::scene::{
                 CvdPlayMode, create_entity_from_cvd_model, play_cvd_subtree,
             };
-            let pointer = create_entity_from_cvd_model(
-                factory.clone(),
-                vfs,
-                &pointer_path,
-                "COMBAT_POINTER".into(),
-                false,
-            );
-            play_cvd_subtree(&pointer, CvdPlayMode::Loop, 1.);
-            scene.add_entity(pointer.clone());
-            self.pointer = Some(pointer);
+            for slot in 0..PARTY_SLOTS {
+                let pointer = create_entity_from_cvd_model(
+                    factory.clone(),
+                    vfs,
+                    &pointer_path,
+                    format!("COMBAT_POINTER{slot}"),
+                    false,
+                );
+                play_cvd_subtree(&pointer, CvdPlayMode::Loop, 1.);
+                pointer.set_visible(false);
+                scene.add_entity(pointer.clone());
+                self.pointers.push(pointer);
+            }
         }
 
         // 相机：开战播 flexcam 的序列（combat::camera），先摆到第一帧。
@@ -2165,44 +2169,49 @@ impl SceCommandCombat {
         self.cues = cues;
     }
 
-    /// 选目标时把指针摆到目标头顶（`FUN_004fc3a0` 画舞台那段）：点取包围盒中心、y 取顶再
-    /// +10（`FUN_0050a9b0`；707 号怪再 −80），然后 +6 + 5·sin(10t + i) 上下跳、y 方向拉伸
-    /// 1 + 0.2·sin(…)。i 是舞台上那五个位的序号，这里取位号 mod 5 [推断]。
+    /// 3D 指针（`FUN_004fc3a0` 画舞台那段）：只看 0..4 号位（舞台角色 `+0x18..+0x28`）里
+    /// `+0x118` 亮着的，每人画一个。亮谁：轮到谁选行动，`FUN_004dc3f0` 和控制盘状态
+    /// 0x4dc7a0 给那个人亮；选目标时 0x4fd3d0 按亮起来的一组
+    /// （[`CombatSession::highlighted`]）重设、组外的熄掉——所以敌方目标头上没有指针，它们
+    /// 只闪（`+0x112`，角色渲染 `FUN_00509b90` 套颜色 0.65 + 0.35·sin(7.8t)，移植端还没做）。
+    /// 点取包围盒中心、y 取顶再 +10（`FUN_0050a9b0`；707 号怪再 −80），然后
+    /// +6 + 5·sin(10t + i) 上下跳、y 方向拉伸 1 + 0.2·sin(…)；t 是战斗时钟，i 是位号。
     fn place_pointer(&mut self) {
-        let Some(pointer) = self.pointer.clone() else {
-            return;
+        let lit: Vec<usize> = match self.session.as_ref() {
+            Some(s) => match s.turn {
+                Some(t) if matches!(t.menu, Menu::Target { .. }) => s.highlighted(),
+                Some(t) => vec![t.slot],
+                None => Vec::new(),
+            },
+            None => Vec::new(),
         };
-        let target = self.session.as_ref().and_then(|s| match s.turn {
-            Some(crate::openpal3::combat::session::PlayerTurn {
-                menu: Menu::Target { index, .. },
-                ..
-            }) => s.targets().get(index).copied(),
-            _ => None,
-        });
-        let top = target.and_then(|slot| {
-            let actor = self.actors.get(slot)?.as_ref()?;
-            Some((slot, head_point(&actor.entity)?))
-        });
-        let Some((slot, top)) = top else {
-            pointer.set_visible(false);
-            return;
-        };
-        let mut y = top.y + 10.;
-        if self
-            .session
-            .as_ref()
-            .and_then(|s| s.battle.get(slot))
-            .is_some_and(|c| c.actor_id == 707)
-        {
-            y -= 80.;
+        for (slot, pointer) in self.pointers.iter().enumerate() {
+            let top = lit
+                .contains(&slot)
+                .then(|| self.actors.get(slot)?.as_ref())
+                .flatten()
+                .and_then(|actor| head_point(&actor.entity));
+            let Some(top) = top else {
+                pointer.set_visible(false);
+                continue;
+            };
+            let mut y = top.y + 10.;
+            if self
+                .session
+                .as_ref()
+                .and_then(|s| s.battle.get(slot))
+                .is_some_and(|c| c.actor_id == 707)
+            {
+                y -= 80.;
+            }
+            let wave = (self.battle_clock * 10. + slot as f32).sin();
+            y += 6. + 5. * wave;
+            let mut t = radiance::math::Transform::new();
+            t.set_position(&Vec3::new(top.x, y, top.z))
+                .scale_local(&Vec3::new(1., 1. + 0.2 * wave, 1.));
+            pointer.transform().borrow_mut().set_matrix(*t.matrix());
+            pointer.set_visible(true);
         }
-        let wave = (self.battle_clock * 10. + (slot % 5) as f32).sin();
-        y += 6. + 5. * wave;
-        let mut t = radiance::math::Transform::new();
-        t.set_position(&Vec3::new(top.x, y, top.z))
-            .scale_local(&Vec3::new(1., 1. + 0.2 * wave, 1.));
-        pointer.transform().borrow_mut().set_matrix(*t.matrix());
-        pointer.set_visible(true);
     }
 
     fn animate_stage(&mut self, delta_sec: f32) {
