@@ -219,7 +219,18 @@ struct ResultPanel {
     label: String,
     /// 精 / 气 / 神：(当前, 上限)。
     gauges: [(i32, i32); 3],
+    /// 仙术库六行各自的使用次数和（水 火 雷 风 土 双）。
+    elements: [i32; 6],
 }
+
+/// 结算收集到的东西：升级（位, 新等级, 学会的特技名）、仙术升级（位, 仙术名, 新等级,
+/// 五灵横幅的行）、钱、物品。
+type Settled = (
+    Vec<(usize, i32, Vec<String>)>,
+    Vec<(usize, String, u8, Option<u8>)>,
+    i32,
+    Vec<(u32, i32)>,
+);
 
 /// 结算画面的贴图（坐标在 `combat::result`）。
 #[derive(Clone)]
@@ -233,6 +244,8 @@ struct ResultTextures {
     label: Tex,
     levelup: Tex,
     getitem: Tex,
+    /// 五灵升级横幅，按 `result::ELEMENT_BANNERS` 的行。
+    element_banners: [Tex; 6],
 }
 
 impl ResultTextures {
@@ -258,6 +271,7 @@ impl ResultTextures {
             label: tex(res::GAUGE_LABEL),
             levelup: tex(res::LEVELUP_PANEL),
             getitem: tex(res::GETITEM_PANEL),
+            element_banners: res::ELEMENT_BANNERS.map(tex),
         }
     }
 }
@@ -1091,7 +1105,22 @@ impl SceCommandCombat {
                             .map(|s| s.id)
                             .filter(|id| Self::is_special(&db, *id))
                             .collect();
+                        // 升级学会的特技（学会等级非 0 且已到）：老存档里可能还没写进 role.skills。
+                        ids.extend(
+                            db.skills()
+                                .iter()
+                                .filter(|s| {
+                                    s.skill_type == 0
+                                        && s.required_actor_level != 0
+                                        && s.required_actor_level as i32 <= role.level
+                                        && s.applicable_actors
+                                            .get(actor_id as usize)
+                                            .is_some_and(|v| *v != 0)
+                                })
+                                .map(|s| s.id),
+                        );
                         ids.sort_unstable();
+                        ids.dedup();
                         ids.into_iter()
                             .filter_map(|id| Self::skill_choice(&db, id))
                             .collect()
@@ -1214,8 +1243,9 @@ impl SceCommandCombat {
             return false;
         };
         let won = outcome.counts_as_win();
+        log::info!("Combat: 结算 {:?}", outcome);
         let db = state.global_state().game_db().cloned();
-        let mut raw: Option<(Vec<(usize, i32)>, i32, Vec<(u32, i32)>)> = None;
+        let mut raw: Option<Settled> = None;
 
         {
             let mut persistent = state.global_state_mut().persistent_state_mut();
@@ -1279,7 +1309,8 @@ impl SceCommandCombat {
 
             if won {
                 let spoils = session.spoils();
-                let mut level_ups: Vec<(usize, i32)> = Vec::new();
+                let mut level_ups: Vec<(usize, i32, Vec<String>)> = Vec::new();
+                let mut skill_ups: Vec<(usize, String, u8, Option<u8>)> = Vec::new();
                 if let Some(db) = db.as_ref() {
                     for (slot, amount) in spoils.experience {
                         if let Some(actor_id) = self
@@ -1288,9 +1319,19 @@ impl SceCommandCombat {
                             .copied()
                             .find(|a| *a as usize == slot)
                         {
+                            let old = persistent.role(actor_id).map(|r| r.level).unwrap_or(0);
                             if persistent.award_experience(actor_id, db, amount) > 0 {
                                 let level = persistent.role(actor_id).map(|r| r.level).unwrap_or(0);
-                                level_ups.push((slot, level));
+                                // 升级时对特技库扫一遍，够等级的学会（`FUN_004fa930`）。
+                                let learned = persistent
+                                    .learn_level_specials(db, actor_id, old, level)
+                                    .into_iter()
+                                    .filter_map(|id| db.skill(id))
+                                    .map(|s| {
+                                        s.name.as_str().map(|n| n.to_string()).unwrap_or_default()
+                                    })
+                                    .collect();
+                                level_ups.push((slot, level, learned));
                             }
                         }
                     }
@@ -1304,7 +1345,21 @@ impl SceCommandCombat {
                         ) else {
                             continue;
                         };
-                        persistent.use_skill(actor_id, skill_id, &row.times_before_level_up);
+                        if let Some(level) =
+                            persistent.use_skill(actor_id, skill_id, &row.times_before_level_up)
+                        {
+                            // 五灵横幅只给 `SkillType` 1..3（`FUN_004f69f0`），行按五灵定。
+                            let banner = (1..=3)
+                                .contains(&row.skill_type)
+                                .then(|| {
+                                    crate::openpal3::combat::result::magic_row(
+                                        &row.element_attributes,
+                                    )
+                                })
+                                .flatten();
+                            let name = row.name.as_str().map(|n| n.to_string()).unwrap_or_default();
+                            skill_ups.push((slot, name, level, banner));
+                        }
                     }
                 }
                 persistent.add_money(spoils.money);
@@ -1314,12 +1369,12 @@ impl SceCommandCombat {
                         persistent.add_item(item, count as u32);
                     }
                 }
-                raw = Some((level_ups, spoils.money, loot));
+                raw = Some((level_ups, skill_ups, spoils.money, loot));
             }
         }
 
         // 结算画面要的消息和面板（combat::result）。
-        if let Some((level_ups, money, loot)) = raw {
+        if let Some((level_ups, skill_ups, money, loot)) = raw {
             use crate::openpal3::combat::result::{
                 LANG_PATH, MessageKind, ResultLang, ResultMessage,
             };
@@ -1332,16 +1387,33 @@ impl SceCommandCombat {
                 .map(|t| ResultLang::parse(&t))
                 .unwrap_or_else(|| ResultLang::parse(""));
             let mut msgs = Vec::new();
-            for (slot, level) in level_ups {
+            for (slot, level, learned) in level_ups {
                 msgs.push(ResultMessage {
                     kind: MessageKind::LevelUp,
                     text: lang.level_up(session.name(slot), level),
+                    row: None,
+                });
+                for skill in learned {
+                    msgs.push(ResultMessage {
+                        kind: MessageKind::Mastered,
+                        text: lang.mastered(session.name(slot), &skill),
+                        row: None,
+                    });
+                }
+            }
+            // 仙术升级（`LAB_00502cc0`）：显示的级数是内部等级 + 1（0x4fac30 压的 `bVar3 + 1`）。
+            for (slot, skill, level, row) in skill_ups {
+                msgs.push(ResultMessage {
+                    kind: MessageKind::SkillUp,
+                    text: lang.skill_up(session.name(slot), &skill, level as i32 + 1),
+                    row,
                 });
             }
             if money > 0 {
                 msgs.push(ResultMessage {
                     kind: MessageKind::Money,
                     text: lang.money(money),
+                    row: None,
                 });
             }
             for (item, count) in loot {
@@ -1356,6 +1428,7 @@ impl SceCommandCombat {
                 msgs.push(ResultMessage {
                     kind: MessageKind::Item,
                     text: lang.item(&name, count),
+                    row: None,
                 });
             }
             let persistent = state.global_state().persistent_state();
@@ -1366,8 +1439,20 @@ impl SceCommandCombat {
                         .role(slot as u32)
                         .map(|r| r.level)
                         .unwrap_or(c.level);
+                    let mut elements = [0i32; 6];
+                    if let (Some(role), Some(db)) = (persistent.role(slot as u32), db.as_ref()) {
+                        for s in &role.skills {
+                            let row = db.skill(s.id).filter(|k| k.skill_type != 0).and_then(|k| {
+                                crate::openpal3::combat::result::magic_row(&k.element_attributes)
+                            });
+                            if let Some(r) = row {
+                                elements[r as usize] += s.uses as i32;
+                            }
+                        }
+                    }
                     Some(ResultPanel {
                         slot,
+                        elements,
                         label: format!("{} {} {}", session.name(slot), level, lang.level),
                         gauges: [(c.hp.max(0), c.max_hp), (c.sp, c.max_sp), (c.mp, c.max_mp)],
                     })
@@ -2309,6 +2394,19 @@ impl SceCommandCombat {
                     }
                     let r = hud::offset(res::NAME_RECT, panel);
                     list.add_text(at(r.0 + 8, r.1 + 8), BANNER_TEXT, &p.label);
+                    // 六个数：白字 16px，格里居中 [推断]。
+                    for (row, v) in p.elements.iter().enumerate() {
+                        let r = hud::offset(res::ELEMENT_NUMBER_RECTS[row], panel);
+                        let text = v.to_string();
+                        let [w, h] = ui.calc_text_size(&text);
+                        let [x0, y0] = at(r.0, r.1);
+                        let (bw, bh) = ((r.2 - r.0) as f32 * scale, (r.3 - r.1) as f32 * scale);
+                        list.add_text(
+                            [x0 + (bw - w) * 0.5, y0 + (bh - h) * 0.5],
+                            [1., 1., 1., 1.],
+                            &text,
+                        );
+                    }
                 }
             }
             if let Some(win) = player.banner() {
@@ -2318,6 +2416,10 @@ impl SceCommandCombat {
             if let Some(m) = player.message() {
                 let back = match m.kind {
                     MessageKind::LevelUp => tex.levelup.as_deref(),
+                    MessageKind::Mastered | MessageKind::SkillUp => m
+                        .row
+                        .and_then(|r| tex.element_banners[r as usize].as_deref())
+                        .or(tex.levelup.as_deref()),
                     _ => tex.getitem.as_deref(),
                 };
                 let r = m.panel().1;

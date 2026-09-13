@@ -64,6 +64,42 @@ pub fn panel_slide_y(panel: usize, elapsed: f32) -> i32 {
 /// 升级的横幅（`FUN_00517df0`，id 0x213）。
 pub const LEVELUP_PANEL: &str = "result/panel/levelup.tga";
 pub const LEVELUP_RECT: Rect = (284, 268, 516, 332);
+/// 仙术升级、学会五灵仙术时的横幅（`FUN_00517df0` id 0x215..0x21b），按仙术在仙术库里
+/// 的行：0 水 1 火 2 雷 3 风 4 土 5 双（跳表 0x502c90 → 控件 `+0x448/44c/444/440/450/454`）。
+pub const ELEMENT_BANNERS: [&str; 6] = [
+    "result/panel/waterlvup.tga",
+    "result/panel/firelvup.tga",
+    "result/panel/thunderlvup.tga",
+    "result/panel/windlvup.tga",
+    "result/panel/earthlvup.tga",
+    "result/panel/doublelvup.tga",
+];
+pub const ELEMENT_BANNER_RECT: Rect = (249, 263, 551, 337);
+
+/// 仙术在仙术库（战斗位 `+0x2e8`，6 行 × 8）里的行，按技能的五灵定：单一五灵进那一行，
+/// 两个以上进「双」，没有五灵的不进 `[推断：往库里放仙术的代码没找到，按底图的「水 火 雷
+/// 风 土 双」和五灵横幅对出来的]`。`elements` 是 `SkillInfo::element_attributes`（水火风雷土）。
+pub fn magic_row(elements: &[i32; 5]) -> Option<u8> {
+    let on: Vec<usize> = (0..5).filter(|i| elements[*i] != 0).collect();
+    match on.as_slice() {
+        [] => None,
+        // 水 火 风 雷 土 → 行 0 1 3 2 4
+        [e] => Some([0, 1, 3, 2, 4][*e]),
+        _ => Some(5),
+    }
+}
+
+/// 面板上六个数（控件 0x202..0x207，白字 16px），按仙术库的行排：数值是那一行 8 格仙术
+/// 使用次数的和（`FUN_004f39f0` 加战斗位 `+0x3d8 + 行*8` 的 8 个字节）。
+pub const ELEMENT_NUMBER_RECTS: [Rect; 6] = [
+    (51, 108, 115, 140),
+    (136, 108, 200, 140),
+    (51, 134, 115, 166),
+    (136, 134, 200, 166),
+    (51, 160, 115, 192),
+    (136, 160, 200, 192),
+];
+
 /// 得到钱 / 物品的横幅（id 0x214）。**[推断]** 这一块挂的是 getitem.tga。
 pub const GETITEM_PANEL: &str = "result/panel/getitem.tga";
 pub const GETITEM_RECT: Rect = (221, 255, 579, 345);
@@ -81,6 +117,8 @@ pub struct ResultLang {
     pub get_item: String,
     /// `Money` = 文钱
     pub money: String,
+    /// `Mastered` = 学会
+    pub mastered: String,
 }
 
 pub const LANG_PATH: &str = "/basedata/basedata/datascript/lang.txt";
@@ -106,12 +144,21 @@ impl ResultLang {
             levelup: get("Levelup", "升为"),
             get_item: get("GetItem", "得到"),
             money: get("Money", "文钱"),
+            mastered: get("Mastered", "学会"),
         }
     }
 
     /// `%s%s %d %s`（0x5db778）：名字 + 升为 + 等级 + 级。
     pub fn level_up(&self, name: &str, level: i32) -> String {
         format!("{name}{} {level} {}", self.levelup, self.level)
+    }
+    /// `%s%s %s`（0x5db7b4，`LAB_00502950`）：名字 + 学会 + 技能名。
+    pub fn mastered(&self, name: &str, skill: &str) -> String {
+        format!("{name}{} {skill}", self.mastered)
+    }
+    /// `%s %s %s %d %s`（0x5db7c8，`LAB_00502cc0`）：名字 + 仙术名 + 升为 + 等级 + 级。
+    pub fn skill_up(&self, name: &str, skill: &str, level: i32) -> String {
+        format!("{name} {skill} {} {level} {}", self.levelup, self.level)
     }
     /// `%s %d %s`（0x5db798）：得到 + 数 + 文钱。
     pub fn money(&self, amount: i32) -> String {
@@ -132,6 +179,10 @@ impl ResultLang {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     LevelUp,
+    /// 升级学会特技（`LAB_00502950`）。
+    Mastered,
+    /// 仙术升级（`LAB_00502cc0`）。
+    SkillUp,
     Money,
     Item,
 }
@@ -140,13 +191,19 @@ pub enum MessageKind {
 pub struct ResultMessage {
     pub kind: MessageKind,
     pub text: String,
+    /// 学会 / 仙术升级用哪块五灵横幅（[`ELEMENT_BANNERS`] 的行）；`None` 用升级横幅——
+    /// 特技（`FUN_004f69f0` 只认 `SkillType` 1..3）和不在库里的都是这样。
+    pub row: Option<u8>,
 }
 
 impl ResultMessage {
     /// 登记时的时长：升级 5 秒（0x4fabec）、钱 5 秒、物品 4 秒（`FUN_004fb370`）。
     pub fn seconds(&self) -> f32 {
         match self.kind {
-            MessageKind::LevelUp | MessageKind::Money => 5.,
+            MessageKind::LevelUp
+            | MessageKind::Mastered
+            | MessageKind::SkillUp
+            | MessageKind::Money => 5.,
             MessageKind::Item => 4.,
         }
     }
@@ -155,6 +212,8 @@ impl ResultMessage {
     pub fn sound(&self) -> Option<&'static str> {
         match self.kind {
             MessageKind::LevelUp => Some("wa014"),
+            // 学会 / 仙术升级都放 wa015（0x502b55）。
+            MessageKind::Mastered | MessageKind::SkillUp => Some("wa015"),
             MessageKind::Item => Some("wa006"),
             MessageKind::Money => None,
         }
@@ -162,6 +221,10 @@ impl ResultMessage {
     pub fn panel(&self) -> (&'static str, Rect) {
         match self.kind {
             MessageKind::LevelUp => (LEVELUP_PANEL, LEVELUP_RECT),
+            MessageKind::Mastered | MessageKind::SkillUp => match self.row {
+                Some(r) => (ELEMENT_BANNERS[r as usize], ELEMENT_BANNER_RECT),
+                None => (LEVELUP_PANEL, LEVELUP_RECT),
+            },
             _ => (GETITEM_PANEL, GETITEM_RECT),
         }
     }
@@ -365,10 +428,12 @@ mod tests {
             ResultMessage {
                 kind: MessageKind::LevelUp,
                 text: "x".into(),
+                row: None,
             },
             ResultMessage {
                 kind: MessageKind::Item,
                 text: "y".into(),
+                row: None,
             },
         ];
         let t = timeline(Outcome::Win, msgs);
@@ -462,5 +527,30 @@ mod tests {
             super::super::hud::full_fill_width(GAUGE_RECTS[0], GAUGE_PADDING),
             85
         );
+    }
+
+    #[test]
+    fn a_skill_sits_in_the_row_of_its_element() {
+        assert_eq!(magic_row(&[1, 0, 0, 0, 0]), Some(0), "水");
+        assert_eq!(magic_row(&[0, 1, 0, 0, 0]), Some(1), "火");
+        assert_eq!(magic_row(&[0, 0, 1, 0, 0]), Some(3), "风");
+        assert_eq!(magic_row(&[0, 0, 0, 1, 0]), Some(2), "雷");
+        assert_eq!(magic_row(&[0, 0, 0, 0, 1]), Some(4), "土");
+        assert_eq!(magic_row(&[1, 0, 0, 0, 1]), Some(5), "双");
+        assert_eq!(magic_row(&[0; 5]), None);
+    }
+
+    #[test]
+    fn mastered_and_skill_up_read_like_the_original() {
+        let lang = ResultLang::parse("");
+        assert_eq!(lang.mastered("景天", "洒金笺"), "景天学会 洒金笺");
+        assert_eq!(lang.skill_up("雪见", "风咒", 2), "雪见 风咒 升为 2 级");
+        let m = ResultMessage {
+            kind: MessageKind::SkillUp,
+            text: String::new(),
+            row: Some(3),
+        };
+        assert_eq!(m.panel().0, "result/panel/windlvup.tga");
+        assert_eq!(m.sound(), Some("wa015"));
     }
 }

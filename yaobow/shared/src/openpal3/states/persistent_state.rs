@@ -850,6 +850,37 @@ impl PersistentState {
         Some(level)
     }
 
+    /// 升级学会特技（`FUN_004fa930` 升级那一支里对特技库 `+0x2c8` 的扫描）：本人能用
+    /// （`applicable_actors`）、学会等级 `required_actor_level` 非 0 且落在 (old, new] 的
+    /// `SkillType` 0 技能。学会等级是 0 的那几条由剧情脚本教，这里不管。返回这次新学会的，
+    /// 按 id 升序 `[推断：原版按特技库的格子顺序]`。
+    pub fn learn_level_specials(
+        &mut self,
+        db: &GameDb,
+        actor_id: u32,
+        old_level: i32,
+        new_level: i32,
+    ) -> Vec<u32> {
+        let mut ids: Vec<u32> = db
+            .skills()
+            .iter()
+            .filter(|s| {
+                let req = s.required_actor_level as i32;
+                s.skill_type == 0
+                    && req != 0
+                    && old_level < req
+                    && req <= new_level
+                    && s.applicable_actors
+                        .get(actor_id as usize)
+                        .is_some_and(|v| *v != 0)
+            })
+            .map(|s| s.id)
+            .collect();
+        ids.sort_unstable();
+        ids.retain(|id| self.learn_skill(actor_id, *id));
+        ids
+    }
+
     /// Teach a skill, if it is not already known.
     pub fn learn_skill(&mut self, actor_id: u32, skill_id: u32) -> bool {
         let Some(role) = self.roles.get_mut(&actor_id) else {

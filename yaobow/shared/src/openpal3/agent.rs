@@ -574,6 +574,19 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "prime_level" => {
+            // [角色号, 等级] —— 升到等级 − 1、经验差 1 点到这一级，打一仗就升级（测学会特技）。
+            let (Some(actor), Some(level)) = (int_arg(0), int_arg(1)) else {
+                return AgentResponse::err(AgentError::bad_request(
+                    "prime_level needs args: [actor_id, level]",
+                ));
+            };
+            let ok = director.prime_level(actor.max(0) as u32, level as i32);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: Some(serde_json::json!({ "ok": ok })),
+            })
+        }
         "learn_skill" => {
             // [角色号, 技能 id] —— 学会一条技能（opcode 51），测特技用。
             let (Some(actor), Some(skill)) = (int_arg(0), int_arg(1)) else {

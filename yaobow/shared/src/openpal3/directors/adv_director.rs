@@ -506,6 +506,24 @@ impl AdventureDirector {
             .set_lineup_position(actor_id, position);
     }
 
+    /// 把某人升到 `level − 1` 级、经验差 1 点到 `level`——测升级学会特技用。
+    pub fn prime_level(&self, actor_id: u32, level: i32) -> bool {
+        let mut props = self.props.borrow_mut();
+        let gs = props.sce_vm.global_state_mut();
+        let Some(db) = gs.game_db().cloned() else {
+            return false;
+        };
+        let mut ps = gs.persistent_state_mut();
+        ps.gain_level(actor_id, level - 1);
+        match ps.role_mut(actor_id) {
+            Some(r) => {
+                r.exp = db.exp_for_level(level) - 1;
+                true
+            }
+            None => false,
+        }
+    }
+
     /// 让某人学会一条技能（opcode 51 的同一条路）——测特技 / 仙术用。
     pub fn learn_skill(&self, actor_id: u32, skill_id: u32) -> bool {
         self.props

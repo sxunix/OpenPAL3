@@ -183,6 +183,11 @@ impl GameDb {
             .map(|i| &self.gdb.combat_actors[*i])
     }
 
+    /// 全部技能行，按数据库里的顺序。
+    pub fn skills(&self) -> &[SkillInfo] {
+        &self.gdb.skills
+    }
+
     pub fn skill(&self, id: u32) -> Option<&SkillInfo> {
         self.skills_by_id.get(&id).map(|i| &self.gdb.skills[*i])
     }
