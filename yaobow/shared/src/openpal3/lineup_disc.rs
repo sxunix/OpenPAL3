@@ -252,6 +252,13 @@ pub fn box_distance(origin: [f32; 3], dir: [f32; 3], lo: [f32; 3], hi: [f32; 3])
     Some(t0)
 }
 
+/// 节点 `+0x1c`：载模型时取的包围盒（gbOBBox）`+0x44`。gbOBBox 是 三根轴 `+0x00..+0x2c`、
+/// 中心 `+0x30..+0x38`（`GetCenter`，gbengine 0x27c00）、边长 `+0x40..+0x48`——`GetRadius`
+/// （0x27dc0）= |边长| × 0.5（常数 0x100f5508），所以存的是整条边长，`+0x44` 就是模型的高。
+fn model_height(b: &Option<([f32; 3], [f32; 3])>) -> f32 {
+    b.map(|(lo, hi)| hi[1] - lo[1]).unwrap_or(0.)
+}
+
 /// 实体（连子实体）渲染对象的 `local_aabb` 并起来。角色脚下的影子（`ROLE_SHADOW`，60×60 的
 /// 面片）不算，不然五个人的盒子都是 ±30、互相叠着。
 fn local_bounds(e: &ComRc<IEntity>) -> Option<([f32; 3], [f32; 3])> {
@@ -542,10 +549,14 @@ impl LineupDisc {
                     if let Some(to) = spin_target(unspun, self.spin) {
                         self.spin_to = to;
                     }
-                    // 选中时把站立动作从头再放一遍（`FUN_00536c50(节点 +0x94, 0)`，
-                    // `+0x94` 是载入时的 0x10 = j01）[推断：重设同一个动作即从头播]。
+                    // 选中时 `FUN_00536c50(节点 +0x94, 0)` 重设站立动作（`+0x94` 是载入时的
+                    // 0x10 = j01）。它先拿要放的名字和当前动作名（`+0x21c`）比，一样就直接返回，
+                    // 不一样才 `FUN_00536ac0` 从头放——所以站着 j01 的人选中时动作不变。
                     if let Some(rc) = RoleController::get_role_controller(e.clone()) {
-                        rc.inner::<RoleController>().replay_anim();
+                        let rc = rc.inner::<RoleController>();
+                        if !rc.active_anim_name().eq_ignore_ascii_case(ROLE_ACTION) {
+                            rc.play_anim(ROLE_ACTION, RoleAnimationRepeatMode::Loop);
+                        }
                     }
                 }
             }
@@ -590,7 +601,7 @@ impl LineupDisc {
                 Some(p) if p < POSITIONS.len() => {
                     taken[p] = true;
                     let at = self.slot_at(p);
-                    tops[p] = Some(at[1] + b.map(|(_, hi)| hi[1]).unwrap_or(0.));
+                    tops[p] = Some(at[1] + model_height(b));
                     at
                 }
                 _ => CENTER,
@@ -606,10 +617,10 @@ impl LineupDisc {
                     (facing(sub(pos, CENTER)) + extra).to_radians(),
                 );
             if self.selected == Some(*id) {
-                // 挂在角色节点上的指针画在 位置 + (0, +0x18, 0)，`+0x18 = +0x1c + 12`，
-                // `+0x1c` 取自模型包围盒 [推断：模型高度]。
-                let height = b.map(|(_, hi)| hi[1]).unwrap_or(0.);
-                head = Some([pos[0], pos[1] + height + POINTER_LIFT, pos[2]]);
+                // 挂在角色节点上的指针画在 位置 + (0, +0x18, 0)，`+0x18 = +0x1c + 12`
+                // （`FUN_00483650` 0x483cbb–0x483cdc）；`+0x1c` 是载模型时（`FUN_0047cb90`
+                // 0x47cd2c–0x47cd37）取的包围盒 `+0x44`，见 [`model_height`]。
+                head = Some([pos[0], pos[1] + model_height(b) + POINTER_LIFT, pos[2]]);
             }
         }
         for (k, p) in self.pointers.iter().enumerate() {

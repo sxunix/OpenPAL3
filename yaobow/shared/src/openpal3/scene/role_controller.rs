@@ -423,6 +423,11 @@ impl RoleController {
         *self.auto_play_idle.borrow_mut() = auto_play_idle;
     }
 
+    /// 正在放的动作名（`play_anim` 最后一次设的）。
+    pub fn active_anim_name(&self) -> String {
+        self.active_anim_name.borrow().clone()
+    }
+
     pub fn state(&self) -> RoleState {
         *self.state.borrow()
     }
