@@ -1488,8 +1488,9 @@ impl SceCommandCombat {
                     persistent.set_lineup_position(actor_id, c.element_position - 1);
                 }
                 if let Some(role) = persistent.role_mut(actor_id) {
-                    // 托管开关写回（`FUN_004ed800`）。原版只在胜利那一支调它，另一个调用者
-                    // `FUN_004ed680` 没细看；移植端不分胜负都写回 `[推断]`。
+                    // 托管开关写回（`FUN_004ed800`）。战斗结束判定 `FUN_004f7910` 三支都会走到它：
+                    // 战败（`FUN_004ed0a0(0) == 1`）直接调；胜利 `FUN_004ed870` 之后、逃跑（`+0x78 == 4`）
+                    // 各调一次整份写回 `FUN_004ed680`，它最后也调 `FUN_004ed800`。所以不分胜负都写回。
                     role.delegation = c.delegation;
                     // 战后写回：`FUN_004ed870`（0x4ed870，由胜负判定
                     // 0x4f7dc1 / 0x4f7f97 在战斗结束时调）逐个我方战斗位：
