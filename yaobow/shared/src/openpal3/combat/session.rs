@@ -6,11 +6,10 @@
 //! What the original does at this layer (`FUN_004055d0` case 2 → the
 //! per-frame `FUN_004db7a0` / `FUN_004f7910` pair) is: fill gauges, let
 //! whoever is ready act, test the outcome after every action. The menu
-//! is `FUN_00500d50`. Only the entries that have a rules-side
-//! implementation are offered: 攻击 / 仙术 / 道具 / 防御 / 逃跑. 合击 has no
-//! entry of its own: as in the original, a 仙术 turns into a 合击 by itself
-//! when a combo's conditions hold (see [`super::combo`]). The order the five sit in is
-//! not read off the original either `[推断]`.
+//! is the 控制盘: `FUN_005196c0` builds its buttons (see `hud::RingButton`), and which
+//! of them can be pressed follows the 0x4dc7a0 rules ([`CombatSession::entry_enabled`]).
+//! 合击 has no entry of its own: as in the original, a 仙术 turns into a 合击 by
+//! itself when a combo's conditions hold (see [`super::combo`]).
 
 use std::collections::VecDeque;
 

@@ -46,11 +46,14 @@ pub const GAUGE_PADDING: BarPadding = BarPadding {
 /// 「精 气 神」三个字的竖条（id 0x220）。
 pub const GAUGE_LABEL: &str = "result/face/HP-GP-MP.tga";
 pub const GAUGE_LABEL_RECT: Rect = (66, 42, 130, 109);
-/// 名字和等级那一行（id 0x211）。写在哪个控件上是 **[推断]**。
+/// 名字和等级那一行：控件 0x212（`FUN_0051c330` 建在面板 `+0x68`，(0,0)-(187,32)）。
+/// `FUN_005184e0` 用 `%s%s %d %s` 拼好后 `FUN_004427c0(字, 1)` 写进 0x212；紧挨着的 0x211
+/// （`+0x64`，(0,211)-(187,243)）写的是 `DAT_00bfdaa4`——一个空串，所以那一行是空的。
+/// `FUN_004427c0` 第二个参数只写控件 `+0x48`，名字这句是 1，用途还没看。
 ///
 /// 面板底图上还印着五灵「水 火 / 雷 风 / 土 双」六格和「经验值」，格里的数
 /// （`FUN_004f39f0`）移植端没有，不画。
-pub const NAME_RECT: Rect = (0, 211, 187, 243);
+pub const NAME_RECT: Rect = (0, 0, 187, 32);
 
 /// 面板往下滑进来：第 k 块晚 0.08 秒起步（`FUN_005184e0` 的 `k * 0.08`），从 y = −256
 /// 滑到 0。那个调用里的 3000 是**加速度**：每帧的处理 `LAB_00518fe0` 算
@@ -102,7 +105,7 @@ pub const ELEMENT_NUMBER_RECTS: [Rect; 6] = [
     (136, 160, 200, 192),
 ];
 
-/// 得到钱 / 物品的横幅（id 0x214）。**[推断]** 这一块挂的是 getitem.tga。
+/// 得到钱 / 物品的横幅（id 0x214）：`FUN_00517df0` 建在 `+0x458`，(221,255)-(579,345)，挂 getitem.tga。
 pub const GETITEM_PANEL: &str = "result/panel/getitem.tga";
 pub const GETITEM_RECT: Rect = (221, 255, 579, 345);
 
@@ -209,14 +212,14 @@ impl ResultMessage {
             MessageKind::Item => 4.,
         }
     }
-    /// 升级 `wa014`（`FUN_005025c0`）；物品 `wa006`——原版在**登记**时就播，
-    /// 移植端改成显示时播 **[推断]**。钱不出声。
+    /// 显示时放的音效：升级 `wa014`（`FUN_005025c0`）。物品的 `wa006` 原版在**登记**时
+    /// 就放（`FUN_004fb370` 每登记一件放一次），不在这里，见 [`item_sounds`]。钱不出声。
     pub fn sound(&self) -> Option<&'static str> {
         match self.kind {
             MessageKind::LevelUp => Some("wa014"),
             // 学会 / 仙术升级都放 wa015（0x502b55）。
             MessageKind::Mastered | MessageKind::SkillUp => Some("wa015"),
-            MessageKind::Item => Some("wa006"),
+            MessageKind::Item => None,
             MessageKind::Money => None,
         }
     }
@@ -273,6 +276,14 @@ impl Step {
             _ => None,
         }
     }
+}
+
+/// 排时间轴时当场要放的音效：每件物品一次 `wa006`（`FUN_004fb370`，0x4fb3d5 / 0x4fb42d）。
+pub fn item_sounds(messages: &[ResultMessage]) -> usize {
+    messages
+        .iter()
+        .filter(|m| m.kind == MessageKind::Item)
+        .count()
 }
 
 /// 三种结局各排什么（`FUN_004f7910`）。

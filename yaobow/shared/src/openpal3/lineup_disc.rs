@@ -65,8 +65,8 @@ const ROLL: f32 = 3.2;
 /// `FUN_0047c6e0(0, 50, 400, 1)`：看向 (0, 50, 0)，距离 400。
 const LOOK_AT: [f32; 3] = [0., 50., 0.];
 const DISTANCE: f32 = 400.;
-/// `FUN_0047c640` 往相机 `+0` 写 50.0（非 0 即透视）。按 4:3 的水平视角理解，和战斗相机
-/// 同一个读法 [推断]。
+/// `FUN_0047c640` 往相机 `+0` 写 50.0（非 0 即透视）。gbCamera 按水平视角用
+/// （`GetViewSizeOnNearPlane`，0x10021a10：半宽 = tan(fov/2) × 近平面），和战斗相机一样。
 const FOV: f32 = 50.;
 
 /// 角色节点载入时的动作：`FUN_0047cb90(模型名, 0x10)`，16 号是 `j01`。
@@ -120,10 +120,11 @@ pub fn camera(pitch: f32) -> DiscCamera {
 
 /// 节点绕竖轴转多少度（`FUN_0047d440`，节点 `+0x78` 置位时）。`offset` 是位置减公转中心，
 /// `+0x74` 是 `normalize(offset)` 和 +z 的夹角，转 `360 − 夹角`，在中心右边（x > 0）时取负。
-/// 站在中心的方向是零向量，按夹角 90° 算 [推断：`gbVec3D::Normalize` 对零向量不动]。
+/// 站在中心时方向几乎是零向量：gbengine 的 `gbVec3D::Normalize`（0x100250a0）长度不到
+/// 0.005 就把向量设成 (0, 1, 0)，和 +z 的夹角是 90°。
 pub fn facing(pos: [f32; 3]) -> f32 {
     let len = (pos[0] * pos[0] + pos[1] * pos[1] + pos[2] * pos[2]).sqrt();
-    let cos = if len > 1e-6 { pos[2] / len } else { 0. };
+    let cos = if len >= 0.005 { pos[2] / len } else { 0. };
     let turn = 360. - cos.clamp(-1., 1.).acos().to_degrees();
     if 0. < pos[0] { -turn } else { turn }
 }

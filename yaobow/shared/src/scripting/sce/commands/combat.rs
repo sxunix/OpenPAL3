@@ -988,7 +988,12 @@ impl SceCommandCombat {
             self.settled = true;
             self.finish(state, outcome);
         }
-        let steps = timeline(outcome, std::mem::take(&mut self.result_messages));
+        let messages = std::mem::take(&mut self.result_messages);
+        // 物品的 wa006 登记时就放（`FUN_004fb370`），不等横幅出来。
+        for _ in 0..crate::openpal3::combat::result::item_sounds(&messages) {
+            ui_sound::play(state, "wa006");
+        }
+        let steps = timeline(outcome, messages);
         self.result = Some(ResultPlayer::new(steps));
         self.result_tex = Some(ResultTextures::load(state));
         true
