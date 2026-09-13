@@ -616,9 +616,10 @@ impl SceCommandCombat {
         db.skill(id).is_some_and(|s| s.skill_type == 0)
     }
 
-    fn skill_choice(db: &GameDb, id: u32) -> Option<SkillChoice> {
+    fn skill_choice(db: &GameDb, id: u32, multiplier: i32) -> Option<SkillChoice> {
         let s = db.skill(id)?;
         Some(SkillChoice {
+            multiplier,
             name: s
                 .name
                 .as_str()
@@ -1136,7 +1137,8 @@ impl SceCommandCombat {
                         .skills
                         .iter()
                         .filter(|s| !Self::is_special(&db, s.id))
-                        .filter_map(|s| Self::skill_choice(&db, s.id))
+                        // 出手倍率：法术表里的等级 + 1（`FUN_004f76c0`）。
+                        .filter_map(|s| Self::skill_choice(&db, s.id, s.level as i32 + 1))
                         .collect(),
                     specials: {
                         let mut ids: Vec<u32> = role
@@ -1162,7 +1164,8 @@ impl SceCommandCombat {
                         ids.sort_unstable();
                         ids.dedup();
                         ids.into_iter()
-                            .filter_map(|id| Self::skill_choice(&db, id))
+                            // 特技不在法术表里，`FUN_004f76c0` 找不到返回 0。
+                            .filter_map(|id| Self::skill_choice(&db, id, 0))
                             .collect()
                     },
                     reward: Reward::default(),
@@ -1205,11 +1208,12 @@ impl SceCommandCombat {
 
                 profiles[slot] = Profile {
                     name: row.name.as_str().unwrap_or_else(|_| format!("#{id}")),
+                    // 出手倍率是 gdb `skill_levels[i]`，不加 1（`FUN_004f76c0`）。
                     skills: row.skill_ids[..3]
                         .iter()
-                        .copied()
-                        .filter(|s| *s != 0)
-                        .filter_map(|s| Self::skill_choice(&db, s))
+                        .zip(row.skill_levels)
+                        .filter(|(s, _)| **s != 0)
+                        .filter_map(|(s, level)| Self::skill_choice(&db, *s, level as i32))
                         .collect(),
                     specials: Vec::new(),
                     reward: Reward {

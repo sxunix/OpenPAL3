@@ -29,6 +29,9 @@ use super::state::{
 #[derive(Debug, Clone)]
 pub struct SkillChoice {
     pub name: String,
+    /// `FUN_004f76c0` 给这一招的出手速度倍率：我方仙术是法术表里的等级 + 1，怪物是 gdb
+    /// `skill_levels[i]`（不加 1），特技找不到算 0。0 在任务里当 1 用，> 3 瞬发。
+    pub multiplier: i32,
     pub effect: SkillEffect,
 }
 
@@ -1185,7 +1188,7 @@ impl CombatSession {
                         match action {
                             Action::Attack => self.commit(Pending::Attack { slot, target }, 1),
                             Action::Cast(i) => {
-                                let m = self.cast_multiplier(slot, i);
+                                let m = self.cast_multiplier(slot, i, false);
                                 self.commit(
                                     Pending::Cast {
                                         slot,
@@ -1410,7 +1413,7 @@ impl CombatSession {
         match plan {
             Some(Plan::Attack { target }) => self.commit(Pending::Attack { slot, target }, 1),
             Some(Plan::Magic { target, index }) => {
-                let m = self.cast_multiplier(slot, index);
+                let m = self.cast_multiplier(slot, index, false);
                 self.commit(
                     Pending::Cast {
                         slot,
@@ -1422,7 +1425,7 @@ impl CombatSession {
                 )
             }
             Some(Plan::Special { target, index }) => {
-                let m = self.cast_multiplier(slot, index);
+                let m = self.cast_multiplier(slot, index, true);
                 self.commit(
                     Pending::Cast {
                         slot,
@@ -1461,7 +1464,7 @@ impl CombatSession {
             Decision::Cast { target, skill } => {
                 match self.skills(slot).iter().position(|s| s.effect.id == skill) {
                     Some(i) => {
-                        let m = self.cast_multiplier(slot, i);
+                        let m = self.cast_multiplier(slot, i, false);
                         self.commit(
                             Pending::Cast {
                                 slot,
@@ -1479,12 +1482,13 @@ impl CombatSession {
         true
     }
 
-    /// `FUN_004f76c0` 给的出手速度倍率。原版从角色的技能槽里取一个字节再
-    /// 加 1，取不到返回 0（任务里当 1 用）。那个字节在移植的技能数据里还没
-    /// 对应上，所以这里一律按 1 `[推断]`——效果是出手段以两倍蓄力速度推进，
-    /// 和原版没有该字段时的行为一致。
-    fn cast_multiplier(&self, _slot: usize, _skill: usize) -> i32 {
-        1
+    /// `FUN_004f76c0` 给的出手速度倍率，建菜单时已存进 [`SkillChoice::multiplier`]。
+    fn cast_multiplier(&self, slot: usize, skill: usize, special: bool) -> i32 {
+        let Some(p) = self.profiles.get(slot) else {
+            return 0;
+        };
+        let list = if special { &p.specials } else { &p.skills };
+        list.get(skill).map(|s| s.multiplier).unwrap_or(0)
     }
 
     /// 普攻（`FUN_004f0a10`）：横排 / 竖列打一排人（[`Battle::attack_targets`]），暴击整次
@@ -1804,6 +1808,7 @@ mod tests {
             b.place(1, xj);
             b.place(5, fighter(Side::Enemy, 900, 1));
             let skill = SkillChoice {
+                multiplier: 0,
                 name: "洒金笺".into(),
                 effect: SkillEffect {
                     id: 4102,
@@ -1892,6 +1897,7 @@ mod tests {
         let mut impacts = [(0u8, 0i16); ATTRIBUTE_SLOTS];
         impacts[ATTR_HP] = (0, 30);
         SkillChoice {
+            multiplier: 0,
             name: "治疗".into(),
             effect: SkillEffect {
                 id: 1,
@@ -2172,6 +2178,19 @@ mod tests {
     }
 
     #[test]
+    fn the_cast_multiplier_comes_from_the_skill_choice() {
+        let mut s = session();
+        s.profiles[0].skills = vec![SkillChoice {
+            multiplier: 3,
+            ..heal()
+        }];
+        s.profiles[0].specials = vec![heal()];
+        assert_eq!(s.cast_multiplier(0, 0, false), 3);
+        assert_eq!(s.cast_multiplier(0, 0, true), 0, "特技不在法术表里");
+        assert_eq!(s.cast_multiplier(0, 5, false), 0);
+    }
+
+    #[test]
     fn seal_and_forbid_grey_out_the_ring_like_the_original() {
         let mut s = session();
         run_until_turn(&mut s);
@@ -2264,6 +2283,7 @@ mod tests {
         let mut impacts = [(0u8, 0i16); ATTRIBUTE_SLOTS];
         impacts[ATTR_HP] = (0, -20);
         s.profiles[0].specials = vec![SkillChoice {
+            multiplier: 0,
             name: "飞龙探云手".into(),
             effect: SkillEffect {
                 id: 0x1005,
@@ -2309,6 +2329,7 @@ mod tests {
         let mut impacts = [(0u8, 0i16); ATTRIBUTE_SLOTS];
         impacts[ATTR_HP] = (0, -20);
         s.profiles[0].skills = vec![SkillChoice {
+            multiplier: 0,
             name: "群攻".into(),
             effect: SkillEffect {
                 id: 77,
