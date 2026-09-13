@@ -360,8 +360,10 @@ struct StageActor {
     entity: ComRc<radiance::comdef::IEntity>,
     set: MotionSet,
     last: Snapshot,
-    /// 怪物倒下后过一会儿收起来（怪物没有倒地动作）。
-    hide_in: Option<f32>,
+    /// 死了的怪物等挨打动作播完再藏（见 `animate_stage`）。
+    hide_on_finish: bool,
+    /// 打赢时在做胜利动作 z20，做完回歇着的动作（见 `begin_ending`）。
+    win_pose: bool,
     /// 站位（`[RolePos]`），走位去了还要回来。
     home: Vec3,
     walk: Option<Walk>,
@@ -388,10 +390,6 @@ enum Walk {
 fn face_point(pos: Vec3, dir: (f32, f32)) -> Vec3 {
     Vec3::new(pos.x + dir.0 * 100., pos.y, pos.z + dir.1 * 100.)
 }
-
-/// 怪物倒下后多久收起来 **[推断]**：原版怪物目录里没有倒地动作，这里等
-/// 挨打那一下做完。
-const MONSTER_HIDE_SECONDS: f32 = 0.6;
 
 type Tex = Option<Rc<Sprite>>;
 
@@ -900,7 +898,8 @@ impl SceCommandCombat {
                 set,
                 hit_events,
                 last: Snapshot::of(c, None),
-                hide_in: None,
+                hide_on_finish: false,
+                win_pose: false,
                 home,
                 walk: None,
                 scripted: 0,
@@ -956,19 +955,12 @@ impl SceCommandCombat {
                 .read_to_end(crate::openpal3::combat::linker::LINKER_PATH)
                 .ok()
                 .and_then(|b| crate::openpal3::combat::linker::EffectLinker::parse(&b));
-            // 两方的定点：敌方是 10 号位（FUN_00508930 读 +0x40 那个舞台角色）；
-            // 我方原版读 CBStage +0x384，这里用 0..4 号位的重心代替 [推断]。
+            // 两方的定点（`FUN_00508930`）：敌方是 10 号位（读 +0x40 那个舞台角色）；我方读
+            // 舞台场景 `+0x384..+0x38c`——构造 `FUN_0050fd00`（0x50fdc7）清零后全程序没人再写，
+            // 就是原点。
             let pos =
                 |k: usize| stage::stage_position(positions, k).map(|p| Vec3::new(p.x, 0., p.z));
-            let party: Vec<Vec3> = (0..PARTY_SLOTS).filter_map(pos).collect();
-            if !party.is_empty() {
-                let n = party.len() as f32;
-                self.side_anchors[0] = Vec3::new(
-                    party.iter().map(|p| p.x).sum::<f32>() / n,
-                    0.,
-                    party.iter().map(|p| p.z).sum::<f32>() / n,
-                );
-            }
+            self.side_anchors[0] = Vec3::new(0., 0., 0.);
             if let Some(p) = pos(10) {
                 self.side_anchors[1] = p;
             }
@@ -1029,7 +1021,9 @@ impl SceCommandCombat {
         }
         self.ending = Some(outcome);
         if outcome == Outcome::Win {
-            // 每人排的任务 0x18 → 胜利动作 z20（`FUN_0050fa20`）；做完停住 [推断]。
+            // 每人排的任务 0x18 → 胜利任务 `FUN_0050fa20`：第一帧换 z20（0x31），等引擎在动作播完
+            // 时发的 "over"（`+0x19f4`）就结束。任务表空了 `FUN_0050b430` 每帧换回默认动作
+            // `FUN_0050bbd0`（活着的我方按精：z04 / z17 濒死 / 眠定……），所以做完不停在最后一帧。
             let alive: Vec<bool> = (0..self.actors.len())
                 .map(|slot| {
                     self.session
@@ -1038,13 +1032,14 @@ impl SceCommandCombat {
                         .is_some_and(|c| c.alive)
                 })
                 .collect();
-            for (slot, actor) in self.actors.iter().enumerate().take(PARTY_SLOTS) {
-                let Some(actor) = actor.as_ref() else {
+            for (slot, actor) in self.actors.iter_mut().enumerate().take(PARTY_SLOTS) {
+                let Some(actor) = actor.as_mut() else {
                     continue;
                 };
                 if !alive[slot] {
                     continue;
                 }
+                actor.win_pose = true;
                 if let (Some(rc), Some(name)) = (
                     RoleController::get_role_controller(actor.entity.clone()),
                     actor.set.name(motion::Motion::Win),
@@ -2128,7 +2123,7 @@ impl SceCommandCombat {
             if frame.begin {
                 actor.scripted += 1;
                 actor.walk = None;
-                actor.hide_in = None;
+                actor.hide_on_finish = false;
                 actor.entity.set_visible(true);
                 if let (Some(name), Some(rc)) = (cue.motion_name(), rc.as_ref()) {
                     let rc = rc.inner::<RoleController>();
@@ -2251,11 +2246,18 @@ impl SceCommandCombat {
             };
             let rc = rc.inner::<RoleController>();
 
-            if let Some(t) = actor.hide_in.as_mut() {
-                *t -= delta_sec;
-                if *t <= 0. {
-                    actor.entity.set_visible(false);
-                    actor.hide_in = None;
+            if actor.hide_on_finish
+                && rc.state() == crate::openpal3::scene::RoleState::AnimationFinished
+            {
+                actor.entity.set_visible(false);
+                actor.hide_on_finish = false;
+            }
+            if actor.win_pose && rc.state() == crate::openpal3::scene::RoleState::AnimationFinished
+            {
+                actor.win_pose = false;
+                if let Some(name) = actor.set.name(motion::rest_motion(&now)) {
+                    rc.set_auto_play_idle(true);
+                    rc.play_anim(name, RoleAnimationRepeatMode::Loop);
                 }
             }
 
@@ -2313,18 +2315,25 @@ impl SceCommandCombat {
                 Some(Play::Stay(m)) => {
                     rc.set_auto_play_idle(false);
                     if !play(m, RoleAnimationRepeatMode::Repeat(1)) {
-                        // 怪物没有倒地动作：挨一下，然后收起来。
-                        play(
-                            motion::Motion::BeAttacked,
-                            RoleAnimationRepeatMode::Repeat(1),
-                        );
-                        actor.hide_in = Some(MONSTER_HIDE_SECONDS);
+                        // 怪物没有倒地动作。原版挨打任务（0x50eb00 起）给它换 b，等引擎在
+                        // 动作播完时发的 "over"（`+0x19f4` = CRC("over")，`FUN_005092b0`）才结束，
+                        // 结束时死了就 `+0x110 = 0`（0x50ed32），渲染 `FUN_00509b90` 不再画。
+                        // 中了 0xe 号状态的不换动作，下一帧就结束。
+                        if c.has_state(0xe) {
+                            actor.entity.set_visible(false);
+                        } else {
+                            play(
+                                motion::Motion::BeAttacked,
+                                RoleAnimationRepeatMode::Repeat(1),
+                            );
+                            actor.hide_on_finish = true;
+                        }
                     }
                 }
                 Some(Play::Rest) => {
                     rc.set_auto_play_idle(true);
                     actor.entity.set_visible(true);
-                    actor.hide_in = None;
+                    actor.hide_on_finish = false;
                     let rest = motion::rest_motion(&now);
                     if rest == motion::Motion::Idle || !play(rest, RoleAnimationRepeatMode::Loop) {
                         rc.idle();
