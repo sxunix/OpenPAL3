@@ -52,13 +52,14 @@ pub const GAUGE_LABEL_RECT: Rect = (66, 42, 130, 109);
 /// （`FUN_004f39f0`）移植端没有，不画。
 pub const NAME_RECT: Rect = (0, 211, 187, 243);
 
-/// 面板往下滑进来：第 k 块晚 0.08 秒起步（`FUN_005184e0` 的 `k * 0.08`），
-/// 从 y = −256 滑到 0。速度用那个调用里的 3000 当每秒像素 **[推断]**。
+/// 面板往下滑进来：第 k 块晚 0.08 秒起步（`FUN_005184e0` 的 `k * 0.08`），从 y = −256
+/// 滑到 0。那个调用里的 3000 是**加速度**：每帧的处理 `LAB_00518fe0` 算
+/// `y = 起点 + 0.5 × 3000 × t²`，到终点就停（`__ftol` 截断）。
 pub const SLIDE_DELAY: f32 = 0.08;
-pub const SLIDE_SPEED: f32 = 3000.;
+pub const SLIDE_ACCEL: f32 = 3000.;
 pub fn panel_slide_y(panel: usize, elapsed: f32) -> i32 {
     let t = (elapsed - panel as f32 * SLIDE_DELAY).max(0.);
-    (-256. + t * SLIDE_SPEED).min(0.) as i32
+    (-256. + 0.5 * SLIDE_ACCEL * t * t).min(0.) as i32
 }
 
 /// 升级的横幅（`FUN_00517df0`，id 0x213）。
