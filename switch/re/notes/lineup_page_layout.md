@@ -313,3 +313,14 @@ PlankUP(65×43) 在面板顶、PlankDW(64×8) 在面板底，
   （`FUN_0048b8f0` 就是仙术页按页签重填列表的那个函数）。
   本页的阵位状态在 `this+0x25c14`，与之无关。
   8 个标志正好对应仙术页的八个页签，上限 5 [推断] 是"最多带 5 个常用仙术"。
+
+## 光照（2026-09-14）
+
+- 这一页不挂灯：节点绘制 `FUN_0047d440` 只 `Begin(节点相机)` + `SetAsCurrent(3)`，页面绘制 0x4850e0 也没有；
+  PAL3 的导入表里没有 `gbGfxManager::SetAmbientLight` / `GetAmbientLight`，全程序不改全局环境光。
+- gbengine：全局环境光在 gbGfxManager `+0x1ac`，初始化 0x1d9b9–0x1d9f7 写 (0.2, 0.2, 0.2)。场景图给每个物体算
+  着色器变量 `ambient`（0x15979–0x15a6b）：(全局环境光 + 灯的环境分量 `[esi+0x24..]`) × 材质 `+0x10..+0x1c`
+  + `+0x1bc` × 材质 `+0x30..+0x3c`。变量名表在 .data 0x11fc54：alltm bonetm fogplane lightpos ambient
+  diffuse specular lightatten。`CalEffectiveVolMod`（0x14dc0）每个物体最多挑两盏各类灯。
+- 角色走 `skin.gbf`：顶点色 `Diffuse = ambient`，不看法线；`geom.gbf` 是固定管线 贴图 × 顶点光照。
+- 移植端没有材质 ambient / emissive 和这套全局环境光，`lineup_disc` 仍用满环境光——亮度和原版不同，要在渲染器里补。

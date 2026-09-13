@@ -320,7 +320,11 @@ impl LineupDisc {
         let engine = am.rendering_engine()?;
         let factory = am.component_factory();
         let scene = CoreScene::create();
-        // 原版这一页没见挂灯，和别的界面视图一样用满环境光 [推断]。
+        // 原版这一页不挂灯（节点绘制 `FUN_0047d440` 只 `Begin` + `SetAsCurrent(3)`），PAL3 也从不
+        // 调 `SetAmbientLight`。gbengine 每个物体的着色器变量 `ambient`（场景图 0x15979–0x15a6b）
+        // = (全局环境光 + 灯的环境分量) × 材质 ambient + `+0x1bc` × 材质 `+0x30..`；全局环境光是
+        // gbGfxManager 初始化（0x1d9b9）给的 (0.2, 0.2, 0.2)。角色的 skin.gbf 顶点色就等于这个
+        // `ambient`。移植端没有材质 ambient / emissive 这套，暂时用满环境光，亮度和原版不一样。
         scene.set_lighting(SceneLighting::new([1., 1., 1.], vec![]));
 
         am.vfs().open(DISC_MODEL).ok()?;
