@@ -569,62 +569,80 @@ impl CombatSession {
         }
 
         self.elapsed += dt;
-        let Some(due) = self.battle.update(dt) else {
-            return None;
-        };
+        self.battle.advance(dt);
+        // 原版主调度每帧把 11 个位都过一遍：谁没挑出行动就下一帧再试（不清行动条），
+        // 不耽误后面的人。
+        let mut waiting: Vec<usize> = Vec::new();
+        loop {
+            let Some(due) = self.battle.due(&waiting) else {
+                return None;
+            };
 
-        match due {
-            // 出手条满了：把先前选定的行动结算掉。
-            Due::Executed(slot) => {
-                let staged = self.stage_driven
-                    && matches!(self.pending, Some(p) if p.slot() == slot)
-                    && !matches!(self.pending, Some(Pending::Escape { .. }));
-                if staged {
-                    self.staging = Some(Staging {
-                        slot,
-                        landed: false,
-                    });
-                    return None;
+            match due {
+                // 出手条满了：把先前选定的行动结算掉。
+                Due::Executed(slot) => {
+                    let staged = self.stage_driven
+                        && matches!(self.pending, Some(p) if p.slot() == slot)
+                        && !matches!(self.pending, Some(Pending::Escape { .. }));
+                    if staged {
+                        self.staging = Some(Staging {
+                            slot,
+                            landed: false,
+                        });
+                        return None;
+                    }
+                    self.resolve_pending(slot);
+                    self.settle_outcome();
+                    return self.finished;
                 }
-                self.resolve_pending(slot);
-                self.settle_outcome();
-                return self.finished;
-            }
-            Due::Ready(slot) => {
-                let actor = self
-                    .battle
-                    .get(slot)
-                    .expect("update returned a placed slot");
-                let side = actor.side;
-                let confused = actor.has_state(K_CONFUSED);
-                let asleep = actor.has_state(K_SLEEP);
-                let paralysed = actor.has_state(K_PARALYSIS);
-                let berserk = actor.has_state(K_BERSERK);
-                let delegated = actor.delegation.on;
+                Due::Ready(slot) => {
+                    // 调度器一次只排一个行动任务：有人还在出手段（登记的行动没结算），轮到的人
+                    // 这一帧先等着，下一帧再看——出手完成的那个优先。
+                    if self.pending.is_some() {
+                        waiting.push(slot);
+                        continue;
+                    }
+                    let actor = self
+                        .battle
+                        .get(slot)
+                        .expect("update returned a placed slot");
+                    let side = actor.side;
+                    let confused = actor.has_state(K_CONFUSED);
+                    let asleep = actor.has_state(K_SLEEP);
+                    let paralysed = actor.has_state(K_PARALYSIS);
+                    let berserk = actor.has_state(K_BERSERK);
+                    let delegated = actor.delegation.on;
 
-                // 主调度 `LAB_00513840`（0x513925 起）：眠（0x11）、定（0x0e）→ 0x513ab8，
-                // 只有一句 `FUN_004db750(k, 0, 0, 0)`，这一回合跳过；托管开关 `+0x345`、
-                // 乱（0x12）、狂（0x13）→ 0x513a36 交给 AI。乱最后落到 `FUN_004d8580`
-                // 随便挑人（见 `ai::confused`），狂走托管那一支（普攻不看开关）。
-                if asleep || paralysed {
-                    let why = if asleep { "睡着了" } else { "定住了" };
-                    self.push_log(format!("{} {why}", self.name(slot)));
-                    self.battle.finish_turn(slot);
-                } else if confused {
-                    self.act_confused(slot);
-                } else if side == Side::Party && (delegated || berserk) {
-                    // 托管开着或中了狂：不出控制盘（0x51394b 查 `+0x345` → 0x513a36）。
-                    self.act_by_delegate(slot);
-                } else if side == Side::Party {
-                    self.turn = Some(PlayerTurn {
-                        slot,
-                        menu: Menu::Main { index: 0 },
-                    });
-                    return None;
-                } else {
-                    self.act_by_ai(slot, false);
+                    // 主调度 `LAB_00513840`（0x513925 起）：眠（0x11）、定（0x0e）→ 0x513ab8，
+                    // 只有一句 `FUN_004db750(k, 0, 0, 0)`，这一回合跳过。我方：托管开关 `+0x345`、
+                    // 乱（0x12）、狂（0x13）→ 0x513a36 走 `FUN_004d86d0`（乱在里面走随机的那两支）。
+                    // 怪物走 0x513a48 那条：一律 `FUN_004d7120`，乱在里面转 `FUN_004d8580`。
+                    // 哪条挑不出行动都是下一帧再试（0x513ac7，不清行动条）。
+                    let acted = if asleep || paralysed {
+                        let why = if asleep { "睡着了" } else { "定住了" };
+                        self.push_log(format!("{} {why}", self.name(slot)));
+                        self.battle.finish_turn(slot);
+                        true
+                    } else if side == Side::Party && (delegated || confused || berserk) {
+                        self.act_by_delegate(slot)
+                    } else if side == Side::Enemy && confused {
+                        self.act_confused(slot)
+                    } else if side == Side::Enemy {
+                        self.act_by_ai(slot, false)
+                    } else {
+                        self.turn = Some(PlayerTurn {
+                            slot,
+                            menu: Menu::Main { index: 0 },
+                        });
+                        return None;
+                    };
+                    if !acted {
+                        waiting.push(slot);
+                        continue;
+                    }
                 }
             }
+            break;
         }
         self.settle_outcome();
         self.finished
@@ -733,7 +751,8 @@ impl CombatSession {
             .get(slot)
             .map(|c| c.has_state(K_CONFUSED))
             .unwrap_or(false);
-        self.act_by_ai(slot, confused);
+        // 挑不出来就还是就绪，下一帧又轮到他、又快进一次。
+        let _ = self.act_by_ai(slot, confused);
         self.settle_outcome();
     }
 
@@ -1311,20 +1330,19 @@ impl CombatSession {
         true
     }
 
-    /// 我方托管（0x513a36 那一支 → `FUN_004d86d0`）：挑出来就照常登记、进出手段。
-    /// 什么都没挑出来时原版不交给怪物那套——0x513a48 起那条链先查 `+0x243`（我方）就跳走，
-    /// 这个人下一帧再试；移植端的调度每帧只交出最小位号的那一个，照原样重试会挡住别人，
-    /// 所以改成这一回合空过、蓄满再试 `[推断]`。
-    fn act_by_delegate(&mut self, slot: usize) {
-        self.act_by_plan(slot, false);
+    /// 我方托管 / 乱 / 狂（0x513a36 那一支 → `FUN_004d86d0`）：挑出来就照常登记、进出手段，
+    /// 返回 `true`。什么都没挑出来返回 `false`，调用方让这个人下一帧再试——原版 0x513a48 起
+    /// 那条链先查 `+0x243`（我方）就跳到 0x513ac7，不交给怪物那套。
+    fn act_by_delegate(&mut self, slot: usize) -> bool {
+        self.act_by_plan(slot, false)
     }
 
-    /// 乱（0x12）：`FUN_004d7120` → `FUN_004d8580`，随便挑人随便出手；挑不出来空过。
-    fn act_confused(&mut self, slot: usize) {
-        self.act_by_plan(slot, true);
+    /// 怪物中了乱（0x12）：`FUN_004d7120` → `FUN_004d8580`，随便挑人随便出手。
+    fn act_confused(&mut self, slot: usize) -> bool {
+        self.act_by_plan(slot, true)
     }
 
-    fn act_by_plan(&mut self, slot: usize, confused: bool) {
+    fn act_by_plan(&mut self, slot: usize, confused: bool) -> bool {
         let tool = |index: usize, e: &SkillEffect, usable: bool| Tool {
             index,
             kind: e.kind,
@@ -1404,18 +1422,14 @@ impl CombatSession {
                 target,
                 index: item,
             }) => self.commit(Pending::Item { slot, target, item }, 1),
-            None if confused => {
-                self.push_log(format!("{} 心神已乱", self.name(slot)));
-                self.battle.finish_turn(slot);
-            }
-            None => {
-                self.push_log(format!("{} 按兵不动", self.name(slot)));
-                self.battle.finish_turn(slot);
-            }
+            None => return false,
         }
+        true
     }
 
-    fn act_by_ai(&mut self, slot: usize, confused: bool) {
+    /// 怪物那套（`FUN_004d7120`）。挑不出来返回 `false`，下一帧再试（0x513ab1 之后直接到
+    /// 0x513ac7，不清行动条）。
+    fn act_by_ai(&mut self, slot: usize, confused: bool) -> bool {
         let options: Vec<SkillOption> = self
             .skills(slot)
             .iter()
@@ -1427,12 +1441,7 @@ impl CombatSession {
             })
             .collect();
         match ai::choose(&self.battle, &mut self.ai_rng, slot, &options, confused) {
-            Decision::Pass => {
-                // 不出手的这一支原版直接走 `FUN_004db750(k,0,0,0)`
-                // （0x513ac2），整条清零跳过这次。
-                self.push_log(format!("{} 按兵不动", self.name(slot)));
-                self.battle.finish_turn(slot);
-            }
+            Decision::Pass => return false,
             Decision::Attack { target } => self.commit(Pending::Attack { slot, target }, 1),
             Decision::Cast { target, skill } => {
                 match self.skills(slot).iter().position(|s| s.effect.id == skill) {
@@ -1452,6 +1461,7 @@ impl CombatSession {
                 }
             }
         }
+        true
     }
 
     /// `FUN_004f76c0` 给的出手速度倍率。原版从角色的技能槽里取一个字节再
@@ -1970,6 +1980,8 @@ mod tests {
     #[test]
     fn the_ai_panel_hands_the_turn_over_once_confirmed() {
         let mut s = session();
+        // 怪物挑不出东西会下一帧再试（不再空过），这里只看托管接不接手，别让它先把人打死。
+        s.battle.get_mut(5).unwrap().attack = 1;
         open_ai_panel(&mut s);
         s.input(Input::Confirm);
         assert_eq!(s.sfx.last(), Some(&SFX_DENIED), "AI 没开，攻击勾不上");
@@ -2328,7 +2340,8 @@ mod tests {
 
     #[test]
     fn a_confused_unit_lashes_out_instead_of_getting_a_menu() {
-        // 乱（0x12）走 0x513a36 → `FUN_004d8580`：不出控制盘，随便挑人出手。
+        // 我方中乱走 0x513a36 → `FUN_004d86d0` 的随机支：不出控制盘，挑不出就下一帧再试，
+        // 迟早随手出手（这里唯一能打的是 5 号）。
         let mut s = session();
         run_until_turn(&mut s);
         let slot = s.turn.as_ref().unwrap().slot;
@@ -2336,22 +2349,17 @@ mod tests {
         s.battle
             .get_mut(slot)
             .unwrap()
-            .apply_state(K_CONFUSED, 0, 5);
+            .apply_state(K_CONFUSED, 0, 50);
         s.battle.get_mut(slot).unwrap().gauge = formulas::GAUGE_FULL;
         s.battle.get_mut(slot).unwrap().phase = Phase::Ready;
-        for _ in 0..40 {
-            s.tick(0.05);
+        for _ in 0..5000 {
+            s.tick(0.01);
             assert!(s.turn.is_none(), "乱了不出控制盘");
-            if s.pending.is_some() || s.log.back().is_some_and(|l| l.contains("心神已乱")) {
+            if s.pending.is_some() {
                 break;
             }
         }
-        assert!(
-            matches!(s.pending, Some(Pending::Attack { slot: 0, target: 5 }))
-                || s.log.back().is_some_and(|l| l.contains("心神已乱")),
-            "要么随手打了唯一在场的人，要么挑不出招空过：{:?}",
-            s.pending
-        );
+        assert_eq!(s.pending, Some(Pending::Attack { slot: 0, target: 5 }));
     }
 
     #[test]

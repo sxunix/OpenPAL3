@@ -2714,7 +2714,7 @@ impl SceCommand for SceCommandCombat {
                         .and_then(|t| self.actors.get(t))
                         .and_then(|a| a.as_ref())
                         .map(|a| a.entity.transform().borrow().position())
-                        // -1 = 战场中心（CBStage +0x384..+0x38c），按原点算 [推断]。
+                        // -1 = 战场中心（CBStage +0x384..+0x38c）：构造 `FUN_0050fd00` 清零、全程序没人再写，就是原点。
                         .unwrap_or(Vec3::new(0., 0., 0.));
                     Self::place_camera_looking_at(stage, pose, at);
                 }

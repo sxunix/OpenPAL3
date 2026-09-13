@@ -418,7 +418,7 @@ impl CamPlayer {
     /// `FUN_005075e0` 的绕圈（`+0x59 && +0x5b && !+0x5a`，77 / 80 号序列）：转过的角度
     /// a = t·`+0x88` + 两段加速度，夹到总角度 `+0x84`（按正负号）；起点绕圆心按 a 转，
     /// 高度按 a / 总角度 从 `+0x90` 往 `+0x9c` 挪；角度保持起点的（这两条都盯着目标，朝向由
-    /// 舞台每帧算）。转满算完。旋转方向照移植端 yaw 的约定 `[推断]`。
+    /// 舞台每帧算）。转满算完。
     fn orbit(&mut self, rec: CamRecord, dt: f32) -> CombatCamera {
         if self.start.is_none() {
             let from = self.step_start(&rec);
@@ -447,10 +447,13 @@ impl CamPlayer {
         } else {
             0.
         };
+        // gbengine：`SetYawPitchRoll(a,0,0)` 得绕 Y 的四元数，`GetMatrix` 出行主序矩阵，
+        // `RotateIn` 做 v·M——x' = x·cos a + z·sin a，z' = −x·sin a + z·cos a。移植端机位就是
+        // 原版坐标，照搬。
         self.pose = CombatCamera {
-            x: cx + ox * c - oz * s,
+            x: cx + ox * c + oz * s,
             y: from.y + rise,
-            z: cz + ox * s + oz * c,
+            z: cz - ox * s + oz * c,
             ..from
         };
         if done {
@@ -605,6 +608,28 @@ mod tests {
         }
         assert!((last.x + 10.).abs() < 1e-3, "转半圈到对面: {}", last.x);
         assert!((last.y - 20.).abs() < 1e-3, "高度挪到 +0x9c");
+    }
+
+    #[test]
+    fn an_orbit_turns_the_same_way_as_gbengine() {
+        let mut r = rec(1., pose(10., 0.), pose(10., 0.));
+        r.flags = [0; 16];
+        r.flags[0] = 1;
+        r.flags[1] = 1;
+        r.flags[3] = 1;
+        r.flags[5] = 1;
+        r.orbit_total = 90.;
+        r.orbit_speed = 90.;
+        let mut p = CamPlayer::new(vec![r], pose(0., 0.)).unwrap();
+        let mut last = p.pose;
+        for _ in 0..30 {
+            last = p.update(0.05);
+        }
+        // (10, 0) 转 +90°：x' = 10·cos + 0 = 0，z' = −10·sin = −10。
+        assert!(
+            last.x.abs() < 1e-3 && (last.z + 10.).abs() < 1e-3,
+            "{last:?}"
+        );
     }
 
     #[test]

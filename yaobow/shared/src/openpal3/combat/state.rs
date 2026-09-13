@@ -599,6 +599,12 @@ impl Battle {
     /// 排序按 `FUN_004db7a0`：谁离完成最近谁先，还在蓄力的一律加 10000 的
     /// 偏置，所以正在出手的永远排在前面。
     pub fn update(&mut self, dt: f32) -> Option<Due> {
+        self.advance(dt);
+        self.due(&[])
+    }
+
+    /// 推一帧：蓄力条、出手条往前走。
+    pub fn advance(&mut self, dt: f32) {
         for slot in 0..SLOTS {
             let Some(c) = self.get_mut(slot) else {
                 continue;
@@ -628,7 +634,12 @@ impl Battle {
                 }
             }
         }
+    }
 
+    /// 这一帧该谁：出手条满的优先，其次蓄力条满的。`skip` 里的这一帧不再交出——原版主调度
+    /// 每帧把 11 个位都过一遍，一个人没挑出行动（托管、怪物 AI 都会这样）就下一帧再试，不耽误
+    /// 后面的人。
+    pub fn due(&self, skip: &[usize]) -> Option<Due> {
         // 出手完成的优先——原版的 +10000 偏置就是这个意思。
         let mut best: Option<(usize, f32)> = None;
         for slot in 0..SLOTS {
@@ -650,7 +661,7 @@ impl Battle {
         let mut best: Option<(usize, f32)> = None;
         for slot in 0..SLOTS {
             let Some(c) = self.get(slot) else { continue };
-            if !c.in_play() || c.phase != Phase::Ready {
+            if !c.in_play() || c.phase != Phase::Ready || skip.contains(&slot) {
                 continue;
             }
             let eta = formulas::seconds_until_turn(c.gauge, c.gauge_speed(), false);

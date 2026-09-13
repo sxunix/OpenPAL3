@@ -900,6 +900,26 @@ impl Delegate<'_> {
             if !self.placed(s) {
                 continue;
             }
+            if self.me.has_state(K_CONFUSED) {
+                // 乱：每个在场的位掷一次 `rand & 0x3f`，落在 0..8 才做（0x4d89d8 的跳表），
+                // 目标就是这个位，哪一边都行。
+                let p = match rng.rand15() & 0x3f {
+                    0 => self.special_revive(s),
+                    1 => self.magic_revive(s),
+                    2 => self.item_revive(s),
+                    3 => self.magic_heal_all(),
+                    4 => self.special_ally_all(),
+                    5 => self.item_heal_all(),
+                    6 => self.magic_heal(s),
+                    7 => self.special_ally(s),
+                    8 => self.item_heal(s),
+                    _ => None,
+                };
+                if p.is_some() {
+                    return p;
+                }
+                continue;
+            }
             let ours = self
                 .unit(s)
                 .map(|c| c.side == self.me.side)
@@ -977,6 +997,9 @@ impl Delegate<'_> {
     /// 找第一个站着的对手，普攻 → 仙术 → 特技 → 道具，同一个人连试两遍（原版两段
     /// 一模一样的阶梯，第二遍只在随机分值上可能不同）。
     fn offense(&self, rng: &mut CombatRng) -> Option<Plan> {
+        if self.me.has_state(K_CONFUSED) {
+            return self.offense_confused(rng);
+        }
         let aoe = 100 - spread(self.hurt(self.foe_side()));
         for s in 0..SLOTS {
             if !self.alive(s) {
@@ -1011,12 +1034,34 @@ impl Delegate<'_> {
     }
 }
 
-/// 我方托管（`FUN_004d86d0`）：谨慎就先 [`Delegate::support`]，没挑出来再
-/// [`Delegate::offense`]。两套都没挑出来返回 `None`——原版这时回到主调度
-/// 0x513a7c，交给怪物那套（`FUN_004d7120`，也就是 [`choose`]）。
-///
-/// 没搬的：中了乱（0x12）时两个行为体各有一支纯随机的分派（`rand % 0x40` /
-/// `rand % 11`）。移植端中了乱的我方整回合不动，走不到这里。
+impl Delegate<'_> {
+    /// `FUN_004d8af0` 乱的那一支（0x4d8d41 起）：`rand % 11` 抽位，要「在场、`+0x370 != 0`、
+    /// 不是自己」才停——而 `+0x370`（战斗位 `+0x598`）从来是 0，所以总是抽满 0x400 次，
+    /// 用最后一次抽到的（可能是自己）。之后 `rand % 11`：0 仙术群攻、1 特技群攻、2 道具群攻、
+    /// 3/10 普攻、4/7 仙术单攻、5/8 特技单攻、6/9 道具单攻。
+    fn offense_confused(&self, rng: &mut CombatRng) -> Option<Plan> {
+        let mut u = 0usize;
+        for _ in 0..0x400 {
+            u = (rng.rand15() % 11) as usize;
+        }
+        if !self.placed(u) {
+            return None;
+        }
+        match rng.rand15() % 11 {
+            0 => self.magic_attack_all(),
+            1 => self.special_enemy_all(rng),
+            2 => self.item_attack_all(),
+            3 | 10 => self.attack(rng, u),
+            4 | 7 => self.magic_attack(u),
+            5 | 8 => self.special_enemy(rng, u),
+            _ => self.item_attack(rng, u),
+        }
+    }
+}
+
+/// 我方托管 / 乱 / 狂（`FUN_004d86d0`）：谨慎就先 [`Delegate::support`]，没挑出来再
+/// [`Delegate::offense`]。中了乱两套各走自己的随机支。都没挑出来返回 `None`——原版这时
+/// 什么也不做，下一帧再试（我方不会退给怪物那套，见 `combat_ai.md` §6.3）。
 pub fn delegate(battle: &Battle, rng: &mut CombatRng, actor: usize, kit: &Kit) -> Option<Plan> {
     let me = battle.get(actor)?;
     if !me.in_play() {
@@ -1474,5 +1519,26 @@ mod tests {
             }
         }
         assert!(hit_ally, "乱了会打自己人");
+    }
+
+    #[test]
+    fn a_confused_companion_can_turn_on_its_own_side() {
+        let flags = Delegation {
+            on: true,
+            attack: true,
+            cautious: false,
+            ..Delegation::default()
+        };
+        let mut b = field(flags, 100);
+        b.get_mut(0).unwrap().states[K_CONFUSED].active = true;
+        let mut ally = 0;
+        for seed in 0..400 {
+            let mut rng = CombatRng::new(seed);
+            if let Some(Plan::Attack { target }) = delegate(&b, &mut rng, 0, &NOTHING) {
+                assert_ne!(target, 0, "打不了自己（普攻不认自己）");
+                ally += (target == 1) as i32;
+            }
+        }
+        assert!(ally > 0, "乱了的队友会打自己人");
     }
 }
