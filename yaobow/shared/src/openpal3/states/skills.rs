@@ -77,6 +77,7 @@ pub fn effect_of(s: &SkillInfo) -> SkillEffect {
         .map(|(i, _)| i as u8 + 1);
     SkillEffect {
         id: s.id,
+        kind: s.skill_type,
         level: s.level as i32,
         success_rate_level: s.success_rate_level,
         elements: (elements.next(), elements.next()),

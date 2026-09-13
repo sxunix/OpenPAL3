@@ -173,6 +173,8 @@ pub struct Combatant {
     /// 真正出手时被行动任务改写，见 [`Battle::begin_execute`]。
     pub cast_rate: u8,
     pub phase: Phase,
+    /// 我方托管的六个开关（战斗位 `+0x568..+0x56d`），见 [`super::ai::Delegation`]。
+    pub delegation: super::ai::Delegation,
 }
 
 impl Combatant {
@@ -205,6 +207,7 @@ impl Combatant {
             cast_gauge: 0.,
             cast_rate: 0,
             phase: Phase::Charging,
+            delegation: Default::default(),
         }
     }
 

@@ -46,6 +46,8 @@ impl ImpactKind {
 #[derive(Debug, Clone, Default)]
 pub struct SkillEffect {
     pub id: u32,
+    /// `SkillType`：0 特技 1 辅助 2 伤害 3 恢复 …（托管挑招时按它分类）。
+    pub kind: u8,
     pub level: i32,
     pub success_rate_level: u8,
     /// Up to two elements, from the skill's `element_attributes`.
@@ -184,6 +186,8 @@ pub fn apply_impact(target: &mut Combatant, slot: usize, kind: ImpactKind, value
 #[derive(Debug, Clone)]
 pub struct ItemEffect {
     pub id: u32,
+    /// `item_type`：1 治疗 2 投掷 3 仙宝 …（托管挑道具时按它分类）。
+    pub kind: u8,
     /// `ItemSpecialType`：1 蛊、2 鬼遁水（强制撤离）。
     pub special: u8,
     /// `TargetRangeType`：1 我方单体 2 我方全体 3 敌单体 4 敌全体。
@@ -198,6 +202,7 @@ impl Default for ItemEffect {
     fn default() -> Self {
         Self {
             id: 0,
+            kind: 0,
             special: 0,
             target_range: 0,
             impacts: [(0, 0); ATTRIBUTE_SLOTS],

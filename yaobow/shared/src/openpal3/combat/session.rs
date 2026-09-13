@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 
 use super::actions::{ATTR_HP, ItemEffect, SPECIAL_COST_GU, SPECIAL_COST_MONEY, SkillEffect};
-use super::ai::{self, Decision, SkillOption};
+use super::ai::{self, Decision, Delegation, Kit, Plan, SkillOption, Tool};
 use super::combo::{self, ComboDef};
 use super::formulas::CombatRng;
 use super::hud;
@@ -126,16 +126,19 @@ pub enum MenuEntry {
     Escape,
     /// 特技（控制盘的「技」，行动码 0x104）。
     Special,
+    /// 托管面板（控制盘的「AI」）。
+    Ai,
 }
 
 impl MenuEntry {
-    pub const ALL: [MenuEntry; 6] = [
+    pub const ALL: [MenuEntry; 7] = [
         MenuEntry::Attack,
         MenuEntry::Skill,
         MenuEntry::Item,
         MenuEntry::Defend,
         MenuEntry::Escape,
         MenuEntry::Special,
+        MenuEntry::Ai,
     ];
 
     pub fn label(self) -> &'static str {
@@ -146,6 +149,7 @@ impl MenuEntry {
             MenuEntry::Defend => "防御",
             MenuEntry::Escape => "逃跑",
             MenuEntry::Special => "特技",
+            MenuEntry::Ai => "AI",
         }
     }
 }
@@ -174,6 +178,13 @@ pub enum Menu {
     Specials {
         index: usize,
     },
+    /// 托管面板（`FUN_0051b210`）。`focus` 0..=5 是六个勾选框（按
+    /// [`ai::Switch::ALL`]），[`hud::AI_OK_FOCUS`] 是「确定」；`draft` 是面板上
+    /// 现在的勾，按了确定才写进战斗位。
+    Ai {
+        focus: usize,
+        draft: Delegation,
+    },
     /// `index` is into [`CombatSession::items`].
     Items {
         index: usize,
@@ -191,6 +202,11 @@ pub struct PlayerTurn {
     pub slot: usize,
     pub menu: Menu,
 }
+
+/// 界面音效（`scripting::sce::commands::ui_sound` 里同名的那几个）。
+const SFX_CLICK: &str = "wa001";
+const SFX_NOTE: &str = "wa003";
+const SFX_DENIED: &str = "wa004";
 
 /// 合击技开演用的出手速度倍率：大于 3 就是瞬发（`FUN_00514870` 里 `FUN_004db750(k, 0, 11500, 1)`）。
 const COMBO_MULTIPLIER: i32 = 4;
@@ -261,6 +277,8 @@ pub struct CombatSession {
     /// The AI's own generator, separate from the rules' (`0x4f4...`
     /// reads `DAT_00c11760`, the combat one reads the CRT seed).
     ai_rng: CombatRng,
+    /// 界面音效，调用方每帧取走播放（原版 `FUN_0053df70(名字, 1)`）。
+    pub sfx: Vec<&'static str>,
     pub elapsed: f32,
     pub log: VecDeque<String>,
     pub turn: Option<PlayerTurn>,
@@ -301,6 +319,7 @@ impl CombatSession {
             battle,
             profiles,
             ai_rng: CombatRng::new(ai_seed),
+            sfx: Vec::new(),
             elapsed: 0.,
             log: VecDeque::new(),
             turn: None,
@@ -547,6 +566,7 @@ impl CombatSession {
                 let side = actor.side;
                 let confused = actor.has_state(K_CONFUSED);
                 let asleep = actor.has_state(K_SLEEP);
+                let delegated = actor.delegation.on;
 
                 if confused {
                     // 乱（状态 0x11）**这一回合什么都不做**。主调度
@@ -563,6 +583,9 @@ impl CombatSession {
                 } else if asleep {
                     self.push_log(format!("{} 睡着了", self.name(slot)));
                     self.battle.finish_turn(slot);
+                } else if side == Side::Party && delegated {
+                    // 托管开着：不出控制盘（主调度 0x51394b 查 `+0x345` → 0x513a36）。
+                    self.act_by_delegate(slot);
                 } else if side == Side::Party {
                     self.turn = Some(PlayerTurn {
                         slot,
@@ -739,6 +762,17 @@ impl CombatSession {
                             turn.menu = Menu::Items { index: 0 };
                         }
                     }
+                    MenuEntry::Ai => {
+                        // 打开面板放 wa003（0x4dd69b），勾选框按战斗位现在的开关摆
+                        // （`FUN_004f9790`）。
+                        let draft = self
+                            .battle
+                            .get(slot)
+                            .map(|c| c.delegation)
+                            .unwrap_or_default();
+                        self.sfx.push(SFX_NOTE);
+                        turn.menu = Menu::Ai { focus: 0, draft };
+                    }
                     MenuEntry::Defend => {
                         self.turn = None;
                         self.battle.defend(slot);
@@ -757,6 +791,68 @@ impl CombatSession {
                 },
                 Input::Cancel => {}
             },
+            Menu::Ai { focus, mut draft } => {
+                let back = MenuEntry::ALL
+                    .iter()
+                    .position(|e| *e == MenuEntry::Ai)
+                    .unwrap_or(0);
+                match input {
+                    // 两列三行，确定在最底下。
+                    Input::Up => {
+                        let focus = match focus {
+                            hud::AI_OK_FOCUS => 4,
+                            f if f >= 2 => f - 2,
+                            f => f,
+                        };
+                        turn.menu = Menu::Ai { focus, draft };
+                    }
+                    Input::Down => {
+                        let focus = if focus >= 4 {
+                            hud::AI_OK_FOCUS
+                        } else {
+                            focus + 2
+                        };
+                        turn.menu = Menu::Ai { focus, draft };
+                    }
+                    Input::Left | Input::Right => {
+                        if focus < hud::AI_OK_FOCUS {
+                            turn.menu = Menu::Ai {
+                                focus: focus ^ 1,
+                                draft,
+                            };
+                        }
+                    }
+                    Input::Confirm if focus < hud::AI_OK_FOCUS => {
+                        let ok = draft.toggle(ai::Switch::ALL[focus]);
+                        self.sfx.push(if ok { SFX_CLICK } else { SFX_DENIED });
+                        turn.menu = Menu::Ai { focus, draft };
+                    }
+                    Input::Confirm => {
+                        // 确定（0xdc，0x4dda28）：放 wa001，六个开关写进战斗位；和打开时
+                        // 比有变化就置 `+0x60` 回主调度重走回合开头（0x4ddc08），没变化
+                        // 回控制盘。回合开头见 AI 开着就交给托管，所以这里直接托管
+                        // `[推断：+0x60 的去向没逐条跟]`。
+                        self.sfx.push(SFX_CLICK);
+                        let changed = self
+                            .battle
+                            .get(slot)
+                            .map(|c| c.delegation != draft)
+                            .unwrap_or(false);
+                        if let Some(c) = self.battle.get_mut(slot) {
+                            c.delegation = draft;
+                        }
+                        if changed && draft.on {
+                            self.turn = None;
+                            self.act_by_delegate(slot);
+                            self.settle_outcome();
+                            return;
+                        }
+                        turn.menu = Menu::Main { index: back };
+                    }
+                    // 关掉（0xd6 带 −1 参数那一支，0x4dd761）：什么都不写。
+                    Input::Cancel => turn.menu = Menu::Main { index: back },
+                }
+            }
             Menu::Skills { index } => {
                 let n = self.skills(slot).len();
                 match input {
@@ -959,6 +1055,83 @@ impl CombatSession {
             self.turn = None;
         }
         outcome != Outcome::Ongoing
+    }
+
+    /// 我方托管（0x513a36 那一支 → `FUN_004d86d0`）：挑出来就照常登记、进出手段；
+    /// 什么都没挑出来就交给怪物那套（0x513a7c → `FUN_004d7120`）。
+    fn act_by_delegate(&mut self, slot: usize) {
+        let tool = |index: usize, e: &SkillEffect, usable: bool| Tool {
+            index,
+            kind: e.kind,
+            range: e.target_range,
+            hp: e.impacts[ATTR_HP],
+            states: e.state_codes,
+            usable,
+        };
+        let magic: Vec<Tool> = (0..self.skills(slot).len())
+            .map(|i| tool(i, &self.skills(slot)[i].effect, self.can_afford(slot, i)))
+            .collect();
+        let specials: Vec<Tool> = (0..self.specials(slot).len())
+            .map(|i| {
+                tool(
+                    i,
+                    &self.specials(slot)[i].effect,
+                    self.can_afford_special(slot, i),
+                )
+            })
+            .collect();
+        let items: Vec<Tool> = self
+            .items
+            .iter()
+            .enumerate()
+            .map(|(i, it)| Tool {
+                index: i,
+                kind: it.effect.kind,
+                range: it.effect.target_range,
+                hp: it.effect.impacts[ATTR_HP],
+                states: it.effect.state_codes,
+                usable: it.count > 0,
+            })
+            .collect();
+        let kit = Kit {
+            magic: &magic,
+            specials: &specials,
+            items: &items,
+        };
+        let plan = ai::delegate(&self.battle, &mut self.ai_rng, slot, &kit);
+        log::info!("Combat: 托管 {} → {:?}", self.name(slot), plan);
+        match plan {
+            Some(Plan::Attack { target }) => self.commit(Pending::Attack { slot, target }, 1),
+            Some(Plan::Magic { target, index }) => {
+                let m = self.cast_multiplier(slot, index);
+                self.commit(
+                    Pending::Cast {
+                        slot,
+                        target,
+                        skill: index,
+                        special: false,
+                    },
+                    m,
+                )
+            }
+            Some(Plan::Special { target, index }) => {
+                let m = self.cast_multiplier(slot, index);
+                self.commit(
+                    Pending::Cast {
+                        slot,
+                        target,
+                        skill: index,
+                        special: true,
+                    },
+                    m,
+                )
+            }
+            Some(Plan::Item {
+                target,
+                index: item,
+            }) => self.commit(Pending::Item { slot, target, item }, 1),
+            None => self.act_by_ai(slot, false),
+        }
     }
 
     fn act_by_ai(&mut self, slot: usize, confused: bool) {
@@ -1455,6 +1628,74 @@ mod tests {
         assert_eq!(s.turn.unwrap().menu, Menu::Skills { index: 0 });
         s.input(Input::Cancel);
         assert_eq!(s.turn.unwrap().menu, Menu::Main { index: 1 });
+    }
+
+    fn open_ai_panel(s: &mut CombatSession) {
+        run_until_turn(s);
+        // 控制盘：擊 → 上「技」→ 左「AI」。
+        s.input(Input::Up);
+        s.input(Input::Left);
+        let ai = MenuEntry::ALL
+            .iter()
+            .position(|e| *e == MenuEntry::Ai)
+            .unwrap();
+        assert_eq!(s.turn.unwrap().menu, Menu::Main { index: ai });
+        s.input(Input::Confirm);
+        assert_eq!(
+            s.turn.unwrap().menu,
+            Menu::Ai {
+                focus: 0,
+                draft: Delegation::default()
+            }
+        );
+        assert_eq!(s.sfx.last(), Some(&SFX_NOTE));
+    }
+
+    #[test]
+    fn the_ai_panel_hands_the_turn_over_once_confirmed() {
+        let mut s = session();
+        open_ai_panel(&mut s);
+        s.input(Input::Confirm);
+        assert_eq!(s.sfx.last(), Some(&SFX_DENIED), "AI 没开，攻击勾不上");
+        // 右下「手动/AI」。
+        s.input(Input::Down);
+        s.input(Input::Down);
+        s.input(Input::Right);
+        s.input(Input::Confirm);
+        assert!(matches!(
+            s.turn.unwrap().menu,
+            Menu::Ai { focus: 5, draft } if draft.on && draft.attack
+        ));
+        s.input(Input::Down);
+        s.input(Input::Confirm);
+        assert!(s.turn.is_none(), "改过开关，这一回合就交给托管");
+        assert_eq!(s.pending, Some(Pending::Attack { slot: 0, target: 5 }));
+        assert!(s.battle.get(0).unwrap().delegation.on);
+        for _ in 0..10_000 {
+            if let Some(outcome) = s.tick(0.05) {
+                assert_eq!(outcome, Outcome::Win);
+                return;
+            }
+            assert!(s.turn.is_none(), "托管的人不再出控制盘");
+        }
+        panic!("没打完");
+    }
+
+    #[test]
+    fn closing_the_ai_panel_writes_nothing() {
+        let mut s = session();
+        open_ai_panel(&mut s);
+        s.input(Input::Down);
+        s.input(Input::Down);
+        s.input(Input::Right);
+        s.input(Input::Confirm);
+        s.input(Input::Cancel);
+        let ai = MenuEntry::ALL
+            .iter()
+            .position(|e| *e == MenuEntry::Ai)
+            .unwrap();
+        assert_eq!(s.turn.unwrap().menu, Menu::Main { index: ai });
+        assert_eq!(s.battle.get(0).unwrap().delegation, Delegation::default());
     }
 
     #[test]

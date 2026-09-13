@@ -166,6 +166,7 @@ impl RingButton {
             RingButton::Item => Some(MenuEntry::Item),
             RingButton::Defence => Some(MenuEntry::Defend),
             RingButton::Flee => Some(MenuEntry::Escape),
+            RingButton::Ai => Some(MenuEntry::Ai),
             _ => None,
         }
     }
@@ -178,6 +179,7 @@ impl RingButton {
             MenuEntry::Item => RingButton::Item,
             MenuEntry::Defend => RingButton::Defence,
             MenuEntry::Escape => RingButton::Flee,
+            MenuEntry::Ai => RingButton::Ai,
         }
     }
 }
@@ -471,6 +473,42 @@ pub const TRICK_BACK2: &str = "TrickNameBack2.tga";
 /// 横幅的字号（`FUN_004427a0(1)` → 20px 档）。
 pub const TRICK_FONT_PX: i32 = 20;
 
+// ---------------------------------------------------------------- 托管面板
+
+/// 托管面板（控制盘「AI」，`FUN_0051b210`）。
+pub const AI_PANEL: Rect = (14, 316, 172, 474);
+/// 底图 256×256，面板本身 0x9e×0x9e，只露左上那一块。
+pub const AI_BACK: &str = "control/AI/back.tga";
+pub const AI_BACK_RECT: Rect = (0, 0, 0x9e, 0x9e);
+/// 六个勾选框（控件 0xd6..0xdb），按 [`super::ai::Switch::ALL`] 的顺序。
+pub const AI_SWITCH_RECTS: [Rect; 6] = [
+    (7, 0x30, 0x50, 0x49),
+    (0x4e, 0x30, 0x97, 0x49),
+    (7, 0x49, 0x50, 0x62),
+    (0x4e, 0x49, 0x97, 0x62),
+    (7, 0x62, 0x50, 0x7b),
+    (0x4e, 0x62, 0x97, 0x7b),
+];
+/// 「确定」（0xdc），`ok0/1/2` 三张：平时、指上去、按下。
+pub const AI_OK_RECT: Rect = (0x23, 0x7f, 0x7f, 0x99);
+/// 面板焦点里「确定」的编号（0..=5 是勾选框）。焦点是移植端给手柄加的，原版只认鼠标。
+pub const AI_OK_FOCUS: usize = 6;
+/// 人名条（控件 0xd0..0xd4 五张，`PTR_…_AI_jingtian_tga_00570218`），叠在同一格。
+pub const AI_NAME_RECT: Rect = (0x39, 0x1f, 0x5f, 0x2f);
+pub const AI_NAMES: [&str; 5] = ["jingtian", "xuejian", "longkui", "zixuan", "changqing"];
+
+pub fn ai_switch_texture(stem: &str, on: bool) -> String {
+    format!("control/AI/{stem}{}.tga", on as u8)
+}
+
+pub fn ai_ok_texture(look: u8) -> String {
+    format!("control/AI/ok{look}.tga")
+}
+
+pub fn ai_name_texture(slot: usize) -> Option<String> {
+    AI_NAMES.get(slot).map(|n| format!("control/AI/{n}.tga"))
+}
+
 /// 全部要用的贴图，给普查测试核对包里都在。
 pub fn every_texture() -> Vec<String> {
     let mut all = vec![CONTROL_BACK.to_string()];
@@ -494,6 +532,14 @@ pub fn every_texture() -> Vec<String> {
     }
     all.push(SEQUENCE_BACK.to_string());
     all.extend([MAGIC_BACK, ITEM_BACK, ROW_SELECT, TRICK_BACK, TRICK_BACK2].map(String::from));
+    all.push(AI_BACK.to_string());
+    for s in super::ai::Switch::ALL {
+        for on in [false, true] {
+            all.push(ai_switch_texture(s.stem(), on));
+        }
+    }
+    all.extend((0u8..3).map(ai_ok_texture));
+    all.extend((0..AI_NAMES.len()).filter_map(ai_name_texture));
     all
 }
 

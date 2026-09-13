@@ -3,6 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
 
+use crate::openpal3::combat::ai::Delegation;
 use crate::ydirs;
 
 use super::game_db::{
@@ -92,6 +93,11 @@ pub struct RoleState {
     /// `switch/re/notes/item_use.md` §1.4）。
     #[serde(default = "zero_states")]
     pub states: [u8; STATE_BYTES],
+
+    /// 战斗托管的六个开关（冒险记录 `+0x294..+0x299`），开战拷进战斗位、战后写回。
+    /// 新档只有「谨慎」是开的（0x40bdbf）。
+    #[serde(default)]
+    pub delegation: Delegation,
 }
 
 /// 角色记录里的状态字节数（`COMBAT_STATE_COUNT`）。
@@ -139,6 +145,7 @@ impl RoleState {
                 .collect(),
             equipment: [0; EQUIPMENT_SLOTS],
             states: [0; STATE_BYTES],
+            delegation: Delegation::default(),
         })
     }
 }
@@ -1082,6 +1089,7 @@ pub(super) fn growth_test_role() -> RoleState {
         skills: Vec::new(),
         equipment: [0; EQUIPMENT_SLOTS],
         states: [0; STATE_BYTES],
+        delegation: Delegation::default(),
     }
 }
 
@@ -1177,6 +1185,7 @@ mod tests {
                 skills: Vec::new(),
                 equipment: [0; EQUIPMENT_SLOTS],
                 states: [0; STATE_BYTES],
+                delegation: Delegation::default(),
             },
         );
 

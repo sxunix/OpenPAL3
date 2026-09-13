@@ -17,6 +17,7 @@
 //! `CBUI` 的版面贴原版贴图（`combat::hud`）。两层都只读规则层的状态。
 
 use crate::openpal3::combat::actions::{ATTRIBUTE_SLOTS, GU_ITEM_ID, ITEM_STATE_CODES, ItemEffect};
+use crate::openpal3::combat::ai;
 use crate::openpal3::combat::encounter::{CrtRand, Encounter, NO_ROUND_CAP, PendingFlags};
 use crate::openpal3::combat::hud::{self, ButtonLook, Gauge, RingButton};
 use crate::openpal3::combat::motion::{self, ActKind, MotionSet, Play, Snapshot};
@@ -45,6 +46,7 @@ use std::rc::Rc;
 
 use super::appraise::{overlay, play_sfx};
 use super::encamp::draw_sprite;
+use super::ui_sound;
 
 /// `SceState::ext` key for the [`PendingFlags`] the flag opcodes set.
 pub const EXT_PENDING: &str = "pal3.combat.pending";
@@ -388,6 +390,12 @@ struct HudTextures {
     skill_back: Tex,
     row_select: Tex,
     trick_back2: Tex,
+    ai_back: Tex,
+    /// 按 `ai::Switch::ALL`，每格 [没勾, 勾上]。
+    ai_switches: Vec<[Tex; 2]>,
+    /// 确定：平时、指上去、按下。
+    ai_ok: [Tex; 3],
+    ai_names: Vec<Tex>,
 }
 
 impl HudTextures {
@@ -444,6 +452,15 @@ impl HudTextures {
             skill_back: tex(hud::SKILL_BACK),
             row_select: tex(hud::ROW_SELECT),
             trick_back2: tex(hud::TRICK_BACK2),
+            ai_back: tex(hud::AI_BACK),
+            ai_switches: ai::Switch::ALL
+                .iter()
+                .map(|s| [false, true].map(|on| tex(&hud::ai_switch_texture(s.stem(), on))))
+                .collect(),
+            ai_ok: [0u8, 1, 2].map(|look| tex(&hud::ai_ok_texture(look))),
+            ai_names: (0..PARTY_SLOTS)
+                .map(|slot| hud::ai_name_texture(slot).and_then(|p| tex(&p)))
+                .collect(),
         }
     }
 }
@@ -607,6 +624,7 @@ impl SceCommandCombat {
         state_codes.copy_from_slice(&item.combat_state_impact_value);
         ItemEffect {
             id: item.id,
+            kind: item.item_type,
             special: item.item_special_type,
             target_range: item.target_range_type,
             impacts,
@@ -988,6 +1006,8 @@ impl SceCommandCombat {
                 let eff = attributes::effective(role, &db);
 
                 let mut c = Combatant::new(combat_id, Side::Party);
+                // 托管开关：`FUN_004ed250` 从冒险记录 `+0x294..+0x299` 拷进 `+0x568..+0x56d`。
+                c.delegation = role.delegation;
                 c.level = role.level;
                 c.max_hp = eff.max_hp;
                 c.hp = role.hp.min(eff.max_hp);
@@ -1176,6 +1196,9 @@ impl SceCommandCombat {
                     continue;
                 };
                 if let Some(role) = persistent.role_mut(actor_id) {
+                    // 托管开关写回（`FUN_004ed800`）。原版只在胜利那一支调它，另一个调用者
+                    // `FUN_004ed680` 没细看；移植端不分胜负都写回 `[推断]`。
+                    role.delegation = c.delegation;
                     // 战后写回：`FUN_004ed870`（0x4ed870，由胜负判定
                     // 0x4f7dc1 / 0x4f7f97 在战斗结束时调）逐个我方战斗位：
                     //
@@ -2008,6 +2031,36 @@ impl SceCommandCombat {
                         draw_sprite(&list, sprite, hud::offset(button.rect(), panel), at);
                     }
                 }
+                Menu::Ai { focus, draft } => {
+                    let panel = hud::AI_PANEL;
+                    let back = hud::offset(hud::AI_BACK_RECT, panel);
+                    draw_sprite(&list, tex.ai_back.as_deref(), back, at);
+                    let name = tex.ai_names.get(turn.slot).and_then(|t| t.as_deref());
+                    draw_sprite(&list, name, hud::offset(hud::AI_NAME_RECT, panel), at);
+                    for (i, s) in ai::Switch::ALL.iter().enumerate() {
+                        let sprite = tex.ai_switches[i][draft.shows(*s) as usize].as_deref();
+                        draw_sprite(
+                            &list,
+                            sprite,
+                            hud::offset(hud::AI_SWITCH_RECTS[i], panel),
+                            at,
+                        );
+                    }
+                    let ok = (focus == hud::AI_OK_FOCUS) as usize;
+                    draw_sprite(
+                        &list,
+                        tex.ai_ok[ok].as_deref(),
+                        hud::offset(hud::AI_OK_RECT, panel),
+                        at,
+                    );
+                    // 勾选框没有「指上去」那张图（原版只认鼠标），手柄焦点移植端描一圈。
+                    if focus < hud::AI_OK_FOCUS {
+                        let r = hud::offset(hud::AI_SWITCH_RECTS[focus], panel);
+                        list.add_rect(at(r.0, r.1), at(r.2, r.3), [1.0, 0.85, 0.2, 1.0])
+                            .thickness(2.0)
+                            .build();
+                    }
+                }
                 Menu::Skills { index } => {
                     let rows: Vec<(Vec<String>, bool)> = session
                         .skills(turn.slot)
@@ -2345,6 +2398,9 @@ impl SceCommand for SceCommandCombat {
         } else {
             if let Some(input) = Self::poll_input(state) {
                 session.input(input);
+            }
+            for name in std::mem::take(&mut session.sfx) {
+                ui_sound::play(state, name);
             }
             session.tick(delta_sec)
         };
