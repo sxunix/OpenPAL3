@@ -1311,8 +1311,10 @@ impl CombatSession {
         true
     }
 
-    /// 我方托管（0x513a36 那一支 → `FUN_004d86d0`）：挑出来就照常登记、进出手段；
-    /// 什么都没挑出来就交给怪物那套（0x513a7c → `FUN_004d7120`）。
+    /// 我方托管（0x513a36 那一支 → `FUN_004d86d0`）：挑出来就照常登记、进出手段。
+    /// 什么都没挑出来时原版不交给怪物那套——0x513a48 起那条链先查 `+0x243`（我方）就跳走，
+    /// 这个人下一帧再试；移植端的调度每帧只交出最小位号的那一个，照原样重试会挡住别人，
+    /// 所以改成这一回合空过、蓄满再试 `[推断]`。
     fn act_by_delegate(&mut self, slot: usize) {
         self.act_by_plan(slot, false);
     }
@@ -1406,7 +1408,10 @@ impl CombatSession {
                 self.push_log(format!("{} 心神已乱", self.name(slot)));
                 self.battle.finish_turn(slot);
             }
-            None => self.act_by_ai(slot, false),
+            None => {
+                self.push_log(format!("{} 按兵不动", self.name(slot)));
+                self.battle.finish_turn(slot);
+            }
         }
     }
 
