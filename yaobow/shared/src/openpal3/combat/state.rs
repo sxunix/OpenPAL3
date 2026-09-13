@@ -52,6 +52,10 @@ pub const K_LUCK_UP: usize = 10;
 pub const K_LUCK_DOWN: usize = 11;
 pub const K_SPEED_UP: usize = 12;
 pub const K_SPEED_DOWN: usize = 13;
+/// 封（封咒）：控制盘「術」不可按。
+pub const K_SEAL: usize = 15;
+/// 禁（禁忌）：控制盘「物」「逃」不可按。
+pub const K_FORBID: usize = 16;
 pub const K_SLEEP: usize = 17;
 pub const K_CONFUSED: usize = 18;
 pub const K_EVADE: usize = 21;

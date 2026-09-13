@@ -20,7 +20,9 @@ use super::combo::{self, ComboDef};
 use super::formulas::CombatRng;
 use super::hud;
 use super::settlement::{self, DefeatedEnemy, Spoils, Survivor};
-use super::state::{Battle, Due, K_CONFUSED, K_SLEEP, Outcome, PARTY_SLOTS, SLOTS, Side};
+use super::state::{
+    Battle, Due, K_CONFUSED, K_FORBID, K_SEAL, K_SLEEP, Outcome, PARTY_SLOTS, SLOTS, Side,
+};
 
 /// A skill as the menu offers it.
 #[derive(Debug, Clone)]
@@ -1243,11 +1245,24 @@ impl CombatSession {
         outcome != Outcome::Ongoing
     }
 
-    /// 控制盘上这一格对 `slot` 能不能按。「援」只给 0 号位景天——面板读写的全是 0 号位的
-    /// `+0x27c` `[推断：原版按钮的可用条件没找到写入处]`。
+    /// 控制盘上这一格对 `slot` 能不能按——开盘的状态函数 0x4dc7a0 逐个显隐：
+    ///
+    /// * 術（+0x54）：中了封（0xf）不可按；
+    /// * 物、逃（+0x58 / +0x68）：中了禁（0x10）不可按；
+    /// * 陣（+0x60）：我方还有人的行动没收尾时不可按（`FUN_004df3d0` 数 `FUN_004fcda0`）；
+    /// * 援（+0x6c）：当前是 0 号位、0 号位站在盘心（阵位 6）、1..3 号位至少一人在场；
+    /// * 魔（+0x70）从不显示；其余总能按。
     pub fn entry_enabled(&self, slot: usize, entry: MenuEntry) -> bool {
+        let has = |k: usize| self.battle.get(slot).is_some_and(|c| c.has_state(k));
         match entry {
-            MenuEntry::Protect => slot == 0,
+            MenuEntry::Skill => !has(K_SEAL),
+            MenuEntry::Item | MenuEntry::Escape => !has(K_FORBID),
+            MenuEntry::Lineup => !self.pending.is_some_and(|p| p.slot() < PARTY_SLOTS),
+            MenuEntry::Protect => {
+                slot == 0
+                    && self.battle.get(0).is_some_and(|c| c.element_position == 6)
+                    && (1..=3).any(|s| self.battle.get(s).is_some_and(|c| !c.retired))
+            }
             _ => true,
         }
     }
@@ -2047,6 +2062,20 @@ mod tests {
         assert!(s.dodged.is_empty(), "打中了不回避");
     }
 
+    #[test]
+    fn seal_and_forbid_grey_out_the_ring_like_the_original() {
+        let mut s = session();
+        run_until_turn(&mut s);
+        assert!(s.entry_enabled(0, MenuEntry::Skill));
+        s.battle.get_mut(0).unwrap().states[K_SEAL].active = true;
+        assert!(!s.entry_enabled(0, MenuEntry::Skill), "封了不能用仙术");
+        assert!(s.entry_enabled(0, MenuEntry::Item));
+        s.battle.get_mut(0).unwrap().states[K_FORBID].active = true;
+        assert!(!s.entry_enabled(0, MenuEntry::Item), "禁了不能用道具");
+        assert!(!s.entry_enabled(0, MenuEntry::Escape), "禁了也不能逃");
+        assert!(s.entry_enabled(0, MenuEntry::Attack));
+    }
+
     fn with_ally(s: &mut CombatSession) {
         let mut ally = fighter(Side::Party, 50, 1);
         ally.element_position = 1;
@@ -2080,6 +2109,8 @@ mod tests {
         let mut s = session();
         assert_eq!(run_until_turn(&mut s), 0);
         with_ally(&mut s);
+        assert!(!s.entry_enabled(0, MenuEntry::Protect), "不在盘心按不了援");
+        s.battle.get_mut(0).unwrap().element_position = 6;
         // 控制盘：擊 → 上「技」→ 右「援」。
         s.input(Input::Up);
         s.input(Input::Right);
