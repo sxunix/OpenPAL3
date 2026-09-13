@@ -1487,8 +1487,18 @@ impl CombatSession {
         1
     }
 
+    /// 普攻（`FUN_004f0a10`）：横排 / 竖列打一排人（[`Battle::attack_targets`]），暴击整次
+    /// 只掷一次，再按位号逐个结算。
     fn attack(&mut self, slot: usize, target: usize) {
+        let targets = self.battle.attack_targets(slot, target);
         let crit = self.battle.roll_crit(slot);
+        for t in targets {
+            self.land_blow(slot, t, crit);
+        }
+        self.note_deaths(slot);
+    }
+
+    fn land_blow(&mut self, slot: usize, target: usize, crit: bool) {
         let blow = self.battle.normal_attack(slot, target, crit);
         // 按速度躲开或没掉血：目标播回避（`FUN_004feef0`）；睡着（0x11）或定住（0x0e）时
         // 那一步不挂动作。
@@ -1537,7 +1547,6 @@ impl CombatSession {
         if blow.eat_item {
             self.eat_item(blow.victim);
         }
-        self.note_deaths(slot);
     }
 
     /// 饿鬼那一口（攻击方式 0x392 → `FUN_004f1fa0(…, 0x1c)`）：在背包里挑「回复类」道具

@@ -1082,7 +1082,8 @@ impl SceCommandCombat {
                     )
                     .and_then(|id| db.item(id))
                     .map(|i| i.weapon_type)
-                    .unwrap_or(0);
+                    // 没拿武器时 `FUN_004ed8c0` 给塞一把魔剑（0x19cb，武器类型 2）。
+                    .unwrap_or(2);
                 // 五件装备（武器不算）逐件累加（`FUN_004edf10`）：减气耗 `+0x290`、减神耗
                 // `+0x294`、暴击加成 `+0x298`；特殊类型 0x17 的每件顺手偷 +5（`FUN_004ee430`，
                 // 其余几种写的字段普攻不读）；饰品栏戴着青铜护镜的挨普攻会反弹（`+0x2bd`）。
@@ -1267,6 +1268,7 @@ impl SceCommandCombat {
                 .collect();
             log::info!("Combat: 我方 {ours:?} 敌方 {theirs:?}");
         }
+        battle.assign_patterns();
         let mut session = CombatSession::new(battle, profiles, seed.rotate_left(13) ^ 0x5bd1_e995);
         session.set_items(items);
         session.set_combos(

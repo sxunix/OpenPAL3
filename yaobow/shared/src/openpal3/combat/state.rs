@@ -209,6 +209,17 @@ pub struct Combatant {
     /// 武器带的普攻附加状态几率，下标 i 对应状态 k = i + 1（`FUN_004f2560` 只看前 0x17 个：
     /// 武器 `combat_state_impact_types[i]` 非 0 且 `combat_state_impact_value[i]` > 0）。
     pub weapon_states: [i16; WEAPON_STATES],
+    /// 普攻打几个人（`+0x289` 横排 / `+0x28a` 竖列），开战时 [`Battle::assign_patterns`] 定。
+    pub pattern: HitPattern,
+}
+
+/// 普攻的打法（战斗位 `+0x289` 横排、`+0x28a` 竖列；`+0x28b` 全体只被清零、从没置过）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum HitPattern {
+    #[default]
+    Single,
+    Row,
+    Column,
 }
 
 /// 武器附加状态只看前 0x17 个（`FUN_004f2560` 的循环 `700 .. 0x2ea`）。
@@ -278,6 +289,7 @@ impl Combatant {
             sp_on_hit: 0,
             attack_mode: 0,
             weapon_states: [0; WEAPON_STATES],
+            pattern: HitPattern::Single,
         }
     }
 
@@ -997,6 +1009,147 @@ impl Battle {
             && p.element_position == 6
             && !p.has_state(0x0e))
         .then_some(0)
+    }
+
+    /// `FUN_004ed8c0`（开战）给每个人定普攻打法。先敌方后我方：
+    ///
+    /// * 敌方按攻击方式：0x394/0x395/0x399/0x39a/0x39e/0x39f 横排，0x396/0x397/0x398/0x39b/0x3a0
+    ///   竖列，其余单体（中途叫出来的怪 `FUN_004f8bb0` 用同一张表）。
+    /// * 我方按手上武器的 `weapon_type`：0 → 掷 `rand & 0x3ff`，> 0x132 竖列、否则横排；
+    ///   4/7 横排；1/3 竖列；其余单体。0 号位（景天）不管武器一律竖列（骰子照掷）。
+    ///   数据里的武器类型都在 1..7，所以那一掷实际走不到。
+    pub fn assign_patterns(&mut self) {
+        for slot in PARTY_SLOTS..SLOTS {
+            if let Some(c) = self.get_mut(slot) {
+                c.pattern = match c.attack_mode {
+                    0x394 | 0x395 | 0x399 | 0x39a | 0x39e | 0x39f => HitPattern::Row,
+                    0x396 | 0x397 | 0x398 | 0x39b | 0x3a0 => HitPattern::Column,
+                    _ => HitPattern::Single,
+                };
+            }
+        }
+        for slot in 0..PARTY_SLOTS {
+            let Some(weapon) = self.get(slot).map(|c| c.weapon_type) else {
+                continue;
+            };
+            let pattern = match weapon {
+                0 => {
+                    if self.rng.rand10() > 0x132 {
+                        HitPattern::Column
+                    } else {
+                        HitPattern::Row
+                    }
+                }
+                4 | 7 => HitPattern::Row,
+                1 | 3 => HitPattern::Column,
+                _ => HitPattern::Single,
+            };
+            if let Some(c) = self.get_mut(slot) {
+                c.pattern = if slot == 0 {
+                    HitPattern::Column
+                } else {
+                    pattern
+                };
+            }
+        }
+    }
+
+    /// `FUN_004ef980`：一次普攻实际要结算的战斗位。单体只有 `target`；横排 / 竖列是和
+    /// `target` 同一边、同一排 / 列、站着的所有人，按位号从小到大（`FUN_004f0a10` 就按这个
+    /// 次序逐个结算）。
+    pub fn attack_targets(&self, attacker: usize, target: usize) -> Vec<usize> {
+        let pattern = self.get(attacker).map(|a| a.pattern).unwrap_or_default();
+        if pattern == HitPattern::Single {
+            return vec![target];
+        }
+        let side = if target < PARTY_SLOTS {
+            0..PARTY_SLOTS
+        } else {
+            PARTY_SLOTS..SLOTS
+        };
+        side.filter(|s| self.get(*s).is_some_and(|c| c.alive))
+            .filter(|s| match pattern {
+                HitPattern::Row => self.same_row(target, *s),
+                HitPattern::Column => self.same_column(target, *s),
+                HitPattern::Single => false,
+            })
+            .collect()
+    }
+
+    /// `FUN_004efd70`：`a`、`b` 在不在同一横排。敌方是固定的三排 {5, 7, 10}、{8, 9}、{6}；
+    /// 我方按阵位查 [`Self::party_lines`]（`a` 所在的排取最后一个含它的）。
+    fn same_row(&self, a: usize, b: usize) -> bool {
+        if a == b {
+            return true;
+        }
+        if !self.same_side_placed(a, b) {
+            return false;
+        }
+        if a >= PARTY_SLOTS {
+            return match a - PARTY_SLOTS {
+                0 | 2 | 5 => matches!(b, 5 | 7 | 10),
+                3 | 4 => matches!(b, 8 | 9),
+                _ => false,
+            };
+        }
+        let (rows, _) = self.party_lines();
+        let (pa, pb) = (self.position_of(a), self.position_of(b));
+        rows.iter()
+            .rposition(|row| row.contains(&pa))
+            .is_some_and(|r| rows[r].contains(&pb))
+    }
+
+    /// `FUN_004efe90`：`a`、`b` 在不在同一竖列。敌方是 {5, 8}、{6, 10}、{7, 9}。
+    fn same_column(&self, a: usize, b: usize) -> bool {
+        if a == b {
+            return true;
+        }
+        if !self.same_side_placed(a, b) {
+            return false;
+        }
+        if a >= PARTY_SLOTS {
+            return match a - PARTY_SLOTS {
+                0 | 3 => matches!(b, 8 | 5),
+                1 | 5 => matches!(b, 10 | 6),
+                2 | 4 => matches!(b, 9 | 7),
+                _ => false,
+            };
+        }
+        let (_, cols) = self.party_lines();
+        let (pa, pb) = (self.position_of(a), self.position_of(b));
+        cols.iter()
+            .rposition(|col| col.contains(&pa))
+            .is_some_and(|c| cols[c].contains(&pb))
+    }
+
+    fn same_side_placed(&self, a: usize, b: usize) -> bool {
+        self.get(a).is_some() && self.get(b).is_some() && (a < PARTY_SLOTS) == (b < PARTY_SLOTS)
+    }
+
+    fn position_of(&self, slot: usize) -> u8 {
+        self.get(slot).map(|c| c.element_position).unwrap_or(0)
+    }
+
+    /// 我方的三横排、三竖列（阵位值 1..5，6 = 盘心），`FUN_004fa760(FUN_004fa6a0(战场五灵))`
+    /// 开战时排好存在战斗 `+0x5064` / `+0x5088`。外圈五位按 1 水 2 火 4 雷 3 风 5 土绕一圈
+    /// （`DAT_005d8dc0`），从战场五灵换出的那一位 p（`FUN_004fa6a0`：1→5，2→1，3→4，4→2，
+    /// 5→3；没配 `fivemagic` 时五灵按 1）起数：横排是 {p 隔一位的两个}、{p 的两个邻位 + 盘心}、
+    /// {p}；竖列是 {p 隔一位的那个, 顺时针邻位}、{盘心, p}、{另两位}。空格按 0 存。
+    fn party_lines(&self) -> ([[u8; 3]; 3], [[u8; 2]; 3]) {
+        const RING: [u8; 5] = [1, 2, 4, 3, 5];
+        let p = match self.scene_element.unwrap_or(1) {
+            1 => 5,
+            2 => 1,
+            3 => 4,
+            4 => 2,
+            5 => 3,
+            _ => 0,
+        };
+        let i = RING.iter().position(|v| *v == p).unwrap_or(0);
+        let t = |k: usize| RING[(i + k) % 5];
+        let rows = [[t(2), t(3), 0], [t(1), t(4), 6], [t(0), 0, 0]];
+        let cols = [[t(2), t(1)], [6, t(0)], [t(3), t(4)]];
+        (rows, cols)
     }
 
     /// 这次普攻暴不暴击（`FUN_004f0a10` 开头，一次出手只掷一次）：几率是
@@ -1931,6 +2084,65 @@ mod tests {
         let blow = b.normal_attack(0, 5, false);
         assert!(b.get(5).unwrap().has_state(K_SEAL), "武器附带封");
         assert!(blow.stolen.is_some_and(|s| s.money > 0), "顺手偷到钱");
+    }
+
+    #[test]
+    fn rows_and_columns_follow_the_battlefield_element() {
+        let mut b = Battle::new(7);
+        b.scene_element = Some(1);
+        for (slot, pos) in [(0, 6u8), (1, 1), (2, 3), (3, 5), (4, 2)] {
+            let mut c = fighter(slot as u32, Side::Party, 50, 10, 5, 1);
+            c.element_position = pos;
+            b.place(slot, c);
+        }
+        for slot in 5..=10 {
+            b.place(slot, fighter(100, Side::Enemy, 50, 10, 5, 1));
+        }
+        // 五灵 1 → p = 5：横排 {2,4}、{1,3,6}、{5}；竖列 {2,1}、{6,5}、{4,3}。
+        b.get_mut(5).unwrap().pattern = HitPattern::Row;
+        assert_eq!(
+            b.attack_targets(5, 1),
+            vec![0, 1, 2],
+            "水位那排带上盘心和风位"
+        );
+        b.get_mut(5).unwrap().pattern = HitPattern::Column;
+        assert_eq!(b.attack_targets(5, 3), vec![0, 3], "盘心和土位一列");
+        assert_eq!(b.attack_targets(5, 4), vec![1, 4]);
+
+        b.get_mut(1).unwrap().pattern = HitPattern::Row;
+        assert_eq!(b.attack_targets(1, 7), vec![5, 7, 10]);
+        b.get_mut(1).unwrap().pattern = HitPattern::Column;
+        assert_eq!(b.attack_targets(1, 9), vec![7, 9]);
+        b.get_mut(10).unwrap().alive = false;
+        assert_eq!(b.attack_targets(1, 6), vec![6], "倒下的不算");
+        b.get_mut(1).unwrap().pattern = HitPattern::Single;
+        assert_eq!(b.attack_targets(1, 6), vec![6]);
+    }
+
+    #[test]
+    fn patterns_come_from_the_weapon_and_the_attack_mode() {
+        let mut b = Battle::new(7);
+        for (slot, weapon) in [(0, 2u8), (1, 7), (2, 3), (3, 6)] {
+            let mut c = fighter(slot as u32, Side::Party, 50, 10, 5, 1);
+            c.weapon_type = weapon;
+            b.place(slot, c);
+        }
+        let mut m = fighter(100, Side::Enemy, 50, 10, 5, 1);
+        m.attack_mode = 0x39a;
+        b.place(5, m);
+        let mut m = fighter(101, Side::Enemy, 50, 10, 5, 1);
+        m.attack_mode = 0x39b;
+        b.place(6, m);
+        b.place(7, fighter(102, Side::Enemy, 50, 10, 5, 1));
+        b.assign_patterns();
+        let p = |s: usize| b.get(s).unwrap().pattern;
+        assert_eq!(p(0), HitPattern::Column, "景天一律竖列");
+        assert_eq!(p(1), HitPattern::Row);
+        assert_eq!(p(2), HitPattern::Column);
+        assert_eq!(p(3), HitPattern::Single);
+        assert_eq!(p(5), HitPattern::Row);
+        assert_eq!(p(6), HitPattern::Column);
+        assert_eq!(p(7), HitPattern::Single);
     }
 
     #[test]
