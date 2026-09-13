@@ -2717,19 +2717,17 @@ impl SceCommandCombat {
                     }
                     let r = hud::offset(res::NAME_RECT, panel);
                     list.add_text(at(r.0 + 8, r.1 + 8), BANNER_TEXT, &p.label);
-                    // 六个数：白字 16px，格里居中 [推断]。
+                    // 六个数（`FUN_0051c330` 建的文字控件 0x202..0x207）：颜色 0x51c5dc 设成
+                    // 0xffffffff，字号 `FUN_004427a0(0)` → 16px；`FUN_005184e0` 用
+                    // `FUN_004427c0(文字, 0)` 写，不居中——控件渲染 0x442a40 从 rect 左上角
+                    // 往里缩内边距 8（构造 `FUN_004422e0` 的 `+0x44`）开始写，不滚动。
+                    let base_px = ui.current_font_size();
+                    ui.set_window_font_scale(16. * scale / base_px);
                     for (row, v) in p.elements.iter().enumerate() {
                         let r = hud::offset(res::ELEMENT_NUMBER_RECTS[row], panel);
-                        let text = v.to_string();
-                        let [w, h] = ui.calc_text_size(&text);
-                        let [x0, y0] = at(r.0, r.1);
-                        let (bw, bh) = ((r.2 - r.0) as f32 * scale, (r.3 - r.1) as f32 * scale);
-                        list.add_text(
-                            [x0 + (bw - w) * 0.5, y0 + (bh - h) * 0.5],
-                            [1., 1., 1., 1.],
-                            &text,
-                        );
+                        list.add_text(at(r.0 + 8, r.1 + 8), [1., 1., 1., 1.], v.to_string());
                     }
+                    ui.set_window_font_scale(1.);
                 }
             }
             if let Some(win) = player.banner() {
