@@ -570,6 +570,17 @@ impl Delegate<'_> {
         }
     }
 
+    /// `FUN_004f4b90`：和 [`Self::item_hp`] 一样，只是没有「回满」那一支（影响类型 2 算 0）。
+    /// 道具攻击（`FUN_004f5b70`）、复活（`FUN_004f61d0`）、解状态（`FUN_004f6860`）三个挑选器
+    /// 用它；只有道具治疗（`FUN_004f5970`）用 `FUN_004f4c80`。
+    fn item_hp_flat(&self, t: &Tool) -> i32 {
+        match t.hp.0 {
+            0 => t.hp.1 as i32,
+            1 => self.me.max_hp * t.hp.1 as i32 / 100,
+            _ => 0,
+        }
+    }
+
     // ---- 挑选器（`FUN_004f4da0` 那一族）
 
     fn pick_skill(tools: &[Tool], wanted: i32, keep: impl Fn(&Tool) -> bool) -> Option<usize> {
@@ -843,7 +854,7 @@ impl Delegate<'_> {
             return None;
         }
         let wanted = rng.rand15() % hp;
-        let i = self.pick_item(wanted, false, Tool::harms_as_item, |x| self.item_hp(x))?;
+        let i = self.pick_item(wanted, false, Tool::harms_as_item, |x| self.item_hp_flat(x))?;
         Some(Plan::Item {
             target: t,
             index: i,
@@ -856,33 +867,35 @@ impl Delegate<'_> {
             return None;
         }
         let wanted = self.mean_hp(self.foe_side(), false);
-        let i = self.pick_item(wanted, true, Tool::harms_as_item, |x| self.item_hp(x))?;
+        let i = self.pick_item(wanted, true, Tool::harms_as_item, |x| self.item_hp_flat(x))?;
         Some(Plan::Item {
             target: self.first_standing(self.foe_side())?,
             index: i,
         })
     }
 
-    /// `FUN_004daca0` 道具复活。分值函数 `FUN_004f61d0` 里没细看，按 `FUN_004f4c80`
-    /// 算 `[推断]`。
+    /// `FUN_004daca0` 道具复活：挑选器 `FUN_004f61d0`，要的量是自己的精上限
+    /// （`FUN_004f2bb0(自己, 1)`），分值 `FUN_004f4b90`。
     fn item_revive(&self, t: usize) -> Option<Plan> {
         if !self.gate(self.flags.item) || !self.placed(t) || self.alive(t) {
             return None;
         }
-        let i = self.pick_item(self.me.max_hp, false, Tool::revives, |x| self.item_hp(x))?;
+        let i = self.pick_item(self.me.max_hp, false, Tool::revives, |x| {
+            self.item_hp_flat(x)
+        })?;
         Some(Plan::Item {
             target: t,
             index: i,
         })
     }
 
-    /// `FUN_004db030` 道具解状态。原版分值用 `FUN_004f4b90`，这里按 `FUN_004f4c80`
-    /// 算 `[推断]`，拿 0 比。
+    /// `FUN_004db030` 道具解状态：挑选器 `FUN_004f6860` 取 `FUN_004f4b90` 绝对值最小的
+    /// （即拿 0 比）。
     fn item_cure(&self, t: usize, k: usize) -> Option<Plan> {
         if !self.gate(self.flags.item) || !self.alive(t) {
             return None;
         }
-        let i = self.pick_item(0, false, |x| x.cures(k), |x| self.item_hp(x))?;
+        let i = self.pick_item(0, false, |x| x.cures(k), |x| self.item_hp_flat(x))?;
         Some(Plan::Item {
             target: t,
             index: i,
