@@ -16,8 +16,10 @@
 // The 五灵 formation itself is 3D in the original (`wl.pol`, the party
 // standing on it, `pointer.cvd` markers on the empty positions); the
 // service renders it (`draw_lineup_disc`) and this page draws on top.
-// Dragging characters onto the disc is not reproduced — the 阵位 buttons
-// are the way to move them.
+// Clicking the disc works as in the original (`0x485230`): click a
+// character to select it (the disc spins it to the front), click another
+// to swap, or an empty marker to move there — the service handles that
+// from the same mouse state. The 阵位 buttons below still work too.
 //
 // A character's position is stored as the button's index 0..5. On the
 // way back to the role record the original writes index + 1

@@ -574,6 +574,20 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "lineup_click" => {
+            // [x, y] —— 阵法页的五灵盘下一帧当作在 800×600 画布这点点了一下，测选人 / 换位用。
+            let f = |i: usize| params.args.get(i).and_then(|v| v.as_f64());
+            let (Some(x), Some(y)) = (f(0), f(1)) else {
+                return AgentResponse::err(AgentError::bad_request(
+                    "lineup_click needs args: [x, y]",
+                ));
+            };
+            crate::openpal3::lineup_disc::queue_debug_click(x as f32, y as f32);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "smelting" => {
             // [过程号] —— 直接开冶炼（146）。
             let proc_id = int_arg(0).unwrap_or(0) as i32;

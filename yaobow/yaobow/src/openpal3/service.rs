@@ -1614,11 +1614,16 @@ impl IPal3ServiceImpl for Pal3Service {
                 com_id: next_model_view_com_id(),
                 last: std::time::Instant::now(),
                 last_y: None,
+                prev_down: false,
             });
         }
         let Some(slot) = slot.as_mut() else {
             return;
         };
+
+        let now = std::time::Instant::now();
+        let dt = now.duration_since(slot.last).as_secs_f32().min(0.1);
+        slot.last = now;
 
         // 按住在盘上时，鼠标纵向位移（按 800×600 画布算）加到俯角上（`0x485230`）。
         let (x, y) = ((mx - ox) / scale, (my - oy) / scale);
@@ -1630,11 +1635,55 @@ impl IPal3ServiceImpl for Pal3Service {
         }
         slot.last_y = down.then_some(y);
 
+        // 手柄右摇杆上下也调俯角（移植端加的，原版只有鼠标）；方向和往下拖一致。
+        let stick = self
+            .input_engine_for_director()
+            .borrow()
+            .get_axis_state(radiance::input::Axis::RightStickY)
+            .value();
+        if stick.abs() > 0.2 {
+            let pitch =
+                slot.disc.pitch() + stick * shared::openpal3::lineup_disc::PAD_PITCH_SPEED * dt;
+            slot.disc.set_pitch(pitch);
+        }
+
+        // 点盘上的人 / 空站位（`0x485352` 起）：选中、换位、挪位，站位写回存档。
+        let debug_click = shared::openpal3::lineup_disc::take_debug_click();
+        let click = (down && !slot.prev_down) || debug_click.is_some();
+        let (cx, cy) = debug_click.unwrap_or((x, y));
+        slot.prev_down = down;
+        slot.disc.step(dt);
+        let mut lineup = lineup;
+        if click {
+            use shared::openpal3::lineup_disc::DiscAction;
+            let pos = |id: u32, l: &[(u32, Option<u8>)]| {
+                l.iter().find(|(i, _)| *i == id).and_then(|(_, p)| *p)
+            };
+            let changes: Vec<(u32, u8)> = match slot.disc.click(cx, cy) {
+                DiscAction::Swap(a, b) => match (pos(a, &lineup), pos(b, &lineup)) {
+                    (Some(pa), Some(pb)) => vec![(a, pb), (b, pa)],
+                    (None, Some(pb)) => vec![(a, pb)],
+                    (Some(pa), None) => vec![(b, pa)],
+                    (None, None) => vec![],
+                },
+                DiscAction::Move(a, k) => vec![(a, k)],
+                _ => vec![],
+            };
+            for (id, p) in changes {
+                if self.set_lineup_position(id as i32, p as i32) {
+                    for e in lineup.iter_mut() {
+                        if e.0 == id {
+                            e.1 = Some(p);
+                        } else if e.1 == Some(p) {
+                            e.1 = None;
+                        }
+                    }
+                }
+            }
+        }
+
         slot.disc
             .place(|id| lineup.iter().find(|(i, _)| *i == id).and_then(|(_, p)| *p));
-        let now = std::time::Instant::now();
-        let dt = now.duration_since(slot.last).as_secs_f32().min(0.1);
-        slot.last = now;
         slot.disc.render(dt);
         if let Some(tex) = slot.disc.texture_id() {
             sinks
@@ -1958,6 +2007,8 @@ struct LineupDiscSlot {
     last: std::time::Instant,
     /// 上一帧按着时鼠标的纵坐标（画布坐标）；松开就是 `None`。
     last_y: Option<f32>,
+    /// 上一帧按着没有，用来认出点下的那一帧。
+    prev_down: bool,
 }
 
 fn next_model_view_com_id() -> i64 {
