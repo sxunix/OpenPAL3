@@ -198,6 +198,13 @@ pub struct Combatant {
     pub sp_saving: i32,
     /// 掉神时减免的百分比（`+0x294`，五件装备 `mp_saving_percentage` 之和，`FUN_004f31c0`）。
     pub mp_saving: i32,
+    /// 道具效果加成百分比（`+0x2b4`）：五件装备里特殊类型 0x15（聚宝盆）、0x16 的每件 +10
+    /// （`FUN_004ee430`，0x15 落空到 0x16 那一格）。只加在我方使用者的道具正数属性上
+    /// （`FUN_004eef20` 0x106 那一支）。
+    pub item_boost: i32,
+    /// 仙术 / 特技命中加成百分比（`+0x29c`，五件装备 `special_skill_success_rate` 之和），
+    /// `FUN_004f98b0` kind 1 用。
+    pub skill_bonus: i32,
     /// 普攻顺手偷的几率（`+0x2b8`）：五件装备里每件特殊类型 0x17 的 +5（`FUN_004ee430`）。
     pub steal_chance: i32,
     /// 饰品栏戴着青铜护镜（0x1fae，`+0x2bd`，`FUN_004edf10` 末尾）：挨普攻时 41/1024 弹回去。
@@ -284,6 +291,8 @@ impl Combatant {
             crit_bonus: 0,
             sp_saving: 0,
             mp_saving: 0,
+            item_boost: 0,
+            skill_bonus: 0,
             steal_chance: 0,
             reflect: false,
             sp_on_hit: 0,

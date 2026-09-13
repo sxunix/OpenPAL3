@@ -173,7 +173,8 @@ pub fn hit_percent(
     skill_bonus: f32,
 ) -> i32 {
     let mut p = (8 - target_luck_eff + caster_luck_eff) * 10;
-    p += ftol(p as f32 * skill_bonus * 0.01);
+    // 0x4f9a2c 起：`p += ROUND(p × +0x29c × 0.01)`，舍入不是截断。
+    p += (p as f64 * skill_bonus as f64 * 0.01f32 as f64).round_ties_even() as i32;
 
     if SPREAD_ENABLED {
         let spread = ftol(p as f32 * 0.2).abs();

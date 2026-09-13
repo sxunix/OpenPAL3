@@ -1036,8 +1036,8 @@ impl CombatSession {
                         self.camera_requests.push(7);
                         if moved {
                             // 关面板（0x4de699）：原版给我方每人排一个 0x108 行动（换位的动作），
-                            // 镜头切 7，停 0.5 秒，再回主调度。移植端只把这一回合算作用掉
-                            // `[推断：原版没换位时关面板是否也算用掉没有核实]`。
+                            // 镜头切 7，停 0.5 秒，再回主调度。移植端只把这一回合算作用掉。
+                            // 没换位时 0x4ddf52 比对快照（0x17a8ee0）一样，直接回控制盘，不算用掉。
                             self.turn = None;
                             self.push_log(format!("{} 变换阵型", self.name(slot)));
                             self.battle.finish_turn(slot);
@@ -1223,7 +1223,7 @@ impl CombatSession {
                                     m,
                                 )
                             }
-                            // 特技的出手速度照攻击（倍率 1）[推断：`FUN_004f76c0` 只查仙术格]。
+                            // 特技不在法术表里，`FUN_004f76c0` 返回 0，任务里当 1。
                             Action::Special(i) => self.commit(
                                 Pending::Cast {
                                     slot,

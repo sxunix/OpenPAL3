@@ -1101,6 +1101,10 @@ impl SceCommandCombat {
                         c.sp_saving += item.sp_saving_percentage as i32;
                         c.mp_saving += item.mp_saving_percentage as i32;
                         c.crit_bonus += item.critical_attack_amplify_percentage as i32;
+                        c.skill_bonus += item.special_skill_success_rate as i32;
+                        if matches!(item.item_special_type, 0x15 | 0x16) {
+                            c.item_boost += 10;
+                        }
                         if item.item_special_type == 0x17 {
                             c.steal_chance += 5;
                         }

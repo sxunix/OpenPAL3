@@ -396,6 +396,8 @@ impl Battle {
         let caster_luck = c.luck_eff();
         let caster_is_player = c.side == Side::Party;
         let caster_element = (1..=5u8).find(|e| c.elements[*e as usize]);
+        // 装备的命中加成（`+0x29c`），`FUN_004f98b0` kind 1 用。
+        let caster_bonus = c.skill_bonus as f32;
 
         let Some(t) = self.get(target) else {
             return result;
@@ -412,7 +414,7 @@ impl Battle {
             skill.success_rate_level,
             caster_luck,
             target_luck,
-            0.,
+            caster_bonus,
         ) {
             return result;
         }
@@ -465,8 +467,8 @@ impl Battle {
     /// （`FUN_004ef4a0`）→ 属性（`FUN_004eef20`）。属性用的是数据库里的
     /// **原始值**，不像技能那样按施术者等级放大、也不过五灵修正；原版只在
     /// 我方使用者身上多加 `round(v × 使用者的 +0x2b4 × 0.01)`（装备特殊 0x16
-    /// 「道具效果增强」，且只对 v>0 生效），移植还没有那条装备位，按 0 算
-    /// `[推断]`——也就是和原版无该装备时一致。
+    /// 「道具效果增强」，且只对 v>0 生效；聚宝盆 0x15 也给 +10，见
+    /// `Combatant::item_boost`）。
     ///
     /// 扣数量不在这里：战斗里用掉的记在会话上，散场时一起写回。
     pub fn use_item(&mut self, user: usize, target: usize, item: &ItemEffect) -> ItemResult {
@@ -524,9 +526,14 @@ impl Battle {
             if raw == 0 {
                 continue;
             }
-            let _ = user;
+            let mut v = raw as i32;
+            // 我方使用者的装备「道具效果增强」（`+0x2b4`），只加正数。
+            if v > 0 && user < super::state::PARTY_SLOTS {
+                let boost = self.get(user).map(|u| u.item_boost).unwrap_or(0);
+                v += (v as f64 * boost as f64 * 0.01f32 as f64).round_ties_even() as i32;
+            }
             if let Some(t) = self.get_mut(target) {
-                result.deltas[slot] = apply_impact(t, slot, ImpactKind::from_u8(kind), raw as i32);
+                result.deltas[slot] = apply_impact(t, slot, ImpactKind::from_u8(kind), v);
             }
         }
 
