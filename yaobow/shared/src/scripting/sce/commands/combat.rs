@@ -309,6 +309,24 @@ enum StageStep {
 /// 合击技编排里渐黑 / 渐亮 / 横幅那几步各 1 秒（`FUN_004fc7d0` 的时长参数 1.0）。
 const COMBO_STEP_SECONDS: f32 = 1.;
 
+/// `FUN_00402b00`：按键表（`+0x1878` 起 0x10e 项）里有没有哪个键这一帧按下。移植端看常用的
+/// 几个键、手柄四个面键和鼠标左键。
+fn any_key_pressed(state: &SceState) -> bool {
+    use radiance::input::{Key, MouseButton};
+    let input = state.input();
+    [
+        Key::Space,
+        Key::Escape,
+        Key::GamePadEast,
+        Key::GamePadSouth,
+        Key::GamePadNorth,
+        Key::GamePadWest,
+    ]
+    .iter()
+    .any(|k| input.get_key_state(*k).pressed())
+        || input.get_mouse_button_state(MouseButton::Left).pressed()
+}
+
 /// 舞台上的一个人，和上一帧看到的状态。
 #[derive(Clone)]
 struct StageActor {
@@ -1406,16 +1424,22 @@ impl SceCommandCombat {
             run.step = StageStep::Strike { t: 0. };
         };
 
-        // 合击技摆位 / 复位要挪别人，等这一段借用结束后再做。
-        let mut moves: Vec<(usize, Vec3)> = Vec::new();
+        // 合击技摆位 / 复位要挪别人，等这一段借用结束后再做。第三项：朝向是否还原成站位的朝向。
+        let mut moves: Vec<(usize, Vec3, bool)> = Vec::new();
         let mut restore_all = false;
+        // 合击技的渐黑 / 渐亮（0x502000 / 0x5020d0）按任意键就走到底（`FUN_00402b00`）。
+        let skip_fade = any_key_pressed(state);
         match run.step {
             StageStep::Begin if run.combo => {
                 run.target = target;
                 run.step = StageStep::ComboOpen { t: 0. };
             }
             StageStep::ComboOpen { t } => {
-                let t = t + delta_sec;
+                let t = if skip_fade {
+                    COMBO_STEP_SECONDS
+                } else {
+                    t + delta_sec
+                };
                 self.stage_fade = (t / COMBO_STEP_SECONDS).min(1.);
                 if t < COMBO_STEP_SECONDS {
                     run.step = StageStep::ComboOpen { t };
@@ -1440,18 +1464,20 @@ impl SceCommandCombat {
                             let Some(c) = session.battle.get(s).filter(|c| c.in_play()) else {
                                 continue;
                             };
+                            // 挪位的同时把朝向还原成站位的朝向（`+0x19e8 = +0x19ec`）。
                             if let Some(p) =
                                 st::lineup_spot(&data.role_positions, ring, c.element_position)
                             {
-                                moves.push((s, Vec3::new(p.x, 0., p.z)));
+                                moves.push((s, Vec3::new(p.x, 0., p.z), true));
                             }
                         }
                         if range == Some(2) {
                             if let (Some(t), Some(p)) =
                                 (run.target, st::stage_position(&data.role_positions, 10))
                             {
+                                // 目标只挪位置，朝向不动（0x4ff51b 起只抄 `+0x19b8`）。
                                 if t >= PARTY_SLOTS {
-                                    moves.push((t, Vec3::new(p.x, 0., p.z)));
+                                    moves.push((t, Vec3::new(p.x, 0., p.z), false));
                                 }
                             }
                         }
@@ -1460,7 +1486,11 @@ impl SceCommandCombat {
                 }
             }
             StageStep::ComboShow { t } => {
-                let t = t + delta_sec;
+                let t = if skip_fade {
+                    COMBO_STEP_SECONDS
+                } else {
+                    t + delta_sec
+                };
                 self.stage_fade = (1. - t / COMBO_STEP_SECONDS).max(0.);
                 if t < COMBO_STEP_SECONDS {
                     run.step = StageStep::ComboShow { t };
@@ -1488,7 +1518,11 @@ impl SceCommandCombat {
                 }
             }
             StageStep::ComboClose { t } => {
-                let t = t + delta_sec;
+                let t = if skip_fade {
+                    COMBO_STEP_SECONDS
+                } else {
+                    t + delta_sec
+                };
                 self.stage_fade = (t / COMBO_STEP_SECONDS).min(1.);
                 if t < COMBO_STEP_SECONDS {
                     run.step = StageStep::ComboClose { t };
@@ -1498,7 +1532,11 @@ impl SceCommandCombat {
                 }
             }
             StageStep::ComboReveal { t } => {
-                let t = t + delta_sec;
+                let t = if skip_fade {
+                    COMBO_STEP_SECONDS
+                } else {
+                    t + delta_sec
+                };
                 self.stage_fade = (1. - t / COMBO_STEP_SECONDS).max(0.);
                 if t >= COMBO_STEP_SECONDS {
                     self.stage_fade = 0.;
@@ -1588,17 +1626,27 @@ impl SceCommandCombat {
                 }
             }
         }
-        for (s, p) in moves {
+        for (s, p, face) in moves {
             if let Some(a) = self.actors.get_mut(s).and_then(|a| a.as_mut()) {
                 a.walk = None;
-                a.entity.transform().borrow_mut().set_position(&p);
+                let transform = a.entity.transform();
+                let mut t = transform.borrow_mut();
+                t.set_position(&p);
+                if face {
+                    t.look_at(&face_point(p, motion::rest_facing(a.set)));
+                }
             }
         }
+        // 0x4ff740：在场的都摆回站位，朝向也还原（`+0x19e8 = +0x19ec`）。
         if restore_all {
             for a in self.actors.iter_mut().flatten() {
                 a.walk = None;
                 let home = a.home;
-                a.entity.transform().borrow_mut().set_position(&home);
+                a.entity
+                    .transform()
+                    .borrow_mut()
+                    .set_position(&home)
+                    .look_at(&face_point(home, motion::rest_facing(a.set)));
             }
         }
     }

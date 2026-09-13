@@ -406,6 +406,8 @@ pub struct SceCommandDealerMenu {
     ask_equip: bool,
     /// 点了「装备」，等点对比栏里某人的某一格（`+0x16d00`）。
     wear_mode: bool,
+    /// 进「选谁穿」多久了：能穿的人那一格小图标跟着闪（[`flash_alpha`]）。
+    wear_clock: f32,
     /// 这一单里买了就穿的。
     worn: Vec<Worn>,
     /// 当铺借用的买页：每行是池子里的一件，最多买 1 个，买下就从列表里去掉。
@@ -460,6 +462,7 @@ impl SceCommandDealerMenu {
             sfx: None,
             ask_equip: false,
             wear_mode: false,
+            wear_clock: 0.,
             worn: vec![],
             single_each: false,
             bought: vec![],
@@ -664,6 +667,7 @@ impl SceCommandDealerMenu {
     fn equip_yes(&mut self, state: &SceState) {
         self.ask_equip = false;
         self.wear_mode = true;
+        self.wear_clock = 0.;
         let Some(g) = self.current().cloned() else {
             return;
         };
@@ -1307,6 +1311,41 @@ pub(super) fn blit(
     }
 }
 
+/// 同 [`blit`]，带透明度。
+fn blit_alpha(
+    list: &imgui::DrawListMut<'_>,
+    tex: &Tex,
+    x: i32,
+    y: i32,
+    alpha: f32,
+    at: &dyn Fn(i32, i32) -> [f32; 2],
+) {
+    if let Some(s) = tex.as_deref() {
+        let r = (x, y, x + s.width() as i32, y + s.height() as i32);
+        let (uv0, uv1) = super::encamp::sprite_uv(s, r);
+        list.add_image(s.imgui_texture_id(), at(r.0, r.1), at(r.2, r.3))
+            .uv_min(uv0)
+            .uv_max(uv1)
+            .col([1., 1., 1., alpha])
+            .build();
+    }
+}
+
+/// 小图标闪的透明度（控件 0x56ae84 的更新 `0x444d30`）：`FUN_00444d10` 开闪后透明度从
+/// 上限（控件原本的 255）每帧减 `+0xa8`（1.0）减到下限 `+0xa4`（6），再每帧加回上限，如此往复。
+/// 原版按帧走、帧率不固定，这里按每秒 60 帧折成秒 [推断]。
+fn flash_alpha(t: f32) -> f32 {
+    const MIN: f32 = 6. / 255.;
+    const RATE: f32 = 60. / 255.;
+    let half = (1. - MIN) / RATE;
+    let phase = t.max(0.) % (2. * half);
+    if phase < half {
+        1. - phase * RATE
+    } else {
+        MIN + (phase - half) * RATE
+    }
+}
+
 /// 三态按钮：悬停或手柄选中用 1 号图，常态 0 号。
 pub(super) fn button(
     list: &imgui::DrawListMut<'_>,
@@ -1717,11 +1756,22 @@ impl SceCommandDealerMenu {
     fn draw_cards(&self, list: &imgui::DrawListMut<'_>, at: &dyn Fn(i32, i32) -> [f32; 2]) {
         let sk = &self.skin;
         let lift = cmp::bob(self.clock);
+        // 「选谁穿」时，能穿的人对应那一格的小图标闪（`FUN_00462280` → `FUN_00444d10`）。
+        let flashing = self
+            .current()
+            .filter(|_| self.wear_mode)
+            .map(|g| (g.applicable, equipment_slots_for_type(g.item_type)));
+        let alpha = flash_alpha(self.wear_clock);
         for c in &self.cards {
             blit(list, &sk.heads[c.role], c.head.0, c.head.1, at);
             for (k, lit) in c.small.iter().enumerate() {
-                if *lit {
-                    let (x, y) = cmp::small_icon_pos(c.head, k);
+                let (x, y) = cmp::small_icon_pos(c.head, k);
+                let flash = flashing
+                    .as_ref()
+                    .is_some_and(|(who, slots)| who[c.role] && slots.contains(&SMALL_SLOTS[k]));
+                if flash {
+                    blit_alpha(list, &sk.small[k], x, y, alpha, at);
+                } else if *lit {
                     blit(list, &sk.small[k], x, y, at);
                 }
             }
@@ -1752,6 +1802,9 @@ impl SceCommand for SceCommandDealerMenu {
     ) -> bool {
         self.clock += delta_sec;
         self.frame_dt = delta_sec;
+        if self.wear_mode {
+            self.wear_clock += delta_sec;
+        }
         if !self.loaded {
             self.load(state);
             if self.shop.merchant_name.is_empty() && self.buttons.is_empty() {
@@ -1931,6 +1984,16 @@ mod tests {
         m.cart.clear();
         m.reset_wear();
         assert!(m.worn.is_empty() && !m.wear_mode);
+    }
+
+    #[test]
+    fn wearable_icons_pulse_down_then_back_up() {
+        assert!((flash_alpha(0.) - 1.).abs() < 1e-6, "从最亮开始往下走");
+        assert!(flash_alpha(1.) < flash_alpha(0.5));
+        let half = (1. - 6. / 255.) / (60. / 255.);
+        assert!((flash_alpha(half) - 6. / 255.).abs() < 1e-3, "到下限");
+        assert!(flash_alpha(half + 1.) > flash_alpha(half));
+        assert!((flash_alpha(2. * half) - 1.).abs() < 1e-3, "一整轮回到最亮");
     }
 
     #[test]
