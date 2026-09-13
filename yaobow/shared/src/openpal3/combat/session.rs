@@ -1267,8 +1267,8 @@ impl CombatSession {
                 (c.side == Side::Party).then_some(Survivor {
                     slot,
                     alive: c.alive,
-                    exp_bonus_percent: 0.,
-                    money_bonus_percent: 0.,
+                    exp_bonus_percent: c.exp_bonus as f32,
+                    money_bonus_percent: c.money_bonus as f32,
                 })
             })
             .collect();

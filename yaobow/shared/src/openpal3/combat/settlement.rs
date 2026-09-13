@@ -34,16 +34,14 @@ pub struct DefeatedEnemy {
 pub struct Survivor {
     pub slot: usize,
     pub alive: bool,
-    /// The accumulated 经验加成 percentage (`+0x2ac`), from 精进 or from
-    /// equipment. Zero means no bonus.
+    /// The accumulated 经验加成 percentage (`+0x2ac`): equipment special
+    /// types 0x14 / 0x15 / 0x18 give 5 / 15 / 20 each (`FUN_004ee430`), and
+    /// 景天's 精进 gives everyone 20 (`FUN_004ed250`). See
+    /// `Combatant::exp_bonus`.
     pub exp_bonus_percent: f32,
-    /// The accumulated 金钱加成 percentage (`+0x2b0`).
-    ///
-    /// UNRESOLVED: the field is summed across the party and applied to
-    /// the money total, but which item property feeds it has not been
-    /// found — no database column is an obvious match. Zero until then,
-    /// which makes the bonus vanish exactly as it does with no bonus
-    /// equipment on.
+    /// The accumulated 金钱加成 percentage (`+0x2b0`), summed across the
+    /// party: 聚宝盆 (item special type 0x15) gives 5 per piece
+    /// (`FUN_004ee430`).
     pub money_bonus_percent: f32,
 }
 

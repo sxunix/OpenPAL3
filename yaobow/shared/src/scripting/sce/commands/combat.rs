@@ -1105,12 +1105,27 @@ impl SceCommandCombat {
                         if matches!(item.item_special_type, 0x15 | 0x16) {
                             c.item_boost += 10;
                         }
+                        // 经验 / 金钱加成（`+0x2ac` / `+0x2b0`，`FUN_004ee430`）。
+                        match item.item_special_type {
+                            0x14 => c.exp_bonus += 5,
+                            0x15 => {
+                                c.exp_bonus += 15;
+                                c.money_bonus += 5;
+                            }
+                            0x18 => c.exp_bonus += 20,
+                            _ => {}
+                        }
                         if item.item_special_type == 0x17 {
                             c.steal_chance += 5;
                         }
                         if item.id == BRONZE_MIRROR && (s == SLOT_ADORN1 || s == SLOT_ADORN2) {
                             c.reflect = true;
                         }
+                    }
+                    // 景天身上有精进（冒险侧状态 30；`DAT_00c0466a` 就是 0 号角色的那一格），
+                    // 全队每人经验加成 +20（`FUN_004ed250`）。
+                    if persistent.role(0).is_some_and(|r| r.states[30] != 0) {
+                        c.exp_bonus += 20;
                     }
                     // 武器带的普攻附加状态（`FUN_004f2560` 读武器那一格）。
                     if let Some(w) = persistent

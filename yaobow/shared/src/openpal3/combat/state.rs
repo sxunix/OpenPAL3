@@ -205,6 +205,11 @@ pub struct Combatant {
     /// 仙术 / 特技命中加成百分比（`+0x29c`，五件装备 `special_skill_success_rate` 之和），
     /// `FUN_004f98b0` kind 1 用。
     pub skill_bonus: i32,
+    /// 经验加成百分比（`+0x2ac`）：五件装备特殊类型 0x14 +5、0x15 +15、0x18 +20（`FUN_004ee430`），
+    /// 景天有精进时全队每人再 +20（`FUN_004ed250`）。结算 `FUN_004fa930` 用。
+    pub exp_bonus: i32,
+    /// 金钱加成百分比（`+0x2b0`）：聚宝盆（特殊类型 0x15）每件 +5。结算 `FUN_004fb370` 全队加总。
+    pub money_bonus: i32,
     /// 普攻顺手偷的几率（`+0x2b8`）：五件装备里每件特殊类型 0x17 的 +5（`FUN_004ee430`）。
     pub steal_chance: i32,
     /// 饰品栏戴着青铜护镜（0x1fae，`+0x2bd`，`FUN_004edf10` 末尾）：挨普攻时 41/1024 弹回去。
@@ -293,6 +298,8 @@ impl Combatant {
             mp_saving: 0,
             item_boost: 0,
             skill_bonus: 0,
+            exp_bonus: 0,
+            money_bonus: 0,
             steal_chance: 0,
             reflect: false,
             sp_on_hit: 0,

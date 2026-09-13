@@ -775,7 +775,7 @@ case 0x19:                                   // k = 25 即死
 | `+0x2bd` | 饰品格（第 4、5 件）是青铜护镜 0x1fae |
 | `+0x2bc` | 五件正好是 0x1388f / 0x14832 / 0x14444 / 0x1fda / 0x1fd9 一整套 |
 
-`+0x2ac` / `+0x2b0` 的读者还没找到；`+0x2b4` 在 `FUN_004eef20` 里当百分比乘。
+`+0x2ac` 是经验加成、`+0x2b0` 是金钱加成（结算读，见 `settlement.rs`；`FUN_004ed250` 另在景天有精进时给全队 `+0x2ac` +20）；`+0x2b4` 在 `FUN_004eef20` 里当道具效果百分比乘。
 
 移植（2026-09-13）：`Battle::roll_crit` / `normal_attack` / `hit_sp` / `shift_mp`，
 `Combatant` 加 `crit_bonus` / `sp_saving` / `mp_saving` / `steal_chance` / `reflect` /
