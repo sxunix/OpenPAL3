@@ -63,6 +63,8 @@ pub const K_CONFUSED: usize = 18;
 /// 狂：回合交给托管那一支（0x513975），普攻不看开关。
 pub const K_BERSERK: usize = 19;
 pub const K_EVADE: usize = 21;
+/// 镜（状态枚举 19）：普攻整下弹回（`FUN_004f0a10`）。
+pub const K_MIRROR: usize = 20;
 /// 濒死（`FUN_004f3e20` 的 `case 0x18`）：不是标记，而是**当场把精压到上限的
 /// 十分之一**（`+0x24c = +0x250 / 10`，当前更低就不动）。压完之后每帧钳位
 /// `FUN_004f7880` 会据此置濒死位。
@@ -188,6 +190,51 @@ pub struct Combatant {
     pub affection: i32,
     /// 援护对象（战斗位 `+0x27c`，只有 0 号位景天的有意义）：护着哪个战斗位。开战清零。
     pub protecting: Option<usize>,
+    /// 暴击加成百分比（战斗位 `+0x298`）：身上五件装备（武器不算）的
+    /// `critical_attack_amplify_percentage` 之和（`FUN_004edf10`）。怪物 0。
+    pub crit_bonus: i32,
+    /// 掉气时减免的百分比（`+0x290`，五件装备 `sp_saving_percentage` 之和）：挨打掉气、
+    /// 出招扣气都走 `FUN_004f3020`，都减。
+    pub sp_saving: i32,
+    /// 掉神时减免的百分比（`+0x294`，五件装备 `mp_saving_percentage` 之和，`FUN_004f31c0`）。
+    pub mp_saving: i32,
+    /// 普攻顺手偷的几率（`+0x2b8`）：五件装备里每件特殊类型 0x17 的 +5（`FUN_004ee430`）。
+    pub steal_chance: i32,
+    /// 饰品栏戴着青铜护镜（0x1fae，`+0x2bd`，`FUN_004edf10` 末尾）：挨普攻时 41/1024 弹回去。
+    pub reflect: bool,
+    /// 普攻打中我方时给对方加的气（`+0x284`）：怪物是 gdb `sp_impact_value`，我方 0。
+    pub sp_on_hit: i32,
+    /// 普攻方式（`+0x280`）：怪物是 gdb `normal_attack_mode_id`（0x385 起），我方 0。
+    pub attack_mode: u32,
+    /// 武器带的普攻附加状态几率，下标 i 对应状态 k = i + 1（`FUN_004f2560` 只看前 0x17 个：
+    /// 武器 `combat_state_impact_types[i]` 非 0 且 `combat_state_impact_value[i]` > 0）。
+    pub weapon_states: [i16; WEAPON_STATES],
+}
+
+/// 武器附加状态只看前 0x17 个（`FUN_004f2560` 的循环 `700 .. 0x2ea`）。
+pub const WEAPON_STATES: usize = 0x17;
+
+/// 普攻打一个目标的结果（[`Battle::normal_attack`]）。
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct Blow {
+    /// 精真正变了的那个人：目标、援护的人，或者弹回来时的攻击方。
+    pub victim: usize,
+    /// 落到 `victim` 身上的精变化。
+    pub delta: i32,
+    /// 目标已倒下或有避（0x4f0b03 那串条件不成立）：这一下不结算，只弹数字
+    /// （`FUN_004fdb10`），不播回避。
+    pub missed: bool,
+    /// 按速度躲开，或者算出来没掉血：目标播回避（`FUN_004feef0`）。
+    pub dodged: bool,
+    pub crit: bool,
+    /// 镜或青铜护镜把这一下弹回攻击方。
+    pub reflected: bool,
+    /// 援护：替目标挨打的人。
+    pub protector: Option<usize>,
+    /// 顺手偷到的（`+0x2b8` 那一掷，`FUN_004f17c0`）。
+    pub stolen: Option<super::actions::Stolen>,
+    /// 攻击方式 0x392（饿鬼）：让调用方从背包里整格吃掉一种回复道具（`FUN_004f1fa0(…, 0x1c)`）。
+    pub eat_item: bool,
 }
 
 impl Combatant {
@@ -223,6 +270,14 @@ impl Combatant {
             delegation: Default::default(),
             affection: 0,
             protecting: None,
+            crit_bonus: 0,
+            sp_saving: 0,
+            mp_saving: 0,
+            steal_chance: 0,
+            reflect: false,
+            sp_on_hit: 0,
+            attack_mode: 0,
+            weapon_states: [0; WEAPON_STATES],
         }
     }
 
@@ -764,9 +819,8 @@ impl Battle {
     /// 前置（0x4f3e20–0x4f3f5c）：
     ///
     /// * 目标有隐形（k23）且要设的不是隐形 → 什么都不做。
-    /// * k ∈ 1..=5（五毒）：先清掉五毒（互斥），已有避毒（k26）则不加。
-    ///   原版在这之前还查一次免疫 `FUN_004f3cc0`，那张免疫表移植还没有，
-    ///   按「不免疫」处理 `[推断]`。
+    /// * k ∈ 1..=5（五毒）：身上已经有五毒里的任何一种就不加（`FUN_004f3cc0` 查
+    ///   `+0x476..+0x47a`，0x4f3f0c）；已有避毒（k26）也不加。
     /// * k ∈ 14..=23（定封禁眠乱狂镜避界隐形）：先把这十种全清掉。
     /// * k ∈ 6..=13（武防运速的增减）：成对互斥，先清掉自己那一对。
     ///
@@ -799,10 +853,11 @@ impl Battle {
         }
 
         if (1..=5).contains(&k) {
-            if let Some(c) = self.get_mut(slot) {
-                for p in 1..=5 {
-                    c.clear_state(p);
-                }
+            if self
+                .get(slot)
+                .is_some_and(|c| (1..=5).any(|p| c.has_state(p)))
+            {
+                return;
             }
             if self
                 .get(slot)
@@ -944,16 +999,260 @@ impl Battle {
         .then_some(0)
     }
 
-    /// A plain physical attack from `attacker` onto `target`.
-    pub fn basic_attack(&mut self, attacker: usize, target: usize) -> i32 {
-        let delta = self.physical_hit(attacker, target);
-        // 援护：伤害照打 `target` 算，落到护的人身上（`FUN_004f2c70(0, …)`，0x4f0d3a）。
-        let victim = self.protector_for(target).unwrap_or(target);
-        // The original does not clamp a negative-damage (defence-heavy)
-        // result here; the HP path decides what happens.
-        self.get_mut(victim)
+    /// 这次普攻暴不暴击（`FUN_004f0a10` 开头，一次出手只掷一次）：几率是
+    /// [`formulas::crit_percent`]（攻击方的运_eff）。
+    pub fn roll_crit(&mut self, attacker: usize) -> bool {
+        let p = self
+            .get(attacker)
+            .map(|a| formulas::crit_percent(a.luck_eff()))
+            .unwrap_or(0);
+        formulas::chance_roll(&mut self.rng, p)
+    }
+
+    /// 普攻落到一个目标上（`FUN_004f0a10` 里对每个目标的那一段），`crit` 是
+    /// [`Self::roll_crit`] 掷好的。顺序照原版：
+    ///
+    /// 1. 目标倒下或有避 → 不结算（[`Blow::missed`]）。
+    /// 2. 目标在我方（战斗位 0..4）时按 [`formulas::dodge_percent`] 掷回避；目标有镜、定、眠
+    ///    时回避作废（骰子照掷）。
+    /// 3. 算伤害（`FUN_004ef7e0`）。回避了或没掉血 → 目标播回避，不落伤害。
+    /// 4. 暴击：`d = round(伤害 × 1.3)`，再加 `round(d × 攻击方暴击加成 × 0.01)`（0x4f0c1c）。
+    /// 5. 目标有镜；或者没镜时掷 `rand & 0x3ff ≤ 0x28` 且目标戴着青铜护镜 → 整下弹回攻击方
+    ///    （`FUN_004f2c70(攻击方, 伤害, 0, 目标)`），后面的都不走。
+    /// 6. 否则打断目标出手（`FUN_004db8b0`）、落伤害；援护时落到景天身上、被护的人情 +1
+    ///    （`FUN_004f34e0`），这一支不打断。目标在我方时加气（[`Self::hit_sp`]）。
+    /// 7. 最后依次：怪物普攻附带（`FUN_004f1cc0`）、武器附带（`FUN_004f2560`）、顺手偷
+    ///    （`+0x2b8`，`FUN_004f17c0`）。援护时这三样都落在景天（0 号位）身上。
+    pub fn normal_attack(&mut self, attacker: usize, target: usize, crit: bool) -> Blow {
+        let mut blow = Blow {
+            victim: target,
+            ..Blow::default()
+        };
+        if !self
+            .get(target)
+            .is_some_and(|t| t.in_play() && !t.has_state(K_EVADE))
+        {
+            blow.missed = true;
+            return blow;
+        }
+
+        let mut dodge = false;
+        if target < PARTY_SLOTS {
+            let p = match (self.get(attacker), self.get(target)) {
+                (Some(a), Some(t)) => formulas::dodge_percent(t.speed_eff(), a.speed_eff()),
+                _ => 0,
+            };
+            dodge = formulas::chance_roll(&mut self.rng, p);
+        }
+        if self.get(target).is_some_and(|t| {
+            t.has_state(K_MIRROR) || t.has_state(K_PARALYSIS) || t.has_state(K_SLEEP)
+        }) {
+            dodge = false;
+        }
+
+        let mut delta = self.physical_hit(attacker, target);
+        if dodge || delta >= 0 {
+            blow.dodged = true;
+            return blow;
+        }
+        if crit {
+            let bonus = self.get(attacker).map(|a| a.crit_bonus).unwrap_or(0);
+            let d = (delta as f64 * 1.3f32 as f64).round_ties_even() as i32;
+            delta = d + (d as f64 * bonus as f64 * 0.01f32 as f64).round_ties_even() as i32;
+            blow.crit = true;
+        }
+
+        let reflect = self.get(target).is_some_and(|t| t.has_state(K_MIRROR)) || {
+            let r = self.rng.rand10();
+            r <= 0x28 && self.get(target).is_some_and(|t| t.reflect)
+        };
+        if reflect {
+            blow.victim = attacker;
+            blow.reflected = true;
+            blow.delta = self
+                .get_mut(attacker)
+                .map(|a| a.change_hp(delta))
+                .unwrap_or(0);
+            return blow;
+        }
+
+        let protector = self.protector_for(target);
+        let victim = protector.unwrap_or(target);
+        if protector.is_none() {
+            self.interrupt(target, None);
+        }
+        blow.victim = victim;
+        blow.protector = protector;
+        blow.delta = self
+            .get_mut(victim)
             .map(|t| t.change_hp(delta))
-            .unwrap_or(0)
+            .unwrap_or(0);
+        if protector.is_some() {
+            if let Some(t) = self.get_mut(target) {
+                t.affection = (t.affection + 1).clamp(0, 999);
+            }
+        }
+        if target < PARTY_SLOTS {
+            let gain = self.get(attacker).map(|a| a.sp_on_hit).unwrap_or(0);
+            self.hit_sp(target, gain);
+        }
+
+        self.attack_mode_effect(attacker, victim, &mut blow);
+        self.weapon_state(attacker, victim);
+        let chance = self.get(attacker).map(|a| a.steal_chance).unwrap_or(0);
+        if formulas::chance_roll(&mut self.rng, chance) {
+            blow.stolen = Some(self.steal(victim));
+        }
+        blow
+    }
+
+    /// 不掷暴击的一下普攻，只要精的变化。
+    pub fn basic_attack(&mut self, attacker: usize, target: usize) -> i32 {
+        self.normal_attack(attacker, target, false).delta
+    }
+
+    /// `FUN_004f3020(slot, v, 0)`：挨打时改气，不弹数字。倒下的不改；掉气时先按
+    /// [`Combatant::sp_saving`] 减掉 `round(v × 减免 × 0.01)`；结果夹在 0..=上限。
+    pub fn hit_sp(&mut self, slot: usize, v: i32) {
+        let Some(c) = self.get_mut(slot) else {
+            return;
+        };
+        if v == 0 || !c.alive {
+            return;
+        }
+        let mut v = v;
+        if v < 0 {
+            v -= (v as f64 * c.sp_saving as f64 * 0.01f32 as f64).round_ties_even() as i32;
+        }
+        c.sp = (c.sp + v).clamp(0, c.max_sp);
+    }
+
+    /// `FUN_004f1cc0`：怪物（战斗位 5..=10）普攻打中后按攻击方式附带的效果，几率是
+    /// [`formulas::inflict_percent`]。攻击方式减 0x385 之后：
+    ///
+    /// * 0 → k3，1/0x11/0x19 → k4，2 → k1，3 → k2，4/0x13/0x1a → k5（五毒）；
+    /// * 5 定，6/0x12/0x14 封，7/0x1b 禁，8 眠，9/0xf 乱，10/0x10 狂；
+    /// * 0xb 吸神、吸气各 10（`FUN_004f3380` / `FUN_004f33d0`）；
+    /// * 0xc 偷钱（`FUN_004f1fa0(…, 0x1b)`），0xd 吃道具（`… 0x1c`），0xe 随机一种毒（`… 1`）；
+    /// * 其余（包括最常见的 21/22/23）什么都不附带。
+    fn attack_mode_effect(&mut self, attacker: usize, victim: usize, blow: &mut Blow) {
+        if !(PARTY_SLOTS..=10).contains(&attacker) {
+            return;
+        }
+        let Some(a) = self.get(attacker) else {
+            return;
+        };
+        let mode = a.attack_mode as i32 - 0x385;
+        let luck_a = a.luck_eff();
+        let luck_v = self.get(victim).map(|v| v.luck_eff()).unwrap_or(0);
+        let p = formulas::inflict_percent(luck_a, luck_v);
+        if !formulas::chance_roll(&mut self.rng, p) {
+            return;
+        }
+        let k = match mode {
+            0 => 3,
+            1 | 0x11 | 0x19 => 4,
+            2 => 1,
+            3 => 2,
+            4 | 0x13 | 0x1a => 5,
+            5 => 14,
+            6 | 0x12 | 0x14 => 15,
+            7 | 0x1b => 16,
+            8 => 17,
+            9 | 0xf => 18,
+            10 | 0x10 => 19,
+            0xb => {
+                self.attack_drain(victim, attacker, 10);
+                return;
+            }
+            0xc => {
+                self.monster_steal_money(victim);
+                return;
+            }
+            0xd => {
+                blow.eat_item = victim < PARTY_SLOTS;
+                return;
+            }
+            0xe => {
+                self.random_poison(victim);
+                return;
+            }
+            _ => return,
+        };
+        self.set_state(victim, k, true);
+    }
+
+    /// `FUN_004f2560`：我方（战斗位 0..4）普攻打中后，武器带的附加状态逐个掷，中一个就停。
+    fn weapon_state(&mut self, attacker: usize, victim: usize) {
+        if attacker >= PARTY_SLOTS {
+            return;
+        }
+        let Some(states) = self.get(attacker).map(|a| a.weapon_states) else {
+            return;
+        };
+        for (i, p) in states.iter().enumerate() {
+            if *p > 0 && formulas::chance_roll(&mut self.rng, *p as i32) {
+                self.set_state(victim, i + 1, true);
+                return;
+            }
+        }
+    }
+
+    /// 攻击方式 0xb：从 `from` 吸 `amount` 神、再吸 `amount` 气给 `to`，每样不超过
+    /// `from` 现有的（`FUN_004f3380` / `FUN_004f33d0`）。数据里没有怪物用这一种。
+    fn attack_drain(&mut self, from: usize, to: usize, amount: i32) {
+        let n = self.get(from).map(|c| c.mp.min(amount)).unwrap_or(0);
+        self.shift_mp(from, -n);
+        self.shift_mp(to, n);
+        let n = self.get(from).map(|c| c.sp.min(amount)).unwrap_or(0);
+        self.hit_sp(from, -n);
+        self.hit_sp(to, n);
+    }
+
+    /// `FUN_004f31c0(slot, v, 0)`：改神，不弹数字。倒下的不改，隐形时不加；掉神时先按
+    /// [`Combatant::mp_saving`] 减掉 `round(v × 减免 × 0.01)`；结果夹在 0..=上限。
+    pub fn shift_mp(&mut self, slot: usize, v: i32) {
+        let Some(c) = self.get_mut(slot) else {
+            return;
+        };
+        if v == 0 || !c.alive || (v > 0 && c.has_state(K_INVISIBLE)) {
+            return;
+        }
+        let mut v = v;
+        if v < 0 {
+            v -= (v as f64 * c.mp_saving as f64 * 0.01f32 as f64).round_ties_even() as i32;
+        }
+        c.mp = (c.mp + v).clamp(0, c.max_mp);
+    }
+
+    /// 攻击方式 0xc（`FUN_004f1fa0(…, 0x1b)`），只对我方：照原版的算式，`m/200 − m/100`
+    /// 大于 0 才掷 `rand % 它`，再加 `m/200`。两项加起来永远 ≤ 0（`2·(m/200) ≤ m/100`），
+    /// 所以一文也偷不走。
+    fn monster_steal_money(&mut self, victim: usize) {
+        if victim >= PARTY_SLOTS {
+            return;
+        }
+        let m = self.money_left();
+        let mut x = m / 200 - m / 100;
+        if x > 0 {
+            x = self.rng.rand15() % x;
+        }
+        x += m / 200;
+        if x > 0 {
+            self.spent_money += x;
+        }
+    }
+
+    /// `FUN_004f3d10`：有避毒或已中毒就算了，否则随机上一种毒（`rand % 5 + 1`）。
+    fn random_poison(&mut self, victim: usize) {
+        let Some(v) = self.get(victim) else {
+            return;
+        };
+        if v.has_state(K_POISON_IMMUNE) || (1..=5).any(|p| v.has_state(p)) {
+            return;
+        }
+        let k = (self.rng.rand15() % 5 + 1) as usize;
+        self.set_state(victim, k, true);
     }
 
     /// `FUN_004f2800`：几个人各打 `target` 一下（`FUN_004ef7e0`，不落到身上）加起来
@@ -1467,11 +1766,18 @@ mod tests {
     }
 
     #[test]
-    fn the_five_poisons_are_mutually_exclusive_and_poison_immunity_blocks_them() {
+    fn a_second_poison_is_refused_and_poison_immunity_blocks_them() {
         let mut b = two_sided_battle();
         b.set_state(5, K_POISON_WIND, true);
         b.set_state(5, K_POISON_FIRE, true);
-        assert!(!b.get(5).unwrap().has_state(K_POISON_WIND), "五毒互斥");
+        assert!(b.get(5).unwrap().has_state(K_POISON_WIND));
+        assert!(
+            !b.get(5).unwrap().has_state(K_POISON_FIRE),
+            "已经中了一种毒就不再加（FUN_004f3cc0）"
+        );
+
+        b.set_state(5, K_POISON_WIND, false);
+        b.set_state(5, K_POISON_FIRE, true);
         assert!(b.get(5).unwrap().has_state(K_POISON_FIRE));
         assert_eq!(
             b.get(5).unwrap().states[K_POISON_FIRE].remaining,
@@ -1479,13 +1785,152 @@ mod tests {
             "火毒是永久的"
         );
 
+        b.set_state(5, K_POISON_FIRE, false);
         b.set_state(5, K_POISON_IMMUNE, true);
         b.set_state(5, K_POISON_WATER, true);
         assert!(!b.get(5).unwrap().has_state(K_POISON_WATER), "避毒挡住五毒");
-        assert!(
-            !b.get(5).unwrap().has_state(K_POISON_FIRE),
-            "施加前先清五毒"
-        );
+    }
+
+    #[test]
+    fn crit_rate_is_ten_times_the_root_of_half_the_luck() {
+        assert_eq!(formulas::crit_percent(0), 0);
+        assert_eq!(formulas::crit_percent(1), 0, "运 / 2 先取整");
+        assert_eq!(formulas::crit_percent(9), 20);
+        assert_eq!(formulas::crit_percent(50), 50);
+        assert_eq!(formulas::crit_percent(200), 100);
+        assert_eq!(formulas::dodge_percent(3, 5), 0, "比对方慢不回避");
+        assert_eq!(formulas::dodge_percent(7, 5), 10);
+        assert_eq!(formulas::inflict_percent(10, 7), 8);
+    }
+
+    #[test]
+    fn a_crit_scales_the_blow_by_one_point_three_plus_the_bonus() {
+        let mut b = two_sided_battle();
+        b.get_mut(5).unwrap().hp = 10_000;
+        b.get_mut(5).unwrap().max_hp = 10_000;
+        b.get_mut(0).unwrap().crit_bonus = 20;
+        let mut plain = b.clone();
+        let d = plain.normal_attack(0, 5, false).delta;
+        assert!(d < 0);
+        let blow = b.normal_attack(0, 5, true);
+        let d1 = (d as f64 * 1.3f32 as f64).round_ties_even() as i32;
+        let extra = (d1 as f64 * 20. * 0.01f32 as f64).round_ties_even() as i32;
+        assert!(blow.crit);
+        assert_eq!(blow.delta, d1 + extra);
+    }
+
+    #[test]
+    fn a_mirror_throws_the_blow_back_at_the_attacker() {
+        let mut b = two_sided_battle();
+        b.get_mut(5).unwrap().states[K_MIRROR].active = true;
+        let blow = b.normal_attack(0, 5, false);
+        assert!(blow.reflected);
+        assert_eq!(blow.victim, 0);
+        assert!(b.get(0).unwrap().hp < 80, "打的人自己挨");
+        assert_eq!(b.get(5).unwrap().hp, 60);
+    }
+
+    #[test]
+    fn the_bronze_mirror_reflects_about_four_percent() {
+        let mut b = two_sided_battle();
+        b.get_mut(0).unwrap().speed = 1;
+        b.get_mut(0).unwrap().reflect = true;
+        let mut reflected = 0;
+        for _ in 0..2000 {
+            b.get_mut(0).unwrap().hp = 80;
+            b.get_mut(5).unwrap().hp = 60;
+            b.get_mut(5).unwrap().alive = true;
+            if b.normal_attack(5, 0, false).reflected {
+                reflected += 1;
+            }
+        }
+        assert!((20..200).contains(&reflected), "41/1024 左右：{reflected}");
+    }
+
+    #[test]
+    fn a_monster_blow_gives_the_party_qi() {
+        let mut b = two_sided_battle();
+        {
+            let c = b.get_mut(0).unwrap();
+            c.speed = 1;
+            c.max_sp = 100;
+            c.sp = 10;
+            c.sp_saving = 50;
+        }
+        b.get_mut(5).unwrap().sp_on_hit = 8;
+        let blow = b.normal_attack(5, 0, false);
+        assert!(blow.delta < 0);
+        assert_eq!(b.get(0).unwrap().sp, 18, "挨打加气，加的时候不减免");
+    }
+
+    #[test]
+    fn savings_shrink_qi_and_shen_losses() {
+        let mut b = two_sided_battle();
+        {
+            let c = b.get_mut(0).unwrap();
+            c.max_sp = 100;
+            c.sp = 50;
+            c.sp_saving = 20;
+            c.max_mp = 100;
+            c.mp = 50;
+            c.mp_saving = 10;
+        }
+        b.hit_sp(0, -10);
+        b.shift_mp(0, -10);
+        assert_eq!(b.get(0).unwrap().sp, 42);
+        assert_eq!(b.get(0).unwrap().mp, 41);
+    }
+
+    #[test]
+    fn a_monster_attack_mode_rides_on_its_blow() {
+        let mut b = two_sided_battle();
+        b.get_mut(0).unwrap().speed = 1;
+        {
+            let m = b.get_mut(5).unwrap();
+            m.attack_mode = 0x385;
+            m.luck = 200;
+        }
+        b.normal_attack(5, 0, false);
+        assert!(b.get(0).unwrap().has_state(3), "攻击方式 0x385 附带 k3");
+
+        let mut b = two_sided_battle();
+        b.get_mut(0).unwrap().speed = 1;
+        b.money = 10_000;
+        {
+            let m = b.get_mut(5).unwrap();
+            m.attack_mode = 0x391;
+            m.luck = 200;
+        }
+        b.normal_attack(5, 0, false);
+        assert_eq!(b.spent_money, 0, "0xc 偷钱的算式永远 ≤ 0");
+    }
+
+    #[test]
+    fn a_fast_party_member_dodges_unless_asleep() {
+        let mut b = two_sided_battle();
+        b.get_mut(0).unwrap().speed = 30;
+        let blow = b.normal_attack(5, 0, false);
+        assert!(blow.dodged);
+        assert_eq!(b.get(0).unwrap().hp, 80);
+
+        b.get_mut(0).unwrap().states[K_SLEEP].active = true;
+        let blow = b.normal_attack(5, 0, false);
+        assert!(!blow.dodged, "睡着躲不开");
+        assert!(b.get(0).unwrap().hp < 80);
+    }
+
+    #[test]
+    fn weapon_states_and_the_steal_chance_ride_on_a_party_blow() {
+        let mut b = two_sided_battle();
+        {
+            let c = b.get_mut(0).unwrap();
+            c.weapon_states[K_SEAL - 1] = 100;
+            c.steal_chance = 100;
+        }
+        b.get_mut(5).unwrap().steal_money = 50;
+        let blow = b.normal_attack(0, 5, false);
+        assert!(b.get(5).unwrap().has_state(K_SEAL), "武器附带封");
+        assert!(blow.stolen.is_some_and(|s| s.money > 0), "顺手偷到钱");
     }
 
     #[test]

@@ -237,10 +237,37 @@ pub fn escape_percent(self_level: i32, self_luck_eff: i32, enemies: &[(i32, i32)
 /// The roll itself (`FUN_00500d50`, 0x500e9c–0x500ef0): below 1 never
 /// works; otherwise ten bits of the LCG against `round(p * 10.24)`.
 pub fn escape_roll(rng: &mut CombatRng, percent: i32) -> bool {
+    chance_roll(rng, percent)
+}
+
+/// 战斗里通用的百分数掷骰：不到 1 直接不中、也不掷；否则 `rand & 0x3ff` 比
+/// `round(p × 10.24)`（逃跑、普攻暴击/回避/附加状态/顺手偷都是这一套）。
+pub fn chance_roll(rng: &mut CombatRng, percent: i32) -> bool {
     if percent < 1 {
         return false;
     }
     rng.rand10() < (percent as f32 * 10.24).round() as i32
+}
+
+/// `FUN_004f98b0` kind 6（0x4f9f7b）：普攻暴击率 = `trunc(√(运_eff / 2) × 10)`，
+/// 运_eff ≤ 0 时是 0（`运 / 2` 是整数除，`× 10` 之后 `__ftol` 截断）。
+pub fn crit_percent(luck_eff: i32) -> i32 {
+    if luck_eff <= 0 {
+        return 0;
+    }
+    (((luck_eff / 2) as f64).sqrt() * 10.0) as i32
+}
+
+/// `FUN_004f98b0` kind 5（0x4f9f49）：我方挨普攻时的回避率 =
+/// `(速_eff(目标) − 速_eff(攻击方)) × 5`，负数算 0。
+pub fn dodge_percent(target_speed_eff: i32, attacker_speed_eff: i32) -> i32 {
+    ((target_speed_eff - attacker_speed_eff) * 5).max(0)
+}
+
+/// `FUN_004f98b0` kind 4（0x4f9f1f）：怪物普攻附带状态的几率 =
+/// `5 + 运_eff(攻击方) − 运_eff(目标)`。
+pub fn inflict_percent(attacker_luck_eff: i32, victim_luck_eff: i32) -> i32 {
+    5 + attacker_luck_eff - victim_luck_eff
 }
 
 // ---- The action gauge ----------------------------------------------------

@@ -234,6 +234,15 @@ const SFX_DENIED: &str = "wa004";
 /// 情加了（`FUN_004f34e0` 正数那一支）。
 const SFX_AFFECTION: &str = "wa010";
 
+/// 普攻暴击的特效组（`FUN_004ce340(0x1d6, …)`）。
+pub const EFFECT_CRIT: i32 = 0x1d6;
+
+/// `FUN_0040d010` 的类别 0xe：饿鬼能吃的「回复类」道具。
+fn is_restorative(e: &ItemEffect) -> bool {
+    e.kind == 1
+        && (e.state_codes[24] == 2 || e.impacts[..3].iter().any(|(kind, v)| *kind == 2 || *v > 0))
+}
+
 /// 合击技开演用的出手速度倍率：大于 3 就是瞬发（`FUN_00514870` 里 `FUN_004db750(k, 0, 11500, 1)`）。
 const COMBO_MULTIPLIER: i32 = 4;
 
@@ -309,6 +318,10 @@ pub struct CombatSession {
     pub dodged: Vec<usize>,
     /// 要战斗镜头播的 flexcam 序列（`FUN_00505770`），调用方每帧取走。
     pub camera_requests: Vec<i32>,
+    /// 要放的特效组和放在哪个战斗位身上（`FUN_004ce340`），舞台每帧取走。
+    pub effects: Vec<(i32, usize)>,
+    /// 饿鬼整格吃掉的道具（id, 个数），散场时从背包里扣。
+    pub eaten_items: Vec<(u32, u32)>,
     pub elapsed: f32,
     pub log: VecDeque<String>,
     pub turn: Option<PlayerTurn>,
@@ -351,6 +364,8 @@ impl CombatSession {
             ai_rng: CombatRng::new(ai_seed),
             sfx: Vec::new(),
             dodged: Vec::new(),
+            effects: Vec::new(),
+            eaten_items: Vec::new(),
             camera_requests: Vec::new(),
             elapsed: 0.,
             log: VecDeque::new(),
@@ -1473,12 +1488,11 @@ impl CombatSession {
     }
 
     fn attack(&mut self, slot: usize, target: usize) {
-        let guard = self.battle.protector_for(target);
-        let moved = self.battle.basic_attack(slot, target);
-        // 没掉血（避、隐形让这一下落空）：原版走 `FUN_004f0a10` 的另一支，给目标排回避
-        // 步骤；目标睡着（0x11）或封住（0x0e）时步骤里不挂动作。按目标自己的回避率
-        // （`FUN_004f98b0(5, …)`）躲开的那一支移植没有 `[推断]`。
-        if guard.is_none() && moved >= 0 {
+        let crit = self.battle.roll_crit(slot);
+        let blow = self.battle.normal_attack(slot, target, crit);
+        // 按速度躲开或没掉血：目标播回避（`FUN_004feef0`）；睡着（0x11）或定住（0x0e）时
+        // 那一步不挂动作。
+        if blow.dodged {
             let still = self
                 .battle
                 .get(target)
@@ -1487,27 +1501,67 @@ impl CombatSession {
                 self.dodged.push(target);
             }
         }
-        if let Some(p) = guard {
-            // 援护挡下（0x4f0d3a）：被护的人情 +1，放 wa010。
-            if let Some(t) = self.battle.get_mut(target) {
-                t.affection = (t.affection + 1).clamp(0, 999);
-            }
+        // 暴击：在挨打的人身上放特效组 0x1d6（0x4f0cd9 / 援护那一支 0x4f0d7c）；弹回去的不放。
+        if blow.crit && !blow.reflected {
+            self.effects.push((EFFECT_CRIT, blow.victim));
+        }
+        if let Some(p) = blow.protector {
+            // 援护挡下（0x4f0d3a）：被护的人情 +1（在规则层做了），放 wa010。
             self.sfx.push(SFX_AFFECTION);
             self.push_log(format!("{} 替 {} 挡下", self.name(p), self.name(target)));
-            log::info!(
-                "Combat: 援护 {} 替 {} 挡下 精{:+}",
-                self.name(p),
-                self.name(target),
-                moved
-            );
         }
-        self.push_log(format!(
-            "{} 攻击 {} 精{:+}",
-            self.name(slot),
-            self.name(target),
-            moved
-        ));
+        if blow.reflected {
+            self.push_log(format!(
+                "{} 的攻击被 {} 弹回 精{:+}",
+                self.name(slot),
+                self.name(target),
+                blow.delta
+            ));
+        } else {
+            self.push_log(format!(
+                "{} 攻击 {} 精{:+}{}",
+                self.name(slot),
+                self.name(blow.victim),
+                blow.delta,
+                if blow.crit { "（暴击）" } else { "" }
+            ));
+        }
+        if let Some(stolen) = blow.stolen {
+            if stolen.money > 0 {
+                self.push_log(format!("偷得 {} 文", stolen.money));
+            }
+            if let Some((id, n)) = stolen.item {
+                self.push_log(format!("偷得 #{id} ×{n}"));
+            }
+        }
+        if blow.eat_item {
+            self.eat_item(blow.victim);
+        }
         self.note_deaths(slot);
+    }
+
+    /// 饿鬼那一口（攻击方式 0x392 → `FUN_004f1fa0(…, 0x1c)`）：在背包里挑「回复类」道具
+    /// （`FUN_0040d010(0xe)`：类型 1，且精/气/神任一项影响类型是 2 或数值 > 0，或者能解死亡），
+    /// 按背包顺序 `rand % 个数` 挑一种，整格吃掉（`FUN_0040cf60` 按那一格的数量扣）。
+    fn eat_item(&mut self, victim: usize) {
+        let edible: Vec<usize> = self
+            .items
+            .iter()
+            .enumerate()
+            .filter(|(_, it)| it.count > 0 && !it.pearl && is_restorative(&it.effect))
+            .map(|(i, _)| i)
+            .collect();
+        if edible.is_empty() {
+            return;
+        }
+        let pick = edible[self.battle.rng.rand15() as usize % edible.len()];
+        let (id, n, name) = {
+            let it = &self.items[pick];
+            (it.effect.id, it.count, it.name.clone())
+        };
+        self.items[pick].count = 0;
+        self.eaten_items.push((id, n));
+        self.push_log(format!("{} 的 {name} ×{n} 被吃掉了", self.name(victim)));
     }
 
     /// 这次仙术配不配得上一条合击技；配上了给 (合击技下标, 目标)。
@@ -2088,13 +2142,22 @@ mod tests {
 
     #[test]
     fn a_blow_that_lands_nothing_makes_the_target_dodge() {
+        use crate::openpal3::combat::state::{K_EVADE, K_INVISIBLE};
         let mut s = session();
-        s.battle.get_mut(5).unwrap().states[crate::openpal3::combat::state::K_EVADE].active = true;
+        s.battle.get_mut(5).unwrap().states[K_EVADE].active = true;
         s.attack(0, 5);
         assert_eq!(s.battle.get(5).unwrap().hp, 60, "避住了");
-        assert_eq!(s.dodged, vec![5]);
+        assert!(
+            s.dodged.is_empty(),
+            "避是整下不结算、只弹数字（FUN_004fdb10），不播回避"
+        );
+        s.battle.get_mut(5).unwrap().states[K_EVADE].active = false;
+        s.battle.get_mut(5).unwrap().states[K_INVISIBLE].active = true;
+        s.attack(0, 5);
+        assert_eq!(s.battle.get(5).unwrap().hp, 60);
+        assert_eq!(s.dodged, vec![5], "算出来没掉血就播回避");
         s.dodged.clear();
-        s.battle.get_mut(5).unwrap().states[crate::openpal3::combat::state::K_EVADE].active = false;
+        s.battle.get_mut(5).unwrap().states[K_INVISIBLE].active = false;
         s.attack(0, 5);
         assert!(s.dodged.is_empty(), "打中了不回避");
     }

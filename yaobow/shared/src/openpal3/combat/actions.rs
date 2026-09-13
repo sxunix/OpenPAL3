@@ -287,12 +287,11 @@ impl Battle {
     }
 
     /// 扣气、神和第三项消耗（`FUN_004f2910`）。原版在打完所有目标之后扣一次，全体技能
-    /// 也只扣一次；在这之前已经用 `FUN_004f7480` / `FUN_004f7200` 确认过付得起。
+    /// 也只扣一次；在这之前已经用 `FUN_004f7480` / `FUN_004f7200` 按原价确认过付得起。
+    /// 气、神走 `FUN_004f3020` / `FUN_004f31c0`，所以装备的减气耗、减神耗在这里生效。
     pub fn pay_skill_cost(&mut self, caster: usize, skill: &SkillEffect) {
-        if let Some(c) = self.get_mut(caster) {
-            c.sp = (c.sp - skill.sp_cost).max(0);
-            c.mp = (c.mp - skill.mp_cost).max(0);
-        }
+        self.hit_sp(caster, -skill.sp_cost);
+        self.shift_mp(caster, -skill.mp_cost);
         self.pay_special_cost(skill);
     }
 
@@ -348,7 +347,7 @@ impl Battle {
 
     /// 飞龙探云手（`FUN_004f17c0`）：先偷钱，`rand % 剩余 + 1` 文，从怪物身上扣掉、记到队伍
     /// 身上（和花掉的钱一起散场写回）；再偷物品，`rand % 剩余件数 + 1` 件。
-    fn steal(&mut self, target: usize) -> Stolen {
+    pub(super) fn steal(&mut self, target: usize) -> Stolen {
         let mut stolen = Stolen::default();
         let money = self.get(target).map(|t| t.steal_money).unwrap_or(0);
         if money > 0 {

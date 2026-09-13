@@ -142,7 +142,9 @@ pub struct CombatActorInfo {
     pub skill_ids: [u32; 4],
     /// Levels of the three normal skills (the boss skill has none).
     pub skill_levels: [u8; 4],
-    /// How much 气 a physical hit from this actor drains.
+    /// 气 a party member **gains** when this actor's physical hit lands on
+    /// them (battle record `+0x284`, added by `FUN_004f3020(target, v, 0)`
+    /// in `FUN_004f0a10`). Every monster row is positive.
     pub sp_impact_value: i32,
     /// Extra properties, mainly used to pick combat sound effects.
     pub properties: [f32; 10],
@@ -270,9 +272,10 @@ pub struct GameItemInfo {
     pub attribute_impact_type: [u8; ATTRIBUTE_COUNT],
     _pad_0: u8,
     pub attribute_impact_value: [i16; ATTRIBUTE_COUNT],
-    /// Per-[`ActorCombatStateType`] [`CombatStateImpactType`]. Every
-    /// shipped row is zero and no code reads it — the codes live in
-    /// [`Self::combat_state_impact_value`].
+    /// Per-[`ActorCombatStateType`] flag. On weapons it marks which states a
+    /// physical hit may inflict, with the chance (percent) in the same slot
+    /// of [`Self::combat_state_impact_value`] — `FUN_004f2560` reads the
+    /// first 0x17 of them. Other item types leave it zero.
     pub combat_state_impact_types: [u8; COMBAT_STATE_COUNT],
     _pad_1: u8,
     /// Per-[`ActorCombatStateType`], what using the item does to that
@@ -285,9 +288,9 @@ pub struct GameItemInfo {
 
     // ---- equipment / crafting tail (PAL3 only) ----
     pub combo_count: i32,
-    /// Percentage reduction of 气 costs.
+    /// Percentage cut on 气 losses — skill costs and hits alike (`FUN_004f3020`).
     pub sp_saving_percentage: i16,
-    /// Percentage reduction of 神 costs.
+    /// Percentage cut on 神 losses, skill costs included (`FUN_004f31c0`).
     pub mp_saving_percentage: i16,
     pub critical_attack_amplify_percentage: i16,
     pub special_skill_success_rate: i16,

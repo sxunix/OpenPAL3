@@ -55,6 +55,8 @@ pub const EXT_PENDING: &str = "pal3.combat.pending";
 pub const EXT_RESULT: &str = "pal3.combat.result";
 
 /// `FUN_00407320`'s fallback when the party stands outside the nav map.
+/// 青铜护镜（`FUN_004edf10` 查饰品两格是不是它）。
+const BRONZE_MIRROR: u32 = 0x1fae;
 const FLOOR_TYPE_OUT_OF_RANGE: i32 = 2;
 
 fn pending_flags_mut(state: &mut SceState) -> &mut PendingFlags {
@@ -1081,6 +1083,43 @@ impl SceCommandCombat {
                     .and_then(|id| db.item(id))
                     .map(|i| i.weapon_type)
                     .unwrap_or(0);
+                // 五件装备（武器不算）逐件累加（`FUN_004edf10`）：减气耗 `+0x290`、减神耗
+                // `+0x294`、暴击加成 `+0x298`；特殊类型 0x17 的每件顺手偷 +5（`FUN_004ee430`，
+                // 其余几种写的字段普攻不读）；饰品栏戴着青铜护镜的挨普攻会反弹（`+0x2bd`）。
+                {
+                    use crate::openpal3::states::persistent_state::{
+                        SLOT_ADORN1, SLOT_ADORN2, SLOT_WEAPON,
+                    };
+                    for s in 0..SLOT_WEAPON {
+                        let Some(item) =
+                            persistent.equipped(actor_id, s).and_then(|id| db.item(id))
+                        else {
+                            continue;
+                        };
+                        c.sp_saving += item.sp_saving_percentage as i32;
+                        c.mp_saving += item.mp_saving_percentage as i32;
+                        c.crit_bonus += item.critical_attack_amplify_percentage as i32;
+                        if item.item_special_type == 0x17 {
+                            c.steal_chance += 5;
+                        }
+                        if item.id == BRONZE_MIRROR && (s == SLOT_ADORN1 || s == SLOT_ADORN2) {
+                            c.reflect = true;
+                        }
+                    }
+                    // 武器带的普攻附加状态（`FUN_004f2560` 读武器那一格）。
+                    if let Some(w) = persistent
+                        .equipped(actor_id, SLOT_WEAPON)
+                        .and_then(|id| db.item(id))
+                    {
+                        for i in 0..crate::openpal3::combat::state::WEAPON_STATES {
+                            if w.combat_state_impact_types[i] != 0
+                                && w.combat_state_impact_value[i] > 0
+                            {
+                                c.weapon_states[i] = w.combat_state_impact_value[i];
+                            }
+                        }
+                    }
+                }
                 if c.hp <= 0 {
                     c.alive = false;
                 }
@@ -1151,6 +1190,10 @@ impl SceCommandCombat {
                 c.defense = row.attribute_values[4];
                 c.speed = row.attribute_values[5];
                 c.luck = row.attribute_values[6];
+                // 普攻方式、挨它一下我方加的气（`FUN_004ed250`：gdb +0x2ec → 战斗位 +0x280，
+                // +0x30c → +0x284）。
+                c.attack_mode = row.normal_attack_mode_id;
+                c.sp_on_hit = row.sp_impact_value;
                 for (i, v) in row.element_attribute_values.iter().enumerate() {
                     c.elements[i + 1] = *v > 0;
                 }
@@ -1305,6 +1348,10 @@ impl SceCommandCombat {
                 } else {
                     persistent.remove_item(id, 1);
                 }
+            }
+            // 饿鬼整格吃掉的道具。
+            for (id, n) in session.eaten_items.iter().copied() {
+                persistent.remove_item(id, n);
             }
 
             if won {
@@ -2652,6 +2699,24 @@ impl SceCommand for SceCommandCombat {
         };
 
         self.drive_staging(state, delta_sec);
+        // 普攻暴击的特效（`FUN_004ce340(0x1d6, 挨打的人的当前位置)`）。
+        let effects = self
+            .session
+            .as_mut()
+            .map(|s| std::mem::take(&mut s.effects))
+            .unwrap_or_default();
+        if !state.fast_forward() {
+            for (group, slot) in effects {
+                let at = self
+                    .actors
+                    .get(slot)
+                    .and_then(|a| a.as_ref())
+                    .map(|a| a.entity.transform().borrow().position());
+                if let Some(at) = at {
+                    state.play_effect(group, at);
+                }
+            }
+        }
         self.cues.extend(state.take_combat_action_requests());
         self.drive_cues(delta_sec);
         self.animate_stage(delta_sec);
