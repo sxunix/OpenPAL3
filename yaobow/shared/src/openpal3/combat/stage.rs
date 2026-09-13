@@ -82,9 +82,11 @@ impl CombatCamera {
     }
 }
 
-/// 战斗相机的视场角（度）。镜头初始化 `FUN_00504540` 往相机 `+4` 写 50.0；按
-/// 4:3 的水平视角理解 **[推断]**——Pal3.Unity 用的垂直 39° 正好是它的换算
-/// （2·atan(tan 19.5° × 4/3) ≈ 50.6°），radiance 的 `fov43` 也是 4:3 水平视角。
+/// 战斗相机的视场角（度）。镜头初始化 `FUN_00504540` 往相机 `+4`（即 gbCamera 的
+/// `+0`，`SetFOV` 写的那一格）写 50.0。gbengine 的 `gbCamera::GetViewSizeOnNearPlane`
+/// （0x10021a10）按**水平**视角用：半宽 = tan(fov/2) × 近平面，半高 = 半宽 × 高 / 宽。
+/// 原版 4:3 画面下垂直约 38.6°（Pal3.Unity 用的 39° 就是这个换算），radiance 的 `fov43`
+/// 也是 4:3 水平视角。
 pub const COMBAT_FOV_DEGREES: f32 = 50.;
 
 /// `cbCam.ini` 在 vfs 里的位置。
