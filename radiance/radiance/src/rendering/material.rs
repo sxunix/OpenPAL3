@@ -848,12 +848,18 @@ impl Pal3GeomMaterialDef {
 /// top row first, hence the flip; retail `.dds` are already stored bottom-up
 /// and decode as is. (MV3 actors get the same correction by negating v.)
 fn decode_pal3_texture(buf: &[u8]) -> Option<image::RgbaImage> {
-    let is_dds = matches!(image::guess_format(buf), Ok(ImageFormat::Dds));
+    let format = image::guess_format(buf);
+    let is_dds = matches!(format, Ok(ImageFormat::Dds));
+    // gbengine 的 BMP 读取（0x1001eb80）把像素整块读进来、不管行序：高度为正（自下而上存）
+    // 的最下一行在前，要翻；高度为负（自上而下存）的本来就是上行在前，和 image crate 一样。
+    let top_down_bmp = matches!(format, Ok(ImageFormat::Bmp))
+        && buf.len() >= 26
+        && i32::from_le_bytes([buf[22], buf[23], buf[24], buf[25]]) < 0;
     let img = image::load_from_memory(buf)
         .or_else(|_| image::load_from_memory_with_format(buf, ImageFormat::Tga))
         .ok()?
         .to_rgba8();
-    Some(if is_dds {
+    Some(if is_dds || top_down_bmp {
         img
     } else {
         image::imageops::flip_vertical(&img)
@@ -896,10 +902,43 @@ impl LightMapMaterialDef {
         Self::create_with_samplers(textures, get_reader, vec![SamplerDef::default(); count])
     }
 
+    /// PAL3 的光照图 POL：光照图（`^L_*.bmp`）和漫反射贴图都按 gbengine 的行序解
+    /// （[`decode_pal3_texture`]，非 DDS 最下一行在前），和 CVD、单贴图 POL 一致。
+    /// 别的游戏走 [`Self::create`]，照 image crate 摆正。
+    pub fn create_pal3<R: Read>(
+        textures: Vec<&str>,
+        get_reader: impl Fn(&str) -> Option<R>,
+    ) -> MaterialDef {
+        let count = textures.len();
+        Self::build(
+            textures,
+            get_reader,
+            vec![SamplerDef::default(); count],
+            decode_pal3_texture,
+        )
+    }
+
     pub fn create_with_samplers<R: Read>(
         textures: Vec<&str>,
         get_reader: impl Fn(&str) -> Option<R>,
         samplers: Vec<SamplerDef>,
+    ) -> MaterialDef {
+        Self::build(textures, get_reader, samplers, |b| {
+            image::load_from_memory(b)
+                .or_else(|err| {
+                    log::error!("Cannot load texture: {}", &err);
+                    Err(err)
+                })
+                .ok()
+                .and_then(|img| Some(img.to_rgba8()))
+        })
+    }
+
+    fn build<R: Read>(
+        textures: Vec<&str>,
+        get_reader: impl Fn(&str) -> Option<R>,
+        samplers: Vec<SamplerDef>,
+        decode: fn(&[u8]) -> Option<image::RgbaImage>,
     ) -> MaterialDef {
         assert_eq!(
             textures.len(),
@@ -919,13 +958,7 @@ impl LightMapMaterialDef {
                         }
                     };
 
-                    image::load_from_memory(b)
-                        .or_else(|err| {
-                            log::error!("Cannot load texture: {}", &err);
-                            Err(err)
-                        })
-                        .ok()
-                        .and_then(|img| Some(img.to_rgba8()))
+                    decode(b)
                 })
             })
             .collect();

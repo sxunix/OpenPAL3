@@ -127,8 +127,18 @@ gbengine 不用 D3DX 读图，TGA 由自己的 `gbImage2D::LoadImageFile`（0x10
 （`close.CVD` 封面 `a.tga`，封面节点 `scale_factor = −1`）画出来「降妖谱」三个字是倒的。现在
 `Pal3PropMaterialDef`（只有 CVD 用）解出非 `.dds` 的图后整张 flipv，截图看封面已经正了。
 单贴图 POL 的 `Pal3GeomMaterialDef` 也改成一样（阵法页的 `wl.pol` 由此对上，见 `lineup_page_layout.md` §3.3）。
-**没改**：带光照图的 POL（`LightMapMaterialDef`，和别的游戏共用），场景里只有 `.tga` 的漫反射贴图
-是不是也倒着，还没核。
+带光照图的 POL（`LightMapMaterialDef`，PAL4 的 dff 也用）现在走单独的 `create_pal3`，光照图和漫反射贴图都用
+`decode_pal3_texture`，别的游戏不受影响：
+
+- 光照图 `^L_*.bmp`（Q01 里 467 张）是 24 位、高度为正（自下而上存）。gbengine 的 BMP 读取（0x1001eb80）把
+  `文件大小 − 数据偏移` 这一整块像素原样读进 `+0xb8`，不调行序，所以内存里也是最下一行在前；Pal3.Unity 的
+  `BmpTextureLoader` 同样只翻高度为负的。image crate 会摆正，所以以前端口的光照图是上下颠倒的。
+  `decode_pal3_texture` 现在对高度为负的 BMP 不翻（gbengine 原样读出来本来就是上行在前）。
+- **顺带修掉一个更大的问题**：光照图材质以前用 `image::load_from_memory` 猜格式，TGA 没有魔数猜不出来，
+  贴图直接载入失败、退成「MISSING TEXTURE」占位图。Q01/YN14 这种漫反射贴图是 `.tga` 的场景以前满屏占位图，
+  改后柱子、墙、天花板都正常了（改前 / 改后截图对比）。`decode_pal3_texture` 猜不出时会按 TGA 再解。
+- 场景贴图绝大多数是 `.dds`（Q01 有 20677 张，`.tga` 只有 34 张），DDS 本来就不翻，不受影响；Q01/XN05 改前改后画面一样。
+- 光照图翻过来以后明暗落的位置对不对，没有原版截图对照，**没有画面核对**，只有 gbengine 和 Pal3.Unity 两边的读法作依据。
 
 ## 8. 界面上的 3D 视图
 

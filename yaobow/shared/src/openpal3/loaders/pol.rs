@@ -129,7 +129,7 @@ fn load_material<P: AsRef<Path>>(
         .with_blend(blend)
     } else {
         let textures: Vec<_> = texture_paths.iter().map(|p| p.to_str().unwrap()).collect();
-        LightMapMaterialDef::create(textures, |name| {
+        LightMapMaterialDef::create_pal3(textures, |name| {
             PathBuf::from(name)
                 .file_stem()
                 .and_then(|_| vfs.open(name).ok())
