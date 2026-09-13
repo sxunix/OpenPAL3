@@ -354,6 +354,9 @@ pub const SWORD_MAX: f32 = 50.;
 
 /// 左上角的 Q 版头像和竖排名字，五个角色各一套、rect 全一样
 /// （`FUN_00516a30` 第二个循环，父控件是 CBUI，所以是屏幕坐标）。
+/// 五套的位置核实过全是 (6,12)-(70,94)（表 `DAT_00570198` = 64、`DAT_005701ac` = 82，再加
+/// 6 / 12）。建的时候是隐藏的；`FUN_00518b30(1)` 会把在场的人全打开（只从调试对话框
+/// `FUN_004e0a60` 调），结算画面调 `FUN_00518b30(0)` 全关。正常战斗里谁切到哪一张还没找到，
 /// 同一时刻显示哪一张 **[推断]**：当前在选行动的那个人。
 pub const PORTRAIT_RECT: Rect = (6, 12, 70, 94);
 pub const NAME_RECT: Rect = (10, 10, 30, 42);
@@ -601,8 +604,9 @@ pub const PROTECT_BAR_RECTS: [Rect; 3] = [
 pub const PROTECT_BAR_BACK: &str = "control/Protect/Progressbar.tga";
 pub const PROTECT_BAR_FILL: &str = "control/Protect/Progress.tga";
 pub const PROTECT_BALL: &str = "control/Protect/ball.tga";
-/// 条里填充的边距：`FUN_0043fdb0/dd0/dc0/de0` 设的 0x30 / 0x17 / 0xb / 5
-/// `[推断：按左、上、右、下读]`。
+/// 条里填充的边距（左、上、右、下）：`FUN_0043fdb0` → `+0x88` 0x30、`FUN_0043fdd0` →
+/// `+0x90` 0x17、`FUN_0043fdc0` → `+0x8c` 0xb、`FUN_0043fde0` → `+0x94` 5。画条的
+/// `FUN_0043fca0` 用 左框 + `+0x88`、右框 − `+0x8c`、上框 + `+0x90`、下框 − `+0x94`。
 pub const PROTECT_BAR_MARGINS: (i32, i32, i32, i32) = (0x30, 0x17, 0xb, 5);
 pub const PROTECT_BAR_MAX: i32 = 100;
 /// 「确定」0x11a。
