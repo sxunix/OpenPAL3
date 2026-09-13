@@ -785,13 +785,13 @@ mod tests {
 /// 每帧：幅度 −= dt × 衰减；幅度还大于 0 时，上下偏移 = sin(总时间 × 频率) × 幅度，临时加在
 /// 镜头位姿的 y（`+0x69024`）上，摆完镜头再还原——所以不会累积。特效 `quake` 类
 /// （0x4d35e0）写的是 幅度 = 子块 `+0`、衰减 = `+4`、频率 = `+8`；战斗调试对话框那处写
-/// (10, 10, 90)。总时间原版用战斗时钟 `+0x50`，这里用震动自己的时钟 **[推断]**（只差一个相位）。
+/// (10, 10, 90)。sin 里的时间是战斗时钟（战斗系统 `+0x50`，镜头构造 `FUN_005052e0` 存下的
+/// `+0x68fb0` 就指向战斗系统），不是震动自己的钟，由调用方传进来。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Shake {
     pub amplitude: f32,
     pub decay: f32,
     pub frequency: f32,
-    t: f32,
 }
 
 impl Shake {
@@ -800,7 +800,6 @@ impl Shake {
             amplitude,
             decay,
             frequency,
-            t: 0.,
         }
     }
 
@@ -809,9 +808,8 @@ impl Shake {
         self.amplitude <= 0.
     }
 
-    /// 往前走 `dt` 秒，返回这一帧镜头 y 的偏移。
-    pub fn step(&mut self, dt: f32) -> f32 {
-        self.t += dt;
+    /// 往前走 `dt` 秒，返回这一帧镜头 y 的偏移；`clock` 是战斗时钟。
+    pub fn step(&mut self, dt: f32, clock: f32) -> f32 {
         if self.amplitude <= 0. {
             self.amplitude = 0.;
             return 0.;
@@ -821,7 +819,7 @@ impl Shake {
             self.amplitude = 0.;
             return 0.;
         }
-        (self.t * self.frequency).sin() * self.amplitude
+        (clock * self.frequency).sin() * self.amplitude
     }
 }
 
@@ -834,21 +832,22 @@ mod shake_tests {
         // 幅度 10、每秒衰减 10：一秒后震完。
         let mut s = Shake::new(10., 10., 90.);
         let mut peak = 0f32;
-        for _ in 0..50 {
-            peak = peak.max(s.step(0.01).abs());
+        for i in 0..50 {
+            peak = peak.max(s.step(0.01, i as f32 * 0.01).abs());
         }
         assert!(peak <= 10. && peak > 1., "{peak}");
         for _ in 0..60 {
-            s.step(0.01);
+            s.step(0.01, 0.);
         }
         assert!(s.finished());
-        assert_eq!(s.step(0.01), 0.);
+        assert_eq!(s.step(0.01, 0.), 0.);
     }
 
     #[test]
     fn the_offset_follows_the_sine() {
         let mut s = Shake::new(10., 0., 1.);
-        let off = s.step(1.0);
-        assert!((off - 1f32.sin() * 10.).abs() < 1e-5);
+        // 相位跟战斗时钟走，不是从 0 起。
+        let off = s.step(0.5, 3.0);
+        assert!((off - 3f32.sin() * 10.).abs() < 1e-5);
     }
 }

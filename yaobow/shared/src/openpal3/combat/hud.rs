@@ -188,8 +188,11 @@ impl RingButton {
     }
 }
 
-/// 按钮的四张图。0/1/2 分别是平时、指上去、按下 **[推断]**（按钮基类的
-/// 惯例，没有逐条核对）；3 是 `FUN_0043aa00` 另挂的那张，按用途当不可用。
+/// 按钮的四张图。0/1/2 是按钮状态 `+0x60` 的三张：平时、指上去（控制盘
+/// `FUN_005195e0` 收到 0x3e9）、按下（0x3ef）；3 是 `FUN_0043aa00` 另挂在
+/// `+0xc4` 的那张。按钮渲染 `FUN_0043ad40`：先画当前状态那张，不可用
+/// （`+0x3c == 0`）时在上面**再叠**第 3 张；没有第 3 张就叠一块
+/// [`DISABLED_FILL`]。当前状态没有图时也只画那块颜色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ButtonLook {
     Normal = 0,
@@ -197,6 +200,11 @@ pub enum ButtonLook {
     Pressed = 2,
     Disabled = 3,
 }
+
+/// 不可用按钮没挂第 4 张图时叠的颜色（ARGB）。全局 `DAT_00d91780` 由
+/// 静态初始化 `0x445a6c` 写成 R 0x3c、G 0x40、B 0x40、A 0xc8（两种
+/// `ColorQuadFmt` 只是字节顺序不同）。
+pub const DISABLED_FILL: u32 = 0xc83c_4040;
 
 pub fn button_texture(button: RingButton, look: ButtonLook) -> String {
     format!("control/{}{}.tga", button.stem(), look as u8)
@@ -279,6 +287,27 @@ impl Gauge {
         (x, y, x + 0x55, y + 0xc)
     }
 
+    /// 当前值数字的左下角（`FUN_004f8480`：条左上角 + (0x16 | 0x1f | 0x17, 5)，
+    /// 条的左上角表 `DAT_017aa808…` 由 `0x4ec4b0` 那几个初始化写成和这里一样）。
+    pub fn number_at(self, panel: usize) -> (i32, i32) {
+        let r = self.rect(panel);
+        let dx = match self {
+            Gauge::Hp => 0x16,
+            Gauge::Gp => 0x1f,
+            Gauge::Mp => 0x17,
+        };
+        (r.0 + dx, r.1 + 5)
+    }
+
+    /// 数字颜色，ARGB。
+    pub fn number_color(self) -> u32 {
+        match self {
+            Gauge::Hp => 0xffa0_bcfa,
+            Gauge::Gp => 0xfffb_e0a2,
+            Gauge::Mp => 0xfffa_a8d5,
+        }
+    }
+
     pub fn fill_texture(self) -> &'static str {
         match self {
             Gauge::Hp => "state/ProgBar_HP.tga",
@@ -352,14 +381,26 @@ pub const SWORD_MAX: f32 = 50.;
 
 // ---------------------------------------------------------------- 头像
 
-/// 左上角的 Q 版头像和竖排名字，五个角色各一套、rect 全一样
-/// （`FUN_00516a30` 第二个循环，父控件是 CBUI，所以是屏幕坐标）。
-/// 五套的位置核实过全是 (6,12)-(70,94)（表 `DAT_00570198` = 64、`DAT_005701ac` = 82，再加
-/// 6 / 12）。建的时候是隐藏的；`FUN_00518b30(1)` 会把在场的人全打开（只从调试对话框
-/// `FUN_004e0a60` 调），结算画面调 `FUN_00518b30(0)` 全关。正常战斗里谁切到哪一张还没找到，
-/// 同一时刻显示哪一张 **[推断]**：当前在选行动的那个人。
-pub const PORTRAIT_RECT: Rect = (6, 12, 70, 94);
-pub const NAME_RECT: Rect = (10, 10, 30, 42);
+/// 每块面板左边的 Q 版头像和竖排名字，五个角色各一套（`FUN_00516a30` 第二个
+/// 循环建，父控件是 CBUI，屏幕坐标；建的时候尺寸 64×82 / 20×32、隐藏）。
+/// 开战 `FUN_004ec910` 按角色记录 `+0x240` 的面板号用 `FUN_00445d20` 把在场的人
+/// 挪到自己面板上并打开，一直显示到结算 `FUN_00518b30(0)` 全关。
+pub const PORTRAIT_SIZE: (i32, i32) = (64, 82);
+pub const NAME_SIZE: (i32, i32) = (20, 32);
+/// `FUN_004ec910` 里按面板号挪到的左上角（面板 1..3 离面板左边 33 / 24，第 3 块
+/// 名字是 23，原文如此）。
+pub const PORTRAIT_AT: [(i32, i32); PANELS] = [(43, 505), (240, 506), (436, 506), (633, 506)];
+pub const NAME_AT: [(i32, i32); PANELS] = [(38, 530), (231, 532), (427, 532), (623, 532)];
+
+pub fn portrait_rect(panel: usize) -> Rect {
+    let (x, y) = PORTRAIT_AT[panel];
+    (x, y, x + PORTRAIT_SIZE.0, y + PORTRAIT_SIZE.1)
+}
+
+pub fn name_rect(panel: usize) -> Rect {
+    let (x, y) = NAME_AT[panel];
+    (x, y, x + NAME_SIZE.0, y + NAME_SIZE.1)
+}
 
 /// 按我方战斗位（0 景天 … 4 长卿，`PTR_…_Jingtian_tga_0057042c` 那张表）。
 pub const PORTRAIT_NAMES: [&str; 5] = ["Jingtian", "Xuejian", "Longkui", "Zixuan", "Changqing"];
@@ -372,6 +413,90 @@ pub fn name_texture(slot: usize) -> Option<String> {
     PORTRAIT_NAMES
         .get(slot)
         .map(|n| format!("state/{n}Name.tga"))
+}
+
+/// 头像的颜色（`FUN_004f8480` 每帧 `FUN_00446020` 设给 CBUI `+0x88 + 战斗位×4`）：
+/// 按五毒 3、4、2、1、5 的顺序取第一个中了的，都没有是白；精 < 1 最后改成暗灰。
+/// ARGB。
+pub fn portrait_tint(has_state: impl Fn(usize) -> bool, hp: i32) -> u32 {
+    if hp < 1 {
+        return 0xff50_5050;
+    }
+    const POISON: [(usize, u32); 5] = [
+        (3, 0xff39_9aad),
+        (4, 0xffde_7531),
+        (2, 0xffa4_66ea),
+        (1, 0xff52_b66b),
+        (5, 0xffd6_ae5a),
+    ];
+    POISON
+        .iter()
+        .find(|(k, _)| has_state(*k))
+        .map_or(0xffff_ffff, |&(_, c)| c)
+}
+
+// ---------------------------------------------------------------- 状态小图
+
+/// 面板下沿一排状态小图（`FUN_00516a30` 第一个循环里每块面板建 19 个，挂在
+/// CBUI `+0xb0 … +0x3c8` + 面板号×4）。`FUN_004f8480` 每帧按
+/// `FUN_004f3d90(战斗位, k)` 开关。rect 相对面板左上角；同一格的升 / 降两张
+/// 叠在一起，靠状态互斥只亮一张。
+pub const STATE_ICONS: [(usize, &str, Rect); 19] = [
+    (0x06, "AttackInc", (15, 85, 37, 108)),
+    (0x07, "AttackDec", (15, 85, 37, 108)),
+    (0x08, "DefenceInc", (39, 85, 61, 108)),
+    (0x09, "DefenceDec", (39, 85, 61, 108)),
+    (0x0c, "SpeedInc", (63, 85, 85, 108)),
+    (0x0d, "SpeedDec", (63, 85, 85, 108)),
+    (0x0a, "LuckInc", (87, 85, 109, 108)),
+    (0x0b, "LuckDec", (87, 85, 109, 108)),
+    (0x0e, "Stable", (111, 88, 127, 104)),
+    (0x0f, "Blank", (111, 88, 127, 104)),
+    (0x10, "Forbid", (111, 88, 127, 104)),
+    (0x11, "Sleep", (111, 88, 127, 104)),
+    (0x12, "Chaos", (111, 88, 127, 104)),
+    (0x13, "Mad", (111, 88, 127, 104)),
+    (0x14, "Mirror", (111, 88, 131, 105)),
+    (0x15, "Wall", (111, 88, 129, 106)),
+    (0x16, "Bound", (111, 88, 130, 105)),
+    (0x17, "Hermit", (111, 88, 129, 105)),
+    (0x1a, "Immunity", (131, 88, 168, 105)),
+];
+
+pub fn state_icon_texture(stem: &str) -> String {
+    format!("state/SpecState/{stem}.tga")
+}
+
+pub fn state_icon_rect(icon: usize, panel: usize) -> Rect {
+    let r = STATE_ICONS[icon].2;
+    offset(r, panel_rect(panel))
+}
+
+// ---------------------------------------------------------------- 数字字
+
+/// gbengine 的第 4 号字（`gbPrintFontMgr::Init` 建的位图数字字，贴图
+/// `gbdata\number.tga`，128×128 分 4 列 3 行：0123 / 4567 / 89×）。
+pub const NUMBER_FONT: &str = "gbdata/number.tga";
+/// 战斗文字队列 type 2（`FUN_004dfe00` 入队、`FUN_004df710` 画）：字号 12，
+/// 字宽 = 12、字高 = 12 × 1.3，字距 0。
+pub const NUMBER_SIZE: f32 = 12.;
+
+/// 一串数字每个字的屏幕矩形和 uv（uv 按贴图从上往下）。`(x, y)` 是第一个字的
+/// **左下角**：`Flush`（gbengine `0x23270`）把字铺成 y 到 y + 高，NDC 向上。
+/// 只有 `'!'..='~'` 出字，别的字只占位；`%d` 只会出数字。
+pub fn number_glyphs(text: &str, x: i32, y: i32) -> Vec<([f32; 4], [f32; 4])> {
+    let (w, h) = (NUMBER_SIZE, NUMBER_SIZE * 1.3);
+    let mut out = vec![];
+    for (i, c) in text.chars().enumerate() {
+        let x0 = x as f32 + i as f32 * w;
+        let Some(n) = c.to_digit(10) else { continue };
+        let (col, row) = ((n % 4) as f32, (n / 4) as f32);
+        out.push((
+            [x0, y as f32 - h, x0 + w, y as f32],
+            [col / 4., row / 3., (col + 1.) / 4., (row + 1.) / 3.],
+        ));
+    }
+    out
 }
 
 // ---------------------------------------------------------------- 行动条
@@ -432,14 +557,6 @@ pub const SKILL_BACK_RECT: Rect = (0, 0, 0x100, 0x100);
 /// 特技列表的行区（`FUN_0051ad10`：相对面板 (0x27,0x6e)-(0xf1,0xe2)），正好六行——
 /// 每人最多六条特技（战斗位 `+0x2c8` 六格）。
 pub const SKILL_ROWS: Rect = (0x27, 0x6e, 0xf1, 0xe2);
-/// 选中条画到哪：行区比底图的框线宽十几像素，两列（0x96 + 0x2b）加起来正好到框线，
-/// 选中条按两列的总宽截 [推断：原版选中条怎么裁没读]。
-pub const SKILL_SELECT_ROWS: Rect = (
-    SKILL_ROWS.0,
-    SKILL_ROWS.1,
-    SKILL_ROWS.0 + SKILL_COLUMNS[0] + SKILL_COLUMNS[1],
-    SKILL_ROWS.3,
-);
 pub const SKILL_VISIBLE_ROWS: usize = ((SKILL_ROWS.3 - SKILL_ROWS.1) / ROW_HEIGHT) as usize;
 /// 特技列表两列：名称 0x96、耗气 0x2b（0x51af2d / 0x51af3e 两次 `FUN_0043e560`）。
 pub const SKILL_COLUMNS: [i32; 2] = [0x96, 0x2b];
@@ -450,6 +567,40 @@ pub const ROW_SELECT: &str = "control/ItemList/SelPic.tga";
 pub const LIST_ROWS: Rect = (0x27, 0x4e, 0xf1, 0xaf);
 /// 行高（`FUN_0043f640(0x13)`）。
 pub const ROW_HEIGHT: i32 = 0x13;
+/// 三个战斗列表都 `FUN_0043f670(2, -4)`：行区里文字和选中条的左、上内边距
+/// （列表 `+0x49c` / `+0x4a0`）。
+pub const LIST_PADDING: (i32, i32) = (2, -4);
+/// 右边留给滚动条的宽度（`+0x494`：仙术、道具 `FUN_0043e3b0(…, 0x10, …)`，
+/// 特技没挂滚动条，构造时的默认值也是 0x10）。
+pub const LIST_SCROLL_WIDTH: i32 = 0x10;
+/// 选中条的顶点色（列表 `+0x498..+0x49b`，构造 `FUN_0043dfc0` 0x43e045 写的
+/// 0xa8 / 0xa8 / 0xa8 / 0xc8），ARGB。
+pub const LIST_SELECT_COLOR: u32 = 0xc8a8_a8a8;
+/// 行文字的字号（`+0x458`，构造默认 0x10，三个列表都没改）。
+pub const LIST_FONT_PX: f32 = 16.;
+
+/// 可见区第 `line` 行选中条的屏幕 rect（UIListBox 渲染 `0x43eab4`）：
+/// 左 = 行区左 + 内边距 + 4，右 = 行区右 − 2 − 滚动条宽，上 = 行区上 + 内边距 +
+/// 行 × 行高 + 8，高 = 行高 − 2、底不超过行区；顶在行区之上就不画。
+pub fn list_select_rect(rows: Rect, line: usize) -> Option<Rect> {
+    let y0 = rows.1 + LIST_PADDING.1 + line as i32 * ROW_HEIGHT + 8;
+    let y1 = (y0 + ROW_HEIGHT - 2).min(rows.3);
+    (y0 >= rows.1).then_some((
+        rows.0 + LIST_PADDING.0 + 4,
+        y0,
+        rows.2 - 2 - LIST_SCROLL_WIDTH,
+        y1,
+    ))
+}
+
+/// 可见区第 `line` 行第一列文字的左上角（同一函数 `0x43e910`）：行区左 + 内边距
+/// + 8，行区上 + 内边距 + 8 + 行 × 行高；后面的列依次加列宽。
+pub fn list_text_at(rows: Rect, line: usize) -> (i32, i32) {
+    (
+        rows.0 + LIST_PADDING.0 + 8,
+        rows.1 + LIST_PADDING.1 + 8 + line as i32 * ROW_HEIGHT,
+    )
+}
 /// 行区装得下几行。
 pub const VISIBLE_ROWS: usize = ((LIST_ROWS.3 - LIST_ROWS.1) / ROW_HEIGHT) as usize;
 
@@ -851,5 +1002,61 @@ mod tests {
         assert_eq!(first_visible(5, 10), 1);
         assert_eq!(first_visible(9, 10), 5);
         assert_eq!(first_visible(9, 5), 0);
+    }
+}
+
+#[cfg(test)]
+mod panel_extras_tests {
+    use super::*;
+
+    #[test]
+    fn number_glyphs_sit_above_the_point() {
+        // "405"：左下角 (100, 50)，每字 12 宽、15.6 高。
+        let g = number_glyphs("405", 100, 50);
+        assert_eq!(g.len(), 3);
+        assert_eq!(g[0].0, [100., 50. - 15.6, 112., 50.]);
+        assert_eq!(g[2].0[0], 124.);
+        // 4 在第二行第一列，5 在第二行第二列，0 在第一行第一列。
+        assert_eq!(g[0].1, [0., 1. / 3., 0.25, 2. / 3.]);
+        assert_eq!(g[1].1, [0., 0., 0.25, 1. / 3.]);
+        assert_eq!(g[2].1, [0.25, 1. / 3., 0.5, 2. / 3.]);
+    }
+
+    #[test]
+    fn portrait_tint_follows_poison_order() {
+        assert_eq!(portrait_tint(|_| false, 10), 0xffff_ffff);
+        assert_eq!(portrait_tint(|k| k == 1 || k == 3, 10), 0xff39_9aad);
+        assert_eq!(portrait_tint(|k| k == 1 || k == 2, 10), 0xffa4_66ea);
+        assert_eq!(portrait_tint(|k| k == 5, 10), 0xffd6_ae5a);
+        assert_eq!(portrait_tint(|k| k == 3, 0), 0xff50_5050);
+    }
+
+    #[test]
+    fn state_icons_hang_off_each_panel() {
+        assert_eq!(state_icon_rect(0, 0), (15, 491 + 85, 37, 491 + 108));
+        assert_eq!(
+            state_icon_rect(18, 2),
+            (403 + 131, 491 + 88, 403 + 168, 491 + 105)
+        );
+        assert_eq!(Gauge::Hp.number_at(0), (0x77 + 0x16, 491 + 0x1c + 5));
+        assert_eq!(Gauge::Gp.number_at(1), (207 + 0x74 + 0x1f, 491 + 0x36 + 5));
+    }
+}
+
+#[cfg(test)]
+mod list_tests {
+    use super::*;
+
+    #[test]
+    fn select_bar_follows_the_listbox_renderer() {
+        // 特技行区 (0x27,0x6e)-(0xf1,0xe2)：选中条 45..223，第 0 行 114..131。
+        assert_eq!(list_select_rect(SKILL_ROWS, 0), Some((45, 114, 223, 131)));
+        assert_eq!(list_select_rect(SKILL_ROWS, 5), Some((45, 209, 223, 226)));
+        // 第 6 行的底超出行区，截到行区底。
+        assert_eq!(
+            list_select_rect(SKILL_ROWS, 6).map(|r| r.3),
+            Some(SKILL_ROWS.3)
+        );
+        assert_eq!(list_text_at(LIST_ROWS, 1), (0x27 + 10, 0x4e + 4 + 19));
     }
 }

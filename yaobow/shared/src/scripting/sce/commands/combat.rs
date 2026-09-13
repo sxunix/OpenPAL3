@@ -174,8 +174,12 @@ pub struct SceCommandCombat {
     /// 选目标时目标头顶的 3D 指针（`ui\combat\pointer\pointer.cvd`，`FUN_00510540` 载进
     /// 舞台场景 `+0x268`），平时藏着。
     pointer: Option<ComRc<radiance::comdef::IEntity>>,
-    /// 指针上下跳用的钟（原版用战斗时间 `+0x50`）。
-    pointer_clock: f32,
+    /// 战斗时钟（战斗系统 `+0x50`）：开战 `FUN_00512580` 清零，每帧战斗更新
+    /// `FUN_00513060` 一开头 += dt × 倍率 `+0x6c`。倍率默认 1.0（`DAT_00570054`），
+    /// 只有 `time` 类特效（`FUN_004d53e0`，移植端没接）和调试对话框
+    /// （`FUN_00515940`，停成 0）会改，所以这里就是开战以来的秒数。选目标指针的
+    /// 上下跳和镜头震动都读它。
+    battle_clock: f32,
     /// 界面贴图，开战时一次读齐。
     hud: Option<HudTextures>,
     /// 舞台上每个战斗位的人（`SLOTS` 个，没人的是 `None`）。
@@ -404,6 +408,10 @@ struct HudTextures {
     sword_bar: Tex,
     portraits: Vec<Tex>,
     names: Vec<Tex>,
+    /// 按 `hud::STATE_ICONS`。
+    state_icons: Vec<Tex>,
+    /// `gbdata/number.tga`
+    number: Tex,
     sequence_back: Tex,
     /// 每个战斗位的行动条头像。
     heads: Vec<Tex>,
@@ -469,6 +477,12 @@ impl HudTextures {
             names: (0..PARTY_SLOTS)
                 .map(|slot| hud::name_texture(slot).and_then(|p| tex(&p)))
                 .collect(),
+            state_icons: hud::STATE_ICONS
+                .iter()
+                .map(|(_, stem, _)| tex(&hud::state_icon_texture(stem)))
+                .collect(),
+            number: asset_mgr
+                .load_sprite(PathBuf::from("/basedata/basedata").join(hud::NUMBER_FONT)),
             sequence_back: tex(hud::SEQUENCE_BACK),
             heads: models
                 .iter()
@@ -514,10 +528,64 @@ impl HudTextures {
     }
 }
 
-/// 列表文字的颜色 **[推断]**：表头是印在底图上的深色字，行文字跟着用深色。
-const LIST_TEXT: [f32; 4] = [0.08, 0.08, 0.08, 1.0];
-const LIST_TEXT_DISABLED: [f32; 4] = [0.42, 0.42, 0.42, 1.0];
+/// 列表行文字的颜色（UIListBox 渲染 `0x43e989`）：能用的行取条目 `+0x44`，
+/// 加条目时（`FUN_0043e5c0`）抄自列表控件 `+0x4`——控件基类构造 `FUN_00445aa0`
+/// 设的 R 0、G 5、B 5，三个战斗列表都没改；不能用的行（`+0x4ac` 为 0）画
+/// `DAT_00d91780`，和不可用按钮叠的是同一个颜色。
+const LIST_TEXT: [f32; 4] = [0., 5. / 255., 5. / 255., 1.];
+const LIST_TEXT_DISABLED: [f32; 4] = [
+    0x3c as f32 / 255.,
+    0x40 as f32 / 255.,
+    0x40 as f32 / 255.,
+    0xc8 as f32 / 255.,
+];
 const BANNER_TEXT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
+
+/// ARGB → imgui 颜色。
+fn argb(c: u32) -> [f32; 4] {
+    let ch = |s: u32| ((c >> s) & 0xff) as f32 / 255.;
+    [ch(16), ch(8), ch(0), ch(24)]
+}
+
+/// 带控件颜色（`FUN_00446020`）的贴图。
+fn draw_sprite_tinted(
+    list: &imgui::DrawListMut<'_>,
+    sprite: Option<&Sprite>,
+    r: hud::Rect,
+    color: u32,
+    at: &dyn Fn(i32, i32) -> [f32; 2],
+) {
+    let Some(s) = sprite else { return };
+    let (uv0, uv1) = super::encamp::sprite_uv(s, r);
+    list.add_image(s.imgui_texture_id(), at(r.0, r.1), at(r.2, r.3))
+        .uv_min(uv0)
+        .uv_max(uv1)
+        .col(argb(color))
+        .build();
+}
+
+/// 位图数字字（`hud::number_glyphs`），`(x, y)` 是左下角。
+fn draw_number(
+    list: &imgui::DrawListMut<'_>,
+    font: Option<&Sprite>,
+    text: &str,
+    x: i32,
+    y: i32,
+    color: u32,
+    at: &dyn Fn(i32, i32) -> [f32; 2],
+) {
+    let Some(font) = font else { return };
+    let (o, e) = (at(0, 0), at(1000, 1000));
+    let (sx, sy) = ((e[0] - o[0]) / 1000., (e[1] - o[1]) / 1000.);
+    let p = |x: f32, y: f32| [o[0] + x * sx, o[1] + y * sy];
+    for (q, uv) in hud::number_glyphs(text, x, y) {
+        list.add_image(font.imgui_texture_id(), p(q[0], q[1]), p(q[2], q[3]))
+            .uv_min([uv[0], uv[1]])
+            .uv_max([uv[2], uv[3]])
+            .col(argb(color))
+            .build();
+    }
+}
 
 impl std::fmt::Debug for SceCommandCombat {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -554,7 +622,7 @@ impl SceCommandCombat {
             combat_scene: None,
             stage: None,
             pointer: None,
-            pointer_clock: 0.,
+            battle_clock: 0.,
             hud: None,
             actors: Vec::new(),
             run: None,
@@ -2100,8 +2168,7 @@ impl SceCommandCombat {
     /// 选目标时把指针摆到目标头顶（`FUN_004fc3a0` 画舞台那段）：点取包围盒中心、y 取顶再
     /// +10（`FUN_0050a9b0`；707 号怪再 −80），然后 +6 + 5·sin(10t + i) 上下跳、y 方向拉伸
     /// 1 + 0.2·sin(…)。i 是舞台上那五个位的序号，这里取位号 mod 5 [推断]。
-    fn place_pointer(&mut self, delta_sec: f32) {
-        self.pointer_clock += delta_sec;
+    fn place_pointer(&mut self) {
         let Some(pointer) = self.pointer.clone() else {
             return;
         };
@@ -2129,7 +2196,7 @@ impl SceCommandCombat {
         {
             y -= 80.;
         }
-        let wave = (self.pointer_clock * 10. + (slot % 5) as f32).sin();
+        let wave = (self.battle_clock * 10. + (slot % 5) as f32).sin();
         y += 6. + 5. * wave;
         let mut t = radiance::math::Transform::new();
         t.set_position(&Vec3::new(top.x, y, top.z))
@@ -2148,11 +2215,6 @@ impl SceCommandCombat {
             return;
         };
         let pending = session.pending;
-        let homes: Vec<Option<Vec3>> = self
-            .actors
-            .iter()
-            .map(|a| a.as_ref().map(|a| a.home))
-            .collect();
         for slot in 0..self.actors.len() {
             let Some(actor) = self.actors[slot].as_mut() else {
                 continue;
@@ -2297,8 +2359,8 @@ impl SceCommandCombat {
                 draw_sprite(&list, head, hud::head_rect(x), at);
             }
 
-            // 底下一排状态面板。原版按角色记录 `+0x18` 那个字节选面板
-            // （`FUN_00518b30`）；这里按战斗位顺序依次占 **[推断]**。
+            // 底下一排状态面板。原版开战 `FUN_004ec910` 给在场的我方按战斗位顺序
+            // 依次发面板号（角色记录 `+0x240`），这里同样按战斗位顺序占。
             let party: Vec<usize> = (0..PARTY_SLOTS)
                 .filter(|&slot| battle.get(slot).is_some())
                 .take(hud::PANELS)
@@ -2324,6 +2386,39 @@ impl SceCommandCombat {
                         draw_sprite(&list, tex.gauge_fill[k].as_deref(), fill, at);
                     }
                 }
+                // 状态小图、头像、名字（`FUN_004f8480`，控件建的顺序画）。
+                for (i, &(k, _, _)) in hud::STATE_ICONS.iter().enumerate() {
+                    if c.has_state(k) {
+                        let icon = tex.state_icons[i].as_deref();
+                        draw_sprite(&list, icon, hud::state_icon_rect(i, panel), at);
+                    }
+                }
+                if slot < PARTY_SLOTS {
+                    let tint = hud::portrait_tint(|k| c.has_state(k), c.hp);
+                    let portrait = tex.portraits.get(slot).and_then(|t| t.as_deref());
+                    draw_sprite_tinted(&list, portrait, hud::portrait_rect(panel), tint, at);
+                    let name = tex.names.get(slot).and_then(|t| t.as_deref());
+                    draw_sprite(&list, name, hud::name_rect(panel), at);
+                }
+                // 精气神的当前值（文字队列 type 2，最后一起画在界面上面）。
+                for gauge in Gauge::ALL {
+                    let value = match gauge {
+                        Gauge::Hp => c.hp,
+                        Gauge::Gp => c.sp,
+                        Gauge::Mp => c.mp,
+                    };
+                    let (x, y) = gauge.number_at(panel);
+                    let color = gauge.number_color();
+                    draw_number(
+                        &list,
+                        tex.number.as_deref(),
+                        &value.to_string(),
+                        x,
+                        y,
+                        color,
+                        at,
+                    );
+                }
             }
 
             let Some(turn) = session.turn else {
@@ -2332,14 +2427,6 @@ impl SceCommandCombat {
                 }
                 return;
             };
-
-            // 左上角：正在选行动的人的头像和竖排名字。
-            if turn.slot < PARTY_SLOTS {
-                let portrait = tex.portraits.get(turn.slot).and_then(|t| t.as_deref());
-                draw_sprite(&list, portrait, hud::PORTRAIT_RECT, at);
-                let name = tex.names.get(turn.slot).and_then(|t| t.as_deref());
-                draw_sprite(&list, name, hud::NAME_RECT, at);
-            }
 
             match turn.menu {
                 Menu::Main { index } => {
@@ -2361,8 +2448,23 @@ impl SceCommandCombat {
                         } else {
                             ButtonLook::Normal
                         };
-                        let sprite = tex.buttons[i][look as usize].as_deref();
-                        draw_sprite(&list, sprite, hud::offset(button.rect(), panel), at);
+                        let r = hud::offset(button.rect(), panel);
+                        if look == ButtonLook::Disabled {
+                            // `FUN_0043ad40`：状态停在平时那张，上面再叠第 4 张，
+                            // 没有第 4 张就叠一块 `DAT_00d91780` 色。
+                            let base = tex.buttons[i][ButtonLook::Normal as usize].as_deref();
+                            draw_sprite(&list, base, r, at);
+                            match tex.buttons[i][ButtonLook::Disabled as usize].as_deref() {
+                                Some(over) => draw_sprite(&list, Some(over), r, at),
+                                None => list
+                                    .add_rect(at(r.0, r.1), at(r.2, r.3), argb(hud::DISABLED_FILL))
+                                    .filled(true)
+                                    .build(),
+                            }
+                        } else {
+                            let sprite = tex.buttons[i][look as usize].as_deref();
+                            draw_sprite(&list, sprite, r, at);
+                        }
                     }
                 }
                 Menu::Protect { focus, draft } => {
@@ -2531,7 +2633,7 @@ impl SceCommandCombat {
                         hud::SKILL_PANEL,
                         (
                             hud::SKILL_BACK_RECT,
-                            hud::SKILL_SELECT_ROWS,
+                            hud::SKILL_ROWS,
                             hud::SKILL_VISIBLE_ROWS,
                         ),
                         &hud::SKILL_COLUMNS,
@@ -2699,25 +2801,37 @@ impl SceCommandCombat {
         let area = hud::offset(rows_rect, panel);
         let first = hud::first_visible_in(index, rows.len(), visible);
         let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
-        let font_px = ui.current_font_size();
-        for (line, (cells, enabled)) in rows.iter().enumerate().skip(first).take(visible) {
-            let y = area.1 + (line - first) as i32 * hud::ROW_HEIGHT;
-            if line == index {
-                draw_sprite(list, select, (area.0, y, area.2, y + hud::ROW_HEIGHT), at);
+        // 行文字 16 号（`hud::LIST_FONT_PX`，800×600 下的像素）。
+        let base_px = ui.current_font_size();
+        ui.set_window_font_scale(hud::LIST_FONT_PX * scale / base_px);
+        // 选中条（UIListBox 渲染 0x43eb66 `FUN_00540c60`）：整张 SelPic 横向拉满
+        // （u 0..1），顶点色 `+0x498` = (0xa8, 0xa8, 0xa8, 0xc8)。原版用
+        // `ui_tex_color.gbf`（SrcAlpha, One）**叠加**、画在文字之后；imgui 这边只有普通
+        // 混合，叠加画出来会把字盖黑，所以先垫在文字底下画。
+        if (first..first + visible).contains(&index) && index < rows.len() {
+            if let (Some(r), Some(s)) = (hud::list_select_rect(area, index - first), select) {
+                let (uv0, uv1) = super::encamp::sprite_uv(s, r);
+                list.add_image(s.imgui_texture_id(), at(r.0, r.1), at(r.2, r.3))
+                    .uv_min([0., uv0[1]])
+                    .uv_max([1., uv1[1]])
+                    .col(argb(hud::LIST_SELECT_COLOR))
+                    .build();
             }
+        }
+        let shown = rows.iter().enumerate().skip(first).take(visible);
+        for (line, (cells, enabled)) in shown {
             let color = if *enabled {
                 LIST_TEXT
             } else {
                 LIST_TEXT_DISABLED
             };
-            let mut x = area.0;
+            let (mut x, y) = hud::list_text_at(area, line - first);
             for (cell, width) in cells.iter().zip(columns) {
-                let [sx, sy] = at(x + 2, y);
-                let dy = (hud::ROW_HEIGHT as f32 * scale - font_px) * 0.5;
-                list.add_text([sx, sy + dy], color, cell);
+                list.add_text(at(x, y), color, cell);
                 x += width;
             }
         }
+        ui.set_window_font_scale(1.);
     }
 
     /// 招式名横幅，字居中。
@@ -2816,6 +2930,9 @@ impl SceCommand for SceCommandCombat {
             }
         }
 
+        // 片子放完才走钟：原版 bink 是阻塞播放，整个战斗循环停着。
+        self.battle_clock += delta_sec;
+
         let Some(session) = self.session.as_mut() else {
             // No database or nothing to fight: report a win so the script
             // moves on.
@@ -2875,7 +2992,7 @@ impl SceCommand for SceCommandCombat {
         self.cues.extend(state.take_combat_action_requests());
         self.drive_cues(delta_sec);
         self.animate_stage(delta_sec);
-        self.place_pointer(delta_sec);
+        self.place_pointer();
         // 特效 `camera` 类（adv_director 从 flexeff 转过来）：先停当前序列
         // （FUN_00505800，停在原地），序列号 > 0 再从当前机位播它（FUN_00505770）。
         let mut camera_requests = state.take_combat_camera_requests();
@@ -2912,7 +3029,8 @@ impl SceCommand for SceCommandCombat {
                 amp, decay, freq,
             ));
         }
-        let shake = self.shake.as_mut().map(|s| s.step(delta_sec));
+        let clock = self.battle_clock;
+        let shake = self.shake.as_mut().map(|s| s.step(delta_sec, clock));
         if self.shake.is_some_and(|s| s.finished()) {
             self.shake = None;
         }
