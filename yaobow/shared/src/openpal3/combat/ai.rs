@@ -8,20 +8,20 @@
 //!   any field in its database row — [`hp_band`] picks one of four
 //!   behaviours, and 乱 overrides the lot.
 //! * **Skills are picked by closest match, not by largest effect**
-//!   ([`closest_skill`]). A healer therefore avoids overhealing and an
+//!   (`closest_by`). A healer therefore avoids overhealing and an
 //!   attacker prefers the spell that just about finishes the job.
-//! * **Targets are picked by a coin toss down the slot list**
-//!   ([`pick_target`]) — the first slot that passes `rand % 3 == 1`. Not
-//!   the nearest, not the weakest.
+//! * **Targets are picked by a coin toss down the slot list** — the
+//!   monster ladders ([`monster`]) start at the first slot that passes
+//!   `rand % 3 == 1` and then try every slot after it. Not the nearest,
+//!   not the weakest.
 //!
-//! The AI draws from its own generator seeded separately from the combat
-//! one (`DAT_005dfdec` against `DAT_005dfde8`), so its choices do not
-//! disturb the damage rolls.
+//! The monster ladders roll the same generator as the damage and crit
+//! rolls (`DAT_005dfdec`), so the session hands them [`Battle::rng`].
 
 use super::formulas::CombatRng;
 use serde::{Deserialize, Serialize};
 
-use super::state::{Battle, Combatant, K_CONFUSED, K_EVADE, K_INVISIBLE, SLOTS, Side};
+use super::state::{Battle, Combatant, K_CONFUSED, K_EVADE, K_INVISIBLE, PARTY_SLOTS, SLOTS, Side};
 
 /// Which behaviour a combatant uses, from `FUN_004f3a50` +
 /// `FUN_004d7120`.
@@ -73,47 +73,6 @@ pub fn behaviour(hp: i32, max_hp: i32, confused: bool) -> Behaviour {
     }
 }
 
-/// One skill the AI is weighing up.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct SkillOption {
-    pub id: u32,
-    /// `FUN_004f4aa0`'s score: the skill's `attribute_impact_value[0]`,
-    /// i.e. what it does to 精. Zero means the combatant cannot actually
-    /// use it, and the original then skips it.
-    pub hp_impact: i32,
-}
-
-/// Pick the skill whose effect is *closest in magnitude* to what is
-/// wanted — `argmin | |impact| − |wanted| |`.
-///
-/// This is the heart of the AI and the reason it feels sensible: asked to
-/// heal 40 points it reaches for the 50-point spell rather than the
-/// 300-point one. Ties go to the earlier entry, matching the original's
-/// strict `<` when it scans.
-pub fn closest_skill(options: &[SkillOption], wanted: i32) -> Option<SkillOption> {
-    let wanted = wanted.abs();
-    let mut best: Option<(SkillOption, i32)> = None;
-    for option in options {
-        if option.hp_impact == 0 {
-            continue;
-        }
-        let distance = (option.hp_impact.abs() - wanted).abs();
-        if best.map(|(_, d)| distance < d).unwrap_or(true) {
-            best = Some((*option, distance));
-        }
-    }
-    best.map(|(option, _)| option)
-}
-
-/// Walk the slots and take the first that passes `rand % 3 == 1`.
-///
-/// `candidates` is the slot list in the order the original walks it
-/// (0..=10). Returns `None` when the sweep falls off the end, which the
-/// original also allows — the caller then does nothing this turn.
-pub fn pick_target(rng: &mut CombatRng, candidates: &[usize]) -> Option<usize> {
-    candidates.iter().copied().find(|_| rng.rand15() % 3 == 1)
-}
-
 /// The probability gates the action ladder uses, as raw
 /// `rand % 1024 <` thresholds.
 pub const CHANCE_HALF: i32 = 0x200;
@@ -124,10 +83,6 @@ pub const CHANCE_30: i32 = 0x133;
 pub fn passes(rng: &mut CombatRng, threshold: i32) -> bool {
     rng.rand15() % 1024 < threshold
 }
-
-/// How many times one action may be taken in a battle before the AI stops
-/// offering it (`< 100` in every branch).
-pub const ACTION_USE_CAP: u32 = 100;
 
 /// Whether a plain attack is allowed against this target.
 ///
@@ -152,79 +107,6 @@ pub fn basic_attack_allowed(
     passes(rng, CHANCE_30)
 }
 
-/// What the AI decided to do this turn.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Decision {
-    /// Too badly hurt to act.
-    Pass,
-    Attack {
-        target: usize,
-    },
-    Cast {
-        target: usize,
-        skill: u32,
-    },
-}
-
-/// A first cut at the action ladder.
-///
-/// The original walks a long priority list — 普攻, then party-wide heal,
-/// single heal, cure, party-wide attack, item, and so on — each gated on
-/// a per-action usage counter and often on one of the [`CHANCE_HALF`]
-/// style probabilities. That ladder's ordering and its counters are not
-/// fully read yet (see the notes' 未解决), so this reproduces only the
-/// parts that are: the behaviour band, the target sweep, and the
-/// closest-match skill choice against how much HP the target has left.
-///
-/// One consequence to keep in mind while reading a battle log: with a
-/// single rung, a sweep that falls off the end simply passes the turn.
-/// Against two enemies that is `(2/3)² ≈ 44%` of turns spent doing
-/// nothing. The original does not idle that much because each further
-/// rung sweeps again for its own action — so a high pass rate here is a
-/// symptom of the missing ladder, not of the sweep.
-pub fn choose(
-    battle: &Battle,
-    rng: &mut CombatRng,
-    actor: usize,
-    skills: &[SkillOption],
-    confused: bool,
-) -> Decision {
-    let Some(me) = battle.get(actor) else {
-        return Decision::Pass;
-    };
-    if behaviour(me.hp, me.max_hp, confused) == Behaviour::Down {
-        return Decision::Pass;
-    }
-
-    let side = me.side;
-    let candidates: Vec<usize> = (0..SLOTS)
-        .filter(|s| {
-            battle
-                .get(*s)
-                .map(|c| c.side != side && c.in_play())
-                .unwrap_or(false)
-        })
-        .collect();
-    if candidates.is_empty() {
-        return Decision::Pass;
-    }
-
-    // The sweep can fall off the end; the original then does nothing.
-    let Some(target) = pick_target(rng, &candidates) else {
-        return Decision::Pass;
-    };
-
-    // Aim a damaging skill at what the target still has standing.
-    let remaining = battle.get(target).map(|c| c.hp).unwrap_or(0);
-    match closest_skill(skills, remaining) {
-        Some(skill) => Decision::Cast {
-            target,
-            skill: skill.id,
-        },
-        None => Decision::Attack { target },
-    }
-}
-
 // ---------------------------------------------------------------- 我方托管
 
 /// 我方托管的六个开关：战斗位 `+0x568..+0x56d`。开战时 `FUN_004ed250` 从冒险
@@ -247,6 +129,20 @@ pub struct Delegation {
     /// `+0x56c`：置位时先走顾自己人那一套（`FUN_004d8760`），再走进攻那一套。
     /// 面板上这一格画的是反的：勾上（`affirmative1`「全力」）= 0。
     pub cautious: bool,
+}
+
+impl Delegation {
+    /// 六个开关全开：怪物开局 `FUN_004f8bb0` 就这么写；快进代打也用它。
+    pub fn all_on() -> Self {
+        Self {
+            on: true,
+            attack: true,
+            magic: true,
+            special: true,
+            item: true,
+            cautious: true,
+        }
+    }
 }
 
 impl Default for Delegation {
@@ -371,6 +267,8 @@ impl Delegation {
 pub struct Tool {
     /// 在各自列表（仙术 / 特技 / 战斗道具）里的下标。
     pub index: usize,
+    /// 技能 / 道具的 id（重楼变身那一招按它找）。
+    pub id: u32,
     /// 仙术、特技是 `SkillType`（0 特技 1 辅助 2 伤害 3 恢复 …），物品是
     /// `item_type`（1 治疗 2 投掷 …）。
     pub kind: u8,
@@ -632,13 +530,14 @@ impl Delegate<'_> {
             return None;
         }
         let c = self.unit(t)?;
-        basic_attack_allowed(
+        let ok = basic_attack_allowed(
             rng,
             self.me.side == Side::Party,
             c.has_state(K_INVISIBLE),
             c.has_state(K_EVADE) && c.has_state(K_0X14),
-        )
-        .then_some(Plan::Attack { target: t })
+        );
+        // `FUN_004f0210`：盘心挡着后位（见 [`Battle::attackable`]）。
+        (ok && self.battle.attackable(self.actor, t)).then_some(Plan::Attack { target: t })
     }
 
     /// `FUN_004d9920` 仙术单体治疗：按目标缺多少精挑。
@@ -1072,10 +971,322 @@ impl Delegate<'_> {
     }
 }
 
+// ---------------------------------------------------------------- 怪物的阶梯
+
+impl Delegate<'_> {
+    /// `FUN_004d94f0` 按目标位存的「单体治疗」闸（`+0x640`）：血档 < 3 是 100（关），
+    /// 否则 0x28、残血 10——都 < 100，所以就是「这个位掉到一半以下」。原版挂着还没演完的
+    /// 同类行动时 `FUN_004d93d0` 会把闸锁成 100；移植端一次只有一个行动在出手段，怪物挑
+    /// 行动时不会有别人的挂着，所以不用锁。攻击和单体仙术攻击那几道闸 `FUN_004d94f0`
+    /// 不写，恒为 0（放行）。
+    fn heal_gate(&self, t: usize) -> bool {
+        self.band(t) >= 3
+    }
+
+    /// 同上的「解状态」闸（`+0x670`）：`FUN_004f3c70`——身上有要解的状态就开。
+    fn cure_gate(&self, t: usize) -> bool {
+        self.unit(t)
+            .is_some_and(|c| (1..0x1b).any(|k| c.has_state(k) && !cure_exempt(k)))
+    }
+
+    /// `+0xd20`（怪物那边的全体治疗）/ `+0xe00`（全体攻击）：那一边在场、掉到一半以下的
+    /// 不到两个就是 100 以上（关）。
+    fn side_gate(&self, side: Side) -> bool {
+        spread(self.hurt(side)) < 100
+    }
+
+    /// 起点：从 0 号位往后，每位掷 `rand % 3 == 1` 且在场的第一个；落在 10 号位时改成 0
+    /// （原版就这么写）；扫空了这一回合不行动。
+    fn sweep(&self, rng: &mut CombatRng) -> Option<usize> {
+        (0..SLOTS)
+            .find(|s| rng.rand15() % 3 == 1 && self.placed(*s))
+            .map(|s| if s == 10 { 0 } else { s })
+    }
+
+    /// 狂 / 乱各有两成（`rand % 10 > 7`）让怪物对自己这边也来一下普攻；`with_confused`
+    /// 为假时只看狂（后两个阶梯收尾那一处）。
+    fn turns_on_own(&self, rng: &mut CombatRng, with_confused: bool) -> bool {
+        if self.me.has_state(K_0X13) && rng.rand15() % 10 > 7 {
+            return true;
+        }
+        with_confused && self.me.has_state(K_CONFUSED) && rng.rand15() % 10 > 7
+    }
+
+    /// `FUN_004db160`：重楼变身（0x2e3）神满了就放 0x1e1d（它 boss 那一招，打全体），
+    /// 不看付不付得起。原版还在原点放特效组 0x22f，移植端没放。
+    fn chonglou(&self) -> Option<Plan> {
+        if self.me.actor_id != 0x2e3 || self.me.mp != self.me.max_mp {
+            return None;
+        }
+        let tool = self.kit.magic.iter().find(|t| t.id == 0x1e1d)?;
+        Some(Plan::Magic {
+            target: self.first_standing(self.foe_side())?,
+            index: tool.index,
+        })
+    }
+
+    /// `FUN_004d9e20`：给同一边的 `t` 放一个辅助类（`skill_type` 1）单体（范围 1）仙术，
+    /// 在付得起的里面随机挑一个（`FUN_004f5330(自己, 0)`：`rand % 个数`）。
+    fn magic_support(&self, rng: &mut CombatRng, t: usize) -> Option<Plan> {
+        if !self.gate(self.flags.magic) || !self.placed(t) || !self.alive(t) {
+            return None;
+        }
+        if self.unit(t)?.hp <= 0 {
+            return None;
+        }
+        let pool: Vec<usize> = self
+            .kit
+            .magic
+            .iter()
+            .filter(|x| x.usable && x.kind == 1 && x.range == 1)
+            .map(|x| x.index)
+            .collect();
+        if pool.is_empty() {
+            return None;
+        }
+        let i = pool[rng.rand15() as usize % pool.len()];
+        Some(Plan::Magic {
+            target: t,
+            index: i,
+        })
+    }
+
+    /// `FUN_004dadd0` 那一格：闸开着才掷 50%，再解身上第一个要解的（`FUN_004f3dc0`）。
+    fn cure_rung(&self, rng: &mut CombatRng, t: usize) -> Option<Plan> {
+        if !self.cure_gate(t) || !passes(rng, CHANCE_HALF) {
+            return None;
+        }
+        let k = self.ailment(t)?;
+        self.magic_cure(t, k)
+    }
+
+    /// `FUN_004d71e0`：血档 1、2（半血以上）。
+    fn ladder_calm(&self, rng: &mut CombatRng) -> Option<Plan> {
+        if let Some(p) = self.chonglou() {
+            return Some(p);
+        }
+        let start = self.sweep(rng)?;
+        for t in start..SLOTS {
+            if !self.placed(t) || !self.alive(t) {
+                continue;
+            }
+            let own = t >= PARTY_SLOTS;
+            if !own || self.turns_on_own(rng, true) {
+                if let Some(p) = self.attack(rng, t) {
+                    return Some(p);
+                }
+            }
+            if self.side_gate(Side::Enemy) {
+                if let Some(p) = self.magic_heal_all() {
+                    return Some(p);
+                }
+            }
+            if own {
+                if self.heal_gate(t) {
+                    if let Some(p) = self.magic_heal(t) {
+                        return Some(p);
+                    }
+                }
+                if let Some(p) = self.cure_rung(rng, t) {
+                    return Some(p);
+                }
+            }
+            // 道具那一支（`FUN_004014f0`）恒返回 0，怪物从不用道具。
+            if self.side_gate(Side::Party) && passes(rng, CHANCE_37) {
+                if let Some(p) = self.magic_attack_all() {
+                    return Some(p);
+                }
+            }
+            if !own {
+                if passes(rng, 0x9a) {
+                    if let Some(p) = self.magic_attack_all() {
+                        return Some(p);
+                    }
+                    if let Some(p) = self.magic_attack(t) {
+                        return Some(p);
+                    }
+                }
+            } else if passes(rng, CHANCE_30) {
+                if self.heal_gate(t) {
+                    if let Some(p) = self.magic_heal(t) {
+                        return Some(p);
+                    }
+                }
+                if passes(rng, CHANCE_30) {
+                    if let Some(p) = self.magic_support(rng, t) {
+                        return Some(p);
+                    }
+                }
+            }
+            if !own || self.turns_on_own(rng, true) {
+                if let Some(p) = self.attack(rng, t) {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    }
+
+    /// `FUN_004d7820`：血档 3（四分之一以上）。
+    fn ladder_hurt(&self, rng: &mut CombatRng) -> Option<Plan> {
+        let start = self.sweep(rng)?;
+        for t in start..SLOTS {
+            if !self.placed(t) || !self.alive(t) {
+                continue;
+            }
+            let own = t >= PARTY_SLOTS;
+            if !own || self.turns_on_own(rng, true) {
+                if let Some(p) = self.attack(rng, t) {
+                    return Some(p);
+                }
+            }
+            if let Some(p) = self.tend(rng, t, false) {
+                return Some(p);
+            }
+            if let Some(p) = self.finish(rng, t, own) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// `FUN_004d7ef0`：血档 4（残血）。开头那一下对自己这边只看狂。
+    fn ladder_dying(&self, rng: &mut CombatRng) -> Option<Plan> {
+        let start = self.sweep(rng)?;
+        for t in start..SLOTS {
+            if !self.placed(t) || !self.alive(t) {
+                continue;
+            }
+            let own = t >= PARTY_SLOTS;
+            if !own || self.turns_on_own(rng, false) {
+                if let Some(p) = self.attack(rng, t) {
+                    return Some(p);
+                }
+            }
+            if let Some(p) = self.tend(rng, t, true) {
+                return Some(p);
+            }
+            if let Some(p) = self.finish(rng, t, own) {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// 后两个阶梯中段：全体治疗 → 轮到自己就先治自己（残血那个治不了再全体治）→ 自己
+    /// 这边的治疗、解状态 → 全体攻击（25%）。
+    fn tend(&self, rng: &mut CombatRng, t: usize, dying: bool) -> Option<Plan> {
+        let own = t >= PARTY_SLOTS;
+        if self.side_gate(Side::Enemy) {
+            if let Some(p) = self.magic_heal_all() {
+                return Some(p);
+            }
+        }
+        if t == self.actor && self.heal_gate(t) {
+            if let Some(p) = self.magic_heal(t) {
+                return Some(p);
+            }
+            if dying {
+                if let Some(p) = self.magic_heal_all() {
+                    return Some(p);
+                }
+            }
+        }
+        if own {
+            if self.heal_gate(t) {
+                if let Some(p) = self.magic_heal(t) {
+                    return Some(p);
+                }
+            }
+            if let Some(p) = self.cure_rung(rng, t) {
+                return Some(p);
+            }
+        }
+        // 道具那一支（`FUN_004014f0`）恒返回 0。
+        if self.side_gate(Side::Party) && passes(rng, 0x100) {
+            if let Some(p) = self.magic_attack_all() {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    /// 后两个阶梯收尾：我方目标连着几格仙术攻击 / 普攻；自己这边的只在狂掷中时普攻。
+    fn finish(&self, rng: &mut CombatRng, t: usize, own: bool) -> Option<Plan> {
+        if own {
+            return if self.turns_on_own(rng, false) {
+                self.attack(rng, t)
+            } else {
+                None
+            };
+        }
+        if passes(rng, 0x2cd) {
+            if let Some(p) = self.magic_attack(t) {
+                return Some(p);
+            }
+        }
+        if passes(rng, 0x2cd) {
+            if let Some(p) = self.attack(rng, t) {
+                return Some(p);
+            }
+        }
+        if let Some(p) = self.magic_attack(t) {
+            return Some(p);
+        }
+        if passes(rng, 0x100) {
+            if let Some(p) = self.magic_attack(t) {
+                return Some(p);
+            }
+        }
+        if passes(rng, 0x66) {
+            if let Some(p) = self.magic_attack_all() {
+                return Some(p);
+            }
+            if let Some(p) = self.magic_attack(t) {
+                return Some(p);
+            }
+        }
+        self.attack(rng, t)
+    }
+}
+
+/// 怪物挑行动（`FUN_004d7120` 不乱的那一支）：按血档走三个阶梯之一——1、2 走
+/// `FUN_004d71e0`，3 走 `FUN_004d7820`，4 走 `FUN_004d7ef0`，倒下的不行动。怪物的六个
+/// 开关开局全开（`FUN_004f8bb0`）。阶梯的闸（`FUN_004d94f0`）原版每帧重算，这里当场算。
+/// 挑不出来返回 `None`，下一帧再试。
+pub fn monster(battle: &Battle, rng: &mut CombatRng, actor: usize, kit: &Kit) -> Option<Plan> {
+    let me = battle.get(actor)?;
+    let d = Delegate {
+        battle,
+        actor,
+        me,
+        flags: Delegation::all_on(),
+        kit,
+    };
+    match hp_band(me.hp, me.max_hp) {
+        1 | 2 => d.ladder_calm(rng),
+        3 => d.ladder_hurt(rng),
+        4 => d.ladder_dying(rng),
+        _ => None,
+    }
+}
+
 /// 我方托管 / 乱 / 狂（`FUN_004d86d0`）：谨慎就先 [`Delegate::support`]，没挑出来再
 /// [`Delegate::offense`]。中了乱两套各走自己的随机支。都没挑出来返回 `None`——原版这时
 /// 什么也不做，下一帧再试（我方不会退给怪物那套，见 `combat_ai.md` §6.3）。
 pub fn delegate(battle: &Battle, rng: &mut CombatRng, actor: usize, kit: &Kit) -> Option<Plan> {
+    let flags = battle.get(actor)?.delegation;
+    delegate_with(battle, rng, actor, kit, flags)
+}
+
+/// 同 [`delegate`]，只是开关由调用方给（快进代打用 [`Delegation::all_on`]）。
+pub fn delegate_with(
+    battle: &Battle,
+    rng: &mut CombatRng,
+    actor: usize,
+    kit: &Kit,
+    flags: Delegation,
+) -> Option<Plan> {
     let me = battle.get(actor)?;
     if !me.in_play() {
         return None;
@@ -1084,7 +1295,7 @@ pub fn delegate(battle: &Battle, rng: &mut CombatRng, actor: usize, kit: &Kit) -
         battle,
         actor,
         me,
-        flags: me.delegation,
+        flags,
         kit,
     };
     if d.flags.cautious {
@@ -1154,150 +1365,6 @@ mod tests {
     }
 
     #[test]
-    fn a_healer_reaches_for_the_right_sized_spell() {
-        let options = [
-            SkillOption {
-                id: 1,
-                hp_impact: 20,
-            },
-            SkillOption {
-                id: 2,
-                hp_impact: 50,
-            },
-            SkillOption {
-                id: 3,
-                hp_impact: 300,
-            },
-        ];
-        // Missing 40 points: the 50 heals, not the 300.
-        assert_eq!(closest_skill(&options, 40).unwrap().id, 2);
-        // Missing 8: the small one.
-        assert_eq!(closest_skill(&options, 8).unwrap().id, 1);
-        // Missing 400: nothing is big enough, so the biggest wins.
-        assert_eq!(closest_skill(&options, 400).unwrap().id, 3);
-    }
-
-    #[test]
-    fn magnitude_is_what_matters_so_damage_sorts_the_same_way() {
-        let options = [
-            SkillOption {
-                id: 1,
-                hp_impact: -20,
-            },
-            SkillOption {
-                id: 2,
-                hp_impact: -60,
-            },
-        ];
-        // The target has 55 HP left: the 60-damage spell is the closer fit.
-        assert_eq!(closest_skill(&options, -55).unwrap().id, 2);
-    }
-
-    #[test]
-    fn an_unusable_skill_is_skipped() {
-        let options = [
-            SkillOption {
-                id: 1,
-                hp_impact: 0,
-            },
-            SkillOption {
-                id: 2,
-                hp_impact: 999,
-            },
-        ];
-        assert_eq!(closest_skill(&options, 10).unwrap().id, 2);
-        assert_eq!(
-            closest_skill(
-                &[SkillOption {
-                    id: 1,
-                    hp_impact: 0
-                }],
-                10
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn ties_go_to_the_earlier_entry() {
-        let options = [
-            SkillOption {
-                id: 1,
-                hp_impact: 30,
-            },
-            SkillOption {
-                id: 2,
-                hp_impact: 50,
-            },
-        ];
-        // Wanted 40 sits exactly between them.
-        assert_eq!(closest_skill(&options, 40).unwrap().id, 1);
-    }
-
-    #[test]
-    fn targeting_is_a_sweep_of_coin_tosses() {
-        let mut rng = CombatRng::new(7);
-        let candidates = [0usize, 1, 2, 3, 4];
-        // Over many sweeps every slot should come up, and sometimes none.
-        let mut seen = [0usize; 5];
-        let mut misses = 0;
-        for _ in 0..2000 {
-            match pick_target(&mut rng, &candidates) {
-                Some(slot) => seen[slot] += 1,
-                None => misses += 1,
-            }
-        }
-        assert!(
-            seen.iter().all(|c| *c > 0),
-            "每个位置都该被选到过: {seen:?}"
-        );
-        assert!(misses > 0, "一次都没落空反而可疑");
-        // Earlier slots are reached first, so they win more often.
-        assert!(seen[0] > seen[4], "{seen:?}");
-    }
-
-    #[test]
-    fn a_combatant_with_no_usable_skill_falls_back_to_swinging() {
-        use crate::openpal3::combat::state::{Combatant, Side};
-
-        let mut battle = Battle::new(5);
-        let mut me = Combatant::new(0, Side::Party);
-        me.hp = 100;
-        me.max_hp = 100;
-        battle.place(0, me);
-        let mut foe = Combatant::new(100, Side::Enemy);
-        foe.hp = 80;
-        foe.max_hp = 80;
-        battle.place(5, foe);
-
-        let mut rng = CombatRng::new(1);
-        // Repeat until the target sweep lands, then check the shape.
-        let decision = (0..100)
-            .map(|_| choose(&battle, &mut rng, 0, &[], false))
-            .find(|d| *d != Decision::Pass)
-            .expect("总该选中一次");
-        assert_eq!(decision, Decision::Attack { target: 5 });
-    }
-
-    #[test]
-    fn a_downed_combatant_passes() {
-        use crate::openpal3::combat::state::{Combatant, Side};
-
-        let mut battle = Battle::new(5);
-        let mut me = Combatant::new(0, Side::Party);
-        me.hp = 0;
-        me.max_hp = 100;
-        battle.place(0, me);
-        let mut foe = Combatant::new(100, Side::Enemy);
-        foe.hp = 80;
-        foe.max_hp = 80;
-        battle.place(5, foe);
-
-        let mut rng = CombatRng::new(1);
-        assert_eq!(choose(&battle, &mut rng, 0, &[], false), Decision::Pass);
-    }
-
-    #[test]
     fn invisibility_stops_a_plain_attack_from_either_side() {
         let mut rng = CombatRng::new(3);
         assert!(!basic_attack_allowed(&mut rng, true, true, false));
@@ -1322,6 +1389,104 @@ mod tests {
         assert!((250..=350).contains(&swings), "怪物挥空率不对: {swings}");
     }
 
+    /// 0 号位一个我方，5 号位一只怪。
+    fn den(monster_hp: i32) -> Battle {
+        let mut b = Battle::new(3);
+        b.place(0, unit(Side::Party, 100, 100));
+        b.place(5, unit(Side::Enemy, monster_hp, 100));
+        b
+    }
+
+    #[test]
+    fn a_calm_monster_with_no_spells_only_swings_at_the_party() {
+        let b = den(100);
+        let kit = Kit {
+            magic: &[],
+            specials: &[],
+            items: &[],
+        };
+        let mut rng = CombatRng::new(9);
+        let mut swung = 0;
+        for _ in 0..200 {
+            match monster(&b, &mut rng, 5, &kit) {
+                Some(Plan::Attack { target: 0 }) => swung += 1,
+                None => {}
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(swung > 0);
+    }
+
+    #[test]
+    fn a_hurt_monster_patches_itself_up() {
+        let b = den(40);
+        let magic = [tool(0, 3, 1, 50)];
+        let kit = Kit {
+            magic: &magic,
+            specials: &[],
+            items: &[],
+        };
+        let mut rng = CombatRng::new(9);
+        let mut healed = 0;
+        for _ in 0..200 {
+            match monster(&b, &mut rng, 5, &kit) {
+                Some(Plan::Magic {
+                    target: 5,
+                    index: 0,
+                }) => healed += 1,
+                Some(Plan::Attack { target: 0 }) | None => {}
+                other => panic!("{other:?}"),
+            }
+        }
+        assert!(healed > 0, "轮到自己、掉到一半以下就先治自己");
+    }
+
+    #[test]
+    fn chonglou_unleashes_its_boss_skill_on_a_full_tank_of_shen() {
+        let mut b = den(100);
+        {
+            let m = b.get_mut(5).unwrap();
+            m.actor_id = 0x2e3;
+            m.max_mp = 500;
+            m.mp = 500;
+        }
+        let magic = [
+            tool(0, 2, 3, -10),
+            Tool {
+                id: 0x1e1d,
+                usable: false,
+                ..tool(1, 2, 4, -300)
+            },
+        ];
+        let kit = Kit {
+            magic: &magic,
+            specials: &[],
+            items: &[],
+        };
+        let boss = Some(Plan::Magic {
+            target: 0,
+            index: 1,
+        });
+        let mut rng = CombatRng::new(1);
+        assert_eq!(monster(&b, &mut rng, 5, &kit), boss, "神满了不看付不付得起");
+        b.get_mut(5).unwrap().mp = 499;
+        for _ in 0..50 {
+            assert_ne!(monster(&b, &mut rng, 5, &kit), boss);
+        }
+    }
+
+    #[test]
+    fn a_downed_monster_does_nothing() {
+        let b = den(0);
+        let kit = Kit {
+            magic: &[],
+            specials: &[],
+            items: &[],
+        };
+        let mut rng = CombatRng::new(1);
+        assert_eq!(monster(&b, &mut rng, 5, &kit), None);
+    }
+
     fn unit(side: Side, hp: i32, max_hp: i32) -> Combatant {
         let mut c = Combatant::new(1, side);
         c.hp = hp;
@@ -1333,6 +1498,7 @@ mod tests {
     fn tool(index: usize, kind: u8, range: u8, hp: i16) -> Tool {
         Tool {
             index,
+            id: 0,
             kind,
             range,
             hp: (0, hp),

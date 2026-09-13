@@ -1208,12 +1208,17 @@ impl SceCommandCombat {
 
                 profiles[slot] = Profile {
                     name: row.name.as_str().unwrap_or_else(|_| format!("#{id}")),
-                    // 出手倍率是 gdb `skill_levels[i]`，不加 1（`FUN_004f76c0`）。
-                    skills: row.skill_ids[..3]
+                    // 四招都进列表（怪物的挑选器都扫 `skill_ids[0..4]`）。出手倍率（`FUN_004f76c0`）：
+                    // 前三招是 gdb `skill_levels[i]`（不加 1），第四招（boss 那招）是 4，即瞬发。
+                    skills: row
+                        .skill_ids
                         .iter()
-                        .zip(row.skill_levels)
-                        .filter(|(s, _)| **s != 0)
-                        .filter_map(|(s, level)| Self::skill_choice(&db, *s, level as i32))
+                        .enumerate()
+                        .filter(|(_, s)| **s != 0)
+                        .filter_map(|(i, s)| {
+                            let multiplier = if i < 3 { row.skill_levels[i] as i32 } else { 4 };
+                            Self::skill_choice(&db, *s, multiplier)
+                        })
                         .collect(),
                     specials: Vec::new(),
                     reward: Reward {

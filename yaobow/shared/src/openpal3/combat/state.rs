@@ -1122,6 +1122,41 @@ impl Battle {
             .is_some_and(|c| cols[c].contains(&pb))
     }
 
+    /// 我方外圈的「后位」p：`FUN_004fa6a0(战场五灵)`，1→5，2→1，3→4，4→2，5→3（没配
+    /// `fivemagic` 时五灵按 1）。
+    fn back_vertex(&self) -> u8 {
+        match self.scene_element.unwrap_or(1) {
+            1 => 5,
+            2 => 1,
+            3 => 4,
+            4 => 2,
+            5 => 3,
+            _ => 0,
+        }
+    }
+
+    /// `FUN_004f0210` 前一半：怪物（位 5..10）没有竖列打法时，打不到站在后位
+    /// （[`Self::back_vertex`]）的我方——只要盘心（阵位 6）有人还站着（精 > 0）。
+    /// 后一半（我方打 6 号位，看战斗 `+0x2519` 等几个标志）移植端没有对应的阵形，没搬。
+    pub fn attackable(&self, attacker: usize, target: usize) -> bool {
+        if !(PARTY_SLOTS..=10).contains(&attacker) || target >= PARTY_SLOTS {
+            return true;
+        }
+        if self
+            .get(attacker)
+            .is_some_and(|a| a.pattern == HitPattern::Column)
+        {
+            return true;
+        }
+        if self.position_of(target) != self.back_vertex() {
+            return true;
+        }
+        !(0..PARTY_SLOTS).any(|s| {
+            self.get(s)
+                .is_some_and(|c| !c.retired && c.element_position == 6 && c.hp > 0)
+        })
+    }
+
     fn same_side_placed(&self, a: usize, b: usize) -> bool {
         self.get(a).is_some() && self.get(b).is_some() && (a < PARTY_SLOTS) == (b < PARTY_SLOTS)
     }
@@ -1137,14 +1172,7 @@ impl Battle {
     /// {p}；竖列是 {p 隔一位的那个, 顺时针邻位}、{盘心, p}、{另两位}。空格按 0 存。
     fn party_lines(&self) -> ([[u8; 3]; 3], [[u8; 2]; 3]) {
         const RING: [u8; 5] = [1, 2, 4, 3, 5];
-        let p = match self.scene_element.unwrap_or(1) {
-            1 => 5,
-            2 => 1,
-            3 => 4,
-            4 => 2,
-            5 => 3,
-            _ => 0,
-        };
+        let p = self.back_vertex();
         let i = RING.iter().position(|v| *v == p).unwrap_or(0);
         let t = |k: usize| RING[(i + k) % 5];
         let rows = [[t(2), t(3), 0], [t(1), t(4), 6], [t(0), 0, 0]];
@@ -2117,6 +2145,26 @@ mod tests {
         assert_eq!(b.attack_targets(1, 6), vec![6], "倒下的不算");
         b.get_mut(1).unwrap().pattern = HitPattern::Single;
         assert_eq!(b.attack_targets(1, 6), vec![6]);
+    }
+
+    #[test]
+    fn the_centre_shields_the_back_vertex_from_monsters() {
+        let mut b = Battle::new(7);
+        b.scene_element = Some(1); // 后位 p = 5
+        for (slot, pos) in [(0, 6u8), (1, 5), (2, 1)] {
+            let mut c = fighter(slot as u32, Side::Party, 50, 10, 5, 1);
+            c.element_position = pos;
+            b.place(slot, c);
+        }
+        b.place(5, fighter(100, Side::Enemy, 50, 10, 5, 1));
+        assert!(!b.attackable(5, 1), "盘心有人，后位打不到");
+        assert!(b.attackable(5, 2));
+        assert!(b.attackable(1, 5), "我方打怪不受这条限制");
+        b.get_mut(5).unwrap().pattern = HitPattern::Column;
+        assert!(b.attackable(5, 1), "竖列打得到");
+        b.get_mut(5).unwrap().pattern = HitPattern::Single;
+        b.get_mut(0).unwrap().hp = 0;
+        assert!(b.attackable(5, 1), "盘心倒了就打得到");
     }
 
     #[test]

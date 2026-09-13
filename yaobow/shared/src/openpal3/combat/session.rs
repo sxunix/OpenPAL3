@@ -15,7 +15,7 @@
 use std::collections::VecDeque;
 
 use super::actions::{ATTR_HP, ItemEffect, SPECIAL_COST_GU, SPECIAL_COST_MONEY, SkillEffect};
-use super::ai::{self, Decision, Delegation, Kit, Plan, SkillOption, Tool};
+use super::ai::{self, Delegation, Kit, Plan, Tool};
 use super::combo::{self, ComboDef};
 use super::formulas::CombatRng;
 use super::hud;
@@ -235,6 +235,30 @@ const SFX_CLICK: &str = "wa001";
 const SFX_NOTE: &str = "wa003";
 const SFX_DENIED: &str = "wa004";
 /// 情加了（`FUN_004f34e0` 正数那一支）。
+/// 谁替这个位挑行动。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiMode {
+    /// 我方托管 / 乱 / 狂（`FUN_004d86d0`）。
+    Delegate,
+    /// 怪物中了乱（`FUN_004d8580`）。
+    Confused,
+    /// 怪物的阶梯（`FUN_004d7120`）。
+    Monster,
+    /// 快进代打：我方按六个开关全开托管。
+    AutoPlay,
+}
+
+impl AiMode {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Delegate => "托管",
+            Self::Confused => "乱",
+            Self::Monster => "怪物",
+            Self::AutoPlay => "代打",
+        }
+    }
+}
+
 const SFX_AFFECTION: &str = "wa010";
 
 /// 普攻暴击的特效组（`FUN_004ce340(0x1d6, …)`）。
@@ -1352,17 +1376,18 @@ impl CombatSession {
     /// 返回 `true`。什么都没挑出来返回 `false`，调用方让这个人下一帧再试——原版 0x513a48 起
     /// 那条链先查 `+0x243`（我方）就跳到 0x513ac7，不交给怪物那套。
     fn act_by_delegate(&mut self, slot: usize) -> bool {
-        self.act_by_plan(slot, false)
+        self.act_by_plan(slot, AiMode::Delegate)
     }
 
     /// 怪物中了乱（0x12）：`FUN_004d7120` → `FUN_004d8580`，随便挑人随便出手。
     fn act_confused(&mut self, slot: usize) -> bool {
-        self.act_by_plan(slot, true)
+        self.act_by_plan(slot, AiMode::Confused)
     }
 
-    fn act_by_plan(&mut self, slot: usize, confused: bool) -> bool {
+    fn act_by_plan(&mut self, slot: usize, mode: AiMode) -> bool {
         let tool = |index: usize, e: &SkillEffect, usable: bool| Tool {
             index,
+            id: e.id,
             kind: e.kind,
             range: e.target_range,
             hp: e.impacts[ATTR_HP],
@@ -1387,6 +1412,7 @@ impl CombatSession {
             .enumerate()
             .map(|(i, it)| Tool {
                 index: i,
+                id: it.effect.id,
                 kind: it.effect.kind,
                 range: it.effect.target_range,
                 hp: it.effect.impacts[ATTR_HP],
@@ -1399,17 +1425,25 @@ impl CombatSession {
             specials: &specials,
             items: &items,
         };
-        let plan = if confused {
-            ai::confused(&self.battle, &mut self.ai_rng, slot, &kit)
-        } else {
-            ai::delegate(&self.battle, &mut self.ai_rng, slot, &kit)
+        let plan = match mode {
+            AiMode::Confused => ai::confused(&self.battle, &mut self.ai_rng, slot, &kit),
+            AiMode::Delegate => ai::delegate(&self.battle, &mut self.ai_rng, slot, &kit),
+            AiMode::AutoPlay => ai::delegate_with(
+                &self.battle,
+                &mut self.ai_rng,
+                slot,
+                &kit,
+                Delegation::all_on(),
+            ),
+            // 怪物的阶梯掷的是伤害、暴击用的那一个发生器（`DAT_005dfdec`）。
+            AiMode::Monster => {
+                let mut rng = self.battle.rng.clone();
+                let plan = ai::monster(&self.battle, &mut rng, slot, &kit);
+                self.battle.rng = rng;
+                plan
+            }
         };
-        log::info!(
-            "Combat: {} {} → {:?}",
-            if confused { "乱" } else { "托管" },
-            self.name(slot),
-            plan
-        );
+        log::info!("Combat: {} {} → {:?}", mode.label(), self.name(slot), plan);
         match plan {
             Some(Plan::Attack { target }) => self.commit(Pending::Attack { slot, target }, 1),
             Some(Plan::Magic { target, index }) => {
@@ -1445,41 +1479,16 @@ impl CombatSession {
         true
     }
 
-    /// 怪物那套（`FUN_004d7120`）。挑不出来返回 `false`，下一帧再试（0x513ab1 之后直接到
-    /// 0x513ac7，不清行动条）。
+    /// 怪物那套（`FUN_004d7120` → 三个阶梯，见 [`ai::monster`]）；中了乱转 `FUN_004d8580`。
+    /// 快进时我方也走这里，按六个开关全开代打。挑不出来返回 `false`，下一帧再试（0x513ab1
+    /// 之后直接到 0x513ac7，不清行动条）。
     fn act_by_ai(&mut self, slot: usize, confused: bool) -> bool {
-        let options: Vec<SkillOption> = self
-            .skills(slot)
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| self.can_afford(slot, *i))
-            .map(|(_, s)| SkillOption {
-                id: s.effect.id,
-                hp_impact: s.effect.impacts[ATTR_HP].1 as i32,
-            })
-            .collect();
-        match ai::choose(&self.battle, &mut self.ai_rng, slot, &options, confused) {
-            Decision::Pass => return false,
-            Decision::Attack { target } => self.commit(Pending::Attack { slot, target }, 1),
-            Decision::Cast { target, skill } => {
-                match self.skills(slot).iter().position(|s| s.effect.id == skill) {
-                    Some(i) => {
-                        let m = self.cast_multiplier(slot, i, false);
-                        self.commit(
-                            Pending::Cast {
-                                slot,
-                                target,
-                                skill: i,
-                                special: false,
-                            },
-                            m,
-                        )
-                    }
-                    None => self.commit(Pending::Attack { slot, target }, 1),
-                }
-            }
-        }
-        true
+        let mode = match self.battle.get(slot).map(|c| c.side) {
+            Some(Side::Enemy) if confused => AiMode::Confused,
+            Some(Side::Enemy) => AiMode::Monster,
+            _ => AiMode::AutoPlay,
+        };
+        self.act_by_plan(slot, mode)
     }
 
     /// `FUN_004f76c0` 给的出手速度倍率，建菜单时已存进 [`SkillChoice::multiplier`]。
