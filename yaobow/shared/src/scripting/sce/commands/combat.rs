@@ -2658,7 +2658,11 @@ impl SceCommand for SceCommandCombat {
         self.place_pointer(delta_sec);
         // 特效 `camera` 类（adv_director 从 flexeff 转过来）：先停当前序列
         // （FUN_00505800，停在原地），序列号 > 0 再从当前机位播它（FUN_00505770）。
-        for seq in state.take_combat_camera_requests() {
+        let mut camera_requests = state.take_combat_camera_requests();
+        if let Some(session) = self.session.as_mut() {
+            camera_requests.extend(std::mem::take(&mut session.camera_requests));
+        }
+        for seq in camera_requests {
             let Some(current) = self.camera.as_mut().map(|p| {
                 p.stop();
                 p.pose

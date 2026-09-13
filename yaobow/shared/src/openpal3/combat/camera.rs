@@ -69,6 +69,8 @@ pub struct CamRecord {
     pub accel_start: [f32; 2],
     /// `+0x7c`、`+0x80`：两段加速度。
     pub accel: [f32; 2],
+    /// `+0xac`：滑行那一步算进度时加在时长上的（`FUN_00507b20`）。实机数据全是 0。
+    pub extra: f32,
 }
 
 impl CamRecord {
@@ -87,6 +89,12 @@ impl CamRecord {
     /// `+0x61`：yaw 绕一圈（见 [`CamPlayer`]）。
     pub fn wraps_yaw(&self) -> bool {
         self.flags[9] != 0
+    }
+    /// `+0x5e`：这一步「滑行」（`FUN_00507b20`）——速度大小不变，方向每帧朝本步的方向
+    /// 拐一点；上一步也是滑行就接着上一步的速度走，几步连起来是一条圆滑的弧。
+    /// 阵型面板打开时播的 6 号序列四步全是这样。
+    pub fn glides(&self) -> bool {
+        self.flags[6] != 0
     }
     /// `+0x65`：一路盯着 [`CamRecord::target`]——朝向不插值，每帧由
     /// `FUN_0041c900` 从镜头位置朝目标算。
@@ -114,6 +122,7 @@ impl CamRecord {
             target: i32::from_le_bytes(b[0x68..0x6c].try_into().unwrap()),
             accel_start: [f(0x74), f(0x78)],
             accel: [f(0x7c), f(0x80)],
+            extra: f(0xac),
         }
     }
 
@@ -183,6 +192,9 @@ pub struct CamPlayer {
     start: Option<(CombatCamera, f32, f32)>,
     done: bool,
     pub pose: CombatCamera,
+    /// 滑行的当前速度（`+0x68fe0`）和这一步的方向速度（`+0x68fec`）。
+    velocity: Option<[f32; 3]>,
+    glide_target: [f32; 3],
 }
 
 impl CamPlayer {
@@ -196,6 +208,8 @@ impl CamPlayer {
             start: None,
             done: false,
             pose: current,
+            velocity: None,
+            glide_target: [0.; 3],
         })
     }
 
@@ -204,6 +218,7 @@ impl CamPlayer {
         self.steps.clear();
         self.step = 0;
         self.start = None;
+        self.velocity = None;
     }
 
     /// 步数用完、镜头停下了。
@@ -230,7 +245,10 @@ impl CamPlayer {
             return self.pose;
         };
         if !rec.moves_camera() {
-            // 这一步不动镜头 [推断]：没有别的附带动作可做，直接算完。
+            if rec.glides() {
+                return self.glide(rec, dt);
+            }
+            // 这一步不动镜头，`+0x5d` 那种（`FUN_005075e0`）也还没做 [推断]：直接算完。
             self.done = true;
             return self.pose;
         }
@@ -306,6 +324,80 @@ impl CamPlayer {
     }
 }
 
+impl CamPlayer {
+    /// `FUN_00507b20`：滑行一步。
+    fn glide(&mut self, rec: CamRecord, dt: f32) -> CombatCamera {
+        let prev_glides =
+            self.step > 0 && self.steps.get(self.step - 1).is_some_and(|r| r.glides());
+        if self.start.is_none() {
+            let mut from = if rec.keeps_from() {
+                rec.from
+            } else {
+                self.pose
+            };
+            if rec.wraps_yaw() {
+                let d = rec.to.yaw - from.yaw;
+                if d > 0. {
+                    from.yaw += std::f32::consts::TAU;
+                } else if d < 0. {
+                    from.yaw -= std::f32::consts::TAU;
+                }
+            }
+            let k = if rec.duration > 0. {
+                1. / rec.duration
+            } else {
+                1.
+            };
+            self.glide_target = [
+                (rec.to.x - from.x) * k,
+                (rec.to.y - from.y) * k,
+                (rec.to.z - from.z) * k,
+            ];
+            // 第一步、或上一步不是滑行：起始速度就是这一步的方向速度（0x507bf0）。
+            if !prev_glides || self.velocity.is_none() {
+                self.velocity = Some(self.glide_target);
+            }
+            self.pose = from;
+            self.start = Some((from, 0., 0.));
+        }
+        let (from, _, _) = self.start.unwrap_or((self.pose, 0., 0.));
+        self.t += dt;
+        let frac = if rec.duration > 0. {
+            self.t / (rec.extra + rec.duration)
+        } else {
+            1.
+        };
+        // 速度大小不变，方向朝本步的方向拐：v = |v| · normalize(v + dt·目标)。
+        let v = self.velocity.unwrap_or(self.glide_target);
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let mut nv = [
+            v[0] + dt * self.glide_target[0],
+            v[1] + dt * self.glide_target[1],
+            v[2] + dt * self.glide_target[2],
+        ];
+        let nl = (nv[0] * nv[0] + nv[1] * nv[1] + nv[2] * nv[2]).sqrt();
+        if nl > 0. {
+            for c in &mut nv {
+                *c *= len / nl;
+            }
+        }
+        self.velocity = Some(nv);
+        let lerp = |a: f32, b: f32| a + (b - a) * frac.min(1.);
+        self.pose = CombatCamera {
+            x: self.pose.x + dt * nv[0],
+            y: self.pose.y + dt * nv[1],
+            z: self.pose.z + dt * nv[2],
+            yaw: lerp(from.yaw, rec.to.yaw),
+            pitch: lerp(from.pitch, rec.to.pitch),
+            roll: lerp(from.roll, rec.to.roll),
+        };
+        if frac >= 1. {
+            self.done = true;
+        }
+        self.pose
+    }
+}
+
 fn distance(a: &CombatCamera, b: &CombatCamera) -> f32 {
     ((b.x - a.x).powi(2) + (b.y - a.y).powi(2) + (b.z - a.z).powi(2)).sqrt()
 }
@@ -338,7 +430,40 @@ mod tests {
             target: 0,
             accel_start: [0., 0.],
             accel: [0., 0.],
+            extra: 0.,
         }
+    }
+
+    fn glide_rec(duration: f32, to: CombatCamera) -> CamRecord {
+        let mut r = rec(duration, pose(0., 0.), to);
+        r.flags = [0; 16];
+        r.flags[6] = 1; // +0x5e 滑行，+0x5c 不置
+        r
+    }
+
+    #[test]
+    fn a_first_glide_step_runs_straight_at_constant_speed() {
+        let mut p = CamPlayer::new(vec![glide_rec(1., pose(100., 0.))], pose(0., 0.)).unwrap();
+        let mut x = 0.;
+        for _ in 0..10 {
+            x = p.update(0.05).x;
+        }
+        assert!((x - 50.).abs() < 1., "半秒走一半: {x}");
+    }
+
+    #[test]
+    fn a_second_glide_step_keeps_the_speed_and_bends_toward_its_way() {
+        let mut to2 = pose(100., 0.);
+        to2.z = 100.;
+        let steps = vec![glide_rec(1., pose(100., 0.)), glide_rec(1., to2)];
+        let mut p = CamPlayer::new(steps, pose(0., 0.)).unwrap();
+        while p.step == 0 || p.start.is_none() {
+            p.update(0.05);
+        }
+        let v = p.velocity.unwrap();
+        let speed = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        assert!((speed - 100.).abs() < 1., "速度大小接着上一步: {speed}");
+        assert!(v[0] > v[2], "刚拐，方向还主要朝 x");
     }
 
     #[test]

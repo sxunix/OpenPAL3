@@ -304,6 +304,8 @@ pub struct CombatSession {
     pub sfx: Vec<&'static str>,
     /// 普攻没打着、要播回避的战斗位，舞台每帧取走（`FUN_004f0a10` 排 `FUN_004feef0`）。
     pub dodged: Vec<usize>,
+    /// 要战斗镜头播的 flexcam 序列（`FUN_00505770`），调用方每帧取走。
+    pub camera_requests: Vec<i32>,
     pub elapsed: f32,
     pub log: VecDeque<String>,
     pub turn: Option<PlayerTurn>,
@@ -346,6 +348,7 @@ impl CombatSession {
             ai_rng: CombatRng::new(ai_seed),
             sfx: Vec::new(),
             dodged: Vec::new(),
+            camera_requests: Vec::new(),
             elapsed: 0.,
             log: VecDeque::new(),
             turn: None,
@@ -809,6 +812,8 @@ impl CombatSession {
                             .filter(|p| (1..=6).contains(p))
                             .unwrap_or(1);
                         self.sfx.push(SFX_NOTE);
+                        // 打开阵型面板播 6 号序列（0x4ddd6d）：镜头绕着战场慢慢飘。
+                        self.camera_requests.push(6);
                         turn.menu = Menu::Lineup {
                             cursor,
                             held: None,
@@ -966,6 +971,8 @@ impl CombatSession {
                         };
                     }
                     Input::Cancel => {
+                        // 关面板播 7 号序列回到平时的机位（0x4ddef6 / 0x4de84f）。
+                        self.camera_requests.push(7);
                         if moved {
                             // 关面板（0x4de699）：原版给我方每人排一个 0x108 行动（换位的动作），
                             // 镜头切 7，停 0.5 秒，再回主调度。移植端只把这一回合算作用掉
@@ -1989,8 +1996,10 @@ mod tests {
                 moved: false
             }
         );
+        assert_eq!(s.camera_requests, vec![6], "打开面板播 6 号序列");
         // 没换位就关：回控制盘。
         s.input(Input::Cancel);
+        assert_eq!(s.camera_requests, vec![6, 7], "关面板播 7 号序列");
         assert_eq!(s.turn.unwrap().menu, Menu::Main { index: lineup });
         s.input(Input::Confirm);
         s.input(Input::Up); // 盘心，没人
