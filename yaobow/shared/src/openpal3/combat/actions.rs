@@ -59,6 +59,11 @@ pub struct SkillEffect {
     pub special_cost_type: i32,
     /// `+0x2c0`（`special_consume_value`）：上面那一项要扣多少。
     pub special_cost_value: i32,
+    /// `TargetRangeType`：1 我方单体 2 我方全体 3 敌单体 4 敌全体（5 一排、6 一列只有怪物的
+    /// 「物理攻击」在用）；0 的两条按效果的正负猜。
+    pub target_range: u8,
+    /// 状态码，按状态**枚举**下标（战斗位的 `k = 下标 + 1`）：1 加、2 解——和道具同一套。
+    pub state_codes: [i16; ITEM_STATE_CODES],
 }
 
 /// `special_consume_type` == 10：扣钱（全队共用）。
@@ -229,6 +234,23 @@ pub struct CastResult {
     pub deltas: [i32; ATTRIBUTE_SLOTS],
 }
 
+/// 仙术打不进去的状态（战斗位 k = 22，状态枚举 21）：`FUN_004f1070` 出招前查
+/// `FUN_004f3d90(t, 0x16)`，有就跳过这个目标。
+pub const MAGIC_SHIELD_STATE: usize = 0x16;
+
+/// 飞龙探云手：`FUN_004f1420` 按 id 调 `FUN_004f17c0` 偷东西。
+pub const SKILL_STEAL: u32 = 0x1005;
+/// 绿波红露斩：按目标掉的精的一半给施术者回精（`FUN_004f2690`）。
+pub const SKILL_DRAIN_HP: u32 = 0x1069;
+/// 鬼狱还神：按伤害量给施术者回神（同上，`FUN_004f31c0`）。
+pub const SKILL_DRAIN_MP: u32 = 0x10d0;
+
+/// 特技顺手偷到的东西。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Stolen {
+    pub money: i32,
+    pub item: Option<(u32, i32)>,
+}
 impl Battle {
     /// 扣掉技能的第三项消耗（`FUN_004f2910` 的那个 switch，分派在 0x4f2985）。
     ///
@@ -255,6 +277,109 @@ impl Battle {
     /// Costs come off the caster whether or not the skill lands, which is
     /// what the original does — the cost is paid when the action starts.
     pub fn cast_skill(&mut self, caster: usize, target: usize, skill: &SkillEffect) -> CastResult {
+        self.pay_skill_cost(caster, skill);
+        self.cast_on(caster, target, skill, false)
+    }
+
+    /// 扣气、神和第三项消耗（`FUN_004f2910`）。原版在打完所有目标之后扣一次，全体技能
+    /// 也只扣一次；在这之前已经用 `FUN_004f7480` / `FUN_004f7200` 确认过付得起。
+    pub fn pay_skill_cost(&mut self, caster: usize, skill: &SkillEffect) {
+        if let Some(c) = self.get_mut(caster) {
+            c.sp = (c.sp - skill.sp_cost).max(0);
+            c.mp = (c.mp - skill.mp_cost).max(0);
+        }
+        self.pay_special_cost(skill);
+    }
+
+    /// 放一次特技（行动码 0x104，`FUN_004f1420`）。和仙术（`FUN_004f1070`）的差别：
+    ///
+    /// * 打出伤害才让目标出手段从头来，而且整条清零（`FUN_004db750(t, 0, 0, 1)`）；
+    /// * 不记使用次数（调用方负责）；
+    /// * 效果后面按 id 多一步（`FUN_004f2690`）：绿波红露斩按目标掉的精的一半给自己回精，
+    ///   鬼狱还神按伤害量回神；飞龙探云手打中后偷钱、偷物品（`FUN_004f17c0`）。
+    ///   吸精蛊（0x1132）在目标身上置的 `+0x56e` 标记用途没追，没做。
+    pub fn cast_special(
+        &mut self,
+        caster: usize,
+        target: usize,
+        skill: &SkillEffect,
+    ) -> (CastResult, Stolen) {
+        self.pay_skill_cost(caster, skill);
+        self.special_on(caster, target, skill)
+    }
+
+    /// 特技打在一个目标上（不扣消耗，见 [`Self::cast_special`]）。
+    pub fn special_on(
+        &mut self,
+        caster: usize,
+        target: usize,
+        skill: &SkillEffect,
+    ) -> (CastResult, Stolen) {
+        let hp_before = self.get(target).map(|t| t.hp).unwrap_or(0);
+        let result = self.cast_on(caster, target, skill, true);
+        let mut stolen = Stolen::default();
+        if !result.hit {
+            return (result, stolen);
+        }
+        match skill.id {
+            SKILL_STEAL => stolen = self.steal(target),
+            SKILL_DRAIN_HP => {
+                let hp_after = self.get(target).map(|t| t.hp).unwrap_or(hp_before);
+                let amount = (hp_before - hp_after).abs() / 2;
+                if let Some(c) = self.get_mut(caster) {
+                    c.change_hp(amount);
+                }
+            }
+            SKILL_DRAIN_MP => {
+                let amount = result.deltas[0].abs();
+                if let Some(c) = self.get_mut(caster) {
+                    c.mp = (c.mp + amount).min(c.max_mp);
+                }
+            }
+            _ => {}
+        }
+        (result, stolen)
+    }
+
+    /// 飞龙探云手（`FUN_004f17c0`）：先偷钱，`rand % 剩余 + 1` 文，从怪物身上扣掉、记到队伍
+    /// 身上（和花掉的钱一起散场写回）；再偷物品，`rand % 剩余件数 + 1` 件。
+    fn steal(&mut self, target: usize) -> Stolen {
+        let mut stolen = Stolen::default();
+        let money = self.get(target).map(|t| t.steal_money).unwrap_or(0);
+        if money > 0 {
+            let n = (self.rng.rand15() as i32) % money + 1;
+            if let Some(t) = self.get_mut(target) {
+                t.steal_money -= n;
+            }
+            self.spent_money -= n;
+            stolen.money = n;
+        }
+        if let Some((id, count)) = self.get(target).and_then(|t| t.steal_item) {
+            if count > 0 {
+                let n = (self.rng.rand15() as i32) % count + 1;
+                if let Some(t) = self.get_mut(target) {
+                    t.steal_item = Some((id, count - n));
+                }
+                self.stolen_items.push((id, n));
+                stolen.item = Some((id, n));
+            }
+        }
+        stolen
+    }
+
+    /// 技能打在一个目标上，不扣消耗。`special` 是特技（`FUN_004f1420`），否则仙术（`FUN_004f1070`）。
+    ///
+    /// 仙术先看目标有没有 22 号状态（`FUN_004f3d90(t, 0x16)`，状态枚举 21，雷界那一类），有就整招
+    /// 跳过；特技没有这一步。打中后先上状态、再改属性（`FUN_004f2660` / `FUN_004f2690` 都是先
+    /// `FUN_004ef4a0` 再 `FUN_004eef20`）。仙术效果最前面还有一步 `FUN_004f2350`：拿技能的
+    /// `special_skill_id` 调 `FUN_004f1fa0`——数据里只有特技带这个值，仙术全是 0，没做。
+    pub fn cast_on(
+        &mut self,
+        caster: usize,
+        target: usize,
+        skill: &SkillEffect,
+        special: bool,
+    ) -> CastResult {
         let mut result = CastResult {
             hit: false,
             deltas: [0; ATTRIBUTE_SLOTS],
@@ -268,15 +393,12 @@ impl Battle {
         let caster_is_player = c.side == Side::Party;
         let caster_element = (1..=5u8).find(|e| c.elements[*e as usize]);
 
-        if let Some(c) = self.get_mut(caster) {
-            c.sp = (c.sp - skill.sp_cost).max(0);
-            c.mp = (c.mp - skill.mp_cost).max(0);
-        }
-        self.pay_special_cost(skill);
-
         let Some(t) = self.get(target) else {
             return result;
         };
+        if !special && t.has_state(MAGIC_SHIELD_STATE) {
+            return result;
+        }
         let target_luck = t.luck_eff();
         let target_element = (1..=5u8).find(|e| t.elements[*e as usize]);
 
@@ -291,6 +413,14 @@ impl Battle {
             return result;
         }
         result.hit = true;
+
+        for (i, code) in skill.state_codes.iter().copied().enumerate() {
+            match code {
+                1 => self.set_state(target, i + 1, true),
+                2 => self.set_state(target, i + 1, false),
+                _ => {}
+            }
+        }
 
         // The side being compared against differs by caster — see
         // `element_modifier`.
@@ -312,8 +442,16 @@ impl Battle {
             }
         }
 
-        // A landed skill knocks the target out of whatever it was doing.
-        self.interrupt(target, Some(skill.level));
+        if special {
+            // 特技只有打出伤害才打断，而且出手段整条清零（`FUN_004f1420`：`FUN_004f2690`
+            // 的结果 < 0 时 `FUN_004db750(t, 0, 0, 1)`）。
+            if result.deltas[0] < 0 {
+                self.restart_cast(target);
+            }
+        } else {
+            // A landed skill knocks the target out of whatever it was doing.
+            self.interrupt(target, Some(skill.level));
+        }
         result
     }
 
@@ -426,6 +564,117 @@ mod tests {
         c.mp = 40;
         c.max_mp = 40;
         c
+    }
+
+    /// 必中的一招：成功率等级大于 10 按百分比算，100 就是必中。
+    fn sure_hit(id: u32, hp: i16) -> SkillEffect {
+        let mut impacts = [(0u8, 0i16); ATTRIBUTE_SLOTS];
+        impacts[ATTR_HP] = (0, hp);
+        SkillEffect {
+            id,
+            success_rate_level: 100,
+            impacts,
+            special_cost_type: -1,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_landed_skill_sets_its_states_first() {
+        let mut b = Battle::new(3);
+        b.place(0, caster());
+        b.place(1, caster());
+        let mut skill = sure_hit(0x139, 0);
+        skill.state_codes[5] = 1; // 天罡战气：状态枚举 5 → 战斗位 k = 6
+        let r = b.cast_skill(0, 1, &skill);
+        assert!(r.hit);
+        assert!(b.get(1).unwrap().has_state(6));
+    }
+
+    #[test]
+    fn the_magic_shield_stops_magic_but_not_specials() {
+        let mut b = Battle::new(3);
+        b.place(0, caster());
+        let mut monster = caster();
+        monster.side = Side::Enemy;
+        monster.hp = 500;
+        monster.max_hp = 500;
+        b.place(5, monster);
+        b.set_state(5, MAGIC_SHIELD_STATE, true);
+        assert!(b.get(5).unwrap().has_state(MAGIC_SHIELD_STATE));
+        let r = b.cast_skill(0, 5, &sure_hit(0x200, -30));
+        assert!(!r.hit, "雷界挡仙术");
+        assert_eq!(b.get(5).unwrap().hp, 500);
+        let (r, _) = b.cast_special(0, 5, &sure_hit(0x1006, -30));
+        assert!(r.hit, "特技不看雷界");
+        assert!(b.get(5).unwrap().hp < 500);
+    }
+
+    #[test]
+    fn a_reviving_skill_brings_the_fallen_back() {
+        let mut b = Battle::new(3);
+        b.place(0, caster());
+        let mut fallen = caster();
+        fallen.hp = 0;
+        fallen.alive = false;
+        b.place(1, fallen);
+        let mut skill = sure_hit(0x106a, 50);
+        skill.impacts[ATTR_HP] = (1, 50); // 百分比回精
+        skill.state_codes[24] = 2; // 解「死亡」
+        let r = b.cast_skill(0, 1, &skill);
+        assert!(r.hit);
+        let c = b.get(1).unwrap();
+        assert!(c.alive && c.hp > 0, "{} {}", c.alive, c.hp);
+    }
+
+    #[test]
+    fn the_stealing_special_takes_money_and_an_item() {
+        let mut b = Battle::new(11);
+        b.place(0, caster());
+        let mut monster = caster();
+        monster.side = Side::Enemy;
+        monster.hp = 500;
+        monster.max_hp = 500;
+        monster.steal_money = 50;
+        monster.steal_item = Some((0x1234, 2));
+        b.place(5, monster);
+
+        let (r, stolen) = b.cast_special(0, 5, &sure_hit(SKILL_STEAL, -5));
+        assert!(r.hit);
+        assert!((1..=50).contains(&stolen.money), "{stolen:?}");
+        assert_eq!(
+            b.get(5).unwrap().steal_money,
+            50 - stolen.money,
+            "偷一次少一次"
+        );
+        assert_eq!(
+            b.spent_money, -stolen.money,
+            "偷到的钱记成负的花费，散场一起写回"
+        );
+        let (id, n) = stolen.item.unwrap();
+        assert_eq!(id, 0x1234);
+        assert!((1..=2).contains(&n));
+        assert_eq!(b.stolen_items, vec![(0x1234, n)]);
+        assert_eq!(b.get(5).unwrap().steal_item, Some((0x1234, 2 - n)));
+    }
+
+    #[test]
+    fn the_draining_special_heals_the_caster_by_half_the_damage() {
+        let mut b = Battle::new(5);
+        let mut me = caster();
+        me.hp = 40;
+        b.place(0, me);
+        let mut monster = caster();
+        monster.side = Side::Enemy;
+        monster.hp = 500;
+        monster.max_hp = 500;
+        b.place(5, monster);
+
+        let (r, _) = b.cast_special(0, 5, &sure_hit(SKILL_DRAIN_HP, -30));
+        assert!(r.hit);
+        let dealt = 500 - b.get(5).unwrap().hp;
+        assert!(dealt > 0);
+        assert_eq!(b.get(0).unwrap().hp, (40 + dealt / 2).min(100));
     }
 
     #[test]

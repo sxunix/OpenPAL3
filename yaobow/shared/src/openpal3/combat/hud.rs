@@ -157,10 +157,11 @@ impl RingButton {
         RingButton::ALL.into_iter().find(|b| b.cell() == Some(cell))
     }
 
-    /// 移植端的规则层做了哪一项。技、陣、AI、援、魔还没有。
+    /// 移植端的规则层做了哪一项。陣、AI、援、魔还没有。
     pub fn entry(self) -> Option<MenuEntry> {
         match self {
             RingButton::Attack => Some(MenuEntry::Attack),
+            RingButton::Skill => Some(MenuEntry::Special),
             RingButton::Magic => Some(MenuEntry::Skill),
             RingButton::Item => Some(MenuEntry::Item),
             RingButton::Defence => Some(MenuEntry::Defend),
@@ -172,6 +173,7 @@ impl RingButton {
     pub fn of_entry(entry: MenuEntry) -> RingButton {
         match entry {
             MenuEntry::Attack => RingButton::Attack,
+            MenuEntry::Special => RingButton::Skill,
             MenuEntry::Skill => RingButton::Magic,
             MenuEntry::Item => RingButton::Item,
             MenuEntry::Defend => RingButton::Defence,
@@ -408,13 +410,30 @@ pub const HEAD_READY_X: i32 = (GAUGE_FULL * 0.017_130_435 + 460.) as i32;
 pub const MAGIC_PANEL: Rect = (2, 278, 251, 484);
 /// 道具列表（`FUN_00519bd0`，0x517af3）。
 pub const ITEM_PANEL: Rect = (6, 278, 255, 484);
-/// 特技列表（`FUN_0051ad10`，0x517bd3）。移植端没有特技，先不用。
+/// 特技列表（`FUN_0051ad10`，0x517bd3）。
 pub const SKILL_PANEL: Rect = (5, 237, 261, 493);
 
 /// 列表底图相对面板的 rect：仙术、道具是 249×206。
 pub const LIST_BACK_RECT: Rect = (0, 0, 0xf9, 0xce);
 pub const MAGIC_BACK: &str = "control/MagicList/MagicPanel.tga";
 pub const ITEM_BACK: &str = "control/ItemList/ItemPanel.tga";
+/// 特技列表的底图，256×256。
+pub const SKILL_BACK: &str = "control/SkillList/SkillPanel.tga";
+pub const SKILL_BACK_RECT: Rect = (0, 0, 0x100, 0x100);
+/// 特技列表的行区（`FUN_0051ad10`：相对面板 (0x27,0x6e)-(0xf1,0xe2)），正好六行——
+/// 每人最多六条特技（战斗位 `+0x2c8` 六格）。
+pub const SKILL_ROWS: Rect = (0x27, 0x6e, 0xf1, 0xe2);
+/// 选中条画到哪：行区比底图的框线宽十几像素，两列（0x96 + 0x2b）加起来正好到框线，
+/// 选中条按两列的总宽截 [推断：原版选中条怎么裁没读]。
+pub const SKILL_SELECT_ROWS: Rect = (
+    SKILL_ROWS.0,
+    SKILL_ROWS.1,
+    SKILL_ROWS.0 + SKILL_COLUMNS[0] + SKILL_COLUMNS[1],
+    SKILL_ROWS.3,
+);
+pub const SKILL_VISIBLE_ROWS: usize = ((SKILL_ROWS.3 - SKILL_ROWS.1) / ROW_HEIGHT) as usize;
+/// 特技列表两列：名称 0x96、耗气 0x2b（0x51af2d / 0x51af3e 两次 `FUN_0043e560`）。
+pub const SKILL_COLUMNS: [i32; 2] = [0x96, 0x2b];
 /// 选中行的底（`FUN_0043e330`，仙术和道具列表都用道具那张）。
 pub const ROW_SELECT: &str = "control/ItemList/SelPic.tga";
 
@@ -432,12 +451,15 @@ pub const ITEM_COLUMNS: [i32; 2] = [0x96, 0x2b];
 
 /// 选中第 `index` 行时，列表从第几行开始画——让选中行留在可见区里。
 pub fn first_visible(index: usize, len: usize) -> usize {
-    if len <= VISIBLE_ROWS {
+    first_visible_in(index, len, VISIBLE_ROWS)
+}
+
+/// 同 [`first_visible`]，可见行数另给（特技列表是六行）。
+pub fn first_visible_in(index: usize, len: usize, visible: usize) -> usize {
+    if len <= visible {
         return 0;
     }
-    index
-        .saturating_sub(VISIBLE_ROWS - 1)
-        .min(len - VISIBLE_ROWS)
+    index.saturating_sub(visible - 1).min(len - visible)
 }
 
 // ---------------------------------------------------------------- 横幅
@@ -552,8 +574,8 @@ mod tests {
         assert_eq!(ring_move(from, (-1, 0), ported), RingButton::Magic);
         assert_eq!(ring_move(from, (1, 0), ported), RingButton::Defence);
         assert_eq!(ring_move(from, (0, 1), ported), RingButton::Item);
-        // 技还没做，往上走不动。
-        assert_eq!(ring_move(from, (0, -1), ported), RingButton::Attack);
+        // 技（特技）做了，往上走到技。
+        assert_eq!(ring_move(from, (0, -1), ported), RingButton::Skill);
         // 逃在右下角：从物往右、从防往下都能到。
         assert_eq!(
             ring_move(RingButton::Item, (1, 0), ported),

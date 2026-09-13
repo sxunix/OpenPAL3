@@ -385,6 +385,7 @@ struct HudTextures {
     heads: Vec<Tex>,
     magic_back: Tex,
     item_back: Tex,
+    skill_back: Tex,
     row_select: Tex,
     trick_back2: Tex,
 }
@@ -440,6 +441,7 @@ impl HudTextures {
                 .collect(),
             magic_back: tex(hud::MAGIC_BACK),
             item_back: tex(hud::ITEM_BACK),
+            skill_back: tex(hud::SKILL_BACK),
             row_select: tex(hud::ROW_SELECT),
             trick_back2: tex(hud::TRICK_BACK2),
         }
@@ -547,6 +549,11 @@ impl SceCommandCombat {
             .get(layer, nx.trunc() as i32, nz.trunc() as i32)
             .map(|tile| ((tile.distance_to_border >> 8) & 0xff) as i32)
             .unwrap_or(FLOOR_TYPE_OUT_OF_RANGE)
+    }
+
+    /// 特技是 `SkillType` 0（StandardMagic）那一类：数据里 26 条，每条只给一个主角、只耗气。
+    fn is_special(db: &GameDb, id: u32) -> bool {
+        db.skill(id).is_some_and(|s| s.skill_type == 0)
     }
 
     fn skill_choice(db: &GameDb, id: u32) -> Option<SkillChoice> {
@@ -1021,11 +1028,25 @@ impl SceCommandCombat {
                         .combat_actor(combat_id)
                         .and_then(|a| a.name.as_str().ok())
                         .unwrap_or_else(|| format!("#{combat_id}")),
+                    // 类型 0 是特技（控制盘「技」，战斗位 `+0x2c8`），其余进仙术。
                     skills: role
                         .skills
                         .iter()
+                        .filter(|s| !Self::is_special(&db, s.id))
                         .filter_map(|s| Self::skill_choice(&db, s.id))
                         .collect(),
+                    specials: {
+                        let mut ids: Vec<u32> = role
+                            .skills
+                            .iter()
+                            .map(|s| s.id)
+                            .filter(|id| Self::is_special(&db, *id))
+                            .collect();
+                        ids.sort_unstable();
+                        ids.into_iter()
+                            .filter_map(|id| Self::skill_choice(&db, id))
+                            .collect()
+                    },
                     reward: Reward::default(),
                 };
             }
@@ -1055,6 +1076,9 @@ impl SceCommandCombat {
                 for (i, v) in row.element_attribute_values.iter().enumerate() {
                     c.elements[i + 1] = *v > 0;
                 }
+                c.steal_money = row.stealable_money_amount as i32;
+                c.steal_item = (row.stealable_item_id != 0 && row.stealable_item_count > 0)
+                    .then_some((row.stealable_item_id, row.stealable_item_count as i32));
                 battle.place(slot, c);
 
                 profiles[slot] = Profile {
@@ -1065,6 +1089,7 @@ impl SceCommandCombat {
                         .filter(|s| *s != 0)
                         .filter_map(|s| Self::skill_choice(&db, s))
                         .collect(),
+                    specials: Vec::new(),
                     reward: Reward {
                         experience: row.experience,
                         money: row.money_when_killed as i32,
@@ -1174,8 +1199,12 @@ impl SceCommandCombat {
 
             // 花掉的钱和用掉的蛊无论胜负都算数——它们是行动开始时就扣的
             // （`FUN_004f2910`），不是结算的一部分。
-            if session.battle.spent_money > 0 {
+            // 飞龙探云手偷到的钱记成负的花费，所以这里是 != 0。
+            if session.battle.spent_money != 0 {
                 persistent.add_money(-session.battle.spent_money);
+            }
+            for (id, n) in session.battle.stolen_items.iter().copied() {
+                persistent.add_item(id, n.max(0) as u32);
             }
             if session.battle.spent_gu > 0 {
                 persistent.remove_item(GU_ITEM_ID, session.battle.spent_gu);
@@ -1356,6 +1385,7 @@ impl SceCommandCombat {
         if self.run.map(|r| r.slot) != Some(slot) {
             let kind = match session.pending {
                 Some(Pending::Attack { .. }) => ActKind::Attack,
+                Some(Pending::Cast { special: true, .. }) => ActKind::Special,
                 Some(Pending::Cast { .. }) | Some(Pending::Combo { .. }) => ActKind::Cast,
                 Some(Pending::Item { target, .. }) => ActKind::Item {
                     hostile: (target < PARTY_SLOTS) != (slot < PARTY_SLOTS),
@@ -1366,9 +1396,9 @@ impl SceCommandCombat {
                 }
             };
             let link_id = match session.pending {
-                Some(Pending::Cast { skill, .. }) => {
-                    session.skills(slot).get(skill).map(|s| s.effect.id)
-                }
+                Some(Pending::Cast { skill, special, .. }) => session
+                    .cast_choice(slot, skill, special)
+                    .map(|s| s.effect.id),
                 Some(Pending::Item { item, .. }) => session.items().get(item).map(|i| i.effect.id),
                 // 合击技的特效挂在链接表里它自己的 id 下（501..510）。
                 Some(Pending::Combo { combo, .. }) => session.combos().get(combo).map(|c| c.id),
@@ -1783,6 +1813,7 @@ impl SceCommandCombat {
             };
             let acting = pending.filter(|p| p.slot() == slot).map(|p| match p {
                 Pending::Attack { .. } => ActKind::Attack,
+                Pending::Cast { special: true, .. } => ActKind::Special,
                 Pending::Cast { .. } | Pending::Combo { .. } => ActKind::Cast,
                 Pending::Item { target, .. } => ActKind::Item {
                     hostile: (target < PARTY_SLOTS) != (slot < PARTY_SLOTS),
@@ -1999,6 +2030,33 @@ impl SceCommandCombat {
                         scale,
                     );
                 }
+                Menu::Specials { index } => {
+                    let rows: Vec<(Vec<String>, bool)> = session
+                        .specials(turn.slot)
+                        .iter()
+                        .enumerate()
+                        .map(|(i, s)| {
+                            let cells = vec![s.name.clone(), s.effect.sp_cost.to_string()];
+                            (cells, session.can_afford_special(turn.slot, i))
+                        })
+                        .collect();
+                    Self::draw_list_in(
+                        ui,
+                        &list,
+                        (tex.skill_back.as_deref(), tex.row_select.as_deref()),
+                        hud::SKILL_PANEL,
+                        (
+                            hud::SKILL_BACK_RECT,
+                            hud::SKILL_SELECT_ROWS,
+                            hud::SKILL_VISIBLE_ROWS,
+                        ),
+                        &hud::SKILL_COLUMNS,
+                        &rows,
+                        index,
+                        at,
+                        scale,
+                    );
+                }
                 Menu::Items { index } => {
                     let rows: Vec<(Vec<String>, bool)> = session
                         .items()
@@ -2101,7 +2159,7 @@ impl SceCommandCombat {
     fn draw_list(
         ui: &Ui,
         list: &imgui::DrawListMut<'_>,
-        (back, select): (Option<&Sprite>, Option<&Sprite>),
+        textures: (Option<&Sprite>, Option<&Sprite>),
         panel: hud::Rect,
         columns: &[i32],
         rows: &[(Vec<String>, bool)],
@@ -2109,13 +2167,39 @@ impl SceCommandCombat {
         at: &dyn Fn(i32, i32) -> [f32; 2],
         scale: f32,
     ) {
-        draw_sprite(list, back, hud::offset(hud::LIST_BACK_RECT, panel), at);
-        let area = hud::offset(hud::LIST_ROWS, panel);
-        let first = hud::first_visible(index, rows.len());
+        Self::draw_list_in(
+            ui,
+            list,
+            textures,
+            panel,
+            (hud::LIST_BACK_RECT, hud::LIST_ROWS, hud::VISIBLE_ROWS),
+            columns,
+            rows,
+            index,
+            at,
+            scale,
+        );
+    }
+
+    /// 同 [`Self::draw_list`]，底图 rect、行区、可见行数另给（特技列表和仙术 / 道具的不一样）。
+    fn draw_list_in(
+        ui: &Ui,
+        list: &imgui::DrawListMut<'_>,
+        (back, select): (Option<&Sprite>, Option<&Sprite>),
+        panel: hud::Rect,
+        (back_rect, rows_rect, visible): (hud::Rect, hud::Rect, usize),
+        columns: &[i32],
+        rows: &[(Vec<String>, bool)],
+        index: usize,
+        at: &dyn Fn(i32, i32) -> [f32; 2],
+        scale: f32,
+    ) {
+        draw_sprite(list, back, hud::offset(back_rect, panel), at);
+        let area = hud::offset(rows_rect, panel);
+        let first = hud::first_visible_in(index, rows.len(), visible);
         let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
         let font_px = ui.current_font_size();
-        for (line, (cells, enabled)) in rows.iter().enumerate().skip(first).take(hud::VISIBLE_ROWS)
-        {
+        for (line, (cells, enabled)) in rows.iter().enumerate().skip(first).take(visible) {
             let y = area.1 + (line - first) as i32 * hud::ROW_HEIGHT;
             if line == index {
                 draw_sprite(list, select, (area.0, y, area.2, y + hud::ROW_HEIGHT), at);

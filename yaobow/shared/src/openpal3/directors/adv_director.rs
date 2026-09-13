@@ -506,6 +506,16 @@ impl AdventureDirector {
             .set_lineup_position(actor_id, position);
     }
 
+    /// 让某人学会一条技能（opcode 51 的同一条路）——测特技 / 仙术用。
+    pub fn learn_skill(&self, actor_id: u32, skill_id: u32) -> bool {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .global_state_mut()
+            .persistent_state_mut()
+            .learn_skill(actor_id, skill_id)
+    }
+
     /// Give (or take, if negative) money — a test aid for the shop UI.
     pub fn add_money(&self, amount: i32) {
         self.props

@@ -161,6 +161,10 @@ pub struct Combatant {
     pub element_position: u8,
     /// 手上武器的类型（原版战斗位 `+0x288`，gdb `WeaponType`），合击技按它比对；0 = 没拿。
     pub weapon_type: u8,
+    /// 飞龙探云手能偷的钱（原版战斗位 `+0x448`，gdb `stealable_money_amount`），偷一次少一次。
+    pub steal_money: i32,
+    /// 能偷的物品和剩余件数（`+0x44c` / `+0x450`，gdb `stealable_item_id` / `_count`）。
+    pub steal_item: Option<(u32, i32)>,
     /// 蓄力条（原版 `+0x20`）。
     pub gauge: f32,
     /// 出手条（原版 `+0x24`）。原版是两条独立的条，不是一条复用。
@@ -195,6 +199,8 @@ impl Combatant {
             defending: false,
             element_position: 0,
             weapon_type: 0,
+            steal_money: 0,
+            steal_item: None,
             gauge: 0.,
             cast_gauge: 0.,
             cast_rate: 0,
@@ -484,6 +490,8 @@ pub struct Battle {
     pub gu: u32,
     /// 这一场里花掉的钱。
     pub spent_money: i32,
+    /// 飞龙探云手偷到的物品，散场时进背包（原版 `FUN_0040ccf0` 当场加）。
+    pub stolen_items: Vec<(u32, i32)>,
     /// 这一场里用掉的蛊。
     pub spent_gu: u32,
     pub rng: CombatRng,
@@ -502,6 +510,7 @@ impl Battle {
             money: 0,
             gu: 0,
             spent_money: 0,
+            stolen_items: Vec::new(),
             spent_gu: 0,
             rng: CombatRng::new(seed),
         }

@@ -48,6 +48,8 @@ pub enum Motion {
     MagicWait,
     /// 仙术
     Magic,
+    /// 特技（我方 z09，特技任务 `FUN_0050f080` 写 36）
+    Special,
     /// 用恢复类道具
     ItemRecover,
     /// 用攻击类道具
@@ -93,6 +95,7 @@ impl MotionSet {
                 BeAttacked => 33,
                 MagicWait => 34,
                 Magic => 35,
+                Special => 36,
                 ItemRecover => 38,
                 ItemAttack => 39,
                 StartDefence => 41,
@@ -109,7 +112,8 @@ impl MotionSet {
                 Idle => Some(50),
                 Attack => Some(53),
                 BeAttacked => Some(54),
-                Magic => Some(55),
+                // 怪物那套没有特技动作，照仙术播 [推断]。
+                Magic | Special => Some(55),
                 Move => Some(52),
                 _ => None,
             },
@@ -126,6 +130,8 @@ impl MotionSet {
 pub enum ActKind {
     Attack,
     Cast,
+    /// 特技（行动码 0x104）。
+    Special,
     /// `hostile`：目标在对面（攻击类道具）。
     Item {
         hostile: bool,
@@ -265,6 +271,7 @@ pub fn strike_motion(kind: ActKind) -> Option<Motion> {
     match kind {
         ActKind::Attack => Some(Motion::Attack),
         ActKind::Cast => Some(Motion::Magic),
+        ActKind::Special => Some(Motion::Special),
         ActKind::Item { hostile: false } => Some(Motion::ItemRecover),
         ActKind::Item { hostile: true } => Some(Motion::ItemAttack),
         ActKind::Escape => None,

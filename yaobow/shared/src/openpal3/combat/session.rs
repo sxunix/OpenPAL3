@@ -34,6 +34,25 @@ impl SkillChoice {
     pub fn heals(&self) -> bool {
         self.effect.impacts[ATTR_HP].1 > 0
     }
+
+    /// 打施术者自己这边吗：`target_range_type` 1/2 是，3..6 不是；0（两条伤害法术）按效果的正负。
+    pub fn targets_own_side(&self) -> bool {
+        match self.effect.target_range {
+            1 | 2 => true,
+            3..=6 => false,
+            _ => self.heals(),
+        }
+    }
+
+    /// 全体（2 我方全体 / 4 敌方全体）。原版出招函数按指令里的目标表逐位结算。
+    pub fn hits_everyone(&self) -> bool {
+        matches!(self.effect.target_range, 2 | 4)
+    }
+
+    /// 解「死亡」（状态枚举 24）的就是复活（回生照、烟水还魂、赎魂光……），倒下的也能选。
+    pub fn revives(&self) -> bool {
+        self.effect.state_codes[24] == 2
+    }
 }
 
 /// A stack of items as the combat menu offers it (`FUN_004f95f0`).
@@ -79,7 +98,10 @@ pub struct Reward {
 #[derive(Debug, Clone, Default)]
 pub struct Profile {
     pub name: String,
+    /// 仙术（術）。
     pub skills: Vec<SkillChoice>,
+    /// 特技（技）：`SkillType` 0 那一类，原版战斗位 `+0x2c8` 六格，按 id 排。
+    pub specials: Vec<SkillChoice>,
     pub reward: Reward,
 }
 
@@ -102,15 +124,18 @@ pub enum MenuEntry {
     Item,
     Defend,
     Escape,
+    /// 特技（控制盘的「技」，行动码 0x104）。
+    Special,
 }
 
 impl MenuEntry {
-    pub const ALL: [MenuEntry; 5] = [
+    pub const ALL: [MenuEntry; 6] = [
         MenuEntry::Attack,
         MenuEntry::Skill,
         MenuEntry::Item,
         MenuEntry::Defend,
         MenuEntry::Escape,
+        MenuEntry::Special,
     ];
 
     pub fn label(self) -> &'static str {
@@ -120,6 +145,7 @@ impl MenuEntry {
             MenuEntry::Item => "道具",
             MenuEntry::Defend => "防御",
             MenuEntry::Escape => "逃跑",
+            MenuEntry::Special => "特技",
         }
     }
 }
@@ -130,6 +156,8 @@ pub enum Action {
     Attack,
     /// Index into the actor's skill list.
     Cast(usize),
+    /// Index into the actor's 特技 list.
+    Special(usize),
     /// Index into [`CombatSession::items`].
     UseItem(usize),
 }
@@ -141,6 +169,9 @@ pub enum Menu {
         index: usize,
     },
     Skills {
+        index: usize,
+    },
+    Specials {
         index: usize,
     },
     /// `index` is into [`CombatSession::items`].
@@ -182,6 +213,9 @@ pub enum Pending {
         slot: usize,
         target: usize,
         skill: usize,
+        /// 特技（行动码 0x104，`FUN_004f1420`）而不是仙术（0x105，`FUN_004f1070`）：
+        /// `skill` 是特技列表的下标。
+        special: bool,
     },
     Item {
         slot: usize,
@@ -341,6 +375,19 @@ impl CombatSession {
         &self.profiles[slot].skills
     }
 
+    pub fn specials(&self, slot: usize) -> &[SkillChoice] {
+        &self.profiles[slot].specials
+    }
+
+    /// 登记的这次施放用的是哪条（特技 / 仙术各查各的列表）。
+    pub fn cast_choice(&self, slot: usize, skill: usize, special: bool) -> Option<&SkillChoice> {
+        if special {
+            self.specials(slot).get(skill)
+        } else {
+            self.skills(slot).get(skill)
+        }
+    }
+
     pub fn finished(&self) -> Option<Outcome> {
         self.finished
     }
@@ -396,15 +443,24 @@ impl CombatSession {
                 self.standing(side)
             };
         }
-        let own_side = match action {
-            Action::Attack => false,
-            Action::Cast(i) => self.skills(slot).get(i).map(|s| s.heals()).unwrap_or(false),
+        let choice = match action {
+            Action::Attack => return self.standing(Side::Enemy),
+            Action::Cast(i) => self.skills(slot).get(i),
+            Action::Special(i) => self.specials(slot).get(i),
             Action::UseItem(_) => unreachable!("道具在上面单独处理"),
         };
-        if own_side {
-            self.standing(Side::Party)
+        let Some(choice) = choice else {
+            return Vec::new();
+        };
+        let side = if choice.targets_own_side() {
+            Side::Party
         } else {
-            self.standing(Side::Enemy)
+            Side::Enemy
+        };
+        if choice.revives() {
+            self.placed(side)
+        } else {
+            self.standing(side)
         }
     }
 
@@ -415,7 +471,21 @@ impl CombatSession {
     /// 钱够，0x10 要背包里有蛊（不看量），其余拿定义值和对应属性比。实机数据
     /// 只用到 10 和 0x10 两种。
     pub fn can_afford(&self, slot: usize, i: usize) -> bool {
-        let (Some(c), Some(s)) = (self.battle.get(slot), self.skills(slot).get(i)) else {
+        self.skills(slot)
+            .get(i)
+            .is_some_and(|s| self.affordable(slot, s))
+    }
+
+    /// 同 [`Self::can_afford`]，查特技列表（特技也走 `FUN_004f7480` / `FUN_004f7200`，
+    /// `FUN_004f91b0` 画列表时拿它们定亮不亮）。
+    pub fn can_afford_special(&self, slot: usize, i: usize) -> bool {
+        self.specials(slot)
+            .get(i)
+            .is_some_and(|s| self.affordable(slot, s))
+    }
+
+    fn affordable(&self, slot: usize, s: &SkillChoice) -> bool {
+        let Some(c) = self.battle.get(slot) else {
             return false;
         };
         if c.sp < s.effect.sp_cost || c.mp < s.effect.mp_cost {
@@ -548,7 +618,8 @@ impl CombatSession {
                 slot,
                 target,
                 skill,
-            } => self.cast(slot, target, skill),
+                special,
+            } => self.cast(slot, target, skill, special),
             Pending::Item { slot, target, item } => self.use_item(slot, target, item),
             Pending::Combo {
                 slot,
@@ -654,6 +725,13 @@ impl CombatSession {
                             turn.menu = Menu::Skills { index: 0 };
                         }
                     }
+                    MenuEntry::Special => {
+                        if self.specials(slot).is_empty() {
+                            self.notice("没有可用的特技");
+                        } else {
+                            turn.menu = Menu::Specials { index: 0 };
+                        }
+                    }
                     MenuEntry::Item => {
                         if self.items.is_empty() {
                             self.notice("没有可用的道具");
@@ -704,6 +782,38 @@ impl CombatSession {
                     }
                     Input::Cancel => {
                         turn.menu = Menu::Main { index: 1 };
+                    }
+                }
+            }
+            Menu::Specials { index } => {
+                let n = self.specials(slot).len();
+                match input {
+                    Input::Up | Input::Left => {
+                        turn.menu = Menu::Specials {
+                            index: (index + n - 1) % n,
+                        };
+                    }
+                    Input::Down | Input::Right => {
+                        turn.menu = Menu::Specials {
+                            index: (index + 1) % n,
+                        };
+                    }
+                    Input::Confirm => {
+                        if self.can_afford_special(slot, index) {
+                            turn.menu = Menu::Target {
+                                action: Action::Special(index),
+                                index: 0,
+                            };
+                        } else {
+                            self.notice("精气不足");
+                        }
+                    }
+                    Input::Cancel => {
+                        let back = MenuEntry::ALL
+                            .iter()
+                            .position(|e| *e == MenuEntry::Special)
+                            .unwrap_or(0);
+                        turn.menu = Menu::Main { index: back };
                     }
                 }
             }
@@ -765,10 +875,21 @@ impl CombatSession {
                                         slot,
                                         target,
                                         skill: i,
+                                        special: false,
                                     },
                                     m,
                                 )
                             }
+                            // 特技的出手速度照攻击（倍率 1）[推断：`FUN_004f76c0` 只查仙术格]。
+                            Action::Special(i) => self.commit(
+                                Pending::Cast {
+                                    slot,
+                                    target,
+                                    skill: i,
+                                    special: true,
+                                },
+                                1,
+                            ),
                             Action::UseItem(i) => self.commit(
                                 Pending::Item {
                                     slot,
@@ -784,6 +905,7 @@ impl CombatSession {
                         turn.menu = match action {
                             Action::Attack => Menu::Main { index: 0 },
                             Action::Cast(i) => Menu::Skills { index: i },
+                            Action::Special(i) => Menu::Specials { index: i },
                             Action::UseItem(i) => Menu::Items { index: i },
                         };
                     }
@@ -867,6 +989,7 @@ impl CombatSession {
                                 slot,
                                 target,
                                 skill: i,
+                                special: false,
                             },
                             m,
                         )
@@ -898,10 +1021,12 @@ impl CombatSession {
 
     /// 这次仙术配不配得上一条合击技；配上了给 (合击技下标, 目标)。
     fn combo_for(&self, action: &Pending) -> Option<(usize, usize)> {
+        // 只有仙术配合击技（`FUN_004eea70` 在 0x105 登记时查）。
         let Pending::Cast {
             slot,
             target,
             skill,
+            special: false,
         } = *action
         else {
             return None;
@@ -931,31 +1056,71 @@ impl CombatSession {
         self.note_deaths(slot);
     }
 
-    fn cast(&mut self, slot: usize, target: usize, i: usize) {
-        let Some(choice) = self.skills(slot).get(i).cloned() else {
+    /// 放一次仙术 / 特技（`FUN_004f1070` / `FUN_004f1420`）。全体的打一整边（相对施术者），
+    /// 复活类连倒下的一起；单体只打选中的那个。消耗打完才扣、只扣一次（`FUN_004f2910`）。
+    fn cast(&mut self, slot: usize, target: usize, i: usize, special: bool) {
+        let Some(choice) = self.cast_choice(slot, i, special).cloned() else {
             return;
         };
-        if self.battle.get(slot).map(|c| c.side) == Some(Side::Party) {
+        let caster_side = self.battle.get(slot).map(|c| c.side).unwrap_or(Side::Party);
+        // 仙术用一次记一次（升级用）；特技不记（`FUN_004f1420` 收尾没有 `+0x3d8` 那一步）。
+        if !special && caster_side == Side::Party {
             self.casts.push((slot, choice.effect.id));
         }
-        let r = self.battle.cast_skill(slot, target, &choice.effect);
-        let line = if r.hit {
-            format!(
-                "{} {} → {} 精{:+}",
-                self.name(slot),
-                choice.name,
-                self.name(target),
-                r.deltas[ATTR_HP]
-            )
+        let targets = if choice.hits_everyone() {
+            let side = match (choice.targets_own_side(), caster_side) {
+                (true, side) => side,
+                (false, Side::Party) => Side::Enemy,
+                (false, Side::Enemy) => Side::Party,
+            };
+            if choice.revives() {
+                self.placed(side)
+            } else {
+                self.standing(side)
+            }
         } else {
-            format!(
-                "{} {} → {} 未命中",
-                self.name(slot),
-                choice.name,
-                self.name(target)
-            )
+            vec![target]
         };
-        self.push_log(line);
+        for t in targets {
+            let r = if special {
+                let (r, stolen) = self.battle.special_on(slot, t, &choice.effect);
+                log::info!(
+                    "Combat: 特技 {} → 位 {t}：{}，精 {:+}，偷得 {} 文、物品 {:?}",
+                    choice.name,
+                    if r.hit { "命中" } else { "未中" },
+                    r.deltas[ATTR_HP],
+                    stolen.money,
+                    stolen.item
+                );
+                if stolen.money > 0 {
+                    self.push_log(format!("偷得 {} 文", stolen.money));
+                }
+                if let Some((id, n)) = stolen.item {
+                    self.push_log(format!("偷得物品 #{id} × {n}"));
+                }
+                r
+            } else {
+                self.battle.cast_on(slot, t, &choice.effect, false)
+            };
+            let line = if r.hit {
+                format!(
+                    "{} {} → {} 精{:+}",
+                    self.name(slot),
+                    choice.name,
+                    self.name(t),
+                    r.deltas[ATTR_HP]
+                )
+            } else {
+                format!(
+                    "{} {} → {} 未命中",
+                    self.name(slot),
+                    choice.name,
+                    self.name(t)
+                )
+            };
+            self.push_log(line);
+        }
+        self.battle.pay_skill_cost(slot, &choice.effect);
         self.note_deaths(slot);
     }
 
@@ -1086,6 +1251,7 @@ mod tests {
                 },
             };
             let profiles = vec![Profile {
+                specials: Vec::new(),
                 name: "景天".into(),
                 skills: vec![skill],
                 reward: Reward::default(),
@@ -1108,6 +1274,7 @@ mod tests {
         let mut s = build(true);
         s.commit(
             Pending::Cast {
+                special: false,
                 slot: 0,
                 target: 5,
                 skill: 0,
@@ -1133,6 +1300,7 @@ mod tests {
         let mut s = build(false);
         s.commit(
             Pending::Cast {
+                special: false,
                 slot: 0,
                 target: 5,
                 skill: 0,
@@ -1173,6 +1341,7 @@ mod tests {
                 mp_cost: 0,
                 special_cost_type: -1,
                 special_cost_value: 0,
+                ..Default::default()
             },
         }
     }
@@ -1184,6 +1353,7 @@ mod tests {
         b.place(5, fighter(Side::Enemy, 60, 1));
         let profiles = vec![
             Profile {
+                specials: Vec::new(),
                 name: "景天".into(),
                 skills: vec![heal()],
                 reward: Reward::default(),
@@ -1193,6 +1363,7 @@ mod tests {
             Profile::default(),
             Profile::default(),
             Profile {
+                specials: Vec::new(),
                 name: "妖".into(),
                 skills: vec![],
                 reward: Reward {
@@ -1284,6 +1455,75 @@ mod tests {
         assert_eq!(s.turn.unwrap().menu, Menu::Skills { index: 0 });
         s.input(Input::Cancel);
         assert_eq!(s.turn.unwrap().menu, Menu::Main { index: 1 });
+    }
+
+    #[test]
+    fn the_skill_button_opens_the_specials_and_commits_a_special() {
+        let mut s = session();
+        let mut impacts = [(0u8, 0i16); ATTRIBUTE_SLOTS];
+        impacts[ATTR_HP] = (0, -20);
+        s.profiles[0].specials = vec![SkillChoice {
+            name: "飞龙探云手".into(),
+            effect: SkillEffect {
+                id: 0x1005,
+                sp_cost: 2,
+                success_rate_level: 100,
+                impacts,
+                special_cost_type: -1,
+                ..Default::default()
+            },
+        }];
+        run_until_turn(&mut s);
+        s.input(Input::Up); // 技
+        s.input(Input::Confirm);
+        assert_eq!(s.turn.unwrap().menu, Menu::Specials { index: 0 });
+        s.input(Input::Cancel);
+        let back = MenuEntry::ALL
+            .iter()
+            .position(|e| *e == MenuEntry::Special)
+            .unwrap();
+        assert_eq!(s.turn.unwrap().menu, Menu::Main { index: back });
+        s.input(Input::Confirm);
+        s.input(Input::Confirm);
+        assert_eq!(s.targets(), vec![5], "打人的特技指向敌方");
+        s.input(Input::Confirm);
+        assert_eq!(
+            s.pending,
+            Some(Pending::Cast {
+                slot: 0,
+                target: 5,
+                skill: 0,
+                special: true,
+            })
+        );
+    }
+
+    #[test]
+    fn an_all_enemies_skill_hits_every_standing_enemy_and_pays_once() {
+        let mut s = session();
+        s.battle.place(6, fighter(Side::Enemy, 60, 1));
+        while s.profiles.len() <= 6 {
+            s.profiles.push(Profile::default());
+        }
+        let mut impacts = [(0u8, 0i16); ATTRIBUTE_SLOTS];
+        impacts[ATTR_HP] = (0, -20);
+        s.profiles[0].skills = vec![SkillChoice {
+            name: "群攻".into(),
+            effect: SkillEffect {
+                id: 77,
+                sp_cost: 10,
+                success_rate_level: 100,
+                impacts,
+                target_range: 4,
+                special_cost_type: -1,
+                ..Default::default()
+            },
+        }];
+        let sp = s.battle.get(0).unwrap().sp;
+        s.cast(0, 5, 0, false);
+        assert!(s.battle.get(5).unwrap().hp < 60, "选中的那个挨了");
+        assert!(s.battle.get(6).unwrap().hp < 60, "没选中的也挨了");
+        assert_eq!(s.battle.get(0).unwrap().sp, sp - 10, "全体技能只扣一次气");
     }
 
     #[test]

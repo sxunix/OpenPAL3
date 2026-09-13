@@ -574,6 +574,19 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "learn_skill" => {
+            // [角色号, 技能 id] —— 学会一条技能（opcode 51），测特技用。
+            let (Some(actor), Some(skill)) = (int_arg(0), int_arg(1)) else {
+                return AgentResponse::err(AgentError::bad_request(
+                    "learn_skill needs args: [actor_id, skill_id]",
+                ));
+            };
+            let learned = director.learn_skill(actor.max(0) as u32, skill.max(0) as u32);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: Some(serde_json::json!({ "learned": learned })),
+            })
+        }
         "lineup_click" => {
             // [x, y] —— 阵法页的五灵盘下一帧当作在 800×600 画布这点点了一下，测选人 / 换位用。
             let f = |i: usize| params.args.get(i).and_then(|v| v.as_f64());

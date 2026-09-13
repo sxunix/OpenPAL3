@@ -85,6 +85,8 @@ pub fn effect_of(s: &SkillInfo) -> SkillEffect {
         mp_cost: s.mp_consume_value,
         special_cost_type: s.special_consume_type,
         special_cost_value: s.special_consume_value,
+        target_range: s.target_range_type,
+        state_codes: s.combat_state_impact_types,
     }
 }
 
