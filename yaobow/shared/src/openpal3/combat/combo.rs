@@ -141,9 +141,11 @@ pub fn find(defs: &[ComboDef], caster: usize, skill_id: u32, battle: &Battle) ->
         .position(|d| eligible(d, caster, skill_id, battle))
 }
 
-/// 打谁（`FUN_004f0360`）。1 我方全体、3 敌方全体，都只挑还站着的 [推断：原版另看战斗位
-/// `+0x598`，没查]；其余打选中的那个。范围 2 选中的是自己人时改打敌方精最多的那个
-/// （`FUN_004f2bb0(i, 0)` 是当前精；原版先看战斗位 `+0x244`，置位的直接选它——那一位没查，这里不看）。
+/// 打谁（`FUN_004f0360`）。1 我方全体、3 敌方全体：原版把在场（`+0x241`）且 `+0x598` 为 0
+/// 的都算上——`+0x598` 只见清零、没见置位，倒下的虽然也在内，但 `FUN_004f2c70` 对倒下的
+/// 直接返回，所以这里只挑还站着的，改精的结果一样。其余打选中的那个。范围 2 选中的是自己人
+/// 时改打敌方：按位号头一个 boss（`+0x244`，见 `Combatant::boss`），没有 boss 就挑精最多的
+/// （`FUN_004f2bb0(i, 0)`，同精取先到的）。
 pub fn targets(def: &ComboDef, chosen: usize, battle: &Battle) -> Vec<usize> {
     let standing = |r: std::ops::Range<usize>| -> Vec<usize> {
         r.filter(|s| battle.get(*s).is_some_and(|c| c.in_play()))
@@ -152,17 +154,27 @@ pub fn targets(def: &ComboDef, chosen: usize, battle: &Battle) -> Vec<usize> {
     match def.range {
         1 => standing(0..PARTY_SLOTS),
         3 => standing(PARTY_SLOTS..SLOTS),
-        2 if chosen < PARTY_SLOTS => standing(PARTY_SLOTS..SLOTS)
-            .into_iter()
-            .fold(None::<(usize, i32)>, |best, s| {
-                let hp = battle.get(s).map_or(0, |c| c.hp);
-                match best {
-                    Some((_, b)) if b >= hp => best,
-                    _ => Some((s, hp)),
-                }
-            })
-            .map(|(s, _)| vec![s])
-            .unwrap_or_else(|| vec![chosen]),
+        2 if chosen < PARTY_SLOTS => {
+            let enemies = standing(PARTY_SLOTS..SLOTS);
+            if let Some(b) = enemies
+                .iter()
+                .copied()
+                .find(|s| battle.get(*s).is_some_and(|c| c.boss))
+            {
+                return vec![b];
+            }
+            enemies
+                .into_iter()
+                .fold(None::<(usize, i32)>, |best, s| {
+                    let hp = battle.get(s).map_or(0, |c| c.hp);
+                    match best {
+                        Some((_, b)) if b >= hp => best,
+                        _ => Some((s, hp)),
+                    }
+                })
+                .map(|(s, _)| vec![s])
+                .unwrap_or_else(|| vec![chosen])
+        }
         _ => vec![chosen],
     }
 }
@@ -183,6 +195,24 @@ pub fn hp_delta(def: &ComboDef, target: usize, battle: &mut Battle) -> i32 {
 mod tests {
     use super::*;
     use crate::openpal3::combat::state::{Combatant, Side};
+
+    #[test]
+    fn range_two_goes_for_the_boss_first() {
+        let mut d = lianhuan();
+        d.range = 2;
+        let mut b = Battle::new(1);
+        b.place(0, Combatant::new(101, Side::Party));
+        for (slot, hp, boss) in [(5usize, 100, false), (6, 50, true), (7, 80, false)] {
+            let mut c = Combatant::new(200 + slot as u32, Side::Enemy);
+            c.hp = hp;
+            c.max_hp = 100;
+            c.boss = boss;
+            b.place(slot, c);
+        }
+        assert_eq!(targets(&d, 0, &b), vec![6], "boss 优先");
+        b.get_mut(6).unwrap().boss = false;
+        assert_eq!(targets(&d, 0, &b), vec![5], "没有 boss 挑精最多的");
+    }
 
     /// 「连环破斩」：景天放洒金笺，雪见要带状态 14，两人各站风 / 土，拿剑 / 刺。
     fn lianhuan() -> ComboDef {

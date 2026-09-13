@@ -1217,6 +1217,13 @@ impl SceCommandCombat {
                 // +0x30c → +0x284）。
                 c.attack_mode = row.normal_attack_mode_id;
                 c.sp_on_hit = row.sp_impact_value;
+                // boss：模型名以 b/B 开头（`FUN_004ed250` 查 gdb `+0x206` 头一个字符）。
+                c.boss = row
+                    .model_id
+                    .as_str()
+                    .map(|m| m.starts_with(['b', 'B']))
+                    .unwrap_or(false);
+                let boss = c.boss;
                 for (i, v) in row.element_attribute_values.iter().enumerate() {
                     c.elements[i + 1] = *v > 0;
                 }
@@ -1224,6 +1231,11 @@ impl SceCommandCombat {
                 c.steal_item = (row.stealable_item_id != 0 && row.stealable_item_count > 0)
                     .then_some((row.stealable_item_id, row.stealable_item_count as i32));
                 battle.place(slot, c);
+                battle.apply_opening_states(
+                    slot,
+                    &row.combat_state_impact_types,
+                    boss || row.combat_state_impact_types[25] != 0,
+                );
 
                 profiles[slot] = Profile {
                     name: row.name.as_str().unwrap_or_else(|_| format!("#{id}")),

@@ -210,6 +210,9 @@ pub struct Combatant {
     pub exp_bonus: i32,
     /// 金钱加成百分比（`+0x2b0`）：聚宝盆（特殊类型 0x15）每件 +5。结算 `FUN_004fb370` 全队加总。
     pub money_bonus: i32,
+    /// boss（战斗位 `+0x244`）：gdb 模型名以 b/B 开头的敌人（`FUN_004ed250`）。合击技范围 2
+    /// 先挑它（`FUN_004f0360`），开局永久避毒。
+    pub boss: bool,
     /// 普攻顺手偷的几率（`+0x2b8`）：五件装备里每件特殊类型 0x17 的 +5（`FUN_004ee430`）。
     pub steal_chance: i32,
     /// 饰品栏戴着青铜护镜（0x1fae，`+0x2bd`，`FUN_004edf10` 末尾）：挨普攻时 41/1024 弹回去。
@@ -300,6 +303,7 @@ impl Combatant {
             skill_bonus: 0,
             exp_bonus: 0,
             money_bonus: 0,
+            boss: false,
             steal_chance: 0,
             reflect: false,
             sp_on_hit: 0,
@@ -1025,6 +1029,21 @@ impl Battle {
             && p.element_position == 6
             && !p.has_state(0x0e))
         .then_some(0)
+    }
+
+    /// 敌人开局的状态（`FUN_004ed250` 怪物那一支）：先永久挂上避毒（`+0x48f`、回合数 0x7fff）
+    /// ——boss 和 gdb `combat_state_impact_types[25]` 非 0 的都有；再把
+    /// `combat_state_impact_types` 前 0x17 个里非 0 的逐个挂上（`FUN_004f3e20(位, k, 1, 0)`，
+    /// 回合数照平常）。
+    pub fn apply_opening_states(&mut self, slot: usize, impact_types: &[u8], poison_immune: bool) {
+        if poison_immune {
+            self.set_state(slot, K_POISON_IMMUNE, true);
+        }
+        for (i, v) in impact_types.iter().take(0x17).enumerate() {
+            if *v != 0 {
+                self.set_state(slot, i + 1, true);
+            }
+        }
     }
 
     /// `FUN_004ed8c0`（开战）给每个人定普攻打法。先敌方后我方：
@@ -2181,6 +2200,22 @@ mod tests {
         b.get_mut(5).unwrap().pattern = HitPattern::Single;
         b.get_mut(0).unwrap().hp = 0;
         assert!(b.attackable(5, 1), "盘心倒了就打得到");
+    }
+
+    #[test]
+    fn monsters_open_with_their_innate_states() {
+        let mut b = Battle::new(7);
+        b.place(5, fighter(100, Side::Enemy, 50, 10, 5, 1));
+        let mut types = [0u8; 31];
+        types[5] = 1; // k6 武+
+        types[25] = 1;
+        b.apply_opening_states(5, &types, types[25] != 0);
+        let m = b.get(5).unwrap();
+        assert!(m.has_state(6));
+        assert!(m.has_state(K_POISON_IMMUNE));
+        assert_eq!(m.states[K_POISON_IMMUNE].remaining, FOREVER, "避毒是永久的");
+        b.set_state(5, 1, true);
+        assert!(!b.get(5).unwrap().has_state(1), "避毒挡住五毒");
     }
 
     #[test]
