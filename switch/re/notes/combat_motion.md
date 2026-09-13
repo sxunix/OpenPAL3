@@ -177,7 +177,7 @@ M01/1 打霹雳堂弟子甲（701）：开战后景天站成 z04 备战架势、
   舞台角色开场 `FUN_005092b0` 存几个名字的 CRC32：`+0x19f4` over、`+0x19f8` work、`+0x19fc` work1、
   之后 pause / store / flyup / flydown——正是 MV3 `action_desc` 里标记的名字。
 - 回调：参数等于 work 或 work1 才往下走；放打击音效（景天 wd023/wd025、雪见 wd028、龙葵 wd030/wd024、
-  其余 wd026/027/029）；怪物按 gdb `+0x310`（`properties[0]`）0x79..0x86 放特效组 0x144..0x14f
+  其余 wd026/027/029）；怪物按 gdb `+0x310`（`properties[0]`）121..134 查跳转表 0x50eac8 放特效组（0x144、—、0x145、0x146、0x147、—、0x148..0x14f，122 / 126 只放音效）
   和 `wd%03d`；然后 `FUN_004ef8b0` 结算：
   - 敌方（位 5..10）只在 work；
   - 龙葵（2 号位）武器类型 5 时 work 不算，每个标记结算武器 `combo_count`（`+0x2fc`）次；
@@ -186,5 +186,5 @@ M01/1 打霹雳堂弟子甲（701）：开战后景天站成 z04 备战架势、
   104 z01 work 0.699 s + work1 1.048 s；怪物 g：301 0.105 s、305 0.978 s、332 0.384 s、B01 0.140 s。
   所以动作里有 work1 的人普攻打两下，每下都是完整的 `FUN_004f0a10`。
 - 移植：`motion::attack_hits`、`StageActor::attack_hits`（开场读攻击动作 MV3）、`CombatSession::attack_hit`；
-  `HIT_DELAY` 只在没标记时兜底。没搬：打击音效、怪物的打击特效。
+  `HIT_DELAY` 只在没标记时兜底。打击音效、敌方的打击特效也照上面的规则放了（`motion::hit_sound` / `hit_effect`，敌方的 `work1` 只放不结算）。
 

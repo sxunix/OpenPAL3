@@ -291,8 +291,10 @@ struct StageRun {
     played: [bool; 2],
     /// 合击技（编排任务 0x514220）：前后多几步渐黑 / 摆位 / 渐亮和名字横幅。
     combo: bool,
-    /// 普攻已经结算了几下（见 `motion::attack_hits`）。
+    /// 普攻已经结算了几下（见 `motion::attack_events`）。
     hits_done: u32,
+    /// 普攻已经处理到第几个标记事件。
+    events_done: usize,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -365,8 +367,8 @@ struct StageActor {
     released: bool,
     /// 特效给的透明度（`gbVisNode::SetBlend`）。
     alpha: f32,
-    /// 普攻结算的（时刻, 次数），见 `motion::attack_hits`。
-    attack_hits: Vec<(f32, u32)>,
+    /// 普攻的标记事件（结算次数、音效、特效），见 `motion::attack_events`。
+    hit_events: Vec<motion::HitEvent>,
 }
 
 /// 走位中。
@@ -778,7 +780,7 @@ impl SceCommandCombat {
                 self.actors.resize(SLOTS, None);
             }
             // 普攻的结算时刻（`FUN_0050e550`）：攻击动作 MV3 里的 `work` / `work1` 标记。
-            let attack_hits = {
+            let hit_events = {
                 let tags: Vec<(String, u32)> = set
                     .name(motion::Motion::Attack)
                     .map(|action| asset_mgr.mv3_path(&model, action))
@@ -796,13 +798,38 @@ impl SceCommandCombat {
                         .find(|(n, _)| n == name)
                         .map(|(_, t)| *t as f32 / 4580.)
                 };
-                motion::attack_hits(slot, at("work"), at("work1"), c.weapon_type, c.weapon_hits)
+                let monster_value = db
+                    .combat_actor(c.actor_id)
+                    .map(|a| a.properties[0] as i32)
+                    .unwrap_or(0);
+                let mut events = motion::attack_events(
+                    slot,
+                    at("work"),
+                    at("work1"),
+                    c.weapon_type,
+                    c.weapon_hits,
+                );
+                for e in &mut events {
+                    if let Some(tag) = e.tag {
+                        e.sound = motion::hit_sound(
+                            slot,
+                            tag,
+                            c.weapon_type,
+                            c.magic_sword,
+                            monster_value,
+                        );
+                        if slot >= PARTY_SLOTS {
+                            e.effect = motion::hit_effect(monster_value);
+                        }
+                    }
+                }
+                events
             };
-            log::info!("Combat: 位 {slot}（{model}）普攻结算时刻 {attack_hits:?}");
+            log::info!("Combat: 位 {slot}（{model}）普攻标记 {hit_events:?}");
             self.actors[slot] = Some(StageActor {
                 entity,
                 set,
-                attack_hits,
+                hit_events,
                 last: Snapshot::of(c, None),
                 hide_in: None,
                 home,
@@ -1121,6 +1148,14 @@ impl SceCommandCombat {
                     .and_then(|id| db.item(id))
                     .map(|i| i.combo_count)
                     .unwrap_or(0);
+                // 0 号位拿魔剑（没拿武器也按魔剑，`FUN_004ed8c0`），打击音效用。
+                c.magic_sword = actor_id == 0
+                    && persistent
+                        .equipped(
+                            actor_id,
+                            crate::openpal3::states::persistent_state::SLOT_WEAPON,
+                        )
+                        .is_none_or(|id| id == 0x19cb);
                 // 五件装备（武器不算）逐件累加（`FUN_004edf10`）：减气耗 `+0x290`、减神耗
                 // `+0x294`、暴击加成 `+0x298`；特殊类型 0x17 的每件顺手偷 +5（`FUN_004ee430`，
                 // 其余几种写的字段普攻不读）；饰品栏戴着青铜护镜的挨普攻会反弹（`+0x2bd`）。
@@ -1639,6 +1674,11 @@ impl SceCommandCombat {
             .iter()
             .map(|a| a.as_ref().map(|a| a.entity.transform().borrow().position()))
             .collect();
+        let homes: Vec<Option<Vec3>> = self
+            .actors
+            .iter()
+            .map(|a| a.as_ref().map(|a| a.home))
+            .collect();
         let side_anchors = self.side_anchors;
         let Some(session) = self.session.as_mut() else {
             return;
@@ -1684,6 +1724,7 @@ impl SceCommandCombat {
                 played: [false; 2],
                 combo: matches!(session.pending, Some(Pending::Combo { .. })),
                 hits_done: 0,
+                events_done: 0,
             });
         }
         let target = match session.pending {
@@ -1890,27 +1931,40 @@ impl SceCommandCombat {
                         }
                     }
                 }
-                // 普攻按攻击动作里的 `work` / `work1` 标记结算几下（`FUN_0050e550`，见
-                // `motion::attack_hits`），最后一下才算行动做完；其余按 efflinker 写的时刻结算一次。
-                let hits: Vec<(f32, u32)> = if run.kind == ActKind::Attack && run.link.is_none() {
-                    actor.attack_hits.clone()
-                } else {
-                    vec![(
-                        run.link.map(|l| l.result_at).unwrap_or(motion::HIT_DELAY),
-                        1,
-                    )]
-                };
-                let total: u32 = hits.iter().map(|h| h.1).sum();
-                let due: u32 = hits.iter().filter(|h| t >= h.0).map(|h| h.1).sum();
-                while run.hits_done < due {
-                    run.hits_done += 1;
-                    if run.hits_done >= total {
-                        session.strike();
-                    } else {
-                        session.attack_hit();
+                // 普攻按攻击动作里的 `work` / `work1` 标记逐个处理（`FUN_0050e550`，见
+                // `motion::attack_events`）：先放打击音效、敌方的打击特效（目标站位），再结算那几下，
+                // 最后一下才算行动做完。其余按 efflinker 写的时刻结算一次。
+                let hit_at = if run.kind == ActKind::Attack && run.link.is_none() {
+                    let events = &actor.hit_events;
+                    let total: u32 = events.iter().map(|e| e.repeats).sum();
+                    while run.events_done < events.len() && t >= events[run.events_done].at {
+                        let e = &events[run.events_done];
+                        run.events_done += 1;
+                        if let Some(name) = &e.sound {
+                            ui_sound::play(state, name);
+                        }
+                        let at = run.target.and_then(|t| homes.get(t).copied().flatten());
+                        if let (Some(group), Some(at)) = (e.effect, at) {
+                            state.play_effect(group, at);
+                        }
+                        for _ in 0..e.repeats {
+                            run.hits_done += 1;
+                            if run.hits_done >= total {
+                                session.strike();
+                            } else {
+                                session.attack_hit();
+                            }
+                        }
                     }
-                }
-                let hit_at = hits.last().map(|h| h.0).unwrap_or(motion::HIT_DELAY);
+                    events.last().map(|e| e.at).unwrap_or(motion::HIT_DELAY)
+                } else {
+                    let at = run.link.map(|l| l.result_at).unwrap_or(motion::HIT_DELAY);
+                    if t >= at && run.hits_done == 0 {
+                        run.hits_done = 1;
+                        session.strike();
+                    }
+                    at
+                };
                 let effects_done = run
                     .link
                     .is_none_or(|l| l.effects().enumerate().all(|(k, _)| run.played[k]));

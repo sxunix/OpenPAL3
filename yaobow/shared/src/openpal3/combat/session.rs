@@ -705,7 +705,7 @@ impl CombatSession {
     }
 
     /// 普攻除最后一下之外的那几下（动作里 `work` / `work1` 两个标记、龙葵的武器连击，见
-    /// `motion::attack_hits`）：照样结算一次 `FUN_004f0a10`，行动留着等最后一下 [`Self::strike`]。
+    /// `motion::attack_events`）：照样结算一次 `FUN_004f0a10`，行动留着等最后一下 [`Self::strike`]。
     pub fn attack_hit(&mut self) {
         let Some(st) = self.staging else {
             return;

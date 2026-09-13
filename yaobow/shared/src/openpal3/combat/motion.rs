@@ -14,7 +14,7 @@
 //! 时序照原版：出手段里原地摆 z061 等出手条满（`FUN_00514870` 调
 //! `FUN_0050a8e0(4)`），条满后才排走位、出手、结算（任务 0x514ae0）。攻击
 //! 走位照 `FUN_0050da90`（480/秒、停在离目标 42 处）。普攻在攻击动作 MV3 的
-//! `work` / `work1` 标记处结算（[`attack_hits`]，`FUN_0050e550`）；仙术、道具按
+//! `work` / `work1` 标记处结算（[`attack_events`]，`FUN_0050e550`）；仙术、道具按
 //! efflinker 写的时刻。演出由舞台驱动（`combat.rs`），这里只放规则和常量。逆向记录在
 //! `switch/re/notes/combat_motion.md`。
 
@@ -282,51 +282,132 @@ pub fn strike_motion(kind: ActKind) -> Option<Motion> {
 }
 
 /// 动作里没有 `work` / `work1` 标记时的退路（出手动作开始后多久结算）。普攻正常走
-/// [`attack_hits`]；仙术、道具有 efflinker 时按它写的时刻。
+/// [`attack_events`]；仙术、道具有 efflinker 时按它写的时刻。
 pub const HIT_DELAY: f32 = 0.3;
 
-/// 普攻打几下、各在什么时候（攻击任务的动作回调 `FUN_0050e550`）。攻击动作的 MV3 里有
-/// `work` 标记（有的人还有 `work1`，MV3 的 tick 每秒 4580），动作播到标记时回调收到它名字
-/// 的 CRC32，和舞台角色开场存的 `+0x19f8`（`work`）/ `+0x19fc`（`work1`）比（`FUN_005092b0`）：
+/// 攻击动作里的标记（MV3 `action_desc` 的名字；舞台角色开场存了它们的 CRC32，`FUN_005092b0`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HitTag {
+    Work,
+    Work1,
+}
+
+/// 普攻的一个标记事件：动作播到 `at` 秒时先放音效 / 特效，再结算 `repeats` 次（可以是 0）。
+#[derive(Debug, Clone, PartialEq)]
+pub struct HitEvent {
+    pub at: f32,
+    /// `None` 是动作里一次结算都排不上时的退路。
+    pub tag: Option<HitTag>,
+    pub repeats: u32,
+    pub sound: Option<String>,
+    pub effect: Option<i32>,
+}
+
+/// 普攻的标记事件（攻击任务的动作回调 `FUN_0050e550`）。攻击动作的 MV3 里有 `work` 标记
+/// （有的人还有 `work1`，MV3 的 tick 每秒 4580），动作播到标记时回调收到它名字的 CRC32，
+/// 和舞台角色开场存的 `+0x19f8`（`work`）/ `+0x19fc`（`work1`）比（`FUN_005092b0`）。两个
+/// 标记都会放音效 / 特效，结算次数：
 ///
-/// * 敌方（位 5..10）只在 `work` 结算一次；
-/// * 龙葵（2 号位）武器类型 5 时 `work` 不算；每个标记结算武器 `combo_count` 次（≤ 1 按 1 次）；
+/// * 敌方（位 5..10）只在 `work` 结算一次，`work1` 不结算；
+/// * 龙葵（2 号位）武器类型 5 时 `work` 不结算；每个标记结算武器 `combo_count` 次（≤ 1 按 1 次）；
 /// * 其余我方每个标记结算一次——所以动作里有 `work1` 的人普攻打两下。
 ///
-/// 每次结算都是完整的一次 `FUN_004f0a10`（暴击各掷各的）。返回（时刻, 次数），按时刻排；
-/// 一个标记都用不上时退回 [`HIT_DELAY`] 一次。
-pub fn attack_hits(
+/// 每次结算都是完整的一次 `FUN_004f0a10`（暴击各掷各的）。按时刻排；一次结算都排不上时
+/// 补一个 [`HIT_DELAY`] 的退路。
+pub fn attack_events(
     slot: usize,
     work: Option<f32>,
     work1: Option<f32>,
     weapon_type: u8,
     weapon_hits: i32,
-) -> Vec<(f32, u32)> {
-    let mut hits = Vec::new();
-    if slot >= PARTY_SLOTS {
-        if let Some(t) = work {
-            hits.push((t, 1));
-        }
+) -> Vec<HitEvent> {
+    let n = if slot == 2 {
+        weapon_hits.max(1) as u32
     } else {
-        let n = if slot == 2 {
-            weapon_hits.max(1) as u32
+        1
+    };
+    let mut events = Vec::new();
+    for (tag, at) in [(HitTag::Work, work), (HitTag::Work1, work1)] {
+        let Some(at) = at else { continue };
+        let repeats = if slot >= PARTY_SLOTS {
+            u32::from(tag == HitTag::Work)
+        } else if slot == 2 && tag == HitTag::Work && weapon_type == 5 {
+            0
         } else {
-            1
+            n
         };
-        if let Some(t) = work {
-            if !(slot == 2 && weapon_type == 5) {
-                hits.push((t, n));
+        events.push(HitEvent {
+            at,
+            tag: Some(tag),
+            repeats,
+            sound: None,
+            effect: None,
+        });
+    }
+    if events.iter().all(|e| e.repeats == 0) {
+        events.push(HitEvent {
+            at: HIT_DELAY,
+            tag: None,
+            repeats: 1,
+            sound: None,
+            effect: None,
+        });
+    }
+    events.sort_by(|a, b| a.at.total_cmp(&b.at));
+    events
+}
+
+/// 打击音效（`FUN_0050e550` 0x50e6e6 起）。我方按人：景天拿魔剑 wd023、否则 wd025；雪见
+/// wd028；龙葵武器类型 7 时 wd030，否则只在 `work1` 放 wd024；紫萱武器类型 4 时 wd027、否则
+/// wd026；长卿武器类型 2 时 wd025、否则 wd029。敌方是 `wd%03d`，数取 gdb `properties[0]`
+/// （`__ftol`），为 0 不放。
+pub fn hit_sound(
+    slot: usize,
+    tag: HitTag,
+    weapon_type: u8,
+    magic_sword: bool,
+    monster_value: i32,
+) -> Option<String> {
+    let name = match slot {
+        0 => {
+            if magic_sword {
+                "wd023"
+            } else {
+                "wd025"
             }
         }
-        if let Some(t) = work1 {
-            hits.push((t, n));
+        1 => "wd028",
+        2 if weapon_type == 7 => "wd030",
+        2 if tag == HitTag::Work1 => "wd024",
+        2 => return None,
+        3 => {
+            if weapon_type == 4 {
+                "wd027"
+            } else {
+                "wd026"
+            }
         }
-    }
-    if hits.is_empty() {
-        hits.push((HIT_DELAY, 1));
-    }
-    hits.sort_by(|a, b| a.0.total_cmp(&b.0));
-    hits
+        4 => {
+            if weapon_type == 2 {
+                "wd025"
+            } else {
+                "wd029"
+            }
+        }
+        _ => return (monster_value != 0).then(|| format!("wd{monster_value:03}")),
+    };
+    Some(name.to_string())
+}
+
+/// 敌方的打击特效（0x50e85c，跳转表 0x50eac8）：`properties[0]` 从 121 到 134 对特效组
+/// 0x144、—、0x145、0x146、0x147、—、0x148..0x14f（122、126 两格只放音效），位置是目标的
+/// 站位、高度 0。
+pub fn hit_effect(monster_value: i32) -> Option<i32> {
+    const GROUPS: [i32; 14] = [
+        0x144, 0, 0x145, 0x146, 0x147, 0, 0x148, 0x149, 0x14a, 0x14b, 0x14c, 0x14d, 0x14e, 0x14f,
+    ];
+    let i = usize::try_from(monster_value - 0x79).ok()?;
+    GROUPS.get(i).copied().filter(|g| *g != 0)
 }
 
 // ---------------------------------------------------------------- 走位
@@ -644,26 +725,67 @@ mod tests {
     }
 
     #[test]
-    fn attack_hits_follow_the_work_tags() {
-        // 景天只有 work。
-        assert_eq!(attack_hits(0, Some(0.664), None, 2, 0), vec![(0.664, 1)]);
-        // 雪见 work + work1：打两下。
+    fn attack_events_follow_the_work_tags() {
+        let hits = |ev: Vec<HitEvent>| ev.iter().map(|e| (e.at, e.repeats)).collect::<Vec<_>>();
         assert_eq!(
-            attack_hits(1, Some(0.699), Some(1.048), 6, 0),
-            vec![(0.699, 1), (1.048, 1)]
+            hits(attack_events(0, Some(0.664), None, 2, 0)),
+            vec![(0.664, 1)]
         );
-        // 怪物只认 work。
         assert_eq!(
-            attack_hits(5, Some(0.105), Some(0.5), 0, 0),
-            vec![(0.105, 1)]
+            hits(attack_events(1, Some(0.699), Some(1.048), 6, 0)),
+            vec![(0.699, 1), (1.048, 1)],
+            "有 work1 的打两下"
         );
-        // 龙葵：武器连击 3，类型 5 时 work 不算。
-        assert_eq!(attack_hits(2, Some(0.3), Some(0.6), 5, 3), vec![(0.6, 3)]);
         assert_eq!(
-            attack_hits(2, Some(0.3), Some(0.6), 7, 0),
+            hits(attack_events(5, Some(0.105), Some(0.5), 0, 0)),
+            vec![(0.105, 1), (0.5, 0)],
+            "怪物的 work1 只放音效特效"
+        );
+        assert_eq!(
+            hits(attack_events(2, Some(0.3), Some(0.6), 5, 3)),
+            vec![(0.3, 0), (0.6, 3)]
+        );
+        assert_eq!(
+            hits(attack_events(2, Some(0.3), Some(0.6), 7, 0)),
             vec![(0.3, 1), (0.6, 1)]
         );
-        // 没标记退回固定时刻。
-        assert_eq!(attack_hits(5, None, None, 0, 0), vec![(HIT_DELAY, 1)]);
+        assert_eq!(
+            hits(attack_events(5, None, None, 0, 0)),
+            vec![(HIT_DELAY, 1)]
+        );
+    }
+
+    #[test]
+    fn hit_sounds_and_effects_follow_the_callback() {
+        assert_eq!(
+            hit_sound(0, HitTag::Work, 2, true, 0).as_deref(),
+            Some("wd023")
+        );
+        assert_eq!(
+            hit_sound(0, HitTag::Work, 2, false, 0).as_deref(),
+            Some("wd025")
+        );
+        assert_eq!(hit_sound(2, HitTag::Work, 5, false, 0), None);
+        assert_eq!(
+            hit_sound(2, HitTag::Work1, 5, false, 0).as_deref(),
+            Some("wd024")
+        );
+        assert_eq!(
+            hit_sound(4, HitTag::Work, 1, false, 0).as_deref(),
+            Some("wd029")
+        );
+        assert_eq!(
+            hit_sound(6, HitTag::Work, 0, false, 123).as_deref(),
+            Some("wd123")
+        );
+        assert_eq!(hit_sound(6, HitTag::Work, 0, false, 0), None);
+        assert_eq!(hit_effect(0x79), Some(0x144));
+        assert_eq!(hit_effect(0x7a), None, "122 只放音效");
+        assert_eq!(hit_effect(0x7b), Some(0x145));
+        assert_eq!(hit_effect(0x7e), None, "126 只放音效");
+        assert_eq!(hit_effect(0x7f), Some(0x148));
+        assert_eq!(hit_effect(0x86), Some(0x14f));
+        assert_eq!(hit_effect(0), None);
+        assert_eq!(hit_effect(0x87), None);
     }
 }

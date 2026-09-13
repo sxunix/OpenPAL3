@@ -214,8 +214,11 @@ pub struct Combatant {
     /// 先挑它（`FUN_004f0360`），开局永久避毒。
     pub boss: bool,
     /// 手上武器的 `combo_count`（gdb 物品 `+0x2fc`）：龙葵普攻每个动作标记结算这么多次
-    /// （`FUN_0050e550`，见 `motion::attack_hits`）。
+    /// （`FUN_0050e550`，见 `motion::attack_events`）。
     pub weapon_hits: i32,
+    /// 0 号位拿的是魔剑（`+0x28c`，`FUN_004ed8c0`；没拿武器时原版塞一把魔剑，也算）。
+    /// 打击音效用（`motion::hit_sound`）。
+    pub magic_sword: bool,
     /// 普攻顺手偷的几率（`+0x2b8`）：五件装备里每件特殊类型 0x17 的 +5（`FUN_004ee430`）。
     pub steal_chance: i32,
     /// 饰品栏戴着青铜护镜（0x1fae，`+0x2bd`，`FUN_004edf10` 末尾）：挨普攻时 41/1024 弹回去。
@@ -308,6 +311,7 @@ impl Combatant {
             money_bonus: 0,
             boss: false,
             weapon_hits: 0,
+            magic_sword: false,
             steal_chance: 0,
             reflect: false,
             sp_on_hit: 0,
