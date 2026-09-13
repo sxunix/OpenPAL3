@@ -130,10 +130,12 @@ pub enum MenuEntry {
     Ai,
     /// 阵型面板（控制盘的「陣」）。
     Lineup,
+    /// 援护面板（控制盘的「援」）。
+    Protect,
 }
 
 impl MenuEntry {
-    pub const ALL: [MenuEntry; 8] = [
+    pub const ALL: [MenuEntry; 9] = [
         MenuEntry::Attack,
         MenuEntry::Skill,
         MenuEntry::Item,
@@ -142,6 +144,7 @@ impl MenuEntry {
         MenuEntry::Special,
         MenuEntry::Ai,
         MenuEntry::Lineup,
+        MenuEntry::Protect,
     ];
 
     pub fn label(self) -> &'static str {
@@ -154,6 +157,7 @@ impl MenuEntry {
             MenuEntry::Special => "特技",
             MenuEntry::Ai => "AI",
             MenuEntry::Lineup => "阵型",
+            MenuEntry::Protect => "援护",
         }
     }
 }
@@ -196,6 +200,12 @@ pub enum Menu {
         held: Option<usize>,
         moved: bool,
     },
+    /// 援护面板（`FUN_0051bc70`）。`focus` 0..=2 是雪见、龙葵、紫萱三格，
+    /// [`hud::PROTECT_OK_FOCUS`] 是「确定」；`draft` 是面板上勾着的战斗位。
+    Protect {
+        focus: usize,
+        draft: Option<usize>,
+    },
     /// `index` is into [`CombatSession::items`].
     Items {
         index: usize,
@@ -218,6 +228,8 @@ pub struct PlayerTurn {
 const SFX_CLICK: &str = "wa001";
 const SFX_NOTE: &str = "wa003";
 const SFX_DENIED: &str = "wa004";
+/// 情加了（`FUN_004f34e0` 正数那一支）。
+const SFX_AFFECTION: &str = "wa010";
 
 /// 合击技开演用的出手速度倍率：大于 3 就是瞬发（`FUN_00514870` 里 `FUN_004db750(k, 0, 11500, 1)`）。
 const COMBO_MULTIPLIER: i32 = 4;
@@ -737,7 +749,9 @@ impl CombatSession {
                         _ => (1, 0),
                     };
                     let from = hud::RingButton::of_entry(MenuEntry::ALL[index]);
-                    let to = hud::ring_move(from, step, |b| b.entry().is_some());
+                    let to = hud::ring_move(from, step, |b| {
+                        b.entry().is_some_and(|e| self.entry_enabled(slot, e))
+                    });
                     if let Some(i) = to
                         .entry()
                         .and_then(|e| MenuEntry::ALL.iter().position(|x| *x == e))
@@ -798,6 +812,20 @@ impl CombatSession {
                             moved: false,
                         };
                     }
+                    MenuEntry::Protect => {
+                        if self.entry_enabled(slot, MenuEntry::Protect) {
+                            // 打开（0x4de8ea）：护的对象不在 1..=3 就当没有；放 wa003。
+                            let draft = self
+                                .battle
+                                .get(0)
+                                .and_then(|c| c.protecting)
+                                .filter(|t| (1..=3).contains(t));
+                            self.sfx.push(SFX_NOTE);
+                            turn.menu = Menu::Protect { focus: 0, draft };
+                        } else {
+                            self.sfx.push(SFX_DENIED);
+                        }
+                    }
                     MenuEntry::Defend => {
                         self.turn = None;
                         self.battle.defend(slot);
@@ -853,10 +881,10 @@ impl CombatSession {
                         turn.menu = Menu::Ai { focus, draft };
                     }
                     Input::Confirm => {
-                        // 确定（0xdc，0x4dda28）：放 wa001，六个开关写进战斗位；和打开时
-                        // 比有变化就置 `+0x60` 回主调度重走回合开头（0x4ddc08），没变化
-                        // 回控制盘。回合开头见 AI 开着就交给托管，所以这里直接托管
-                        // `[推断：+0x60 的去向没逐条跟]`。
+                        // 确定（0xdc，0x4dda28）：放 wa001，六个开关写进战斗位；和打开时比有变化就置
+                        // `+0x60`，把 0x10a 当这一回合的行动（0x513b3f → 任务 0x5158f0，只做
+                        // `FUN_004db710` 两条清零）——这一回合用掉，下回合起才由托管出手。没变化
+                        // 回控制盘。
                         self.sfx.push(SFX_CLICK);
                         let changed = self
                             .battle
@@ -866,9 +894,10 @@ impl CombatSession {
                         if let Some(c) = self.battle.get_mut(slot) {
                             c.delegation = draft;
                         }
-                        if changed && draft.on {
+                        if changed {
                             self.turn = None;
-                            self.act_by_delegate(slot);
+                            self.push_log(format!("{} 改了托管", self.name(slot)));
+                            self.battle.finish_turn(slot);
                             self.settle_outcome();
                             return;
                         }
@@ -946,6 +975,58 @@ impl CombatSession {
                         }
                         turn.menu = Menu::Main { index: back };
                     }
+                }
+            }
+            Menu::Protect { focus, draft } => {
+                let back = MenuEntry::ALL
+                    .iter()
+                    .position(|e| *e == MenuEntry::Protect)
+                    .unwrap_or(0);
+                match input {
+                    Input::Up => {
+                        turn.menu = Menu::Protect {
+                            focus: focus.saturating_sub(1),
+                            draft,
+                        };
+                    }
+                    Input::Down => {
+                        turn.menu = Menu::Protect {
+                            focus: (focus + 1).min(hud::PROTECT_OK_FOCUS),
+                            draft,
+                        };
+                    }
+                    Input::Left | Input::Right => {}
+                    // 三格是单选：点一格先全清再勾它（0x4dedc0）；点勾着的那格就取消。
+                    // 人不在场或倒下的那格是灰的（0x4deafe）。
+                    Input::Confirm if focus < hud::PROTECT_OK_FOCUS => {
+                        let t = focus + 1;
+                        if self.can_be_protected(t) {
+                            let draft = if draft == Some(t) { None } else { Some(t) };
+                            turn.menu = Menu::Protect { focus, draft };
+                        }
+                    }
+                    // 确定（0x4dec61）：写 0 号位 `+0x27c`；和打开时一样就回控制盘，变了就
+                    // 置 `+0x60` 把 0x10c 当这一回合的行动——那个任务（0x5158f0）只做
+                    // `FUN_004db710`，两条清零，也就是这一回合用掉。
+                    Input::Confirm => {
+                        let before = self.battle.get(0).and_then(|c| c.protecting);
+                        if let Some(c) = self.battle.get_mut(0) {
+                            c.protecting = draft;
+                        }
+                        if before != draft {
+                            self.turn = None;
+                            let line = match draft {
+                                Some(t) => format!("{} 援护 {}", self.name(0), self.name(t)),
+                                None => format!("{} 不再援护", self.name(0)),
+                            };
+                            self.push_log(line);
+                            self.battle.finish_turn(slot);
+                            self.settle_outcome();
+                            return;
+                        }
+                        turn.menu = Menu::Main { index: back };
+                    }
+                    Input::Cancel => turn.menu = Menu::Main { index: back },
                 }
             }
             Menu::Skills { index } => {
@@ -1152,6 +1233,20 @@ impl CombatSession {
         outcome != Outcome::Ongoing
     }
 
+    /// 控制盘上这一格对 `slot` 能不能按。「援」只给 0 号位景天——面板读写的全是 0 号位的
+    /// `+0x27c` `[推断：原版按钮的可用条件没找到写入处]`。
+    pub fn entry_enabled(&self, slot: usize, entry: MenuEntry) -> bool {
+        match entry {
+            MenuEntry::Protect => slot == 0,
+            _ => true,
+        }
+    }
+
+    /// 援护面板上这一格能不能勾：人在场且站着（0x4deb01 查 `+0x241` 和 `FUN_004ed010`）。
+    pub fn can_be_protected(&self, slot: usize) -> bool {
+        self.battle.get(slot).map(|c| c.in_play()).unwrap_or(false)
+    }
+
     /// 站在五灵位 `spot` 上的我方（在场，倒下的也算——原版按 `+0x241` 找）。
     pub fn lineup_occupant(&self, spot: u8) -> Option<usize> {
         (0..PARTY_SLOTS).find(|s| {
@@ -1318,7 +1413,22 @@ impl CombatSession {
     }
 
     fn attack(&mut self, slot: usize, target: usize) {
+        let guard = self.battle.protector_for(target);
         let moved = self.battle.basic_attack(slot, target);
+        if let Some(p) = guard {
+            // 援护挡下（0x4f0d3a）：被护的人情 +1，放 wa010。
+            if let Some(t) = self.battle.get_mut(target) {
+                t.affection = (t.affection + 1).clamp(0, 999);
+            }
+            self.sfx.push(SFX_AFFECTION);
+            self.push_log(format!("{} 替 {} 挡下", self.name(p), self.name(target)));
+            log::info!(
+                "Combat: 援护 {} 替 {} 挡下 精{:+}",
+                self.name(p),
+                self.name(target),
+                moved
+            );
+        }
         self.push_log(format!(
             "{} 攻击 {} 精{:+}",
             self.name(slot),
@@ -1498,6 +1608,14 @@ impl CombatSession {
     /// Anything that has fallen since the last look gets a settlement
     /// entry, credited to `actor` if it is on the party's side.
     fn note_deaths(&mut self, actor: usize) {
+        // `FUN_005136d0`：被护的人离场，援护就清掉。
+        if let Some(t) = self.battle.get(0).and_then(|c| c.protecting) {
+            if !self.can_be_protected(t) {
+                if let Some(c) = self.battle.get_mut(0) {
+                    c.protecting = None;
+                }
+            }
+        }
         let killer = self
             .battle
             .get(actor)
@@ -1804,8 +1922,8 @@ mod tests {
         ));
         s.input(Input::Down);
         s.input(Input::Confirm);
-        assert!(s.turn.is_none(), "改过开关，这一回合就交给托管");
-        assert_eq!(s.pending, Some(Pending::Attack { slot: 0, target: 5 }));
+        assert!(s.turn.is_none(), "改过开关，这一回合用掉");
+        assert!(s.pending.is_none(), "这一回合不出手");
         assert!(s.battle.get(0).unwrap().delegation.on);
         for _ in 0..10_000 {
             if let Some(outcome) = s.tick(0.05) {
@@ -1890,6 +2008,77 @@ mod tests {
         s.battle.get_mut(1).unwrap().alive = true;
         assert!(s.rearrange(0, 6));
         assert_eq!(s.battle.get(1).unwrap().element_position, 1, "对调");
+    }
+
+    fn with_ally(s: &mut CombatSession) {
+        let mut ally = fighter(Side::Party, 50, 1);
+        ally.element_position = 1;
+        s.battle.place(1, ally);
+    }
+
+    #[test]
+    fn protect_takes_the_blow_only_from_the_centre_of_the_disc() {
+        let mut s = session();
+        with_ally(&mut s);
+        let me = s.battle.get_mut(0).unwrap();
+        me.protecting = Some(1);
+        me.element_position = 3;
+        s.attack(5, 1);
+        assert!(s.battle.get(1).unwrap().hp < 50, "不在盘心护不了");
+
+        let mut s = session();
+        with_ally(&mut s);
+        let me = s.battle.get_mut(0).unwrap();
+        me.protecting = Some(1);
+        me.element_position = 6;
+        s.attack(5, 1);
+        assert_eq!(s.battle.get(1).unwrap().hp, 50, "被护的人没挨打");
+        assert!(s.battle.get(0).unwrap().hp < 200, "景天替他挨了");
+        assert_eq!(s.battle.get(1).unwrap().affection, 1);
+        assert_eq!(s.sfx.last(), Some(&SFX_AFFECTION));
+    }
+
+    #[test]
+    fn the_protect_panel_picks_one_and_uses_up_the_turn() {
+        let mut s = session();
+        assert_eq!(run_until_turn(&mut s), 0);
+        with_ally(&mut s);
+        // 控制盘：擊 → 上「技」→ 右「援」。
+        s.input(Input::Up);
+        s.input(Input::Right);
+        let protect = MenuEntry::ALL
+            .iter()
+            .position(|e| *e == MenuEntry::Protect)
+            .unwrap();
+        assert_eq!(s.turn.unwrap().menu, Menu::Main { index: protect });
+        s.input(Input::Confirm);
+        assert_eq!(
+            s.turn.unwrap().menu,
+            Menu::Protect {
+                focus: 0,
+                draft: None
+            }
+        );
+        s.input(Input::Down);
+        s.input(Input::Confirm);
+        assert!(
+            matches!(s.turn.unwrap().menu, Menu::Protect { draft: None, .. }),
+            "龙葵不在场，勾不上"
+        );
+        s.input(Input::Up);
+        s.input(Input::Confirm);
+        assert!(matches!(
+            s.turn.unwrap().menu,
+            Menu::Protect { draft: Some(1), .. }
+        ));
+        for _ in 0..3 {
+            s.input(Input::Down);
+        }
+        s.input(Input::Confirm);
+        assert!(s.turn.is_none(), "改了援护，这一回合用掉");
+        assert!(s.pending.is_none());
+        assert_eq!(s.battle.get(0).unwrap().protecting, Some(1));
+        assert!(!s.entry_enabled(1, MenuEntry::Protect), "「援」只给景天");
     }
 
     #[test]

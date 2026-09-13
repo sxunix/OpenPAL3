@@ -175,6 +175,11 @@ pub struct Combatant {
     pub phase: Phase,
     /// 我方托管的六个开关（战斗位 `+0x568..+0x56d`），见 [`super::ai::Delegation`]。
     pub delegation: super::ai::Delegation,
+    /// 「情」（战斗位 `+0x274`，开战时 `FUN_004ed250` 从冒险侧的好感表拷进来）。援护替人
+    /// 挡下时被护的人 +1（`FUN_004f34e0`，夹在 0..999）。
+    pub affection: i32,
+    /// 援护对象（战斗位 `+0x27c`，只有 0 号位景天的有意义）：护着哪个战斗位。开战清零。
+    pub protecting: Option<usize>,
 }
 
 impl Combatant {
@@ -208,6 +213,8 @@ impl Combatant {
             cast_rate: 0,
             phase: Phase::Charging,
             delegation: Default::default(),
+            affection: 0,
+            protecting: None,
         }
     }
 
@@ -903,12 +910,29 @@ impl Battle {
         }
     }
 
+    /// `FUN_004eee60`：打 `target` 的这一下有没有人替他挨。0 号位得在场站着、护的正是他、
+    /// 站在盘心（五灵位 6）、没有 0x0e；另三道（`FUN_0050a770` 站位几何、`FUN_0050a700`、
+    /// `FUN_004fca00(0x12)`）是舞台那边的，移植没有。只管我方 1..4 号位（0x4f0c3f 那一段）。
+    pub fn protector_for(&self, target: usize) -> Option<usize> {
+        if target == 0 || target >= PARTY_SLOTS {
+            return None;
+        }
+        let p = self.get(0)?;
+        (p.protecting == Some(target)
+            && p.in_play()
+            && p.element_position == 6
+            && !p.has_state(0x0e))
+        .then_some(0)
+    }
+
     /// A plain physical attack from `attacker` onto `target`.
     pub fn basic_attack(&mut self, attacker: usize, target: usize) -> i32 {
         let delta = self.physical_hit(attacker, target);
+        // 援护：伤害照打 `target` 算，落到护的人身上（`FUN_004f2c70(0, …)`，0x4f0d3a）。
+        let victim = self.protector_for(target).unwrap_or(target);
         // The original does not clamp a negative-damage (defence-heavy)
         // result here; the HP path decides what happens.
-        self.get_mut(target)
+        self.get_mut(victim)
             .map(|t| t.change_hp(delta))
             .unwrap_or(0)
     }

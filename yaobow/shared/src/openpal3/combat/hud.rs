@@ -168,6 +168,7 @@ impl RingButton {
             RingButton::Flee => Some(MenuEntry::Escape),
             RingButton::Ai => Some(MenuEntry::Ai),
             RingButton::Lineup => Some(MenuEntry::Lineup),
+            RingButton::Protect => Some(MenuEntry::Protect),
             _ => None,
         }
     }
@@ -182,6 +183,7 @@ impl RingButton {
             MenuEntry::Escape => RingButton::Flee,
             MenuEntry::Ai => RingButton::Ai,
             MenuEntry::Lineup => RingButton::Lineup,
+            MenuEntry::Protect => RingButton::Protect,
         }
     }
 }
@@ -575,6 +577,49 @@ pub fn lineup_move(from: u8, (dx, dy): (i32, i32)) -> u8 {
     best.map(|(s, _)| s).unwrap_or(from)
 }
 
+// ---------------------------------------------------------------- 援护面板
+
+/// 援护面板（控制盘「援」，`FUN_0051bc70`）：底图 `Protect\back.tga`，控件 0x110，
+/// 相对 (0,0)-(0xe6,200)。
+pub const PROTECT_PANEL: Rect = (10, 271, 240, 471);
+pub const PROTECT_BACK: &str = "control/Protect/back.tga";
+pub const PROTECT_BACK_RECT: Rect = (0, 0, 0xe6, 200);
+/// 三行：雪见、龙葵、紫萱（战斗位 1..3）。
+pub const PROTECT_NAMES: [&str; 3] = ["xuejian", "longkui", "zixuan"];
+/// 勾选框 0x111..0x113，32×32；贴图 `<名>0` 没勾、`1` 勾上、`3` 不可用。
+pub const PROTECT_CHECK_RECTS: [Rect; 3] = [
+    (0x25, 0x39, 0x45, 0x59),
+    (0x25, 0x5e, 0x45, 0x7e),
+    (0x25, 0x84, 0x45, 0xa4),
+];
+/// 情的条 0x114..0x116，只显示不能拖（值来自被护的人战斗位 `+0x274`，上限 100）。
+pub const PROTECT_BAR_RECTS: [Rect; 3] = [
+    (0x1b, 0x39, 0xd3, 0x5f),
+    (0x1b, 0x5e, 0xd3, 0x84),
+    (0x1b, 0x84, 0xd3, 0xaa),
+];
+pub const PROTECT_BAR_BACK: &str = "control/Protect/Progressbar.tga";
+pub const PROTECT_BAR_FILL: &str = "control/Protect/Progress.tga";
+pub const PROTECT_BALL: &str = "control/Protect/ball.tga";
+/// 条里填充的边距：`FUN_0043fdb0/dd0/dc0/de0` 设的 0x30 / 0x17 / 0xb / 5
+/// `[推断：按左、上、右、下读]`。
+pub const PROTECT_BAR_MARGINS: (i32, i32, i32, i32) = (0x30, 0x17, 0xb, 5);
+pub const PROTECT_BAR_MAX: i32 = 100;
+/// 「确定」0x11a。
+pub const PROTECT_OK_RECT: Rect = (0x44, 0xaa, 0xa0, 0xc4);
+/// 面板焦点里「确定」的编号（0..=2 是三个勾选框）。
+pub const PROTECT_OK_FOCUS: usize = 3;
+
+pub fn protect_check_texture(row: usize, look: u8) -> Option<String> {
+    PROTECT_NAMES
+        .get(row)
+        .map(|n| format!("control/Protect/{n}{look}.tga"))
+}
+
+pub fn protect_ok_texture(look: u8) -> String {
+    format!("control/Protect/ok{look}.tga")
+}
+
 /// 全部要用的贴图，给普查测试核对包里都在。
 pub fn every_texture() -> Vec<String> {
     let mut all = vec![CONTROL_BACK.to_string()];
@@ -606,6 +651,21 @@ pub fn every_texture() -> Vec<String> {
     }
     all.extend((0u8..3).map(ai_ok_texture));
     all.extend((0..AI_NAMES.len()).filter_map(ai_name_texture));
+    all.extend(
+        [
+            PROTECT_BACK,
+            PROTECT_BAR_BACK,
+            PROTECT_BAR_FILL,
+            PROTECT_BALL,
+        ]
+        .map(String::from),
+    );
+    for row in 0..PROTECT_NAMES.len() {
+        for look in [0, 1, 3] {
+            all.extend(protect_check_texture(row, look));
+        }
+    }
+    all.extend((0u8..3).map(protect_ok_texture));
     all.push(LINEUP_BACK.to_string());
     for slot in 0..LINEUP_NAMES.len() {
         all.extend(lineup_face_texture(slot, false));

@@ -396,6 +396,13 @@ struct HudTextures {
     /// 确定：平时、指上去、按下。
     ai_ok: [Tex; 3],
     ai_names: Vec<Tex>,
+    protect_back: Tex,
+    protect_bar: Tex,
+    protect_fill: Tex,
+    protect_ball: Tex,
+    /// 雪见、龙葵、紫萱，每格 [没勾, 勾上, 不可用]。
+    protect_checks: Vec<[Tex; 3]>,
+    protect_ok: [Tex; 3],
     lineup_back: Tex,
     /// 按我方战斗位，[平时, 暗色]。
     lineup_faces: Vec<[Tex; 2]>,
@@ -461,6 +468,17 @@ impl HudTextures {
                 .map(|s| [false, true].map(|on| tex(&hud::ai_switch_texture(s.stem(), on))))
                 .collect(),
             ai_ok: [0u8, 1, 2].map(|look| tex(&hud::ai_ok_texture(look))),
+            protect_back: tex(hud::PROTECT_BACK),
+            protect_bar: tex(hud::PROTECT_BAR_BACK),
+            protect_fill: tex(hud::PROTECT_BAR_FILL),
+            protect_ball: tex(hud::PROTECT_BALL),
+            protect_checks: (0..hud::PROTECT_NAMES.len())
+                .map(|row| {
+                    [0u8, 1, 3]
+                        .map(|look| hud::protect_check_texture(row, look).and_then(|p| tex(&p)))
+                })
+                .collect(),
+            protect_ok: [0u8, 1, 2].map(|look| tex(&hud::protect_ok_texture(look))),
             lineup_back: tex(hud::LINEUP_BACK),
             lineup_faces: (0..PARTY_SLOTS)
                 .map(|slot| {
@@ -1017,6 +1035,8 @@ impl SceCommandCombat {
                 let mut c = Combatant::new(combat_id, Side::Party);
                 // 托管开关：`FUN_004ed250` 从冒险记录 `+0x294..+0x299` 拷进 `+0x568..+0x56d`。
                 c.delegation = role.delegation;
+                // 情：`FUN_004ed250` 从 `DAT_00c04348` 那张好感表拷进 `+0x274`。
+                c.affection = persistent.favor(actor_id);
                 c.level = role.level;
                 c.max_hp = eff.max_hp;
                 c.hp = role.hp.min(eff.max_hp);
@@ -2034,7 +2054,10 @@ impl SceCommandCombat {
                         if !button.shown_at_start() {
                             continue;
                         }
-                        let look = if button.entry().is_none() {
+                        let look = if !button
+                            .entry()
+                            .is_some_and(|e| session.entry_enabled(turn.slot, e))
+                        {
                             ButtonLook::Disabled
                         } else if button == focus {
                             ButtonLook::Focused
@@ -2044,6 +2067,58 @@ impl SceCommandCombat {
                         let sprite = tex.buttons[i][look as usize].as_deref();
                         draw_sprite(&list, sprite, hud::offset(button.rect(), panel), at);
                     }
+                }
+                Menu::Protect { focus, draft } => {
+                    let panel = hud::PROTECT_PANEL;
+                    let back = hud::offset(hud::PROTECT_BACK_RECT, panel);
+                    draw_sprite(&list, tex.protect_back.as_deref(), back, at);
+                    let (ml, mt, mr, _) = hud::PROTECT_BAR_MARGINS;
+                    for row in 0..hud::PROTECT_NAMES.len() {
+                        let slot = row + 1;
+                        let bar = hud::offset(hud::PROTECT_BAR_RECTS[row], panel);
+                        draw_sprite(&list, tex.protect_bar.as_deref(), bar, at);
+                        let v = session
+                            .battle
+                            .get(slot)
+                            .map(|c| c.affection)
+                            .unwrap_or(0)
+                            .clamp(0, hud::PROTECT_BAR_MAX);
+                        let (x0, y0) = (bar.0 + ml, bar.1 + mt);
+                        let w = (bar.2 - mr - x0) * v / hud::PROTECT_BAR_MAX;
+                        if w > 0 {
+                            draw_sprite(
+                                &list,
+                                tex.protect_fill.as_deref(),
+                                (x0, y0, x0 + w, y0 + 8),
+                                at,
+                            );
+                        }
+                        draw_sprite(
+                            &list,
+                            tex.protect_ball.as_deref(),
+                            (x0 + w - 8, y0 - 4, x0 + w + 8, y0 + 12),
+                            at,
+                        );
+                        let look = if !session.can_be_protected(slot) {
+                            2
+                        } else {
+                            (draft == Some(slot)) as usize
+                        };
+                        let r = hud::offset(hud::PROTECT_CHECK_RECTS[row], panel);
+                        draw_sprite(&list, tex.protect_checks[row][look].as_deref(), r, at);
+                        if focus == row {
+                            list.add_rect(at(r.0, r.1), at(r.2, r.3), [1.0, 0.85, 0.2, 1.0])
+                                .thickness(2.0)
+                                .build();
+                        }
+                    }
+                    let ok = (focus == hud::PROTECT_OK_FOCUS) as usize;
+                    draw_sprite(
+                        &list,
+                        tex.protect_ok[ok].as_deref(),
+                        hud::offset(hud::PROTECT_OK_RECT, panel),
+                        at,
+                    );
                 }
                 Menu::Lineup { cursor, held, .. } => {
                     let panel = hud::LINEUP_PANEL;
