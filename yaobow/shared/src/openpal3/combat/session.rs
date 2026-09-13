@@ -302,6 +302,8 @@ pub struct CombatSession {
     ai_rng: CombatRng,
     /// 界面音效，调用方每帧取走播放（原版 `FUN_0053df70(名字, 1)`）。
     pub sfx: Vec<&'static str>,
+    /// 普攻没打着、要播回避的战斗位，舞台每帧取走（`FUN_004f0a10` 排 `FUN_004feef0`）。
+    pub dodged: Vec<usize>,
     pub elapsed: f32,
     pub log: VecDeque<String>,
     pub turn: Option<PlayerTurn>,
@@ -343,6 +345,7 @@ impl CombatSession {
             profiles,
             ai_rng: CombatRng::new(ai_seed),
             sfx: Vec::new(),
+            dodged: Vec::new(),
             elapsed: 0.,
             log: VecDeque::new(),
             turn: None,
@@ -1415,6 +1418,18 @@ impl CombatSession {
     fn attack(&mut self, slot: usize, target: usize) {
         let guard = self.battle.protector_for(target);
         let moved = self.battle.basic_attack(slot, target);
+        // 没掉血（避、隐形让这一下落空）：原版走 `FUN_004f0a10` 的另一支，给目标排回避
+        // 步骤；目标睡着（0x11）或封住（0x0e）时步骤里不挂动作。按目标自己的回避率
+        // （`FUN_004f98b0(5, …)`）躲开的那一支移植没有 `[推断]`。
+        if guard.is_none() && moved >= 0 {
+            let still = self
+                .battle
+                .get(target)
+                .is_some_and(|c| c.in_play() && !c.has_state(0x11) && !c.has_state(0x0e));
+            if still {
+                self.dodged.push(target);
+            }
+        }
         if let Some(p) = guard {
             // 援护挡下（0x4f0d3a）：被护的人情 +1，放 wa010。
             if let Some(t) = self.battle.get_mut(target) {
@@ -2008,6 +2023,19 @@ mod tests {
         s.battle.get_mut(1).unwrap().alive = true;
         assert!(s.rearrange(0, 6));
         assert_eq!(s.battle.get(1).unwrap().element_position, 1, "对调");
+    }
+
+    #[test]
+    fn a_blow_that_lands_nothing_makes_the_target_dodge() {
+        let mut s = session();
+        s.battle.get_mut(5).unwrap().states[crate::openpal3::combat::state::K_EVADE].active = true;
+        s.attack(0, 5);
+        assert_eq!(s.battle.get(5).unwrap().hp, 60, "避住了");
+        assert_eq!(s.dodged, vec![5]);
+        s.dodged.clear();
+        s.battle.get_mut(5).unwrap().states[crate::openpal3::combat::state::K_EVADE].active = false;
+        s.attack(0, 5);
+        assert!(s.dodged.is_empty(), "打中了不回避");
     }
 
     fn with_ally(s: &mut CombatSession) {

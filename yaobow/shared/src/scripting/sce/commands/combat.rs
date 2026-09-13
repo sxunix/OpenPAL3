@@ -1937,6 +1937,11 @@ impl SceCommandCombat {
     }
 
     fn animate_stage(&mut self, delta_sec: f32) {
+        let dodged = self
+            .session
+            .as_mut()
+            .map(|s| std::mem::take(&mut s.dodged))
+            .unwrap_or_default();
         let Some(session) = self.session.as_ref() else {
             return;
         };
@@ -2013,6 +2018,11 @@ impl SceCommandCombat {
                 }
             }
 
+            // 回避（z15）：普攻落空的那一下。怪物那套没有这个动作，`play` 自己跳过。
+            if dodged.contains(&slot) && now.alive && now.hp == actor.last.hp {
+                rc.set_auto_play_idle(true);
+                play(motion::Motion::Evade, RoleAnimationRepeatMode::Repeat(1));
+            }
             let reaction = if std::mem::take(&mut actor.released) {
                 Some(Play::Rest)
             } else {

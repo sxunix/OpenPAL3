@@ -70,6 +70,8 @@ pub enum Motion {
     Move,
     /// 濒死（精不到四分之一）
     Dying,
+    /// 回避（普攻没打着：任务 `FUN_0050ee70` 写 44，由 `FUN_004f0a10` 排的步骤 `FUN_004feef0` 挂上）
+    Evade,
     /// 胜利（打赢后每人排的任务，`FUN_0050fa20` 写 49）
     Win,
 }
@@ -106,6 +108,7 @@ impl MotionSet {
                 Flee => 48,
                 Move => 31,
                 Dying => 46,
+                Evade => 44,
                 Win => 49,
             }),
             MotionSet::Monster => match motion {
@@ -588,5 +591,12 @@ mod tests {
         fleeing.acting = Some(ActKind::Escape);
         assert_eq!(react(&standing(), &fleeing), Some(Play::Loop(Motion::Flee)));
         assert_eq!(react(&fleeing, &standing()), Some(Play::Rest));
+    }
+
+    #[test]
+    fn a_dodge_plays_z15_for_the_party_only() {
+        assert_eq!(MotionSet::Party.index(Motion::Evade), Some(44));
+        assert_eq!(MotionSet::Party.name(Motion::Evade), Some("z15"));
+        assert_eq!(MotionSet::Monster.index(Motion::Evade), None);
     }
 }
