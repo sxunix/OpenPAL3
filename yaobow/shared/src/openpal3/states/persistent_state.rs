@@ -850,15 +850,17 @@ impl PersistentState {
         Some(level)
     }
 
-    /// 升级学会特技（`FUN_004fa930` 升级那一支里对特技库 `+0x2c8` 的扫描）：本人能用
-    /// （`applicable_actors`）、学会等级 `required_actor_level` 非 0 且落在 (old, new] 的
-    /// `SkillType` 0 技能。学会等级是 0 的那几条由剧情脚本教，这里不管。返回这次新学会的，
-    /// 按 id 升序 `[推断：原版按特技库的格子顺序]`。
+    /// 升级学会特技（`FUN_004fa930` 升级那一支里对特技库 `+0x2c8` 的扫描）。特技库是
+    /// `FUN_0040eb90` 按 gdb 的顺序把本人能用（`applicable_actors`）的 `SkillType` 0 技能
+    /// 排进去的，学没学会另有一格标志；升级时逐格看，还没学会、学会等级 `required_actor_level`
+    /// 非 0 且不超过新等级的就学会。学会等级是 0 的那几条由剧情脚本教，这里不管。返回这次
+    /// 新学会的，按库里的次序（即 gdb 次序；发行的数据里正好也是 id 升序）。`old_level`
+    /// 原版不看——漏学的在下一次升级时补上。
     pub fn learn_level_specials(
         &mut self,
         db: &GameDb,
         actor_id: u32,
-        old_level: i32,
+        _old_level: i32,
         new_level: i32,
     ) -> Vec<u32> {
         let mut ids: Vec<u32> = db
@@ -868,7 +870,6 @@ impl PersistentState {
                 let req = s.required_actor_level as i32;
                 s.skill_type == 0
                     && req != 0
-                    && old_level < req
                     && req <= new_level
                     && s.applicable_actors
                         .get(actor_id as usize)
@@ -876,7 +877,6 @@ impl PersistentState {
             })
             .map(|s| s.id)
             .collect();
-        ids.sort_unstable();
         ids.retain(|id| self.learn_skill(actor_id, *id));
         ids
     }

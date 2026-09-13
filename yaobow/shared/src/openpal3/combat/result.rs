@@ -76,11 +76,12 @@ pub const ELEMENT_BANNERS: [&str; 6] = [
 ];
 pub const ELEMENT_BANNER_RECT: Rect = (249, 263, 551, 337);
 
-/// 仙术在仙术库（战斗位 `+0x2e8`，6 行 × 8）里的行，按技能的五灵定：单一五灵进那一行，
-/// 两个以上进「双」，没有五灵的不进 `[推断：往库里放仙术的代码没找到，按底图的「水 火 雷
-/// 风 土 双」和五灵横幅对出来的]`。`elements` 是 `SkillInfo::element_attributes`（水火风雷土）。
+/// 仙术在仙术库（战斗位 `+0x2e8`，6 行 × 8）里的行。库由 `FUN_0040ec20` 排：按 gdb 次序取
+/// 本人能用的 `SkillType` 1/2/3，数五灵里值**等于 1** 的个数——一个就进那一行（水 0、火 1、
+/// 风 3、雷 2、土 4），两个以上进第 5 行「双」，一个都没有的不进；排完每行按 id 冒泡升序。
+/// `elements` 是 `SkillInfo::element_attributes`（水火风雷土）。
 pub fn magic_row(elements: &[i32; 5]) -> Option<u8> {
-    let on: Vec<usize> = (0..5).filter(|i| elements[*i] != 0).collect();
+    let on: Vec<usize> = (0..5).filter(|i| elements[*i] == 1).collect();
     match on.as_slice() {
         [] => None,
         // 水 火 风 雷 土 → 行 0 1 3 2 4
