@@ -115,7 +115,7 @@ impl MotionSet {
                 Idle => Some(50),
                 Attack => Some(53),
                 BeAttacked => Some(54),
-                // 怪物那套没有特技动作，照仙术播 [推断]。
+                // 怪物那套没有特技动作；gdb 里怪物的技能全是类型 1/2/3，特技（类型 0）走不到这里，照仙术播。
                 Magic | Special => Some(55),
                 Move => Some(52),
                 _ => None,
