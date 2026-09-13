@@ -167,6 +167,7 @@ impl RingButton {
             RingButton::Defence => Some(MenuEntry::Defend),
             RingButton::Flee => Some(MenuEntry::Escape),
             RingButton::Ai => Some(MenuEntry::Ai),
+            RingButton::Lineup => Some(MenuEntry::Lineup),
             _ => None,
         }
     }
@@ -180,6 +181,7 @@ impl RingButton {
             MenuEntry::Defend => RingButton::Defence,
             MenuEntry::Escape => RingButton::Flee,
             MenuEntry::Ai => RingButton::Ai,
+            MenuEntry::Lineup => RingButton::Lineup,
         }
     }
 }
@@ -509,6 +511,70 @@ pub fn ai_name_texture(slot: usize) -> Option<String> {
     AI_NAMES.get(slot).map(|n| format!("control/AI/{n}.tga"))
 }
 
+// ---------------------------------------------------------------- 阵型面板
+
+/// 阵型面板（控制盘「陣」，`FUN_0051b710`）：底图 `lineup\back.tga`，相对面板
+/// (0,0)-(0xe6,0xfa)，控件 0xf0。
+pub const LINEUP_PANEL: Rect = (9, 232, 239, 482);
+pub const LINEUP_BACK: &str = "control/Lineup/back.tga";
+pub const LINEUP_BACK_RECT: Rect = (0, 0, 0xe6, 0xfa);
+/// 五张头像（控件 0xf1..0xf5）按各自的五灵位摆：`FUN_0051bb50` 取
+/// `DAT_0057024c / DAT_00570268[位]`，再加 (9, 0xe8)——正好是面板原点，所以这里
+/// 存相对面板的坐标。下标是战斗位 `+0x470`：1 水 2 火 3 风 4 雷 5 土 6 盘心，0 不用。
+pub const LINEUP_SPOTS: [(i32, i32); 7] = [
+    (0, 0),
+    (0x68, 0xbc),
+    (0x2e, 0x94),
+    (0x88, 0x57),
+    (0x41, 0x57),
+    (0x9c, 0x94),
+    (0x68, 0x83),
+];
+/// 头像控件 0x28×0x26（贴图 64×64，只露左上）。
+pub const LINEUP_FACE: (i32, i32) = (0x28, 0x26);
+/// 抓起来的头像放大到 1.4 倍（0x4de489 写控件缩放 0x3fb33333），放下回 1.0。
+pub const LINEUP_HELD_SCALE: f32 = 1.4;
+pub const LINEUP_NAMES: [&str; 5] = ["jingtian", "xuejian", "longkui", "zixuan", "changqing"];
+
+pub fn lineup_face_rect(spot: u8) -> Option<Rect> {
+    if spot == 0 {
+        return None;
+    }
+    let (x, y) = *LINEUP_SPOTS.get(spot as usize)?;
+    Some((x, y, x + LINEUP_FACE.0, y + LINEUP_FACE.1))
+}
+
+/// 头像：平时 `<名>.tga`，动不了的 `<名>_d.tga`（`FUN_004425d0` 挂的第二张，暗色）。
+pub fn lineup_face_texture(slot: usize, dimmed: bool) -> Option<String> {
+    LINEUP_NAMES
+        .get(slot)
+        .map(|n| format!("control/Lineup/{n}{}.tga", if dimmed { "_d" } else { "" }))
+}
+
+/// 手柄在六个位上挪光标。**原版只能用鼠标拖**，这是移植端加的：朝那个方向、
+/// 按「距离² + 4×偏离²」取最近的位，那个方向上没有就不动。
+pub fn lineup_move(from: u8, (dx, dy): (i32, i32)) -> u8 {
+    let (fx, fy) = LINEUP_SPOTS[from.clamp(1, 6) as usize];
+    let mut best: Option<(u8, i32)> = None;
+    for spot in 1..=6u8 {
+        if spot == from {
+            continue;
+        }
+        let (x, y) = LINEUP_SPOTS[spot as usize];
+        let (vx, vy) = (x - fx, y - fy);
+        let along = vx * dx + vy * dy;
+        if along <= 0 {
+            continue;
+        }
+        let across = vx * dy - vy * dx;
+        let cost = vx * vx + vy * vy + 4 * across * across;
+        if best.map(|(_, c)| cost < c).unwrap_or(true) {
+            best = Some((spot, cost));
+        }
+    }
+    best.map(|(s, _)| s).unwrap_or(from)
+}
+
 /// 全部要用的贴图，给普查测试核对包里都在。
 pub fn every_texture() -> Vec<String> {
     let mut all = vec![CONTROL_BACK.to_string()];
@@ -540,12 +606,26 @@ pub fn every_texture() -> Vec<String> {
     }
     all.extend((0u8..3).map(ai_ok_texture));
     all.extend((0..AI_NAMES.len()).filter_map(ai_name_texture));
+    all.push(LINEUP_BACK.to_string());
+    for slot in 0..LINEUP_NAMES.len() {
+        all.extend(lineup_face_texture(slot, false));
+        all.extend(lineup_face_texture(slot, true));
+    }
     all
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pad_walks_the_lineup_disc_by_direction() {
+        assert_eq!(lineup_move(1, (0, -1)), 6, "水往上是盘心");
+        assert_eq!(lineup_move(6, (-1, 0)), 2, "盘心往左是火");
+        assert_eq!(lineup_move(6, (1, 0)), 5, "盘心往右是土");
+        assert_eq!(lineup_move(4, (1, 0)), 3, "雷往右是风");
+        assert_eq!(lineup_move(1, (0, 1)), 1, "水下面没有位，不动");
+    }
 
     fn center(r: Rect) -> (i32, i32) {
         ((r.0 + r.2) / 2, (r.1 + r.3) / 2)

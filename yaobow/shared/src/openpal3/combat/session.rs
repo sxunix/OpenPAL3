@@ -20,7 +20,7 @@ use super::combo::{self, ComboDef};
 use super::formulas::CombatRng;
 use super::hud;
 use super::settlement::{self, DefeatedEnemy, Spoils, Survivor};
-use super::state::{Battle, Due, K_CONFUSED, K_SLEEP, Outcome, SLOTS, Side};
+use super::state::{Battle, Due, K_CONFUSED, K_SLEEP, Outcome, PARTY_SLOTS, SLOTS, Side};
 
 /// A skill as the menu offers it.
 #[derive(Debug, Clone)]
@@ -128,10 +128,12 @@ pub enum MenuEntry {
     Special,
     /// 托管面板（控制盘的「AI」）。
     Ai,
+    /// 阵型面板（控制盘的「陣」）。
+    Lineup,
 }
 
 impl MenuEntry {
-    pub const ALL: [MenuEntry; 7] = [
+    pub const ALL: [MenuEntry; 8] = [
         MenuEntry::Attack,
         MenuEntry::Skill,
         MenuEntry::Item,
@@ -139,6 +141,7 @@ impl MenuEntry {
         MenuEntry::Escape,
         MenuEntry::Special,
         MenuEntry::Ai,
+        MenuEntry::Lineup,
     ];
 
     pub fn label(self) -> &'static str {
@@ -150,6 +153,7 @@ impl MenuEntry {
             MenuEntry::Escape => "逃跑",
             MenuEntry::Special => "特技",
             MenuEntry::Ai => "AI",
+            MenuEntry::Lineup => "阵型",
         }
     }
 }
@@ -184,6 +188,13 @@ pub enum Menu {
     Ai {
         focus: usize,
         draft: Delegation,
+    },
+    /// 阵型面板（`FUN_0051b710`）。`cursor` 是光标所在的五灵位（1..=6）；`held`
+    /// 是抓在手上的我方战斗位；`moved` 记这次开面板有没有真换过位。
+    Lineup {
+        cursor: u8,
+        held: Option<usize>,
+        moved: bool,
     },
     /// `index` is into [`CombatSession::items`].
     Items {
@@ -773,6 +784,20 @@ impl CombatSession {
                         self.sfx.push(SFX_NOTE);
                         turn.menu = Menu::Ai { focus: 0, draft };
                     }
+                    MenuEntry::Lineup => {
+                        let cursor = self
+                            .battle
+                            .get(slot)
+                            .map(|c| c.element_position)
+                            .filter(|p| (1..=6).contains(p))
+                            .unwrap_or(1);
+                        self.sfx.push(SFX_NOTE);
+                        turn.menu = Menu::Lineup {
+                            cursor,
+                            held: None,
+                            moved: false,
+                        };
+                    }
                     MenuEntry::Defend => {
                         self.turn = None;
                         self.battle.defend(slot);
@@ -851,6 +876,76 @@ impl CombatSession {
                     }
                     // 关掉（0xd6 带 −1 参数那一支，0x4dd761）：什么都不写。
                     Input::Cancel => turn.menu = Menu::Main { index: back },
+                }
+            }
+            Menu::Lineup {
+                cursor,
+                held,
+                moved,
+            } => {
+                let back = MenuEntry::ALL
+                    .iter()
+                    .position(|e| *e == MenuEntry::Lineup)
+                    .unwrap_or(0);
+                match input {
+                    Input::Up | Input::Down | Input::Left | Input::Right => {
+                        let step = match input {
+                            Input::Up => (0, -1),
+                            Input::Down => (0, 1),
+                            Input::Left => (-1, 0),
+                            _ => (1, 0),
+                        };
+                        turn.menu = Menu::Lineup {
+                            cursor: hud::lineup_move(cursor, step),
+                            held,
+                            moved,
+                        };
+                    }
+                    Input::Confirm => match held {
+                        // 抓起（0x4de3d0）：点中的头像得在场、且能动（`FUN_004f0750`）。
+                        None => match self.lineup_occupant(cursor) {
+                            Some(s) if self.can_rearrange(s) => {
+                                self.sfx.push(SFX_CLICK);
+                                turn.menu = Menu::Lineup {
+                                    cursor,
+                                    held: Some(s),
+                                    moved,
+                                };
+                            }
+                            _ => self.sfx.push(SFX_DENIED),
+                        },
+                        // 放下（0x4de4f8）：目标位上站着动不了的人（`FUN_004f0700`）就
+                        // 弹回；否则两人对调五灵位（战斗位 `+0x470`）。
+                        Some(a) => {
+                            let ok = self.rearrange(a, cursor);
+                            self.sfx.push(if ok { SFX_CLICK } else { SFX_DENIED });
+                            turn.menu = Menu::Lineup {
+                                cursor,
+                                held: None,
+                                moved: moved || ok,
+                            };
+                        }
+                    },
+                    Input::Cancel if held.is_some() => {
+                        turn.menu = Menu::Lineup {
+                            cursor,
+                            held: None,
+                            moved,
+                        };
+                    }
+                    Input::Cancel => {
+                        if moved {
+                            // 关面板（0x4de699）：原版给我方每人排一个 0x108 行动（换位的动作），
+                            // 镜头切 7，停 0.5 秒，再回主调度。移植端只把这一回合算作用掉
+                            // `[推断：原版没换位时关面板是否也算用掉没有核实]`。
+                            self.turn = None;
+                            self.push_log(format!("{} 变换阵型", self.name(slot)));
+                            self.battle.finish_turn(slot);
+                            self.settle_outcome();
+                            return;
+                        }
+                        turn.menu = Menu::Main { index: back };
+                    }
                 }
             }
             Menu::Skills { index } => {
@@ -1055,6 +1150,47 @@ impl CombatSession {
             self.turn = None;
         }
         outcome != Outcome::Ongoing
+    }
+
+    /// 站在五灵位 `spot` 上的我方（在场，倒下的也算——原版按 `+0x241` 找）。
+    pub fn lineup_occupant(&self, spot: u8) -> Option<usize> {
+        (0..PARTY_SLOTS).find(|s| {
+            self.battle
+                .get(*s)
+                .map(|c| !c.retired && c.element_position == spot)
+                .unwrap_or(false)
+        })
+    }
+
+    /// `FUN_004f0750`：换阵时能不能挪这个人——站着，且没有 0x0e / 0x11 / 0x12 / 0x13。
+    pub fn can_rearrange(&self, slot: usize) -> bool {
+        self.battle
+            .get(slot)
+            .map(|c| c.in_play() && ![0x0e, 0x11, 0x12, 0x13].iter().any(|k| c.has_state(*k)))
+            .unwrap_or(false)
+    }
+
+    /// 把 `slot` 挪到五灵位 `spot`，原来站那儿的人换到 `slot` 的旧位（0x4de581 那一圈）。
+    /// 那人动不了就不换，返回 `false`。
+    fn rearrange(&mut self, slot: usize, spot: u8) -> bool {
+        let Some(old) = self.battle.get(slot).map(|c| c.element_position) else {
+            return false;
+        };
+        if old == spot {
+            return true;
+        }
+        if let Some(other) = self.lineup_occupant(spot) {
+            if !self.can_rearrange(other) {
+                return false;
+            }
+            if let Some(c) = self.battle.get_mut(other) {
+                c.element_position = old;
+            }
+        }
+        if let Some(c) = self.battle.get_mut(slot) {
+            c.element_position = spot;
+        }
+        true
     }
 
     /// 我方托管（0x513a36 那一支 → `FUN_004d86d0`）：挑出来就照常登记、进出手段；
@@ -1696,6 +1832,64 @@ mod tests {
             .unwrap();
         assert_eq!(s.turn.unwrap().menu, Menu::Main { index: ai });
         assert_eq!(s.battle.get(0).unwrap().delegation, Delegation::default());
+    }
+
+    #[test]
+    fn the_lineup_panel_swaps_places_and_uses_up_the_turn() {
+        let mut s = session();
+        s.battle.get_mut(0).unwrap().element_position = 1;
+        run_until_turn(&mut s);
+        // 控制盘：擊 → 左「術」→ 下「陣」。
+        s.input(Input::Left);
+        s.input(Input::Down);
+        let lineup = MenuEntry::ALL
+            .iter()
+            .position(|e| *e == MenuEntry::Lineup)
+            .unwrap();
+        assert_eq!(s.turn.unwrap().menu, Menu::Main { index: lineup });
+        s.input(Input::Confirm);
+        assert_eq!(
+            s.turn.unwrap().menu,
+            Menu::Lineup {
+                cursor: 1,
+                held: None,
+                moved: false
+            }
+        );
+        // 没换位就关：回控制盘。
+        s.input(Input::Cancel);
+        assert_eq!(s.turn.unwrap().menu, Menu::Main { index: lineup });
+        s.input(Input::Confirm);
+        s.input(Input::Up); // 盘心，没人
+        s.input(Input::Confirm);
+        assert_eq!(s.sfx.last(), Some(&SFX_DENIED), "空位抓不起人");
+        s.input(Input::Down); // 回水
+        s.input(Input::Confirm);
+        assert!(matches!(
+            s.turn.unwrap().menu,
+            Menu::Lineup { held: Some(0), .. }
+        ));
+        s.input(Input::Up);
+        s.input(Input::Confirm);
+        assert_eq!(s.battle.get(0).unwrap().element_position, 6);
+        s.input(Input::Cancel);
+        assert!(s.turn.is_none(), "换过位，这一回合用掉");
+        assert!(s.pending.is_none());
+    }
+
+    #[test]
+    fn a_member_who_cannot_act_is_not_pushed_off_their_spot() {
+        let mut s = session();
+        s.battle.get_mut(0).unwrap().element_position = 1;
+        let mut ally = fighter(Side::Party, 50, 1);
+        ally.element_position = 6;
+        ally.alive = false;
+        s.battle.place(1, ally);
+        assert!(!s.rearrange(0, 6), "倒下的人占着的位换不进去");
+        assert_eq!(s.battle.get(0).unwrap().element_position, 1);
+        s.battle.get_mut(1).unwrap().alive = true;
+        assert!(s.rearrange(0, 6));
+        assert_eq!(s.battle.get(1).unwrap().element_position, 1, "对调");
     }
 
     #[test]

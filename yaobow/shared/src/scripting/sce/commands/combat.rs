@@ -396,6 +396,9 @@ struct HudTextures {
     /// 确定：平时、指上去、按下。
     ai_ok: [Tex; 3],
     ai_names: Vec<Tex>,
+    lineup_back: Tex,
+    /// 按我方战斗位，[平时, 暗色]。
+    lineup_faces: Vec<[Tex; 2]>,
 }
 
 impl HudTextures {
@@ -458,6 +461,12 @@ impl HudTextures {
                 .map(|s| [false, true].map(|on| tex(&hud::ai_switch_texture(s.stem(), on))))
                 .collect(),
             ai_ok: [0u8, 1, 2].map(|look| tex(&hud::ai_ok_texture(look))),
+            lineup_back: tex(hud::LINEUP_BACK),
+            lineup_faces: (0..PARTY_SLOTS)
+                .map(|slot| {
+                    [false, true].map(|d| hud::lineup_face_texture(slot, d).and_then(|p| tex(&p)))
+                })
+                .collect(),
             ai_names: (0..PARTY_SLOTS)
                 .map(|slot| hud::ai_name_texture(slot).and_then(|p| tex(&p)))
                 .collect(),
@@ -1195,6 +1204,11 @@ impl SceCommandCombat {
                 let Some(c) = session.battle.get(actor_id as usize) else {
                     continue;
                 };
+                // 五灵阵位写回：`FUN_004ed800` 把战斗位 `+0x470` 抄回冒险记录 `+0x29a`
+                // （移植端存格子号 0..5）。
+                if (1..=6).contains(&c.element_position) {
+                    persistent.set_lineup_position(actor_id, c.element_position - 1);
+                }
                 if let Some(role) = persistent.role_mut(actor_id) {
                     // 托管开关写回（`FUN_004ed800`）。原版只在胜利那一支调它，另一个调用者
                     // `FUN_004ed680` 没细看；移植端不分胜负都写回 `[推断]`。
@@ -2029,6 +2043,51 @@ impl SceCommandCombat {
                         };
                         let sprite = tex.buttons[i][look as usize].as_deref();
                         draw_sprite(&list, sprite, hud::offset(button.rect(), panel), at);
+                    }
+                }
+                Menu::Lineup { cursor, held, .. } => {
+                    let panel = hud::LINEUP_PANEL;
+                    let back = hud::offset(hud::LINEUP_BACK_RECT, panel);
+                    draw_sprite(&list, tex.lineup_back.as_deref(), back, at);
+                    for slot in 0..PARTY_SLOTS {
+                        if held == Some(slot) {
+                            continue;
+                        }
+                        let Some(c) = session.battle.get(slot).filter(|c| !c.retired) else {
+                            continue;
+                        };
+                        let Some(r) = hud::lineup_face_rect(c.element_position) else {
+                            continue;
+                        };
+                        let dim = !session.can_rearrange(slot) as usize;
+                        let face = tex.lineup_faces[slot][dim].as_deref();
+                        draw_sprite(&list, face, hud::offset(r, panel), at);
+                    }
+                    if let Some(r) = hud::lineup_face_rect(cursor) {
+                        let r = hud::offset(r, panel);
+                        // 抓着的头像跟着光标、放大 1.4 倍（原版跟着鼠标）。
+                        if let Some(slot) = held {
+                            let (cx, cy) = ((r.0 + r.2) / 2, (r.1 + r.3) / 2);
+                            let (hw, hh) = (
+                                (hud::LINEUP_FACE.0 as f32 * hud::LINEUP_HELD_SCALE / 2.) as i32,
+                                (hud::LINEUP_FACE.1 as f32 * hud::LINEUP_HELD_SCALE / 2.) as i32,
+                            );
+                            if let Some(s) = tex.lineup_faces[slot][0].as_deref() {
+                                let (uv0, uv1) = super::encamp::sprite_uv(s, r);
+                                list.add_image(
+                                    s.imgui_texture_id(),
+                                    at(cx - hw, cy - hh),
+                                    at(cx + hw, cy + hh),
+                                )
+                                .uv_min(uv0)
+                                .uv_max(uv1)
+                                .build();
+                            }
+                        }
+                        // 光标框是移植端给手柄加的。
+                        list.add_rect(at(r.0, r.1), at(r.2, r.3), [1.0, 0.85, 0.2, 1.0])
+                            .thickness(2.0)
+                            .build();
                     }
                 }
                 Menu::Ai { focus, draft } => {
