@@ -71,6 +71,16 @@ pub struct CamRecord {
     pub accel: [f32; 2],
     /// `+0xac`：滑行那一步算进度时加在时长上的（`FUN_00507b20`）。实机数据全是 0。
     pub extra: f32,
+    /// `+0x6c`：`+0x59 == 0` 那种移动方式的速度（`FUN_00506340`）。
+    pub speed: f32,
+    /// `+0x84` / `+0x88`：绕圈（`FUN_005075e0`）的总角度和角速度，单位是**度**
+    /// （`gbQuaternion::SetYawPitchRoll` 进门先乘 π/180）。
+    pub orbit_total: f32,
+    pub orbit_speed: f32,
+    /// `+0x8c..+0x94`：绕圈的圆心。
+    pub orbit_center: [f32; 3],
+    /// `+0x9c`：绕完一圈时高度从圆心的 y 挪到这里（按转过的比例插）。
+    pub orbit_height: f32,
 }
 
 impl CamRecord {
@@ -89,6 +99,15 @@ impl CamRecord {
     /// `+0x61`：yaw 绕一圈（见 [`CamPlayer`]）。
     pub fn wraps_yaw(&self) -> bool {
         self.flags[9] != 0
+    }
+    /// `+0x59`：「匀速」那一支；为 0 时用记录里的速度 `+0x6c`（见 [`CamPlayer`]）。
+    pub fn uniform(&self) -> bool {
+        self.flags[1] != 0
+    }
+    /// `+0x5d`：这一步的第二个动作（`FUN_005075e0`）。只有 `+0x59 && +0x5b && !+0x5a`
+    /// 时才真的做（绕圈），其余直接返回。
+    pub fn orbits(&self) -> bool {
+        self.flags[5] != 0 && self.flags[1] != 0 && self.flags[3] != 0 && self.flags[2] == 0
     }
     /// `+0x5e`：这一步「滑行」（`FUN_00507b20`）——速度大小不变，方向每帧朝本步的方向
     /// 拐一点；上一步也是滑行就接着上一步的速度走，几步连起来是一条圆滑的弧。
@@ -123,6 +142,11 @@ impl CamRecord {
             accel_start: [f(0x74), f(0x78)],
             accel: [f(0x7c), f(0x80)],
             extra: f(0xac),
+            speed: f(0x6c),
+            orbit_total: f(0x84),
+            orbit_speed: f(0x88),
+            orbit_center: [f(0x8c), f(0x90), f(0x94)],
+            orbit_height: f(0x9c),
         }
     }
 
@@ -244,12 +268,19 @@ impl CamPlayer {
         let Some(rec) = self.steps.get(self.step).copied() else {
             return self.pose;
         };
-        if !rec.moves_camera() {
-            if rec.glides() {
-                return self.glide(rec, dt);
+        // `FUN_005061a0`：`+0x5c` / `+0x5d` / `+0x5e` 三个动作谁开着就跑谁，步子只在某个
+        // 动作置了「完成」（`+0x16`）后才换。实机数据每条只开一个。
+        if rec.moves_camera() {
+            if !rec.uniform() {
+                return self.drift(rec, dt);
             }
-            // 这一步不动镜头，`+0x5d` 那种（`FUN_005075e0`）也还没做 [推断]：直接算完。
-            self.done = true;
+        } else if rec.glides() {
+            return self.glide(rec, dt);
+        } else if rec.orbits() {
+            return self.orbit(rec, dt);
+        } else {
+            // 没有能跑的动作（比如 1 号序列第一步只开了 `+0x5d`、却不满足绕圈的条件，
+            // `FUN_005075e0` 直接返回）：这一步永远不完，镜头停在原地。
             return self.pose;
         }
 
@@ -325,6 +356,109 @@ impl CamPlayer {
 }
 
 impl CamPlayer {
+    /// 这一步的起点：记录里的，或者镜头当前的（`FUN_005062d0`）；`+0x61` 时 yaw 加减一圈。
+    fn step_start(&self, rec: &CamRecord) -> CombatCamera {
+        let mut from = if rec.keeps_from() {
+            rec.from
+        } else {
+            self.pose
+        };
+        if rec.wraps_yaw() {
+            let d = rec.to.yaw - from.yaw;
+            if d > 0. {
+                from.yaw += std::f32::consts::TAU;
+            } else if d < 0. {
+                from.yaw -= std::f32::consts::TAU;
+            }
+        }
+        from
+    }
+
+    /// `FUN_00506340` 的 `+0x59 == 0` 那一支：位置 = 起点 + 方向 × (t·速度 + 两段加速度)，
+    /// **不夹到终点**；角度按 t / 时长插。实机三条（70 / 75 / 78 号序列）速度都是 0、起止
+    /// 同一点，效果就是原地转到记录里的角度。
+    fn drift(&mut self, rec: CamRecord, dt: f32) -> CombatCamera {
+        if self.start.is_none() {
+            let from = self.step_start(&rec);
+            self.start = Some((from, distance(&from, &rec.to), rec.speed));
+        }
+        let (from, dist, speed) = self.start.unwrap_or((self.pose, 0., 0.));
+        self.t += dt;
+        let t = self.t;
+        let frac = if rec.duration > 0. {
+            t / rec.duration
+        } else {
+            1.
+        };
+        let moved = t * speed + rec.accel_distance(t);
+        let (ux, uy, uz) = if dist > 0. {
+            (
+                (rec.to.x - from.x) / dist,
+                (rec.to.y - from.y) / dist,
+                (rec.to.z - from.z) / dist,
+            )
+        } else {
+            (0., 0., 0.)
+        };
+        let lerp = |a: f32, b: f32| a + (b - a) * frac.min(1.);
+        self.pose = CombatCamera {
+            x: from.x + ux * moved,
+            y: from.y + uy * moved,
+            z: from.z + uz * moved,
+            yaw: lerp(from.yaw, rec.to.yaw),
+            pitch: lerp(from.pitch, rec.to.pitch),
+            roll: lerp(from.roll, rec.to.roll),
+        };
+        if frac >= 1. {
+            self.done = true;
+        }
+        self.pose
+    }
+
+    /// `FUN_005075e0` 的绕圈（`+0x59 && +0x5b && !+0x5a`，77 / 80 号序列）：转过的角度
+    /// a = t·`+0x88` + 两段加速度，夹到总角度 `+0x84`（按正负号）；起点绕圆心按 a 转，
+    /// 高度按 a / 总角度 从 `+0x90` 往 `+0x9c` 挪；角度保持起点的（这两条都盯着目标，朝向由
+    /// 舞台每帧算）。转满算完。旋转方向照移植端 yaw 的约定 `[推断]`。
+    fn orbit(&mut self, rec: CamRecord, dt: f32) -> CombatCamera {
+        if self.start.is_none() {
+            let from = self.step_start(&rec);
+            self.start = Some((from, 0., 0.));
+        }
+        let (from, _, _) = self.start.unwrap_or((self.pose, 0., 0.));
+        self.t += dt;
+        let total = rec.orbit_total;
+        let mut a = self.t * rec.orbit_speed + rec.accel_distance(self.t);
+        let done = if total <= 0. {
+            if a < total {
+                a = total;
+            }
+            a <= total
+        } else {
+            if a > total {
+                a = total;
+            }
+            total <= a
+        };
+        let [cx, cy, cz] = rec.orbit_center;
+        let (s, c) = a.to_radians().sin_cos();
+        let (ox, oz) = (from.x - cx, from.z - cz);
+        let rise = if total != 0. {
+            a / total * (rec.orbit_height - cy)
+        } else {
+            0.
+        };
+        self.pose = CombatCamera {
+            x: cx + ox * c - oz * s,
+            y: from.y + rise,
+            z: cz + ox * s + oz * c,
+            ..from
+        };
+        if done {
+            self.done = true;
+        }
+        self.pose
+    }
+
     /// `FUN_00507b20`：滑行一步。
     fn glide(&mut self, rec: CamRecord, dt: f32) -> CombatCamera {
         let prev_glides =
@@ -431,7 +565,59 @@ mod tests {
             accel_start: [0., 0.],
             accel: [0., 0.],
             extra: 0.,
+            speed: 0.,
+            orbit_total: 0.,
+            orbit_speed: 0.,
+            orbit_center: [0.; 3],
+            orbit_height: 0.,
         }
+    }
+
+    #[test]
+    fn a_zero_speed_drift_only_turns_in_place() {
+        let mut r = rec(1., pose(0., 0.), pose(100., 1.));
+        r.flags[1] = 0; // +0x59 == 0
+        let mut p = CamPlayer::new(vec![r], pose(0., 0.)).unwrap();
+        let mut last = p.pose;
+        for _ in 0..30 {
+            last = p.update(0.05);
+        }
+        assert_eq!(last.x, 0., "速度 0 不挪位置");
+        assert!((last.yaw - 1.).abs() < 1e-4, "角度转到记录里的");
+        assert!(p.finished() || p.done);
+    }
+
+    #[test]
+    fn an_orbit_step_turns_the_start_about_the_centre() {
+        let mut r = rec(1., pose(10., 0.), pose(10., 0.));
+        r.flags = [0; 16];
+        r.flags[0] = 1; // 起点用记录里的
+        r.flags[1] = 1; // +0x59
+        r.flags[3] = 1; // +0x5b
+        r.flags[5] = 1; // +0x5d
+        r.orbit_total = 180.;
+        r.orbit_speed = 180.;
+        r.orbit_height = 20.;
+        let mut p = CamPlayer::new(vec![r], pose(0., 0.)).unwrap();
+        let mut last = p.pose;
+        for _ in 0..30 {
+            last = p.update(0.05);
+        }
+        assert!((last.x + 10.).abs() < 1e-3, "转半圈到对面: {}", last.x);
+        assert!((last.y - 20.).abs() < 1e-3, "高度挪到 +0x9c");
+    }
+
+    #[test]
+    fn a_step_with_nothing_to_run_never_ends() {
+        let mut r = rec(1., pose(0., 0.), pose(100., 0.));
+        r.flags = [0; 16];
+        r.flags[5] = 1; // 只开了 +0x5d，却不满足绕圈的条件
+        let mut p = CamPlayer::new(vec![r], pose(5., 0.)).unwrap();
+        for _ in 0..100 {
+            p.update(0.05);
+        }
+        assert!(!p.finished(), "FUN_005061a0 永远等不到这一步完成");
+        assert_eq!(p.pose.x, 5.);
     }
 
     fn glide_rec(duration: f32, to: CombatCamera) -> CamRecord {
