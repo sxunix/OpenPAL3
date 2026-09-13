@@ -21,7 +21,8 @@ use super::formulas::CombatRng;
 use super::hud;
 use super::settlement::{self, DefeatedEnemy, Spoils, Survivor};
 use super::state::{
-    Battle, Due, K_CONFUSED, K_FORBID, K_SEAL, K_SLEEP, Outcome, PARTY_SLOTS, SLOTS, Side,
+    Battle, Due, K_BERSERK, K_CONFUSED, K_FORBID, K_PARALYSIS, K_SEAL, K_SLEEP, Outcome,
+    PARTY_SLOTS, SLOTS, Side,
 };
 
 /// A skill as the menu offers it.
@@ -597,25 +598,22 @@ impl CombatSession {
                 let side = actor.side;
                 let confused = actor.has_state(K_CONFUSED);
                 let asleep = actor.has_state(K_SLEEP);
+                let paralysed = actor.has_state(K_PARALYSIS);
+                let berserk = actor.has_state(K_BERSERK);
                 let delegated = actor.delegation.on;
 
-                if confused {
-                    // 乱（状态 0x11）**这一回合什么都不做**。主调度
-                    // `LAB_00513840` 在 0x513925 查到它就跳去 0x513ab8，
-                    // 那里只有一句 `FUN_004db750(k, 0, 0, 0)`（两条行动条
-                    // 清零、回蓄力段），随后直接落到循环递增——没有出手，
-                    // 也不是交给 AI。封（0x0e）走同一支，移植还没建模。
-                    //
-                    // 交给 AI 代打的是另一支（0x513a36）：狂（0x12）、镜
-                    // （0x13）和 `+0x345`，先调战斗对白再走 `FUN_004d86d0`。
-                    // 那三个状态移植都还没建模，所以这里只改「乱」。
-                    self.push_log(format!("{} 心神已乱", self.name(slot)));
+                // 主调度 `LAB_00513840`（0x513925 起）：眠（0x11）、定（0x0e）→ 0x513ab8，
+                // 只有一句 `FUN_004db750(k, 0, 0, 0)`，这一回合跳过；托管开关 `+0x345`、
+                // 乱（0x12）、狂（0x13）→ 0x513a36 交给 AI。乱最后落到 `FUN_004d8580`
+                // 随便挑人（见 `ai::confused`），狂走托管那一支（普攻不看开关）。
+                if asleep || paralysed {
+                    let why = if asleep { "睡着了" } else { "定住了" };
+                    self.push_log(format!("{} {why}", self.name(slot)));
                     self.battle.finish_turn(slot);
-                } else if asleep {
-                    self.push_log(format!("{} 睡着了", self.name(slot)));
-                    self.battle.finish_turn(slot);
-                } else if side == Side::Party && delegated {
-                    // 托管开着：不出控制盘（主调度 0x51394b 查 `+0x345` → 0x513a36）。
+                } else if confused {
+                    self.act_confused(slot);
+                } else if side == Side::Party && (delegated || berserk) {
+                    // 托管开着或中了狂：不出控制盘（0x51394b 查 `+0x345` → 0x513a36）。
                     self.act_by_delegate(slot);
                 } else if side == Side::Party {
                     self.turn = Some(PlayerTurn {
@@ -1316,6 +1314,15 @@ impl CombatSession {
     /// 我方托管（0x513a36 那一支 → `FUN_004d86d0`）：挑出来就照常登记、进出手段；
     /// 什么都没挑出来就交给怪物那套（0x513a7c → `FUN_004d7120`）。
     fn act_by_delegate(&mut self, slot: usize) {
+        self.act_by_plan(slot, false);
+    }
+
+    /// 乱（0x12）：`FUN_004d7120` → `FUN_004d8580`，随便挑人随便出手；挑不出来空过。
+    fn act_confused(&mut self, slot: usize) {
+        self.act_by_plan(slot, true);
+    }
+
+    fn act_by_plan(&mut self, slot: usize, confused: bool) {
         let tool = |index: usize, e: &SkillEffect, usable: bool| Tool {
             index,
             kind: e.kind,
@@ -1354,8 +1361,17 @@ impl CombatSession {
             specials: &specials,
             items: &items,
         };
-        let plan = ai::delegate(&self.battle, &mut self.ai_rng, slot, &kit);
-        log::info!("Combat: 托管 {} → {:?}", self.name(slot), plan);
+        let plan = if confused {
+            ai::confused(&self.battle, &mut self.ai_rng, slot, &kit)
+        } else {
+            ai::delegate(&self.battle, &mut self.ai_rng, slot, &kit)
+        };
+        log::info!(
+            "Combat: {} {} → {:?}",
+            if confused { "乱" } else { "托管" },
+            self.name(slot),
+            plan
+        );
         match plan {
             Some(Plan::Attack { target }) => self.commit(Pending::Attack { slot, target }, 1),
             Some(Plan::Magic { target, index }) => {
@@ -1386,6 +1402,10 @@ impl CombatSession {
                 target,
                 index: item,
             }) => self.commit(Pending::Item { slot, target, item }, 1),
+            None if confused => {
+                self.push_log(format!("{} 心神已乱", self.name(slot)));
+                self.battle.finish_turn(slot);
+            }
             None => self.act_by_ai(slot, false),
         }
     }
@@ -2302,10 +2322,8 @@ mod tests {
     }
 
     #[test]
-    fn a_confused_unit_loses_the_turn_instead_of_acting() {
-        // 主调度 0x513925 查到状态 0x11 就跳去 0x513ab8，那里只有
-        // `FUN_004db750(k,0,0,0)`，随后直接落到循环递增——不出手、也不是
-        // 交给 AI。
+    fn a_confused_unit_lashes_out_instead_of_getting_a_menu() {
+        // 乱（0x12）走 0x513a36 → `FUN_004d8580`：不出控制盘，随便挑人出手。
         let mut s = session();
         run_until_turn(&mut s);
         let slot = s.turn.as_ref().unwrap().slot;
@@ -2314,33 +2332,43 @@ mod tests {
             .get_mut(slot)
             .unwrap()
             .apply_state(K_CONFUSED, 0, 5);
-        // 让它重新轮到。
         s.battle.get_mut(slot).unwrap().gauge = formulas::GAUGE_FULL;
         s.battle.get_mut(slot).unwrap().phase = Phase::Ready;
-
-        let before = s.battle.get(5).map(|c| c.hp);
         for _ in 0..40 {
             s.tick(0.05);
-            if s.log
-                .back()
-                .map(|l| l.contains("心神已乱"))
-                .unwrap_or(false)
-            {
+            assert!(s.turn.is_none(), "乱了不出控制盘");
+            if s.pending.is_some() || s.log.back().is_some_and(|l| l.contains("心神已乱")) {
                 break;
             }
         }
         assert!(
-            s.log.back().unwrap().contains("心神已乱"),
-            "乱的单位应当空过一回合，日志是 {:?}",
-            s.log.back()
+            matches!(s.pending, Some(Pending::Attack { slot: 0, target: 5 }))
+                || s.log.back().is_some_and(|l| l.contains("心神已乱")),
+            "要么随手打了唯一在场的人，要么挑不出招空过：{:?}",
+            s.pending
         );
-        assert!(s.pending.is_none(), "空过不该登记行动");
-        assert_eq!(s.battle.get(5).map(|c| c.hp), before, "不该打到人");
-        assert_eq!(
-            s.battle.get(slot).unwrap().phase,
-            Phase::Charging,
-            "行动条应当清零回蓄力段"
-        );
+    }
+
+    #[test]
+    fn a_paralysed_unit_loses_the_turn() {
+        let mut s = session();
+        run_until_turn(&mut s);
+        let slot = s.turn.as_ref().unwrap().slot;
+        s.turn = None;
+        s.battle
+            .get_mut(slot)
+            .unwrap()
+            .apply_state(K_PARALYSIS, 0, 5);
+        s.battle.get_mut(slot).unwrap().gauge = formulas::GAUGE_FULL;
+        s.battle.get_mut(slot).unwrap().phase = Phase::Ready;
+        for _ in 0..40 {
+            s.tick(0.05);
+            if s.log.back().is_some_and(|l| l.contains("定住了")) {
+                break;
+            }
+        }
+        assert!(s.log.back().is_some_and(|l| l.contains("定住了")));
+        assert!(s.pending.is_none());
     }
 
     /// 一件我方单体的疗伤药。

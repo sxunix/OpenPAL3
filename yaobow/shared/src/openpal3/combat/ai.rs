@@ -1037,6 +1037,37 @@ pub fn delegate(battle: &Battle, rng: &mut CombatRng, actor: usize, kit: &Kit) -
     d.offense(rng)
 }
 
+/// 乱（0x12）：`FUN_004d7120` 查到乱就走 `FUN_004d8580`——用 `rand % 11` 挑一个在场、
+/// 不是自己的位（哪一边都行，最多试 0x200 次），再按 `rand & 7`：1 全体治疗、2 单体
+/// 治疗、4 全体攻击、5 单体攻击，其余普攻。各动作的闸因为中了乱一律放行。挑不出来
+/// 返回 `None`，这一回合空过。
+pub fn confused(battle: &Battle, rng: &mut CombatRng, actor: usize, kit: &Kit) -> Option<Plan> {
+    let me = battle.get(actor)?;
+    let d = Delegate {
+        battle,
+        actor,
+        me,
+        flags: me.delegation,
+        kit,
+    };
+    let mut pick = None;
+    for _ in 0..0x200 {
+        let u = (rng.rand15() % 11) as usize;
+        if d.placed(u) && u != actor {
+            pick = Some(u);
+            break;
+        }
+    }
+    let u = pick?;
+    match rng.rand15() & 7 {
+        1 => d.magic_heal_all(),
+        2 => d.magic_heal(u),
+        4 => d.magic_attack_all(),
+        5 => d.magic_attack(u),
+        _ => d.attack(rng, u),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1425,5 +1456,23 @@ mod tests {
             delegate(&field(flags, 60), &mut rng, 0, &kit),
             Some(Plan::Attack { target: 5 })
         );
+    }
+
+    #[test]
+    fn a_confused_unit_may_swing_at_its_own_side() {
+        let mut b = Battle::new(1);
+        let mut me = unit(Side::Party, 100, 100);
+        me.states[K_CONFUSED].active = true;
+        b.place(0, me);
+        b.place(1, unit(Side::Party, 100, 100));
+        let mut hit_ally = false;
+        for seed in 0..200 {
+            let mut rng = CombatRng::new(seed);
+            if let Some(Plan::Attack { target }) = confused(&b, &mut rng, 0, &NOTHING) {
+                assert_ne!(target, 0, "不会打自己");
+                hit_ally |= target == 1;
+            }
+        }
+        assert!(hit_ally, "乱了会打自己人");
     }
 }

@@ -52,12 +52,16 @@ pub const K_LUCK_UP: usize = 10;
 pub const K_LUCK_DOWN: usize = 11;
 pub const K_SPEED_UP: usize = 12;
 pub const K_SPEED_DOWN: usize = 13;
+/// 定（麻痹）：和眠一样，这回合跳过（主调度 0x513938）。
+pub const K_PARALYSIS: usize = 14;
 /// 封（封咒）：控制盘「術」不可按。
 pub const K_SEAL: usize = 15;
 /// 禁（禁忌）：控制盘「物」「逃」不可按。
 pub const K_FORBID: usize = 16;
 pub const K_SLEEP: usize = 17;
 pub const K_CONFUSED: usize = 18;
+/// 狂：回合交给托管那一支（0x513975），普攻不看开关。
+pub const K_BERSERK: usize = 19;
 pub const K_EVADE: usize = 21;
 /// 濒死（`FUN_004f3e20` 的 `case 0x18`）：不是标记，而是**当场把精压到上限的
 /// 十分之一**（`+0x24c = +0x250 / 10`，当前更低就不动）。压完之后每帧钳位
