@@ -9,6 +9,7 @@ members = [
     "radiance/script-package",
     "radiance/ypk",
     "radiance/3rdparty/mini-fs",
+    "radiance/3rdparty/imgui-rs-vulkan-renderer",
     "yaobow/agent_server",
     "yaobow/asset_project",
     "yaobow/common",
@@ -35,6 +36,8 @@ imgui = { version = "0.12", features = ["docking", "tables-api"] }
 mini-fs = { path = "radiance/3rdparty/mini-fs", default-features = false, features = ["zip"] }
 
 [patch.crates-io]
+# Vendored: adds an additive-blend pipeline for PAL3's UI (see its lib.rs).
+imgui-rs-vulkan-renderer = { path = "radiance/3rdparty/imgui-rs-vulkan-renderer" }
 filetime = { git = "https://github.com/dontpanic92/filetime", branch = "yaobow" }
 chlorine = { git = "https://github.com/dontpanic92/chlorine", branch = "yaobow" }
 vcpkg = { git = "https://github.com/dontpanic92/vcpkg-rs", branch = "yaobow" }

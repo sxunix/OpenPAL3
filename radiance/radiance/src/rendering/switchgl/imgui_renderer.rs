@@ -131,12 +131,14 @@ impl SwitchGLImguiRenderer {
             }
             log::info!(
                 "imgui font atlas: {}x{} tex={} nonzero_alpha_texels={} ({}%)",
-                w, h, tex, nonzero_alpha,
+                w,
+                h,
+                tex,
+                nonzero_alpha,
                 if n > 0 { nonzero_alpha * 100 / n } else { 0 }
             );
 
             sys::ImFontAtlas_SetTexID(fonts, tex as usize as sys::ImTextureID);
-
         }
     }
 
@@ -147,7 +149,6 @@ impl SwitchGLImguiRenderer {
         if !frame.frame_begun {
             return;
         }
-
 
         let draw_data: &DrawData = unsafe {
             sys::igRender();
@@ -231,12 +232,7 @@ impl SwitchGLImguiRenderer {
                             if x2 <= x || y2 <= y {
                                 continue;
                             }
-                            glScissor(
-                                x as i32,
-                                (fh - y2) as i32,
-                                (x2 - x) as i32,
-                                (y2 - y) as i32,
-                            );
+                            glScissor(x as i32, (fh - y2) as i32, (x2 - x) as i32, (y2 - y) as i32);
 
                             glBindTexture(GL_TEXTURE_2D, cmd_params.texture_id.id() as u32);
 
@@ -247,15 +243,32 @@ impl SwitchGLImguiRenderer {
                                 GL_TRIANGLES,
                                 count as i32,
                                 GL_UNSIGNED_SHORT,
-                                (cmd_params.idx_offset * std::mem::size_of::<u16>())
-                                    as *const _,
+                                (cmd_params.idx_offset * std::mem::size_of::<u16>()) as *const _,
                             );
                         }
                         // Would require re-applying our state; nothing in the
                         // codebase emits it, so treat as a no-op.
                         DrawCmd::ResetRenderState => {}
-                        // C callbacks recorded by foreign code; none exist here.
-                        DrawCmd::RawCallback { .. } => {}
+                        // Blend-switch markers from `crate::imgui::push_blend_*`;
+                        // anything else is ignored.
+                        DrawCmd::RawCallback { raw_cmd, .. } => {
+                            let tag = (*raw_cmd).UserCallbackData as usize;
+                            if tag == crate::imgui::CALLBACK_BLEND_ADDITIVE {
+                                glBlendFuncSeparate(
+                                    GL_SRC_ALPHA,
+                                    GL_ONE,
+                                    GL_ONE,
+                                    GL_ONE_MINUS_SRC_ALPHA,
+                                );
+                            } else if tag == crate::imgui::CALLBACK_BLEND_NORMAL {
+                                glBlendFuncSeparate(
+                                    GL_SRC_ALPHA,
+                                    GL_ONE_MINUS_SRC_ALPHA,
+                                    GL_ONE,
+                                    GL_ONE_MINUS_SRC_ALPHA,
+                                );
+                            }
+                        }
                     }
                 }
             }
@@ -301,7 +314,12 @@ unsafe fn build_program() -> anyhow::Result<(u32, i32)> {
                 let mut log_len = 0;
                 glGetShaderiv(shader, GL_INFO_LOG_LENGTH, &mut log_len);
                 let mut log = vec![0u8; log_len.max(0) as usize];
-                glGetShaderInfoLog(shader, log_len, std::ptr::null_mut(), log.as_mut_ptr() as *mut _);
+                glGetShaderInfoLog(
+                    shader,
+                    log_len,
+                    std::ptr::null_mut(),
+                    log.as_mut_ptr() as *mut _,
+                );
                 anyhow::bail!(
                     "imgui {} shader failed to compile: {}",
                     stage,
@@ -339,4 +357,3 @@ unsafe fn build_program() -> anyhow::Result<(u32, i32)> {
         Ok((program, uniform_proj))
     }
 }
-

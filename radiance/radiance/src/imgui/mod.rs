@@ -18,6 +18,37 @@ use std::{
     rc::Rc,
 };
 
+/// `UserCallbackData` of the draw-list callback that switches the imgui
+/// renderer to additive blending (`SrcAlpha, One`) for the draws after it —
+/// PAL3's `gfxscript\ui_tex_color.gbf`. Both backends match on these values:
+/// switchgl's `imgui_renderer`, and the vendored `imgui-rs-vulkan-renderer`
+/// (`radiance/3rdparty`, its own copy of the constants).
+pub const CALLBACK_BLEND_ADDITIVE: usize = 0x4144_4431;
+/// Switches back to the normal alpha blend.
+pub const CALLBACK_BLEND_NORMAL: usize = 0x4144_4430;
+
+unsafe extern "C" fn blend_marker(_: *const sys::ImDrawList, _: *const sys::ImDrawCmd) {}
+
+fn push_blend_marker(tag: usize) {
+    unsafe {
+        sys::ImDrawList_AddCallback(
+            sys::igGetWindowDrawList(),
+            Some(blend_marker),
+            tag as *mut std::ffi::c_void,
+        );
+    }
+}
+
+/// Draw the current window's following draw-list items additively.
+pub fn push_blend_additive() {
+    push_blend_marker(CALLBACK_BLEND_ADDITIVE);
+}
+
+/// Back to the normal alpha blend after [`push_blend_additive`].
+pub fn push_blend_normal() {
+    push_blend_marker(CALLBACK_BLEND_NORMAL);
+}
+
 pub struct FontIndex;
 impl FontIndex {
     pub const LARGE_FONT: usize = 0;

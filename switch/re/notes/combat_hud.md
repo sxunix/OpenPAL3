@@ -158,8 +158,10 @@ UIListBox 的渲染（0x43e8a0，Ghidra 没建函数）：三个战斗列表都 
   行区高 / 行高（`FUN_0043eba0`）。`FUN_00540c60` 画：整张 SelPic（256×32 RGB，黑底青光）
   横向拉满（u 0..1），顶点色 `+0x498` = (0xa8, 0xa8, 0xa8, 0xc8)（构造 0x43e045），效果
   `DAT_01895058` = `gfxscript\ui_tex_color.gbf`：颜色、alpha 都是贴图 × 顶点色，
-  **SrcAlpha / One 叠加**——所以盖在字上也不挡字。移植端的 imgui 只有普通混合（vulkan 版
-  imgui 渲染库不认 RawCallback），叠加做不了，先把选中条垫在文字底下画。
+  **SrcAlpha / One 叠加**——所以盖在字上也不挡字。移植端（2026-09-14）：`radiance::imgui::push_blend_additive /
+  push_blend_normal` 往绘制列表里插回调标记（`UserCallbackData` = 0x41444431 / 0x41444430），vulkan 的 imgui 渲染库
+  拷进 `radiance/3rdparty/imgui-rs-vulkan-renderer` 加了一条 SrcAlpha/One 管线按标记切换，switchgl 的 imgui 渲染器按
+  同样的标记换 `glBlendFuncSeparate`；选中条照原版在文字之后叠加画。
 
 ## 6. 横幅
 

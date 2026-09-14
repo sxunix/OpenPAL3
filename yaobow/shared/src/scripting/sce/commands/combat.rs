@@ -2852,20 +2852,6 @@ impl SceCommandCombat {
         // 行文字 16 号（`hud::LIST_FONT_PX`，800×600 下的像素）。
         let base_px = ui.current_font_size();
         ui.set_window_font_scale(hud::LIST_FONT_PX * scale / base_px);
-        // 选中条（UIListBox 渲染 0x43eb66 `FUN_00540c60`）：整张 SelPic 横向拉满
-        // （u 0..1），顶点色 `+0x498` = (0xa8, 0xa8, 0xa8, 0xc8)。原版用
-        // `ui_tex_color.gbf`（SrcAlpha, One）**叠加**、画在文字之后；imgui 这边只有普通
-        // 混合，叠加画出来会把字盖黑，所以先垫在文字底下画。
-        if (first..first + visible).contains(&index) && index < rows.len() {
-            if let (Some(r), Some(s)) = (hud::list_select_rect(area, index - first), select) {
-                let (uv0, uv1) = super::encamp::sprite_uv(s, r);
-                list.add_image(s.imgui_texture_id(), at(r.0, r.1), at(r.2, r.3))
-                    .uv_min([0., uv0[1]])
-                    .uv_max([1., uv1[1]])
-                    .col(argb(hud::LIST_SELECT_COLOR))
-                    .build();
-            }
-        }
         let shown = rows.iter().enumerate().skip(first).take(visible);
         for (line, (cells, enabled)) in shown {
             let color = if *enabled {
@@ -2880,6 +2866,21 @@ impl SceCommandCombat {
             }
         }
         ui.set_window_font_scale(1.);
+        // 选中条（UIListBox 渲染 0x43eb66 `FUN_00540c60`，在文字之后画）：整张 SelPic 横向
+        // 拉满（u 0..1），顶点色 `+0x498` = (0xa8, 0xa8, 0xa8, 0xc8)，效果 `ui_tex_color.gbf`
+        // （SrcAlpha, One）叠加——黑底青光的图叠上去只提亮，不挡字。
+        if (first..first + visible).contains(&index) && index < rows.len() {
+            if let (Some(r), Some(s)) = (hud::list_select_rect(area, index - first), select) {
+                let (uv0, uv1) = super::encamp::sprite_uv(s, r);
+                radiance::imgui::push_blend_additive();
+                list.add_image(s.imgui_texture_id(), at(r.0, r.1), at(r.2, r.3))
+                    .uv_min([0., uv0[1]])
+                    .uv_max([1., uv1[1]])
+                    .col(argb(hud::LIST_SELECT_COLOR))
+                    .build();
+                radiance::imgui::push_blend_normal();
+            }
+        }
     }
 
     /// 招式名横幅，字居中。
