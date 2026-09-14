@@ -70,6 +70,7 @@ pub struct ScnRole {
     pub position_z: f32,
     // Offset 0x54: a {0, 1} flag, NOT a world-Y coordinate. Roles carry no
     // stored Y; their height is derived from the nav map of their layer.
+    // 它是 InitActive：开场在不在场（Pal3.Unity `ScnNpcInfo.InitActive`）。
     pub flag_0x54: u32,
     pub dw58: u32,
     pub sce_proc_id: u32,
@@ -92,6 +93,24 @@ pub struct ScnRole {
     // Offset 0x150: patrol move speed / rate ({0,20,22,25,30,40,50,55,60,65}).
     pub move_speed: u32,
     pub dw154: Vec<u32>,
+}
+
+impl ScnRole {
+    /// `ScnNpcInfo.Type`（+0x01）：2 = 战斗 NPC，也就是野外怪物（Pal3.Unity `ActorType.CombatNpc`）。
+    pub fn is_combat_npc(&self) -> bool {
+        self.b1 == 2
+    }
+
+    /// 野外怪物的三个怪物 id（+0x74 / +0x78 / +0x7c，`FUN_00407560` 从这里取）。
+    pub fn monster_ids(&self) -> [u32; 3] {
+        [self.dw74, self.dw78, self.dw7c]
+    }
+
+    /// 野外怪物一次出几个（+0x80 的低字节，`FUN_00407560` 的 `local_148 & 0xff`）。同一个 dword 的
+    /// 次字节是「能否重生」（Pal3.Unity `MonsterCanRespawn`），原版没有地方读。
+    pub fn monster_count(&self) -> u8 {
+        (self.path_mode & 0xff) as u8
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]

@@ -2078,6 +2078,51 @@ impl AdventureDirectorProps {
             .look_at(&target);
     }
 
+    /// 野外遇敌：主角停下（`FUN_004181e0` 调在主角身上），按撞上的怪开一场野外战斗。战斗命令一初始化就关掉
+    /// 冒险输入，所以不会一帧里连撞几次。
+    fn check_field_encounter(&mut self) -> bool {
+        use crate::openpal3::scene::RoleController;
+        let Some(scene_rc) = self.scene_manager.scn_scene() else {
+            return false;
+        };
+        let Some(player) = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)
+        else {
+            return false;
+        };
+        let radius = RoleController::get_role_controller(player.clone())
+            .map(|rc| rc.inner::<RoleController>().model_radius())
+            .unwrap_or(crate::openpal3::scene::DEFAULT_MODEL_RADIUS);
+        let Some(hit) = scene_rc
+            .inner::<crate::openpal3::scene::ScnScene>()
+            .touching_field_monster(&player, radius)
+        else {
+            return false;
+        };
+        if let Some(rc) = RoleController::get_role_controller(player.clone()) {
+            rc.inner::<RoleController>().idle();
+        }
+        log::info!(
+            "Field: 撞上 ROLE_{}（{:?} × {}），朝向判定 {}",
+            hit.role_index,
+            hit.ids,
+            hit.count,
+            hit.sneak
+        );
+        let cmd = Box::new(
+            crate::scripting::sce::commands::SceCommandCombat::new_field(
+                hit.count as i32,
+                hit.ids,
+                hit.sneak,
+                hit.role_index,
+            ),
+        );
+        self.sce_vm
+            .push_debug_command(cmd, self.scene_manager.clone());
+        true
+    }
+
     fn do_update(&mut self, delta_sec: f32) -> Option<ComRc<IDirector>> {
         self.sce_vm.update(delta_sec);
 
@@ -2147,6 +2192,12 @@ impl AdventureDirectorProps {
             scene_rc
                 .inner::<crate::openpal3::scene::ScnScene>()
                 .step_patrols(delta_sec);
+        }
+
+        // 野外怪物撞上主角就开战（`FUN_00417420` 末尾 → `FUN_00407560`）。战斗命令一初始化就把舞台
+        // 压到场景栈顶，这一帧后面按冒险场景取主角的代码就不能再跑了。
+        if self.check_field_encounter() {
+            return None;
         }
 
         self.camera_rotation =

@@ -220,6 +220,47 @@ if (desc->noSneak == 0) {                       // desc+0x50
 `CBStage.cpp` 里 `WeSneakAttackEnemy` / `EnemySneakAttackUs`（`FUN_004fd290`）
 一一对应，但两者哪个对哪个没有逐条闭环。
 
+### 野外遇敌（2026-09-14 查全，移植端第一步已做）
+
+**谁是野外怪物**：`.scn` 里类型 2（`ScnNpcInfo.Type` = 战斗 NPC）的角色。怪物 id 三个在 +0x74 / +0x78 / +0x7c，
++0x80 低字节是一次出几个、次字节「能否重生」（原版没人读）。`FUN_00417040` 把整条 `.scn` 记录拷到角色 `+0xac`，
+行为一律改成 5（追击，不看 `.scn` 里的初始行为）；追击参数来自 `datascript\scene.txt` 的 `monster` 节
+（`FUN_0041efa0` 按键名表 0x58b264 起、步长 0x14 读进 0x58b260 起）：
+`FreeRange` S/M/L 40/60/100、`FreeSpeed` 30/50/100、`FindFov` 90（没用上）、`FindRadius` 100/200/400、
+`AttackSpeed` 160/210/240、`AttackRange` 10。角色 `+0x590` = FreeRange[gdb `move_range_level`（+0x2f1）：0/1→S、2→M、3→L]，
+`+0x594` = AttackRange × `+0x590`，`+0x598` = FindRadiusL（写死）。
+
+**怪物 AI**（`FUN_00417420`，状态 `+0x588`）：0 待命（`FUN_0041ad40` 把自己往出生点拉回 FreeRange 里），发现主角
+（`FUN_004178a0`：同一层、主角离出生点 ≤ `+0x594 × 0.8`，且距离 < 120，或 < `+0x598` 且在怪正前方点积 > 0.7 且
+导航网格上看得见）→ 1 追；追到主角离出生点 > `+0x594` 或离怪 > `+0x598 × 1.4` → 2 回出生点；回到了 → 0。全局计数
+`DAT_0058b230` < 1 时（`FUN_0041e720` 加减，对话 / 菜单一类）→ 3 定住。速度：`FUN_00412710` 按 gdb `move_speed_level`
+（+0x2f3：1→S、2→M、其它→L、0→0）取 FreeSpeed，追击时按 `chase_speed_level`（+0x2f4：1→M、2→L、其它→S）取 AttackSpeed。
+**移植端还没做这一段**（怪物现在照 `.scn` 路径巡逻或站着）。
+
+**撞上**（`FUN_00417420` 末尾，移植端 `ScnScene::touching_field_monster` 已做）：主角在场、不是状态 4、游戏状态 2、
+两人 `+0xa4` 差 < 24、距离 < 两人半径（角色 `+0x10`，`FUN_004125d0`：`0.4 × √(x² + z²)`）之和 → 主角停下
+（`FUN_004181e0` 调在主角身上）。距离 ≥ 12 时判偷袭：`FUN_0041ba10(主角, 怪的位置)` = 怪在主角面前、
+`FUN_0041ba10(怪, 主角位置)` = 主角在怪面前（500 以内、点积 > 0）；怪看得见主角、主角背对 → 2（敌方偷袭），反过来 → 1
+（我方偷袭）。然后写死 `DAT_00c11748 = 0`、`DAT_00c11750 = 0`（能逃）、回合不限、`DAT_005833cc = 1`，
+`FUN_00407560(怪 +0xac, 偷袭, 怪)`：`FUN_004118d0(+0x80 低字节, 三个 id, 0)` 抽怪（`FUN_018c59e0`）→ `FUN_00407320(描述符, 偷袭, 怪)`。
+`FUN_00407320` 把偷袭 1 / 2 写成描述符 `+0x44` 的 2 / 1，`FUN_004edc60` 再按 `+0x44` 1 → `+0x219`、2 → `+0x218`
+各掷一次 `rand & 0x3ff < 0x200`——**两次对调抵消，1 = 我方偷袭（`+0x218`），2 = 敌方偷袭（`+0x219`）**，都只 50% 成立。
+
+**偷袭成立之后**：`FUN_004dbb80` 被偷袭一方蓄力条 0、偷袭方满条；`FUN_005096d0` 被偷袭一方朝向 + 180°
+（敌方位看 `+0x218`、我方位看 `+0x219`）；开场时间轴 `LAB_00513eb0` 按 [敌方偷袭横幅 3 秒] → `FUN_004fce70` 4 秒 →
+`FUN_004fcfb0` 4 秒 → [我方偷袭横幅 3 秒] 排，横幅 `FUN_004fd290` 写 `lang.txt` 的 `EnemySneakAttackUs`「敌人偷袭成功」
+（CBUI `+0x434`，`TricknameBack2.tga`）/ `WeSneakAttackEnemy`「我方偷袭成功」（`+0x430`，`TricknameBack.tga`），
+都在 (300,30)-(461,87)；选项 `+5` 为真时跳过（只有镜头代码临时置）。主调度在时间轴提交后立刻挂上，所以横幅和战斗同时走。
+
+**战后**（`FUN_004055d0` 模式 3）：`DAT_005833d0 = (结果码 == 2)`（胜、回合到顶、逃掉都是 2）；不是 2 且 `DAT_005833cc`
+→ game over；否则 `*(DAT_00c11754 + 0x278) = 0`——撞上的那只怪退场（不画、不动）。重进场景从 `.scn` 重新摆，所以都会回来。
+
+**移植端**（2026-09-14）：`ScnRole::is_combat_npc / monster_ids / monster_count`、`RoleController::model_radius`、
+`ScnScene::touching_field_monster / retire_field_monster`、冒险导演每帧 `check_field_encounter`、`SceCommandCombat::new_field`
+（`Encounter::field`）、`FUN_004edc60` 的 50%、`seed_gauges`、被偷袭方转身、偷袭横幅、战后退场。
+**[推断]**：高度差用位置 y 代替 `+0xa4`；碰撞半径按包围盒边长（不是半边长）。没做：怪物 AI（待命 / 追 / 回）、
+开场那两步 4 秒的 `FUN_004fce70` / `FUN_004fcfb0`、`DAT_0058b230` 定住。
+
 ### `CBSystem::Prepare`（`FUN_00512f40(desc, debugFlag)`）
 
 ```c

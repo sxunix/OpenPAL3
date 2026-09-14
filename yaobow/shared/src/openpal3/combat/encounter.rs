@@ -86,6 +86,19 @@ impl Encounter {
         }
     }
 
+    /// 野外遇敌（`FUN_00417420` → `FUN_00407560`）：`.scn` 角色的三个怪物 id 和个数照 73 号一样抽
+    /// （`FUN_018c59e0`，没有 boss）；进之前写死 `DAT_00c11748 = 0`、`DAT_00c11750 = 0`（能逃）、回合不限、
+    /// `DAT_005833cc = 1`（输了 game over），脚本先设的那几个标志不管。
+    pub fn field(rng: &mut CrtRand, count: i32, ids: [u32; 3], sneak: u8) -> Self {
+        Self {
+            monsters: pick_monsters(rng, count, ids, 0),
+            flags: PendingFlags::default(),
+            escape_forbidden: false,
+            keep_bgm: false,
+            sneak,
+        }
+    }
+
     pub fn enemy_count(&self) -> usize {
         self.monsters.iter().filter(|id| **id != 0).count()
     }

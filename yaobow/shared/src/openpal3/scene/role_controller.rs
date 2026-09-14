@@ -112,6 +112,7 @@ pub struct RoleController {
     /// actor's head (the 72 emoji bubble) needs it, and it differs a lot
     /// between characters: 景天 is 76, 龙葵 63, 花盈 28.
     model_height: Cell<f32>,
+    model_radius: Cell<f32>,
 }
 
 ComObject_RoleController!(super::RoleController);
@@ -174,6 +175,8 @@ impl RoleController {
 
         let model_height =
             mv3_model_height(&asset_mgr, role_name, idle_anim_name).unwrap_or(DEFAULT_MODEL_HEIGHT);
+        let model_radius =
+            mv3_model_radius(&asset_mgr, role_name, idle_anim_name).unwrap_or(DEFAULT_MODEL_RADIUS);
 
         Self {
             entity,
@@ -199,6 +202,7 @@ impl RoleController {
             texture_override: RefCell::new(None),
             unique_materials: Cell::new(false),
             model_height: Cell::new(model_height),
+            model_radius: Cell::new(model_radius),
         }
     }
 
@@ -457,6 +461,11 @@ impl RoleController {
     /// field docs.
     pub fn model_height(&self) -> f32 {
         self.model_height.get()
+    }
+
+    /// 碰撞半径（角色 `+0x10`，`FUN_004125d0`），野外怪物撞主角时两人相加。
+    pub fn model_radius(&self) -> f32 {
+        self.model_radius.get()
     }
 
     pub fn model_name(&self) -> String {
@@ -808,6 +817,30 @@ fn compute_mv3_frame_normals(
 /// Fallback when the `.mv3` cannot be measured — roughly a main
 /// character's height.
 pub const DEFAULT_MODEL_HEIGHT: f32 = 76.0;
+
+/// 读不到模型时的碰撞半径。[推断] 按常见人物模型的包围盒估的。
+pub const DEFAULT_MODEL_RADIUS: f32 = 20.0;
+
+/// 碰撞半径：`FUN_004125d0` 取 `0.4 × √(x² + z²)`，x / z 是模型包围盒在水平面上的两个量
+/// （`FUN_00536fd0` 给的矩阵里取出来）。[推断] 是边长还是半边长没核实，这里按边长。
+fn mv3_model_radius(asset_mgr: &Rc<AssetManager>, role_name: &str, action: &str) -> Option<f32> {
+    let path = asset_mgr.mv3_path(role_name, action);
+    let data = asset_mgr.vfs().read_to_end(&path).ok()?;
+    let mv3 = read_mv3(&mut Cursor::new(data)).ok()?;
+    let frame = mv3.models.first()?.frames.first()?;
+    let (mut lx, mut hx, mut lz, mut hz) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    for v in &frame.vertices {
+        lx = lx.min(v.x as f32);
+        hx = hx.max(v.x as f32);
+        lz = lz.min(v.z as f32);
+        hz = hz.max(v.z as f32);
+    }
+    if hx <= lx || hz <= lz {
+        return None;
+    }
+    let (dx, dz) = ((hx - lx) * MV3_SCALE, (hz - lz) * MV3_SCALE);
+    Some(0.4 * (dx * dx + dz * dz).sqrt())
+}
 
 /// Measure a role model by the Y extent of its idle animation's first
 /// frame. Cheap enough to do once per role; the file is already in the

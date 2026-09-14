@@ -128,6 +128,18 @@ pub struct ResultLang {
 
 pub const LANG_PATH: &str = "/basedata/basedata/datascript/lang.txt";
 
+/// `lang.txt` 里一个键的值（一行 `键<tab…>$值&`，`FUN_00430570`）。
+pub fn lang_value(text: &str, key: &str) -> Option<String> {
+    text.lines().find_map(|line| {
+        (line.split_whitespace().next() == Some(key))
+            .then(|| {
+                let (a, b) = (line.find('$')?, line.rfind('&')?);
+                (a < b).then(|| line[a + 1..b].to_string())
+            })
+            .flatten()
+    })
+}
+
 impl ResultLang {
     /// 解析 `lang.txt`：一行 `键<tab…>$值&`。缺的键用实机的值兜底。
     pub fn parse(text: &str) -> Self {

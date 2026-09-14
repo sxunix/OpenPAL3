@@ -26,7 +26,7 @@ pub use particles::{
     write_particle_mesh,
 };
 pub use role_controller::{
-    DEFAULT_MODEL_HEIGHT, RoleAnimationRepeatMode, RoleController, RoleState,
+    DEFAULT_MODEL_HEIGHT, DEFAULT_MODEL_RADIUS, RoleAnimationRepeatMode, RoleController, RoleState,
     create_animated_mesh_from_mv3, create_animated_mesh_from_mv3_with_texture, create_mv3_entity,
 };
 pub use scene::{LadderTestResult, ScnScene};

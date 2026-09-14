@@ -16,6 +16,17 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
+/// 野外怪物撞上主角时要带进战斗的东西（`FUN_00417420` 末尾 → `FUN_00407560`）。
+#[derive(Debug, Clone, Copy)]
+pub struct FieldEncounter {
+    /// 撞上的是哪个 `.scn` 角色（`ROLE_<n>`），战后让它退场。
+    pub role_index: u8,
+    pub count: u8,
+    pub ids: [u32; 3],
+    /// 朝向判定：1 我方偷袭、2 敌方偷袭、0 都不是（成不成立还要进战斗再掷一次）。
+    pub sneak: u8,
+}
+
 pub struct ScnScene {
     scene: ComRc<IScene>,
     asset_mgr: Rc<AssetManager>,
@@ -441,6 +452,91 @@ impl ScnScene {
         } else {
             None
         }
+    }
+
+    /// 野外怪物撞上主角（`FUN_00417420` 末尾）：场景里类型 2、带怪物 id、还在场（没藏）的角色，和主角
+    /// 高度差 < 24、距离 < 两人碰撞半径之和就开战。离得 ≥ 12 时按朝向判偷袭（`FUN_0041ba10` 各查一次：
+    /// 主角面前有没有怪、怪面前有没有主角）——怪看得见主角而主角背对它 = 敌方偷袭（2），反过来 = 我方偷袭（1）。
+    pub fn touching_field_monster(
+        &self,
+        player: &ComRc<IEntity>,
+        player_radius: f32,
+    ) -> Option<FieldEncounter> {
+        let p = player.transform().borrow().position();
+        let pf = Self::facing_of(player);
+        for role in &self.scn_file.roles {
+            if !role.is_combat_npc() || role.monster_ids().iter().all(|id| *id == 0) {
+                continue;
+            }
+            let Some(e) = self.get_role_entity(role.index as i32) else {
+                continue;
+            };
+            if !e.visible() {
+                continue;
+            }
+            let m = e.transform().borrow().position();
+            // [推断] 原版比的是两人的 `+0xa4`，移植端用位置的 y。
+            if (m.y - p.y).abs() >= 24. {
+                continue;
+            }
+            let dist = Vec3::sub(&m, &p).norm();
+            let r = RoleController::get_role_controller(e.clone())
+                .map(|rc| rc.inner::<RoleController>().model_radius())
+                .unwrap_or(super::role_controller::DEFAULT_MODEL_RADIUS);
+            if player_radius + r <= dist {
+                continue;
+            }
+            let sneak = if dist < 12. {
+                0
+            } else {
+                let a = Self::in_front(&p, &pf, &m);
+                let b = Self::in_front(&m, &Self::facing_of(&e), &p);
+                match (a, b) {
+                    (false, true) => 2,
+                    (true, false) => 1,
+                    _ => 0,
+                }
+            };
+            return Some(FieldEncounter {
+                role_index: role.index,
+                count: role.monster_count(),
+                ids: role.monster_ids(),
+                sneak,
+            });
+        }
+        None
+    }
+
+    /// 打赢 / 逃掉以后撞上的那只怪退场（`FUN_004055d0`：`*(DAT_00c11754 + 0x278) = 0`）。重进场景时从
+    /// `.scn` 重新摆，所以还会回来。
+    pub fn retire_field_monster(&self, role_index: u8) {
+        if let Some(e) = self.get_role_entity(role_index as i32) {
+            e.set_visible(false);
+            if let Some(rc) = RoleController::get_role_controller(e.clone()) {
+                rc.inner::<RoleController>().set_active(false);
+            }
+        }
+    }
+
+    /// 角色面朝哪边：`Transform::look_at` 把「背离目标」写在矩阵第 2 列，取反就是面朝的方向。
+    fn facing_of(entity: &ComRc<IEntity>) -> Vec3 {
+        let t = entity.transform();
+        let t = t.borrow();
+        let m = t.matrix();
+        Vec3::new(-m[0][2], -m[1][2], -m[2][2])
+    }
+
+    /// `FUN_0041ba10(this, pos)`：`pos` 在 `this` 面前 500 以内（点积 > 0；贴得不到 1 也算）。
+    fn in_front(this: &Vec3, facing: &Vec3, pos: &Vec3) -> bool {
+        let d = Vec3::sub(pos, this);
+        let len = d.norm();
+        if len > 500. {
+            return false;
+        }
+        if len < 1. {
+            return true;
+        }
+        (d.x * facing.x + d.y * facing.y + d.z * facing.z) / len > 0.
     }
 
     /// All role entities currently in the scene (named `ROLE_<n>`).
@@ -881,24 +977,23 @@ impl ScnScene {
                 {
                     let rc = role_controller.inner::<RoleController>();
                     rc.set_nav_layer(layer);
+                    // 开场在不在场只看 `.scn` 的 InitActive（+0x54，`FUN_00417040` 拷到角色 +0x100；
+                    // Pal3.Unity `ActorController.Init` 也只看它）。以前只激活有巡逻路径或挂脚本的，
+                    // 原地站着的野外怪、路人都没摆出来，挂脚本却初始不在场的反倒提前露面。
+                    rc.set_active(role.flag_0x54 != 0);
                     // Only non-scripted ambient NPCs auto-patrol, so they don't
-                    // fight SCE RoleMoveTo/RolePathTo. Mark them active so their
-                    // walk animation loops (driven by RoleController::on_updating).
+                    // fight SCE RoleMoveTo/RolePathTo.
                     if role.sce_proc_id == 0 && role.patrol_path.len() >= 2 {
                         rc.set_patrol(
                             role.patrol_path.clone(),
                             role.path_mode,
                             role.move_speed as f32,
                         );
-                        rc.set_active(true);
                     }
                 }
                 if role.sce_proc_id != 0 {
-                    {
-                        let rc = role_controller.inner::<RoleController>();
-                        rc.set_active(true);
-                        rc.set_proc_id(role.sce_proc_id as i32);
-                    };
+                    let rc = role_controller.inner::<RoleController>();
+                    rc.set_proc_id(role.sce_proc_id as i32);
                 }
 
                 entities.push(entity);

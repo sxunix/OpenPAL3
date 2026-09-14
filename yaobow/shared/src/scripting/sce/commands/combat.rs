@@ -148,6 +148,13 @@ enum Kind {
     Normal { count: i32, ids: [u32; 3] },
     /// Opcode 80.
     Boss { ids: [u32; 6] },
+    /// 野外遇敌（`FUN_00417420` → `FUN_00407560`）：撞上的 `.scn` 角色 `role`、朝向判定 `sneak`。
+    Field {
+        count: i32,
+        ids: [u32; 3],
+        sneak: u8,
+        role: u8,
+    },
 }
 
 /// Opcodes 73 and 80.
@@ -155,6 +162,10 @@ enum Kind {
 pub struct SceCommandCombat {
     kind: Kind,
     session: Option<CombatSession>,
+    /// 偷袭成立了没有：（我方 `+0x218`，敌方 `+0x219`）。
+    sneak: (bool, bool),
+    /// 偷袭横幅的字（`lang.txt` 的 `WeSneakAttackEnemy` / `EnemySneakAttackUs`）。
+    sneak_text: Option<String>,
     /// Party actor id per battle slot 0..5.
     /// 在场的我方成员，**存的是队伍下标，而下标就是战斗位号**
     /// （见 `game_db::PLAYER_COMBAT_IDS` 的注释和 `combat_flow.md` 第 9.7
@@ -422,6 +433,7 @@ struct HudTextures {
     item_back: Tex,
     skill_back: Tex,
     row_select: Tex,
+    trick_back: Tex,
     trick_back2: Tex,
     ai_back: Tex,
     /// 按 `ai::Switch::ALL`，每格 [没勾, 勾上]。
@@ -500,6 +512,7 @@ impl HudTextures {
             item_back: tex(hud::ITEM_BACK),
             skill_back: tex(hud::SKILL_BACK),
             row_select: tex(hud::ROW_SELECT),
+            trick_back: tex(hud::TRICK_BACK),
             trick_back2: tex(hud::TRICK_BACK2),
             ai_back: tex(hud::AI_BACK),
             ai_switches: ai::Switch::ALL
@@ -607,6 +620,16 @@ impl SceCommandCombat {
         })
     }
 
+    /// 野外遇敌，见 [`Kind::Field`]。
+    pub fn new_field(count: i32, ids: [u32; 3], sneak: u8, role: u8) -> Self {
+        Self::with_kind(Kind::Field {
+            count,
+            ids,
+            sneak,
+            role,
+        })
+    }
+
     pub fn new_boss(m1: i32, m2: i32, m3: i32, m4: i32, m5: i32, m6: i32) -> Self {
         Self::with_kind(Kind::Boss {
             ids: [m1, m2, m3, m4, m5, m6].map(|m| m as u32),
@@ -617,6 +640,8 @@ impl SceCommandCombat {
         Self {
             kind,
             session: None,
+            sneak: (false, false),
+            sneak_text: None,
             party_actor_ids: Vec::new(),
             switched_bgm: false,
             game_over_on_loss: true,
@@ -836,11 +861,19 @@ impl SceCommandCombat {
                 continue;
             };
             let home = Vec3::new(pos.x, 0., pos.z);
+            // 偷袭时被偷袭的一方背过身去（`FUN_005096d0`：敌方位看 `+0x218`、我方位看 `+0x219`，朝向 + 180°）。
+            let (fx, fz) = motion::rest_facing(set);
+            let turned = if slot < PARTY_SLOTS {
+                self.sneak.1
+            } else {
+                self.sneak.0
+            };
+            let facing = if turned { (-fx, -fz) } else { (fx, fz) };
             entity
                 .transform()
                 .borrow_mut()
                 .set_position(&home)
-                .look_at(&face_point(home, motion::rest_facing(set)));
+                .look_at(&face_point(home, facing));
             if let Some(rc) = RoleController::get_role_controller(entity.clone()) {
                 let rc = rc.inner::<RoleController>();
                 rc.set_active(true);
@@ -1117,7 +1150,14 @@ impl SceCommandCombat {
                 Encounter::scripted(&mut CrtRand::new(seed), count, ids, flags)
             }
             Kind::Boss { ids } => Encounter::boss(ids, flags),
+            Kind::Field {
+                count, ids, sneak, ..
+            } => Encounter::field(&mut CrtRand::new(seed), count, ids, sneak),
         };
+        if matches!(self.kind, Kind::Field { .. }) {
+            // `FUN_00417420` 开战前写死 `DAT_005833cc = 1`。
+            self.game_over_on_loss = true;
+        }
 
         let floor_type = Self::floor_type(&scene_manager, state);
 
@@ -1468,9 +1508,30 @@ impl SceCommandCombat {
             log::info!("Combat: 我方 {ours:?} 敌方 {theirs:?}");
         }
         battle.assign_patterns();
-        // 开场蓄力条（`FUN_004dbb80`）。偷袭两个标志移植端还没有来源：脚本开战一律传 0，
-        // 野外遇敌（`FUN_0041ba10` 朝向判定 + `FUN_004edc60` 的 50%）没做。
-        battle.seed_gauges(false, false);
+        // 偷袭（`FUN_004edc60`）：朝向判定 1 / 2 还要掷 `rand & 0x3ff < 0x200` 才成立——1 → `+0x218` 我方偷袭，
+        // 2 → `+0x219` 敌方偷袭（`FUN_00407320` 中间把 1、2 对调成描述符 `+0x44` 的 2、1，再对调回来）。
+        // 脚本开战一律是 0。然后开场蓄力条（`FUN_004dbb80`）。
+        let we = encounter.sneak == 1 && battle.rng.rand10() < 0x200;
+        let enemy = encounter.sneak == 2 && battle.rng.rand10() < 0x200;
+        self.sneak = (we, enemy);
+        if we || enemy {
+            use common::store_ext::StoreExt2;
+            let (key, fallback) = if we {
+                ("WeSneakAttackEnemy", "我方偷袭成功")
+            } else {
+                ("EnemySneakAttackUs", "敌人偷袭成功")
+            };
+            self.sneak_text = Some(
+                state
+                    .asset_mgr()
+                    .vfs()
+                    .read_to_end_from_gbk(crate::openpal3::combat::result::LANG_PATH)
+                    .ok()
+                    .and_then(|t| crate::openpal3::combat::result::lang_value(&t, key))
+                    .unwrap_or_else(|| fallback.to_string()),
+            );
+        }
+        battle.seed_gauges(we, enemy);
         let mut session = CombatSession::new(battle, profiles, seed.rotate_left(13) ^ 0x5bd1_e995);
         session.set_items(items);
         session.set_combos(
@@ -2929,6 +2990,26 @@ impl SceCommandCombat {
     }
 
     /// 招式名横幅，字居中。
+    /// 偷袭横幅（开场时间轴里的 `FUN_004fd290`，3 秒）：敌方偷袭排在最前（0–3 秒，`TricknameBack2.tga`），
+    /// 我方偷袭排在两步 4 秒的 `FUN_004fce70` / `FUN_004fcfb0` 之后（8–11 秒，`TricknameBack.tga`）。
+    /// 横幅借招式名那一块（CBUI `+0x430` / `+0x434`，都是 (300,30)-(461,87)）。
+    fn draw_sneak_banner(ui: &Ui, tex: &HudTextures, sneak: (bool, bool), text: &str, clock: f32) {
+        let (back, from) = if sneak.1 {
+            (tex.trick_back2.as_deref(), 0.)
+        } else if sneak.0 {
+            (tex.trick_back.as_deref(), 8.)
+        } else {
+            return;
+        };
+        if !(from..from + 3.).contains(&clock) {
+            return;
+        }
+        overlay(ui, "CombatSneakBanner", |ui, at, scale| {
+            let list = ui.get_window_draw_list();
+            Self::draw_banner(ui, &list, back, text, at, scale);
+        });
+    }
+
     fn draw_banner(
         ui: &Ui,
         list: &imgui::DrawListMut<'_>,
@@ -3159,6 +3240,9 @@ impl SceCommand for SceCommandCombat {
             Self::draw_result(ui, player, &self.result_panels, self.result_tex.as_ref());
         } else if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
             Self::draw(ui, session, hud, self.battle_clock);
+            if let Some(text) = self.sneak_text.as_deref() {
+                Self::draw_sneak_banner(ui, hud, self.sneak, text, self.battle_clock);
+            }
         }
         if self.stage_fade > 0. {
             let fade = self.stage_fade;
@@ -3199,6 +3283,16 @@ impl SceCommand for SceCommandCombat {
                 }
                 log::info!("Combat: finished with {outcome:?}");
                 self.drop_stage(&scene_manager);
+                // 野外遇敌打赢 / 逃掉（结果码 2）：撞上的那只退场（`FUN_004055d0`：`DAT_00c11754 + 0x278 = 0`）。
+                if let Kind::Field { role, .. } = self.kind {
+                    if matches!(outcome, Outcome::Win | Outcome::Escaped) {
+                        use crate::openpal3::directors::SceneManagerExtensions;
+                        if let Some(scn) = scene_manager.scn_scene() {
+                            scn.inner::<crate::openpal3::scene::ScnScene>()
+                                .retire_field_monster(role);
+                        }
+                    }
+                }
                 let settled = std::mem::take(&mut self.settled);
                 if settled {
                     self.restore_bgm(state);
