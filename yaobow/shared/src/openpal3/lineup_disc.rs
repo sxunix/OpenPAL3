@@ -324,7 +324,9 @@ impl LineupDisc {
         // 调 `SetAmbientLight`。gbengine 每个物体的着色器变量 `ambient`（场景图 0x15979–0x15a6b）
         // = (全局环境光 + 灯的环境分量) × 材质 ambient + `+0x1bc` × 材质 `+0x30..`；全局环境光是
         // gbGfxManager 初始化（0x1d9b9）给的 (0.2, 0.2, 0.2)。角色的 skin.gbf 顶点色就等于这个
-        // `ambient`。移植端没有材质 ambient / emissive 这套，暂时用满环境光，亮度和原版不一样。
+        // `ambient`；自发光系数 gbGfxManager `+0x1bc` 恒为 0，其余靠场景图里挂着的灯。原版实机
+        // 截图（逗游网阵法攻略 doyo.cn/article/29258 的配图）里盘上的人是正常亮度，和这里用满环境光
+        // 画出来的一致，所以照用满环境光。
         scene.set_lighting(SceneLighting::new([1., 1., 1.], vec![]));
 
         am.vfs().open(DISC_MODEL).ok()?;
