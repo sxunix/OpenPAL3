@@ -66,6 +66,10 @@ impl RenderObject for VulkanRenderObject {
         self.material.update_tint_alpha(alpha);
     }
 
+    fn set_tint_rgb(&self, rgb: [f32; 3]) {
+        self.material.update_tint_rgb(rgb);
+    }
+
     fn material_debug_name(&self) -> Option<&str> {
         Some(self.material.debug_name())
     }

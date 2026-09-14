@@ -43,6 +43,16 @@ impl RenderObject for SwitchGLRenderObject {
     fn local_aabb(&self) -> Option<([f32; 3], [f32; 3])> {
         self.vertices.borrow().aabb_min_max()
     }
+
+    /// Materials are per render object on this backend (no cache), so the
+    /// tint can live on the material; the draw uploads it every frame.
+    fn set_alpha(&self, alpha: f32) {
+        self.material.update_tint_alpha(alpha);
+    }
+
+    fn set_tint_rgb(&self, rgb: [f32; 3]) {
+        self.material.update_tint_rgb(rgb);
+    }
 }
 
 impl SwitchGLRenderObject {

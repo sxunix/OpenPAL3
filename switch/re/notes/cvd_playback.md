@@ -116,7 +116,11 @@ exe 里载了两份：
 
 移植端（`combat.rs` 的 `place_pointer`）：每个我方位一个实体（原版一份画多次）；亮谁按上面的规则
 （`CombatSession::highlighted` 对应 `+0x5c` 那一组），时钟用 `battle_clock`。包围盒用角色渲染对象的
-`local_aabb` 并起来近似 OBB。敌方目标的闪烁还没做（渲染对象只有改 alpha 的接口，没有改 RGB 的）。
+`local_aabb` 并起来近似 OBB。选中组的闪烁（2026-09-14 做）：原版 `FUN_00509b90` 换 `geom_diffuse.gbf`（`FUN_005084c0` 载进战斗系统
+`+0x4c` 对象 `+0x984`，带透明的 `+0x988` 是 `geom_diffuse_t.gbf`）画，顶点色 = 效果变量 6（`specular`）=
+0.65 + 0.35·sin(战斗时钟 × 7.8)，不算光照。移植端给渲染对象加了 `set_tint_rgb`（Vulkan 材质 `update_tint_rgb`，
+switchgl 材质参数改成 Cell），战斗舞台的角色 `set_unique_materials()` 不和同模型共用材质，`place_pointer` 每帧
+给组里的人乘这个灰度、出组复原——是在自身光照上乘，不是替掉光照。实机截图：选敌时怪物变暗、出招后复原。
 实机截图：控制盘时指针在景天头上、选敌人时敌人头上没有指针（2026-09-14）。
 
 阵法页的 `ui\GameMainUI\Lineup\pointer.cvd`（`FUN_00483650`）也已做，见 `lineup_page_layout.md` §3。

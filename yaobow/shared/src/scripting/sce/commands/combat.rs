@@ -364,6 +364,8 @@ struct StageActor {
     hide_on_finish: bool,
     /// 打赢时在做胜利动作 z20，做完回歇着的动作（见 `begin_ending`）。
     win_pose: bool,
+    /// 选目标时在闪（`+0x112`），染过色。
+    pulsing: bool,
     /// 站位（`[RolePos]`），走位去了还要回来。
     home: Vec3,
     walk: Option<Walk>,
@@ -840,6 +842,8 @@ impl SceCommandCombat {
             if let Some(rc) = RoleController::get_role_controller(entity.clone()) {
                 let rc = rc.inner::<RoleController>();
                 rc.set_active(true);
+                // 选目标时要单独染色（见 `place_pointer`），同模型的怪不能共用材质。
+                rc.set_unique_materials();
                 rc.play_anim(idle, RoleAnimationRepeatMode::Loop);
             }
             scene.add_entity(entity.clone());
@@ -900,6 +904,7 @@ impl SceCommandCombat {
                 last: Snapshot::of(c, None),
                 hide_on_finish: false,
                 win_pose: false,
+                pulsing: false,
                 home,
                 walk: None,
                 scripted: 0,
@@ -2169,10 +2174,36 @@ impl SceCommandCombat {
     /// `+0x118` 亮着的，每人画一个。亮谁：轮到谁选行动，`FUN_004dc3f0` 和控制盘状态
     /// 0x4dc7a0 给那个人亮；选目标时 0x4fd3d0 按亮起来的一组
     /// （[`CombatSession::highlighted`]）重设、组外的熄掉——所以敌方目标头上没有指针，它们
-    /// 只闪（`+0x112`，角色渲染 `FUN_00509b90` 套颜色 0.65 + 0.35·sin(7.8t)，移植端还没做）。
+    /// 只闪（`+0x112`，见下面的染色）。
     /// 点取包围盒中心、y 取顶再 +10（`FUN_0050a9b0`；707 号怪再 −80），然后
     /// +6 + 5·sin(10t + i) 上下跳、y 方向拉伸 1 + 0.2·sin(…)；t 是战斗时钟，i 是位号。
     fn place_pointer(&mut self) {
+        // 选目标时组里的人（我方敌方都算）`+0x112` 亮：角色渲染 `FUN_00509b90` 换
+        // `geom_diffuse.gbf`（战斗系统 `+0x4c` 对象 `+0x984`，`FUN_005084c0` 载）来画，顶点色 =
+        // 效果变量 6（`specular`）= 0.65 + 0.35·sin(战斗时钟 × 7.8)，不算光照。移植端在
+        // 自身光照上乘这个灰度（渲染对象 tint.rgb）。
+        let pulse: Vec<usize> = match self.session.as_ref() {
+            Some(s)
+                if s.turn
+                    .is_some_and(|t| matches!(t.menu, Menu::Target { .. })) =>
+            {
+                s.highlighted()
+            }
+            _ => Vec::new(),
+        };
+        let c = 0.65 + 0.35 * (self.battle_clock * 7.8).sin();
+        for (slot, actor) in self.actors.iter_mut().enumerate() {
+            let Some(actor) = actor.as_mut() else {
+                continue;
+            };
+            if pulse.contains(&slot) {
+                super::role_fade::set_tint_rgb(&actor.entity, [c, c, c]);
+                actor.pulsing = true;
+            } else if actor.pulsing {
+                super::role_fade::set_tint_rgb(&actor.entity, [1., 1., 1.]);
+                actor.pulsing = false;
+            }
+        }
         let lit: Vec<usize> = match self.session.as_ref() {
             Some(s) => match s.turn {
                 Some(t) if matches!(t.menu, Menu::Target { .. }) => s.highlighted(),

@@ -162,6 +162,15 @@ impl VulkanMaterial {
         let gpu = MaterialParamsGpu::from_params(&p);
         self.params_buffer.borrow_mut().copy_memory_from(&[gpu]);
     }
+
+    /// Rewrite only the tint's RGB lanes, leaving alpha and `misc` alone.
+    pub fn update_tint_rgb(&self, rgb: [f32; 3]) {
+        let mut p = self.params.get();
+        p.tint[..3].copy_from_slice(&rgb);
+        self.params.set(p);
+        let gpu = MaterialParamsGpu::from_params(&p);
+        self.params_buffer.borrow_mut().copy_memory_from(&[gpu]);
+    }
 }
 
 impl Drop for VulkanMaterial {

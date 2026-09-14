@@ -153,15 +153,33 @@ impl SwitchGLShader {
         self.uniform_projection_matrix
     }
 
-    pub fn uniform_ambient_light(&self) -> i32 { self.uniform_ambient_light }
-    pub fn uniform_light_pos(&self) -> i32 { self.uniform_light_pos }
-    pub fn uniform_light_color(&self) -> i32 { self.uniform_light_color }
-    pub fn uniform_fog_color(&self) -> i32 { self.uniform_fog_color }
-    pub fn uniform_fog_params(&self) -> i32 { self.uniform_fog_params }
-    pub fn uniform_tint(&self) -> i32 { self.uniform_tint }
-    pub fn uniform_material_misc(&self) -> i32 { self.uniform_material_misc }
-    pub fn uniform_uv_xform(&self) -> i32 { self.uniform_uv_xform }
-    pub fn uniform_time_sec(&self) -> i32 { self.uniform_time_sec }
+    pub fn uniform_ambient_light(&self) -> i32 {
+        self.uniform_ambient_light
+    }
+    pub fn uniform_light_pos(&self) -> i32 {
+        self.uniform_light_pos
+    }
+    pub fn uniform_light_color(&self) -> i32 {
+        self.uniform_light_color
+    }
+    pub fn uniform_fog_color(&self) -> i32 {
+        self.uniform_fog_color
+    }
+    pub fn uniform_fog_params(&self) -> i32 {
+        self.uniform_fog_params
+    }
+    pub fn uniform_tint(&self) -> i32 {
+        self.uniform_tint
+    }
+    pub fn uniform_material_misc(&self) -> i32 {
+        self.uniform_material_misc
+    }
+    pub fn uniform_uv_xform(&self) -> i32 {
+        self.uniform_uv_xform
+    }
+    pub fn uniform_time_sec(&self) -> i32 {
+        self.uniform_time_sec
+    }
 }
 
 impl Drop for SwitchGLShader {
@@ -238,6 +256,13 @@ fn get_shader_program_data(shader: ShaderProgram) -> ShaderProgramData {
             include_bytes!("shaders/pal3_lit_common.frag"),
             VertexComponents::POSITION | VertexComponents::NORMAL | VertexComponents::TEXCOORD,
         ),
+        // 粒子（662e340 只给 Vulkan 加了这个分支）：逐颗颜色走 TEXCOORD2。
+        ShaderProgram::Particle => ShaderProgramData::new(
+            "Particle",
+            include_bytes!("shaders/particle.vert"),
+            include_bytes!("shaders/particle.frag"),
+            VertexComponents::POSITION | VertexComponents::TEXCOORD | VertexComponents::TEXCOORD2,
+        ),
     }
 }
 
@@ -246,7 +271,12 @@ fn check_shader(shader: u32, name: &str, stage: &str) -> anyhow::Result<()> {
         let mut status = 0;
         glGetShaderiv(shader, GL_COMPILE_STATUS, &mut status);
         if status != GL_TRUE as i32 {
-            anyhow::bail!("{} {} shader failed to compile: {}", name, stage, shader_log(shader));
+            anyhow::bail!(
+                "{} {} shader failed to compile: {}",
+                name,
+                stage,
+                shader_log(shader)
+            );
         }
     }
     Ok(())

@@ -361,6 +361,7 @@ impl AssetManager {
         role_name: &str,
         action_name: &str,
         texture: Option<&str>,
+        unique: bool,
     ) -> Option<ComRc<IAnimatedMeshComponent>> {
         let path = self
             .basedata_path
@@ -375,6 +376,7 @@ impl AssetManager {
             &self.vfs,
             &path,
             texture,
+            unique,
         )
         .ok()
     }

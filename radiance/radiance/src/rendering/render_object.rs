@@ -52,6 +52,11 @@ pub trait RenderObject {
     /// per-material params ignore it.
     fn set_alpha(&self, _alpha: f32) {}
 
+    /// Re-upload the material's tint RGB, the colour multiplier the shaders
+    /// apply on top of their lighting (`rgb * tint.rgb * tint.a`); alpha is
+    /// left alone. No-op by default, as `set_alpha` is.
+    fn set_tint_rgb(&self, _rgb: [f32; 3]) {}
+
     /// Returns the source material's `debug_name`, when available.
     ///
     /// PAL4's water-UV-animation driver uses this to find render objects

@@ -10,7 +10,7 @@ pub struct SwitchGLMaterial {
     name: String,
     shader: Rc<SwitchGLShader>,
     textures: Vec<Rc<SwitchGLTexture>>,
-    params: MaterialParams,
+    params: std::cell::Cell<MaterialParams>,
     blend: BlendMode,
     depth: DepthMode,
     cull: CullMode,
@@ -39,7 +39,7 @@ impl SwitchGLMaterial {
             name: def.debug_name().to_string(),
             shader,
             textures,
-            params: *def.params(),
+            params: std::cell::Cell::new(*def.params()),
             blend: def.blend(),
             depth: def.depth(),
             cull: def.cull(),
@@ -58,8 +58,22 @@ impl SwitchGLMaterial {
         &self.textures
     }
 
-    pub fn params(&self) -> &MaterialParams {
-        &self.params
+    pub fn params(&self) -> MaterialParams {
+        self.params.get()
+    }
+
+    /// Rewrite only the tint's alpha lane (135/136 actor fade).
+    pub fn update_tint_alpha(&self, alpha: f32) {
+        let mut p = self.params.get();
+        p.tint[3] = alpha.clamp(0., 1.);
+        self.params.set(p);
+    }
+
+    /// Rewrite only the tint's RGB lanes.
+    pub fn update_tint_rgb(&self, rgb: [f32; 3]) {
+        let mut p = self.params.get();
+        p.tint[..3].copy_from_slice(&rgb);
+        self.params.set(p);
     }
 
     pub fn blend(&self) -> BlendMode {

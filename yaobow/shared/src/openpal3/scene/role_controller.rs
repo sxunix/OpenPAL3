@@ -105,6 +105,8 @@ pub struct RoleController {
     // mesh is built, so an override means rebuilding: it invalidates the
     // animation cache and the active action is reloaded through it.
     texture_override: RefCell<Option<String>>,
+    /// 这个角色的动作网格用自己的材质，不和同模型的别人共用（战斗舞台上要单独染色）。
+    unique_materials: Cell<bool>,
     /// How tall the model stands, in world units — the Y extent of the
     /// idle animation's first frame. Anything that has to sit above an
     /// actor's head (the 72 emoji bubble) needs it, and it differs a lot
@@ -195,6 +197,7 @@ impl RoleController {
             patrol_speed: RefCell::new(0.),
             overlap: RefCell::new(0),
             texture_override: RefCell::new(None),
+            unique_materials: Cell::new(false),
             model_height: Cell::new(model_height),
         }
     }
@@ -311,6 +314,7 @@ impl RoleController {
                         &self.model_name.borrow(),
                         &anim_name,
                         override_name.as_deref(),
+                        self.unique_materials.get(),
                     )
                     .or_else(|| {
                         // A texture the script named but the data does
@@ -323,10 +327,12 @@ impl RoleController {
                                 name
                             );
                         }
-                        self.asset_mgr.load_role_anim(
+                        self.asset_mgr.load_role_anim_with_texture(
                             self.entity.clone(),
                             &self.model_name.borrow(),
                             &anim_name,
+                            None,
+                            self.unique_materials.get(),
                         )
                     });
 
@@ -421,6 +427,13 @@ impl RoleController {
 
     pub fn set_auto_play_idle(&self, auto_play_idle: bool) {
         *self.auto_play_idle.borrow_mut() = auto_play_idle;
+    }
+
+    /// 以后载的动作网格都用自己的材质（清掉已缓存的动作，下次 `play_anim` 重载）。
+    pub fn set_unique_materials(&self) {
+        if !self.unique_materials.replace(true) {
+            self.animations.clear();
+        }
     }
 
     /// 正在放的动作名（`play_anim` 最后一次设的）。
@@ -585,7 +598,7 @@ pub fn create_animated_mesh_from_mv3<P: AsRef<Path>>(
     vfs: &MiniFs,
     path: P,
 ) -> anyhow::Result<ComRc<IAnimatedMeshComponent>> {
-    create_animated_mesh_from_mv3_with_texture(entity, component_factory, vfs, path, None)
+    create_animated_mesh_from_mv3_with_texture(entity, component_factory, vfs, path, None, false)
 }
 
 /// As [`create_animated_mesh_from_mv3`], but with every model's texture
@@ -598,6 +611,7 @@ pub fn create_animated_mesh_from_mv3_with_texture<P: AsRef<Path>>(
     vfs: &MiniFs,
     path: P,
     texture: Option<&str>,
+    unique: bool,
 ) -> anyhow::Result<ComRc<IAnimatedMeshComponent>> {
     let mv3file = read_mv3(&mut Cursor::new(vfs.read_to_end(&path)?))?;
     let mut frames = vec![];
@@ -628,6 +642,12 @@ pub fn create_animated_mesh_from_mv3_with_texture<P: AsRef<Path>>(
         let material = Pal3ActorMaterialDef::create(texture_path.to_str().unwrap(), |name| {
             vfs.open(name).ok()
         });
+        // `unique`：每个角色自己一份材质（要单独染色的，见 `set_unique_materials`）。
+        let material = if unique {
+            material.make_unique()
+        } else {
+            material
+        };
         for mesh_index in 0..model.mesh_count as usize {
             frames.push(create_geometry_frames(model, mesh_index, &material))
         }

@@ -47,6 +47,22 @@ pub fn set_alpha(entity: &ComRc<IEntity>, alpha: f32) -> usize {
     n
 }
 
+/// Set the actor's tint RGB (a colour multiplier on top of its lighting).
+/// The blob shadow is skipped for the same reason as in [`set_alpha`].
+pub fn set_tint_rgb(entity: &ComRc<IEntity>, rgb: [f32; 3]) {
+    if entity.name() == "ROLE_SHADOW" {
+        return;
+    }
+    if let Some(rc) = entity.get_rendering_component() {
+        for object in rc.render_objects() {
+            object.as_dyn().set_tint_rgb(rgb);
+        }
+    }
+    for child in entity.children() {
+        set_tint_rgb(&child, rgb);
+    }
+}
+
 /// Shared body of 135 and 136.
 #[derive(Debug, Clone)]
 struct Fade {
