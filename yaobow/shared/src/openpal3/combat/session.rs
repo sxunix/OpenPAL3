@@ -35,18 +35,11 @@ pub struct SkillChoice {
 }
 
 impl SkillChoice {
-    /// A positive 精 impact is a heal and is aimed at one's own side.
-    pub fn heals(&self) -> bool {
-        self.effect.impacts[ATTR_HP].1 > 0
-    }
-
-    /// 打施术者自己这边吗：`target_range_type` 1/2 是，3..6 不是；0（两条伤害法术）按效果的正负。
+    /// 打施术者自己这边吗：`target_range_type` 1/2 是，其余都不是。控制盘选目标时按
+    /// `FUN_004df370` 把范围换成标志：1 → 0x10、2 → 2（我方），4 → 3、5 → 5、6 → 9，其余（含 0）
+    /// → 0x11（bit0 敌方、单体）。
     pub fn targets_own_side(&self) -> bool {
-        match self.effect.target_range {
-            1 | 2 => true,
-            3..=6 => false,
-            _ => self.heals(),
-        }
+        matches!(self.effect.target_range, 1 | 2)
     }
 
     /// 全体（2 我方全体 / 4 敌方全体）。原版出招函数按指令里的目标表逐位结算。
@@ -1956,6 +1949,7 @@ mod tests {
             effect: SkillEffect {
                 id: 1,
                 level: 1,
+                target_range: 1,
                 success_rate_level: 0,
                 elements: (None, None),
                 impacts,
