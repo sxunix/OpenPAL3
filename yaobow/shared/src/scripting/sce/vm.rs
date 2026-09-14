@@ -644,13 +644,15 @@ impl SceProcContext {
                 command!(self, SceCommandPlaySound, name: string, repeat: i32)
             }
             80 => {
-                // CombatBoss
-                let m1 = data_read::i32(self);
-                let m2 = data_read::i32(self);
-                let m3 = data_read::i32(self);
-                let m4 = data_read::i32(self);
-                let m5 = data_read::i32(self);
+                // CombatBoss。参数在文件里是倒着存的（见 `command!`），这里是手写的，以前按文件顺序读，
+                // 六个怪物整个倒了——古藤老人 `CombatBoss(0, 0, 0, 0, 0, 711)` 本该站 10 号位
+                // （处理函数 0x4373d0 用 `FUN_00434c00` 按声明顺序弹）。
                 let m6 = data_read::i32(self);
+                let m5 = data_read::i32(self);
+                let m4 = data_read::i32(self);
+                let m3 = data_read::i32(self);
+                let m2 = data_read::i32(self);
+                let m1 = data_read::i32(self);
                 debug!("SceCommandCombat(boss) {m1} {m2} {m3} {m4} {m5} {m6}");
                 Some(Box::new(SceCommandCombat::new_boss(m1, m2, m3, m4, m5, m6)))
             }

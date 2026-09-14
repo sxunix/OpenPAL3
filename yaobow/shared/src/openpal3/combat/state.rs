@@ -766,6 +766,11 @@ impl Battle {
     /// `+0x28` 只在这一位自己的蓄力条从没满到满时加（`FUN_004dba60`）——所以毒、吸精蛊是**各人
     /// 按自己的回合**结算，快的人结算得勤；倒下的人条不涨，也就不再结算。
     pub(crate) fn own_turn(&mut self, slot: usize) {
+        // 全场回合数（`+0x220`，只拿来比回合上限）：`FUN_004ecb20` 写死「10 号位又过了一个回合」才加，
+        // 在状态结算之前。用到回合上限的只有古藤老人、邪剑仙作法两场，都是 `CombatBoss` 一个怪站 10 号位。
+        if slot == SLOTS - 1 {
+            self.round += 1;
+        }
         if let Some(c) = self.get_mut(slot) {
             c.tick_states();
         }
@@ -904,39 +909,14 @@ impl Battle {
         c.cast_gauge = 0.;
     }
 
-    /// A combatant has finished acting: reset its gauge (`FUN_004db710`)
-    /// and, if it was the last enemy slot, count a round (`+0x220`, only
-    /// used against the round cap; status effects run per unit, see
-    /// [`Self::own_turn`]).
-    ///
-    /// The original's test is literally "slot 10 acted". Most battles do
-    /// not field six enemies, and an empty slot 10 never acts, so taken
-    /// literally the round would never advance and no poison would ever
-    /// tick. Rolling on the last *occupied* slot instead keeps rounds
-    /// moving; it matches the original exactly whenever slot 10 is
-    /// filled. Which of the two the original really intends is still
-    /// open — see the notes' 未解决 list: the only two `CombatMaxRound`
-    /// fights (古藤老人 15, 邪剑仙作法 20) each field one boss in slot 5,
-    /// and player guides say 古藤老人 ends after 15 rounds, which the
-    /// literal reading could never do.
+    /// A combatant has finished acting: reset its gauge (`FUN_004db710`).
+    /// 全场回合数不在这里数，见 [`Self::own_turn`]。
     pub fn finish_turn(&mut self, slot: usize) {
         if let Some(c) = self.get_mut(slot) {
             c.gauge = 0.;
             c.cast_gauge = 0.;
             c.phase = Phase::Charging;
         }
-        if Some(slot) == self.last_occupied_slot() {
-            self.end_round();
-        }
-    }
-
-    fn last_occupied_slot(&self) -> Option<usize> {
-        (0..SLOTS).rev().find(|s| self.combatants[*s].is_some())
-    }
-
-    /// 全场过了一回合（`+0x220`，只拿来比回合上限）。
-    pub fn end_round(&mut self) {
-        self.round += 1;
     }
 
     /// 吸精蛊一个回合（0x4ecb9b–0x4ecc3a）：回合数 +1，到 4 摘掉标记；第 1、2、3 回合按
@@ -1871,19 +1851,26 @@ mod tests {
     }
 
     #[test]
-    fn rounds_advance_even_without_a_full_enemy_line() {
-        // Only slots 0 and 5 are filled, so the original's literal "slot
-        // 10 acted" test would never fire.
+    fn only_slot_ten_counts_the_rounds() {
+        // 只有 0、5 号位：全场回合不涨，火毒照样按各人自己的回合扣。
         let mut b = two_sided_battle();
         b.get_mut(0).unwrap().apply_state(K_POISON_FIRE, 0, FOREVER);
-
         for _ in 0..4000 {
             if let Some(Due::Ready(slot)) = b.update(0.1) {
                 b.finish_turn(slot);
             }
         }
-        assert!(b.round > 0, "回合从未推进");
+        assert_eq!(b.round, 0, "10 号位没人，回合不涨");
         assert!(b.get(0).unwrap().hp < 80, "火毒应该在扣血");
+
+        let mut b = two_sided_battle();
+        b.place(10, fighter(101, Side::Enemy, 60, 20, 8, 2));
+        for _ in 0..4000 {
+            if let Some(Due::Ready(slot)) = b.update(0.1) {
+                b.finish_turn(slot);
+            }
+        }
+        assert!(b.round > 0, "10 号位有人才数回合");
     }
 
     #[test]
