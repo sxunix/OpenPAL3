@@ -1514,6 +1514,12 @@ impl SceCommandCombat {
         let we = encounter.sneak == 1 && battle.rng.rand10() < 0x200;
         let enemy = encounter.sneak == 2 && battle.rng.rand10() < 0x200;
         self.sneak = (we, enemy);
+        if encounter.sneak != 0 {
+            log::info!(
+                "Combat: 偷袭判定 {}，成立：我方 {we} 敌方 {enemy}",
+                encounter.sneak
+            );
+        }
         if we || enemy {
             use common::store_ext::StoreExt2;
             let (key, fallback) = if we {
