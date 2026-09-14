@@ -633,6 +633,15 @@ impl CombatSession {
 
         self.elapsed += dt;
         self.battle.advance(dt);
+        // 逃走（`Battle::own_turn` 掷中）：有舞台时舞台演跑、跑到了才 `finish_fleeing`；没舞台（快进、
+        // 测试）就当场跑完——不然逃的人一直算在场又不出手，最后一个敌人逃时战斗停不下来。
+        if !self.stage_driven {
+            for slot in 0..SLOTS {
+                if self.battle.get(slot).is_some_and(|c| c.fleeing) {
+                    self.battle.finish_fleeing(slot);
+                }
+            }
+        }
         // 原版主调度每帧把 11 个位都过一遍：谁没挑出行动就下一帧再试（不清行动条），
         // 不耽误后面的人。
         let mut waiting: Vec<usize> = Vec::new();
@@ -2000,6 +2009,24 @@ mod tests {
             }
         }
         panic!("没人轮到出手");
+    }
+
+    #[test]
+    fn without_a_stage_a_fleeing_enemy_is_gone_at_once() {
+        let mut s = session();
+        s.battle.get_mut(0).unwrap().speed = 1;
+        let e = s.battle.get_mut(5).unwrap();
+        e.escape_rate = 100;
+        e.gauge = crate::openpal3::combat::formulas::GAUGE_FULL - 2.;
+        let mut outcome = None;
+        for _ in 0..100 {
+            outcome = s.tick(0.05);
+            if outcome.is_some() {
+                break;
+            }
+        }
+        assert!(s.battle.get(5).unwrap().retired, "快进 / 测试里当场跑完");
+        assert_eq!(outcome, Some(crate::openpal3::combat::state::Outcome::Win));
     }
 
     #[test]

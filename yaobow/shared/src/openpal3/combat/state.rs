@@ -800,6 +800,7 @@ impl Battle {
             let rate = self.get(slot).map(|c| c.escape_rate).unwrap_or(0);
             if formulas::chance_roll(&mut self.rng, rate) {
                 if let Some(c) = self.get_mut(slot) {
+                    log::info!("Combat: 位 {slot}（{}）掷中逃走", c.actor_id);
                     c.fleeing = true;
                 }
             }

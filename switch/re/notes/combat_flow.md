@@ -1325,7 +1325,7 @@ if (slot->+0x590 < FUN_004db700(slot)) {           // 这一位该走下一个�
   到了 `+0x598 = 1`、`FUN_004db710` 清条、`FUN_004db9c0(位, 0)`、`FUN_004db920(位, 1)`、站到终点。
   `+0x597` / `+0x598` 任一非零都不能当目标（`FUN_004eecb0`）；「敌方还有活口」（`FUN_004ed100`）只看
   `+0x598`，所以跑到一半还算在场。逃掉的不算死，不给经验、不掉东西。移植端：`Combatant::escape_rate` /
-  `fleeing`、`Battle::own_turn` 掷、舞台 `Walk::Away` 跑、跑到后 `Battle::finish_fleeing` 记成离场。
+  `fleeing`、`Battle::own_turn` 掷、舞台 `Walk::Away` 跑、跑到后 `Battle::finish_fleeing` 记成离场。没有舞台驱动时（快进一帧跑完整场、单元测试）`CombatSession::tick` 当场 `finish_fleeing`，不然逃的人一直算在场又不出手。
 * **敌人分裂/召唤**（0x4ecf00 一带）：怪物 id `0x1cd2` 且 `+0x590 > 2` 时，以
   `0x33/0x400`（≈5%）的概率找一个**空着或已经倒下**的敌方位
   （`+0x241 == 0 || +0x242 == 0`），`FUN_004f8bb0(位, 0x1cd2)` 造一只同类；
