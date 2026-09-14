@@ -851,7 +851,10 @@ impl Battle {
     /// tick. Rolling on the last *occupied* slot instead keeps rounds
     /// moving; it matches the original exactly whenever slot 10 is
     /// filled. Which of the two the original really intends is still
-    /// open — see the notes' 未解决 list.
+    /// open — see the notes' 未解决 list: the only two `CombatMaxRound`
+    /// fights (古藤老人 15, 邪剑仙作法 20) each field one boss in slot 5,
+    /// and player guides say 古藤老人 ends after 15 rounds, which the
+    /// literal reading could never do.
     pub fn finish_turn(&mut self, slot: usize) {
         if let Some(c) = self.get_mut(slot) {
             c.gauge = 0.;
