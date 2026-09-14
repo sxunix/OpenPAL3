@@ -387,6 +387,8 @@ enum Walk {
     To { dest: Vec3, face: Vec3 },
     /// 回站位。
     Home,
+    /// 逃走：跑向 (800, 0, 800)（`LAB_005011b0` / `FUN_0050f590`），到了告诉战斗。
+    Away { dest: Vec3 },
 }
 
 fn face_point(pos: Vec3, dir: (f32, f32)) -> Vec3 {
@@ -1379,6 +1381,8 @@ impl SceCommandCombat {
                     c.elements[i + 1] = *v > 0;
                 }
                 c.steal_money = row.stealable_money_amount as i32;
+                // 逃走概率：`FUN_004ed250` 0x4ed595 把 gdb `+0x2d4` 取整写进 `+0x59c`。
+                c.escape_rate = row.escape_rate as i32;
                 c.steal_item = (row.stealable_item_id != 0 && row.stealable_item_count > 0)
                     .then_some((row.stealable_item_id, row.stealable_item_count as i32));
                 battle.place(slot, c);
@@ -2257,6 +2261,7 @@ impl SceCommandCombat {
             return;
         };
         let pending = session.pending;
+        let mut fled: Vec<usize> = Vec::new();
         for slot in 0..self.actors.len() {
             let Some(actor) = self.actors[slot].as_mut() else {
                 continue;
@@ -2304,6 +2309,18 @@ impl SceCommandCombat {
                 set.name(m).is_some_and(|name| rc.play_anim(name, mode))
             };
 
+            // 逃走（`LAB_005011b0`）：舞台角色空下来就开跑，挂 `FUN_0050f590`——动作 0x34（怪物那套的
+            // 走，循环），朝 (800, 0, 800) 每秒跑 380。
+            if c.fleeing && actor.walk.is_none() {
+                log::info!("Combat: 位 {slot}（{}）逃走", c.actor_id);
+                let (x, z) = motion::FLEE_POINT;
+                actor.walk = Some(Walk::Away {
+                    dest: Vec3::new(x, actor.home.y, z),
+                });
+                rc.set_auto_play_idle(false);
+                play(motion::Motion::Move, RoleAnimationRepeatMode::Loop);
+            }
+
             // 走一帧。
             if let Some(walk) = actor.walk {
                 let (dest, face_at_end) = match walk {
@@ -2312,10 +2329,17 @@ impl SceCommandCombat {
                         let (fx, fz) = motion::rest_facing(set);
                         (actor.home, face_point(actor.home, (fx, fz)))
                     }
+                    Walk::Away { dest } => (dest, dest),
+                };
+                let away = matches!(walk, Walk::Away { .. });
+                let speed = if away {
+                    motion::FLEE_SPEED
+                } else {
+                    motion::WALK_SPEED
                 };
                 let pos = actor.entity.transform().borrow().position();
                 let ((x, z), arrived) =
-                    motion::step_toward((pos.x, pos.z), (dest.x, dest.z), delta_sec);
+                    motion::step_toward_at((pos.x, pos.z), (dest.x, dest.z), delta_sec, speed);
                 let next = Vec3::new(x, pos.y, z);
                 let look = if arrived { face_at_end } else { dest };
                 let transform = actor.entity.transform();
@@ -2327,6 +2351,11 @@ impl SceCommandCombat {
                     actor.walk = None;
                     if now.alive {
                         rc.idle();
+                    }
+                    if away {
+                        // 跑出去了（0x50f946）：`+0x598 = 1`，站在终点不再动。
+                        log::info!("Combat: 位 {slot} 跑出去了");
+                        fled.push(slot);
                     }
                 }
             }
@@ -2389,6 +2418,11 @@ impl SceCommandCombat {
                 }
             }
             actor.last = now;
+        }
+        if let Some(session) = self.session.as_mut() {
+            for slot in fled {
+                session.battle.finish_fleeing(slot);
+            }
         }
     }
 

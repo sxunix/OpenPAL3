@@ -175,6 +175,11 @@ pub struct Combatant {
     pub steal_money: i32,
     /// 能偷的物品和剩余件数（`+0x44c` / `+0x450`，gdb `stealable_item_id` / `_count`）。
     pub steal_item: Option<(u32, i32)>,
+    /// 逃走概率（原版战斗位 `+0x59c`，`FUN_004ed250` 从 gdb `escape_rate` 取整）；0 = 不逃。
+    pub escape_rate: i32,
+    /// 正在逃（`+0x597`）：掷中了、还没跑出去。不能当目标、不再出手，但判胜负时还算在场
+    /// （`FUN_004ed100` 只看 `+0x598`）。跑完变成 [`Self::retired`]。
+    pub fleeing: bool,
     /// 吸精蛊的标记（原版战斗位 `+0x56e` / `+0x56f`）：`Some(n)` = 标记着、已经过了 n 个回合。
     /// `FUN_004f2690` 打中时置 `Some(0)`，每回合结算见 [`Battle::own_turn`]。
     pub gu_drain: Option<u8>,
@@ -301,6 +306,8 @@ impl Combatant {
             weapon_type: 0,
             steal_money: 0,
             steal_item: None,
+            escape_rate: 0,
+            fleeing: false,
             gu_drain: None,
             killed_by: None,
             gauge: 0.,
@@ -335,7 +342,7 @@ impl Combatant {
 
     /// Whether this combatant can still act or be targeted.
     pub fn in_play(&self) -> bool {
-        self.alive && !self.retired
+        self.alive && !self.retired && !self.fleeing
     }
 
     pub fn attack_eff(&self) -> i32 {
@@ -665,7 +672,7 @@ impl Battle {
         self.combatants
             .iter()
             .flatten()
-            .any(|c| c.side == side && c.in_play())
+            .any(|c| c.side == side && c.alive && !c.retired)
     }
 
     /// `FUN_004f7910`, in its order: the party-down test comes first
@@ -755,6 +762,29 @@ impl Battle {
             c.tick_states();
         }
         self.gu_drain_tick(slot);
+        // 敌人逃走（0x4ecd0e 起）：5..10 号位 `+0x59c` > 0 的，`rand & 0x3ff < round(+0x59c × 10.24)`
+        // 就置 `+0x597`，排 0x15 组（占住 → `LAB_005011b0` 跑向 (800, 0, 800) → 放开）。跑由舞台演，
+        // 跑完调 [`Self::finish_fleeing`]。
+        if slot >= PARTY_SLOTS {
+            let rate = self.get(slot).map(|c| c.escape_rate).unwrap_or(0);
+            if formulas::chance_roll(&mut self.rng, rate) {
+                if let Some(c) = self.get_mut(slot) {
+                    c.fleeing = true;
+                }
+            }
+        }
+    }
+
+    /// 逃走的敌人跑出去了（`FUN_0050f590` 0x50f946 起）：`+0x598 = 1`、行动条清零（`FUN_004db710`）、
+    /// 这一位的 ATB 关掉。移植端记成离场（[`Combatant::retired`]），不给经验、不掉东西。
+    pub fn finish_fleeing(&mut self, slot: usize) {
+        if let Some(c) = self.get_mut(slot) {
+            c.fleeing = false;
+            c.retired = true;
+            c.gauge = 0.;
+            c.cast_gauge = 0.;
+            c.phase = Phase::Charging;
+        }
     }
 
     /// 这一帧该谁：出手条满的优先，其次蓄力条满的。`skip` 里的这一帧不再交出——原版主调度
@@ -1767,6 +1797,25 @@ mod tests {
         b.seed_gauges(true, false);
         assert_eq!(b.get(0).unwrap().gauge, formulas::GAUGE_FULL);
         assert_eq!(b.get(5).unwrap().gauge, 0.);
+    }
+
+    #[test]
+    fn an_enemy_that_flees_stays_counted_until_it_is_out() {
+        let mut b = two_sided_battle();
+        b.get_mut(5).unwrap().escape_rate = 100;
+        b.own_turn(5);
+        let c = b.get(5).unwrap();
+        assert!(c.fleeing, "100% 必中");
+        assert!(!c.in_play(), "逃的时候不能当目标、不出手");
+        assert_eq!(b.outcome(), Outcome::Ongoing, "跑出去之前还算在场");
+        b.finish_fleeing(5);
+        assert!(b.get(5).unwrap().retired);
+        assert_eq!(b.outcome(), Outcome::Win);
+
+        let mut b = two_sided_battle();
+        b.get_mut(0).unwrap().escape_rate = 100;
+        b.own_turn(0);
+        assert!(!b.get(0).unwrap().fleeing, "我方不走这一条");
     }
 
     #[test]

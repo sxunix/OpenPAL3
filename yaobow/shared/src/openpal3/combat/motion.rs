@@ -436,9 +436,20 @@ pub fn approach_point(target: (f32, f32), me: (f32, f32)) -> (f32, f32) {
 /// 朝向差到 90°）就当到了」，按匀速直线走不会发生，这里用步长盖过剩余
 /// 距离来判。
 pub fn step_toward(pos: (f32, f32), to: (f32, f32), dt: f32) -> ((f32, f32), bool) {
+    step_toward_at(pos, to, dt, WALK_SPEED)
+}
+
+/// 敌人逃走的跑速（`FUN_0050f590`：方向 × 380（0x56ffcc），每帧乘帧时长）。原版到没到按「跑的方向和
+/// 朝向差过 90°（0x56ffc0）」判，匀速直线跑时就是步长盖过剩余距离。
+pub const FLEE_SPEED: f32 = 380.;
+/// 逃走跑向的点（`LAB_005011b0` 0x50125e 写的 (800, 0, 800)）。
+pub const FLEE_POINT: (f32, f32) = (800., 800.);
+
+/// [`step_toward`]，速度自己给。
+pub fn step_toward_at(pos: (f32, f32), to: (f32, f32), dt: f32, speed: f32) -> ((f32, f32), bool) {
     let (dx, dz) = (to.0 - pos.0, to.1 - pos.1);
     let left = (dx * dx + dz * dz).sqrt();
-    let step = WALK_SPEED * dt;
+    let step = speed * dt;
     if left < ARRIVE_DISTANCE || step >= left {
         return (to, true);
     }
