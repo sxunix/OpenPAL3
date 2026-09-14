@@ -2387,7 +2387,7 @@ impl SceCommandCombat {
     }
 
     /// 按原版 `CBUI` 的版面画界面，坐标见 `combat::hud`。
-    fn draw(ui: &Ui, session: &CombatSession, tex: &HudTextures) {
+    fn draw(ui: &Ui, session: &CombatSession, tex: &HudTextures, clock: f32) {
         overlay(ui, "CombatHud", |ui, at, scale| {
             let list = ui.get_window_draw_list();
             let battle = &session.battle;
@@ -2440,7 +2440,8 @@ impl SceCommandCombat {
                 for (i, &(k, _, _)) in hud::STATE_ICONS.iter().enumerate() {
                     if c.has_state(k) {
                         let icon = tex.state_icons[i].as_deref();
-                        draw_sprite(&list, icon, hud::state_icon_rect(i, panel), at);
+                        let rect = hud::state_icon_rect(i, panel);
+                        draw_sprite_tinted(&list, icon, rect, hud::state_icon_tint(clock), at);
                     }
                 }
                 if slot < PARTY_SLOTS {
@@ -3113,7 +3114,7 @@ impl SceCommand for SceCommandCombat {
             // 结算期间战斗界面收起来（`FUN_00518b30(0)` / `FUN_004db940(0)`）。
             Self::draw_result(ui, player, &self.result_panels, self.result_tex.as_ref());
         } else if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
-            Self::draw(ui, session, hud);
+            Self::draw(ui, session, hud, self.battle_clock);
         }
         if self.stage_fade > 0. {
             let fade = self.stage_fade;

@@ -370,7 +370,9 @@ pub fn full_fill_width(bar: Rect, pad: BarPadding) -> i32 {
 
 /// 第一块面板左边的竖条（`FUN_00516a30`，`DAT_017acb8c`/`DAT_017acb88`
 /// 由 `FUN_00516070`/`FUN_00516090` 算成面板 + (12, 17)）。上限 50
-/// （`FUN_0043fca0(50.0)`），开战清零。**谁往里加值还没找到**，现在一直空。
+/// （`FUN_0043fca0(50.0)`），值是 `FUN_004f8480` 设的 战斗管理器 `+0x440` × 0.25——
+/// `+0x440` 开战从 `DAT_00c047a4` 拷入，那个全局全程序没人写，战斗里也只在放完魔剑时清零，
+/// 所以 v1.4 里这根条恒为空（满值时 `FUN_004d6050` 的特效也从不出现）。
 pub fn sword_rect() -> Rect {
     let (x, y) = (PANEL_X[0] + 12, PANEL_Y[0] + 17);
     (x, y, x + 0x1e, y + 0x56)
@@ -462,6 +464,13 @@ pub const STATE_ICONS: [(usize, &str, Rect); 19] = [
     (0x17, "Hermit", (111, 88, 129, 105)),
     (0x1a, "Immunity", (131, 88, 168, 105)),
 ];
+
+/// 状态小图的颜色（ARGB）：CBUI 每帧更新（虚表 +0x8 `FUN_00518e30`）调 `FUN_00518e60`，
+/// 给 4 块面板 × 19 个小图都设灰度 200 + round(50·sin(战斗时钟 × 12))，150..250 一明一暗。
+pub fn state_icon_tint(clock: f32) -> u32 {
+    let g = (200. + (50. * (clock * 12.).sin()).round()) as u32;
+    0xff00_0000 | g << 16 | g << 8 | g
+}
 
 pub fn state_icon_texture(stem: &str) -> String {
     format!("state/SpecState/{stem}.tga")
@@ -1058,5 +1067,18 @@ mod list_tests {
             Some(SKILL_ROWS.3)
         );
         assert_eq!(list_text_at(LIST_ROWS, 1), (0x27 + 10, 0x4e + 4 + 19));
+    }
+}
+
+#[cfg(test)]
+mod state_icon_tint_tests {
+    use super::state_icon_tint;
+
+    #[test]
+    fn it_pulses_between_150_and_250() {
+        assert_eq!(state_icon_tint(0.), 0xffc8_c8c8);
+        let peak = std::f32::consts::FRAC_PI_2 / 12.;
+        assert_eq!(state_icon_tint(peak), 0xfffa_fafa);
+        assert_eq!(state_icon_tint(3. * peak), 0xff96_9696);
     }
 }
