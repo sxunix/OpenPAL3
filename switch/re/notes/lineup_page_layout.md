@@ -324,3 +324,9 @@ PlankUP(65×43) 在面板顶、PlankDW(64×8) 在面板底，
   diffuse specular lightatten。`CalEffectiveVolMod`（0x14dc0）每个物体最多挑两盏各类灯。
 - 角色走 `skin.gbf`：顶点色 `Diffuse = ambient`，不看法线；`geom.gbf` 是固定管线 贴图 × 顶点光照。
 - 移植端没有材质 ambient / emissive 和这套全局环境光，`lineup_disc` 仍用满环境光——亮度和原版不同，要在渲染器里补。
+- 自发光（2026-09-14 补）：公式里的 `+0x1bc` 是 gbGfxManager 的自发光系数（导出 `EnableEmissive` 0x4ff0 /
+  `SetEmissiveFactor` 0x5020 / `GetEmissiveFactor` 0x5030），初始化清 0；PAL3 导入表里没有这几个，gbengine 内部也没有
+  调用，所以一直是 0。角色 MV3 材质（每个贴图记录前 17 个 float = D3D 材质 diffuse/ambient/specular/emissive/power）
+  ambient 都是 (1,1,1)，emissive 景天/龙葵/B30 为 1、雪见 0.9、怪 301 为 0。于是这一页角色的顶点色 =
+  0.2 + 场景图里挂着的灯的环境分量（`CalEffectiveVolMod` 挑的，可能来自当时冒险场景留在全局场景图里的光源）——
+  静态分析定不出固定值，要对着原版实机截图才能定；移植端仍用满环境光。
