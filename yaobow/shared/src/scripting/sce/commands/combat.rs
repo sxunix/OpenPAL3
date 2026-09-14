@@ -1026,7 +1026,9 @@ impl SceCommandCombat {
         }
         self.ending = Some(outcome);
         if outcome == Outcome::Win {
-            // 每人排的任务 0x18 → 胜利任务 `FUN_0050fa20`：第一帧换 z20（0x31），等引擎在动作播完
+            // 胜负判定 `FUN_004f7910` 给每个在场活着的我方排一组 0x18：`LAB_004fe550` 占住角色
+            // （`FUN_0050a8f0`，+0x175/+0x178）→ `LAB_00501cf0` 等角色空闲、没眠没 0xe，挂胜利任务 →
+            // `LAB_004fe600` 放开（`FUN_0050a920`）。胜利任务 `FUN_0050fa20`：第一帧换 z20（0x31），等引擎在动作播完
             // 时发的 "over"（`+0x19f4`）就结束。任务表空了 `FUN_0050b430` 每帧换回默认动作
             // `FUN_0050bbd0`（活着的我方按精：z04 / z17 濒死 / 眠定……），所以做完不停在最后一帧。
             let alive: Vec<bool> = (0..self.actors.len())
@@ -1034,7 +1036,8 @@ impl SceCommandCombat {
                     self.session
                         .as_ref()
                         .and_then(|s| s.battle.get(slot))
-                        .is_some_and(|c| c.alive)
+                        // 0x18 组第二步（`LAB_00501cf0`）：中了眠 0x11 或 0xe 号状态的不做 z20。
+                        .is_some_and(|c| c.alive && !c.has_state(0x11) && !c.has_state(0xe))
                 })
                 .collect();
             for (slot, actor) in self.actors.iter_mut().enumerate().take(PARTY_SLOTS) {
