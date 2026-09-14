@@ -798,7 +798,9 @@ impl Battle {
         // 跑完调 [`Self::finish_fleeing`]。
         if slot >= PARTY_SLOTS {
             let rate = self.get(slot).map(|c| c.escape_rate).unwrap_or(0);
-            if formulas::chance_roll(&mut self.rng, rate) {
+            let hit = formulas::chance_roll(&mut self.rng, rate);
+            log::debug!("Combat: 位 {slot} 自己的回合，逃走率 {rate}，掷中 {hit}");
+            if hit {
                 if let Some(c) = self.get_mut(slot) {
                     log::info!("Combat: 位 {slot}（{}）掷中逃走", c.actor_id);
                     c.fleeing = true;
