@@ -1846,6 +1846,16 @@ impl IPal3ServiceImpl for Pal3Service {
         state.set_lineup_position(actor_id as u32, position as u8)
     }
 
+    fn lineup_page_opened(&self) -> () {
+        let handle = self.active_persistent_state.borrow();
+        let Some(state) = handle.as_ref() else {
+            return;
+        };
+        if let Ok(mut state) = state.try_borrow_mut() {
+            state.reread_lineup_for_page();
+        }
+    }
+
     fn monster_seen(&self, actor_id: i32) -> bool {
         if actor_id < 0 {
             return false;

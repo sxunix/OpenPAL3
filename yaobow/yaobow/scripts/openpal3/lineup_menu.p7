@@ -24,7 +24,9 @@
 // A character's position is stored as the button's index 0..5. On the
 // way back to the role record the original writes index + 1
 // (`FUN_004845f0`): 1..5 水火风雷土, 6 the middle of the disc; 合击技
-// check those values (`combat/combo.rs`).
+// check those values (`combat/combo.rs`). Reading them back when the page
+// opens (`FUN_00485980`) crosses 3 and 4, so every visit swaps whoever
+// stands on buttons 2 and 3 — reproduced via `pal3.lineup_page_opened()`.
 
 import radiance;
 import shared.openpal3;
@@ -93,6 +95,10 @@ pub fn paint_lineup_menu(
     let lw = ui.display_size_x() as float;
     let lh = ui.display_size_y() as float;
     if lw <= 0.0 || lh <= 0.0 { return state; }
+
+    // 刚打开这一页（从别处进来时 state 置 0）：原版 `FUN_00484660` 这时从角色记录重读站位，
+    // 读法把值 3 / 4 交叉，见 `PersistentState::reread_lineup_for_page`。之后返回 1。
+    if state == 0 { pal3.lineup_page_opened(); }
 
     let viewport = gui.Rect(0.0, 0.0, lw, lh);
     let native = gui.Size(chrome.REF_W, chrome.REF_H);
@@ -184,7 +190,7 @@ pub fn paint_lineup_menu(
     if hit == chrome.PAGE_BOOK { return TO_BOOK; }
     if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
 
-    return 0;
+    return 1;
 }
 
 fn name_of(role: int) -> string {

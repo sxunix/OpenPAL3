@@ -301,6 +301,10 @@ interface IPal3Service: IUnknown {
     // Move a character into a position, evicting whoever stood there.
     bool set_lineup_position(int actor_id, int position);
 
+    // 阵法页刚打开：照原版从角色记录重读站位（格 2、3 对调，见
+    // `PersistentState::reread_lineup_for_page`）。
+    void lineup_page_opened();
+
     // Whether this monster has been recorded in the 侠义榜, and the
     // number recorded so far. Nothing marks monsters yet — that happens
     // when combat exists — so today these report an empty book.

@@ -1024,6 +1024,24 @@ impl PersistentState {
         self.lineup.remove(&actor_id);
     }
 
+    /// 阵法页打开时重读站位（`FUN_00485df0` 消息 1000 → `FUN_00484660` → `FUN_00485980`）。
+    /// 原版从角色记录 `+0x29a` 读回格子是 值 1→格 0、2→1、**3→3、4→2**、5→4、6→5（跳转表
+    /// 0x485cb8），关页写回（`FUN_00485cd0` → `FUN_004845f0`，跳转表 0x484644）却是 格子号 + 1。
+    /// 移植端存的就是格子号（= 值 − 1），所以打开一次 = 在队的人里格 2、3 对调；关页不用另做。
+    /// 结果是每开关一次，站这两格的人的阵位值 3（风）/ 4（雷）互换一次，合击技的位置要求跟着
+    /// 变——原版就是这样。
+    pub fn reread_lineup_for_page(&mut self) {
+        for id in self.team.clone() {
+            if let Some(p) = self.lineup.get_mut(&id) {
+                *p = match *p {
+                    2 => 3,
+                    3 => 2,
+                    p => p,
+                };
+            }
+        }
+    }
+
     // ---- 侠义榜 ----
 
     pub fn monster_seen(&self, actor_id: u32) -> bool {
@@ -1324,6 +1342,23 @@ mod tests {
         assert!(!state.set_lineup_position(3, 9), "只有六个阵位");
         state.clear_lineup_position(1);
         assert_eq!(state.lineup_occupant(2), None);
+    }
+
+    #[test]
+    fn opening_the_lineup_page_crosses_places_two_and_three() {
+        let mut state = PersistentState::new(PAL3_APP_NAME.to_string());
+        for id in [0, 1, 2] {
+            state.add_to_team(id);
+        }
+        state.set_lineup_position(0, 2);
+        state.set_lineup_position(1, 3);
+        state.set_lineup_position(2, 4);
+        state.reread_lineup_for_page();
+        assert_eq!(state.lineup_position(0), Some(3));
+        assert_eq!(state.lineup_position(1), Some(2));
+        assert_eq!(state.lineup_position(2), Some(4));
+        state.reread_lineup_for_page();
+        assert_eq!(state.lineup_position(0), Some(2), "再开一次换回来");
     }
 
     #[test]
