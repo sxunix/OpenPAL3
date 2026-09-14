@@ -175,6 +175,12 @@ pub struct Combatant {
     pub steal_money: i32,
     /// 能偷的物品和剩余件数（`+0x44c` / `+0x450`，gdb `stealable_item_id` / `_count`）。
     pub steal_item: Option<(u32, i32)>,
+    /// 吸精蛊的标记（原版战斗位 `+0x56e` / `+0x56f`）：`Some(n)` = 标记着、已经过了 n 个回合。
+    /// `FUN_004f2690` 打中时置 `Some(0)`，每回合结算见 [`Battle::end_round`]。
+    pub gu_drain: Option<u8>,
+    /// 被谁打倒的（原版 `+0x570`，`FUN_004f2c70` 的第 4 参）。移植端只有吸精蛊那一路填它；
+    /// 别的路结算时按当时出手的人记（`CombatSession::note_deaths`）。
+    pub killed_by: Option<usize>,
     /// 蓄力条（原版 `+0x20`）。
     pub gauge: f32,
     /// 出手条（原版 `+0x24`）。原版是两条独立的条，不是一条复用。
@@ -295,6 +301,8 @@ impl Combatant {
             weapon_type: 0,
             steal_money: 0,
             steal_item: None,
+            gu_drain: None,
+            killed_by: None,
             gauge: 0.,
             cast_gauge: 0.,
             cast_rate: 0,
@@ -840,15 +848,51 @@ impl Battle {
         (0..SLOTS).rev().find(|s| self.combatants[*s].is_some())
     }
 
-    /// Roll the round over: every combatant's states tick.
+    /// Roll the round over: every combatant's states tick, then 吸精蛊 drains
+    /// (`FUN_004ecb20` 里紧跟在 `FUN_004f48c0` 后面)。
     pub fn end_round(&mut self) {
         self.round += 1;
         for slot in 0..SLOTS {
+            // [推断] 原版的钩子对 `+0x241` 在场的位都跑，倒下的算不算没查（`+0x242` 谁清的
+            // 还开着）；移植端和状态结算一样只跑活着的。
             if let Some(c) = self.get_mut(slot) {
                 if c.in_play() {
                     c.tick_states();
+                    self.gu_drain_tick(slot);
                 }
             }
+        }
+    }
+
+    /// 吸精蛊一个回合（0x4ecb9b–0x4ecc3a）：回合数 +1，到 4 摘掉标记；第 1、2、3 回合按
+    /// 目标**上限**精（`FUN_004f2bb0(t, 1)`）乘 0.05 / 0.1 / 0.15（0x56a778 / 0x56a624 /
+    /// 0x56aad4，`__ftol` 截尾）扣目标的精，同样的量加给 **3 号位**（紫萱，写死的）；
+    /// 第 4 回合两边各改 0。回的量是算出来的那个数，不看目标实际掉了多少（防御折半、
+    /// 目标隐形都不影响）。目标被吸死记在 3 号位头上（第 4 参 3）。
+    fn gu_drain_tick(&mut self, slot: usize) {
+        let Some((n, max_hp)) = self.get_mut(slot).and_then(|c| {
+            let n = c.gu_drain? + 1;
+            c.gu_drain = (n < 4).then_some(n);
+            Some((n, c.max_hp))
+        }) else {
+            return;
+        };
+        let rate: f32 = match n {
+            1 => 0.05,
+            2 => 0.1,
+            3 => 0.15,
+            _ => 0.,
+        };
+        let amount = (f64::from(max_hp) * f64::from(rate)) as i32;
+        if let Some(t) = self.get_mut(slot) {
+            let was_alive = t.alive;
+            t.change_hp(-amount);
+            if was_alive && !t.alive {
+                t.killed_by = Some(3);
+            }
+        }
+        if let Some(c) = self.get_mut(3) {
+            c.change_hp(amount);
         }
     }
 

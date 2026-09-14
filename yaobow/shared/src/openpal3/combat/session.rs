@@ -1825,7 +1825,7 @@ impl CombatSession {
                 experience: reward.experience,
                 money: reward.money,
                 loot: reward.loot,
-                killer,
+                killer: self.battle.get(slot).and_then(|c| c.killed_by).or(killer),
                 death_time: self.elapsed,
             });
         }

@@ -249,6 +249,9 @@ pub const SKILL_STEAL: u32 = 0x1005;
 pub const SKILL_DRAIN_HP: u32 = 0x1069;
 /// 鬼狱还神：按伤害量给施术者回神（同上，`FUN_004f31c0`）。
 pub const SKILL_DRAIN_MP: u32 = 0x10d0;
+/// 吸精蛊：在目标身上做标记，之后三个回合吸它的精给紫萱（`FUN_004f2690` 置标记，
+/// `FUN_004ecb20` 每回合吸，见 `Battle::end_round`）。
+pub const SKILL_GU_DRAIN: u32 = 0x1132;
 
 /// 特技顺手偷到的东西。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -300,8 +303,8 @@ impl Battle {
     /// * 打出伤害才让目标出手段从头来，而且整条清零（`FUN_004db750(t, 0, 0, 1)`）；
     /// * 不记使用次数（调用方负责）；
     /// * 效果后面按 id 多一步（`FUN_004f2690`）：绿波红露斩按目标掉的精的一半给自己回精，
-    ///   鬼狱还神按伤害量回神；飞龙探云手打中后偷钱、偷物品（`FUN_004f17c0`）。
-    ///   吸精蛊（0x1132）在目标身上置的 `+0x56e` 标记用途没追，没做。
+    ///   鬼狱还神按伤害量回神；飞龙探云手打中后偷钱、偷物品（`FUN_004f17c0`）；
+    ///   吸精蛊在目标身上做标记（`+0x56e = 1`、`+0x56f = 0`），再中一次从头数。
     pub fn cast_special(
         &mut self,
         caster: usize,
@@ -338,6 +341,11 @@ impl Battle {
                 let amount = result.deltas[0].abs();
                 if let Some(c) = self.get_mut(caster) {
                     c.mp = (c.mp + amount).min(c.max_mp);
+                }
+            }
+            SKILL_GU_DRAIN => {
+                if let Some(t) = self.get_mut(target) {
+                    t.gu_drain = Some(0);
                 }
             }
             _ => {}
@@ -686,6 +694,53 @@ mod tests {
         let dealt = 500 - b.get(5).unwrap().hp;
         assert!(dealt > 0);
         assert_eq!(b.get(0).unwrap().hp, (40 + dealt / 2).min(100));
+    }
+
+    #[test]
+    fn the_gu_drain_feeds_slot_three_for_three_rounds() {
+        let mut b = Battle::new(5);
+        b.place(0, caster());
+        let mut zixuan = caster();
+        zixuan.hp = 10;
+        zixuan.max_hp = 1000;
+        b.place(3, zixuan);
+        let mut monster = caster();
+        monster.side = Side::Enemy;
+        monster.hp = 350;
+        monster.max_hp = 350;
+        b.place(5, monster);
+
+        let (r, _) = b.cast_special(0, 5, &sure_hit(SKILL_GU_DRAIN, 0));
+        assert!(r.hit);
+        assert_eq!(b.get(5).unwrap().gu_drain, Some(0));
+        let hp = |b: &Battle, s| b.get(s).unwrap().hp;
+        let before = (hp(&b, 5), hp(&b, 3));
+        // 350 × 0.05 = 17.5 → 17，× 0.1 = 35，× 0.15 = 52.5 → 52。
+        for (n, amount) in [(1, 17), (2, 35), (3, 52), (4, 0)] {
+            let (t, z) = (hp(&b, 5), hp(&b, 3));
+            b.end_round();
+            assert_eq!(hp(&b, 5), t - amount, "第 {n} 回合");
+            assert_eq!(hp(&b, 3), z + amount, "第 {n} 回合");
+        }
+        assert_eq!(b.get(5).unwrap().gu_drain, None, "第 4 回合摘掉");
+        b.end_round();
+        assert_eq!((hp(&b, 5), hp(&b, 3)), (before.0 - 104, before.1 + 104));
+    }
+
+    #[test]
+    fn a_gu_drain_kill_is_credited_to_slot_three() {
+        let mut b = Battle::new(5);
+        b.place(3, caster());
+        let mut monster = caster();
+        monster.side = Side::Enemy;
+        monster.hp = 10;
+        monster.max_hp = 1000;
+        monster.gu_drain = Some(0);
+        b.place(5, monster);
+        b.end_round();
+        let m = b.get(5).unwrap();
+        assert!(!m.alive);
+        assert_eq!(m.killed_by, Some(3));
     }
 
     #[test]
