@@ -180,6 +180,11 @@ pub struct Combatant {
     /// 正在逃（`+0x597`）：掷中了、还没跑出去。不能当目标、不再出手，但判胜负时还算在场
     /// （`FUN_004ed100` 只看 `+0x598`）。跑完变成 [`Self::retired`]。
     pub fleeing: bool,
+    /// 每回合恢复的百分比（`+0x2a0` / `+0x2a4` / `+0x2a8`）：五件装备 gdb `attribute_impact_value[0..2]`
+    /// 逐件累加（`FUN_004edf10`），比如祝融玉佩「精恢复10%」、天冥宝戒「气恢复15%」。
+    pub hp_regen: f32,
+    pub sp_regen: f32,
+    pub mp_regen: f32,
     /// 吸精蛊的标记（原版战斗位 `+0x56e` / `+0x56f`）：`Some(n)` = 标记着、已经过了 n 个回合。
     /// `FUN_004f2690` 打中时置 `Some(0)`，每回合结算见 [`Battle::own_turn`]。
     pub gu_drain: Option<u8>,
@@ -308,6 +313,9 @@ impl Combatant {
             steal_item: None,
             escape_rate: 0,
             fleeing: false,
+            hp_regen: 0.,
+            sp_regen: 0.,
+            mp_regen: 0.,
             gu_drain: None,
             killed_by: None,
             gauge: 0.,
@@ -762,6 +770,29 @@ impl Battle {
             c.tick_states();
         }
         self.gu_drain_tick(slot);
+        // 装备的每回合恢复（0x4ecc3f–0x4ecd0b）：值大于 0 且没满，回 `__ftol(上限 × 值 × 0.01)`——精走
+        // `FUN_004f2c70(位, 量, 1, −1)`，气 `FUN_004f3020(位, 量, 0)`，神 `FUN_004f31c0(位, 量, 0)`。
+        let regen =
+            |max: i32, rate: f32| (f64::from(max) * f64::from(rate) * f64::from(0.01f32)) as i32;
+        let (hp, sp, mp) = match self.get(slot) {
+            Some(c) => (
+                (c.hp_regen > 0. && c.hp < c.max_hp).then(|| regen(c.max_hp, c.hp_regen)),
+                (c.sp_regen > 0. && c.sp < c.max_sp).then(|| regen(c.max_sp, c.sp_regen)),
+                (c.mp_regen > 0. && c.mp < c.max_mp).then(|| regen(c.max_mp, c.mp_regen)),
+            ),
+            None => (None, None, None),
+        };
+        if let Some(v) = hp {
+            if let Some(c) = self.get_mut(slot) {
+                c.change_hp(v);
+            }
+        }
+        if let Some(v) = sp {
+            self.hit_sp(slot, v);
+        }
+        if let Some(v) = mp {
+            self.shift_mp(slot, v);
+        }
         // 敌人逃走（0x4ecd0e 起）：5..10 号位 `+0x59c` > 0 的，`rand & 0x3ff < round(+0x59c × 10.24)`
         // 就置 `+0x597`，排 0x15 组（占住 → `LAB_005011b0` 跑向 (800, 0, 800) → 放开）。跑由舞台演，
         // 跑完调 [`Self::finish_fleeing`]。
@@ -1816,6 +1847,24 @@ mod tests {
         b.get_mut(0).unwrap().escape_rate = 100;
         b.own_turn(0);
         assert!(!b.get(0).unwrap().fleeing, "我方不走这一条");
+    }
+
+    #[test]
+    fn equipment_regen_tops_up_each_own_turn() {
+        let mut b = two_sided_battle();
+        let c = b.get_mut(0).unwrap();
+        c.hp = 10;
+        // 上限 80 × 10 × 0.01f32（0.00999999977）= 7.9999998，`__ftol` 截尾得 7——原版 x87 同样。
+        c.hp_regen = 10.;
+        c.max_sp = 50;
+        c.sp = 0;
+        c.sp_regen = 15.; // 7.5 → 7
+        b.own_turn(0);
+        assert_eq!(b.get(0).unwrap().hp, 17);
+        assert_eq!(b.get(0).unwrap().sp, 7);
+        b.get_mut(0).unwrap().hp = 80;
+        b.own_turn(0);
+        assert_eq!(b.get(0).unwrap().hp, 80, "满了不回");
     }
 
     #[test]

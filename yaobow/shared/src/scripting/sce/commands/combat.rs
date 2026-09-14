@@ -1255,6 +1255,10 @@ impl SceCommandCombat {
                         c.mp_saving += item.mp_saving_percentage as i32;
                         c.crit_bonus += item.critical_attack_amplify_percentage as i32;
                         c.skill_bonus += item.special_skill_success_rate as i32;
+                        // 每回合恢复 %（`+0x2a0..+0x2a8` ← 物品 `+0x284..+0x288`）。
+                        c.hp_regen += f32::from(item.attribute_impact_value[0]);
+                        c.sp_regen += f32::from(item.attribute_impact_value[1]);
+                        c.mp_regen += f32::from(item.attribute_impact_value[2]);
                         if matches!(item.item_special_type, 0x15 | 0x16) {
                             c.item_boost += 10;
                         }
