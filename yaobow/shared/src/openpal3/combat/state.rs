@@ -1113,6 +1113,32 @@ impl Battle {
     /// * 我方按手上武器的 `weapon_type`：0 → 掷 `rand & 0x3ff`，> 0x132 竖列、否则横排；
     ///   4/7 横排；1/3 竖列；其余单体。0 号位（景天）不管武器一律竖列（骰子照掷）。
     ///   数据里的武器类型都在 1..7，所以那一掷实际走不到。
+    /// 开场的蓄力条（`FUN_004dbb80`）：敌方偷袭（`+0x219`，先查它）时敌方满条、我方 0，我方偷袭
+    /// （`+0x218`）反过来；都没有时每个在场的位按位号顺序掷 `rand15 % 638 + 速_eff × 638`
+    /// （`FUN_004f3920`）。满条开局不算一个回合——`FUN_004dba60` 只数从没满到满。
+    pub fn seed_gauges(&mut self, we_sneak: bool, enemy_sneak: bool) {
+        for slot in 0..SLOTS {
+            if self.get(slot).is_none() {
+                continue;
+            }
+            let gauge = if enemy_sneak || we_sneak {
+                let enemy = slot >= PARTY_SLOTS;
+                if enemy == enemy_sneak {
+                    formulas::GAUGE_FULL
+                } else {
+                    0.
+                }
+            } else {
+                let r = self.rng.rand15() % 0x27e;
+                let speed = self.get(slot).map(|c| c.speed_eff()).unwrap_or(0);
+                (r + speed * 0x27e) as f32
+            };
+            if let Some(c) = self.get_mut(slot) {
+                c.gauge = gauge;
+            }
+        }
+    }
+
     pub fn assign_patterns(&mut self) {
         for slot in PARTY_SLOTS..SLOTS {
             if let Some(c) = self.get_mut(slot) {
@@ -1713,6 +1739,31 @@ mod tests {
         }
         c.tick_states();
         assert_eq!(c.hp, 25, "然后每回合 75% 上限");
+    }
+
+    #[test]
+    fn opening_gauges_start_from_speed_or_the_sneak_side() {
+        let mut b = two_sided_battle();
+        b.seed_gauges(false, false);
+        for s in [0, 5] {
+            let c = b.get(s).unwrap();
+            let base = (c.speed_eff() * 0x27e) as f32;
+            assert!(c.gauge >= base && c.gauge < base + 638., "{s}: {}", c.gauge);
+        }
+
+        let mut b = two_sided_battle();
+        b.seed_gauges(false, true);
+        assert_eq!(b.get(0).unwrap().gauge, 0.);
+        assert_eq!(b.get(5).unwrap().gauge, formulas::GAUGE_FULL);
+        b.get_mut(5).unwrap().apply_state(K_POISON_FIRE, 0, FOREVER);
+        let hp = b.get(5).unwrap().hp;
+        assert_eq!(b.update(0.01), Some(Due::Ready(5)), "满条开局直接能动");
+        assert_eq!(b.get(5).unwrap().hp, hp, "开局满条不算一个回合");
+
+        let mut b = two_sided_battle();
+        b.seed_gauges(true, false);
+        assert_eq!(b.get(0).unwrap().gauge, formulas::GAUGE_FULL);
+        assert_eq!(b.get(5).unwrap().gauge, 0.);
     }
 
     #[test]

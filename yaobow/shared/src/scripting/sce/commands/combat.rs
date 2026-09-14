@@ -1460,6 +1460,9 @@ impl SceCommandCombat {
             log::info!("Combat: 我方 {ours:?} 敌方 {theirs:?}");
         }
         battle.assign_patterns();
+        // 开场蓄力条（`FUN_004dbb80`）。偷袭两个标志移植端还没有来源：脚本开战一律传 0，
+        // 野外遇敌（`FUN_0041ba10` 朝向判定 + `FUN_004edc60` 的 50%）没做。
+        battle.seed_gauges(false, false);
         let mut session = CombatSession::new(battle, profiles, seed.rotate_left(13) ^ 0x5bd1_e995);
         session.set_items(items);
         session.set_combos(
