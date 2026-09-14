@@ -176,7 +176,7 @@ pub struct Combatant {
     /// 能偷的物品和剩余件数（`+0x44c` / `+0x450`，gdb `stealable_item_id` / `_count`）。
     pub steal_item: Option<(u32, i32)>,
     /// 吸精蛊的标记（原版战斗位 `+0x56e` / `+0x56f`）：`Some(n)` = 标记着、已经过了 n 个回合。
-    /// `FUN_004f2690` 打中时置 `Some(0)`，每回合结算见 [`Battle::end_round`]。
+    /// `FUN_004f2690` 打中时置 `Some(0)`，每回合结算见 [`Battle::own_turn`]。
     pub gu_drain: Option<u8>,
     /// 被谁打倒的（原版 `+0x570`，`FUN_004f2c70` 的第 4 参）。移植端只有吸精蛊那一路填它；
     /// 别的路结算时按当时出手的人记（`CombatSession::note_deaths`）。
@@ -709,6 +709,7 @@ impl Battle {
     /// 推一帧：蓄力条、出手条往前走。
     pub fn advance(&mut self, dt: f32) {
         for slot in 0..SLOTS {
+            let mut turned = false;
             let Some(c) = self.get_mut(slot) else {
                 continue;
             };
@@ -719,6 +720,7 @@ impl Battle {
                 // 条满等着被排上行动，原版此时仍是 phase 0、条停在 11500。
                 Phase::Ready => {}
                 Phase::Charging => {
+                    let before = c.gauge;
                     let speed = c.gauge_speed();
                     c.gauge += formulas::gauge_step(dt, speed);
                     if c.gauge > formulas::GAUGE_FULL - 1.0 {
@@ -726,6 +728,8 @@ impl Battle {
                         c.phase = Phase::Ready;
                         // 行动条一满就解除防御，和 0x515893 的判据一致。
                         c.defending = false;
+                        // `FUN_004dba60`：蓄力条从没满到满，这一位的回合数（ATB `+0x28`）+1。
+                        turned = before < formulas::GAUGE_FULL;
                     }
                 }
                 Phase::Executing => {
@@ -736,7 +740,21 @@ impl Battle {
                     }
                 }
             }
+            if turned {
+                self.own_turn(slot);
+            }
         }
+    }
+
+    /// 这一位又过了一个回合（`FUN_004ecb20`：`+0x590` 追上 ATB `+0x28` 就 +1 并结算）：先状态
+    /// （`FUN_004f48c0`），再吸精蛊。原版主调度每帧对每个位先调它、再看行动条满没满，ATB 的
+    /// `+0x28` 只在这一位自己的蓄力条从没满到满时加（`FUN_004dba60`）——所以毒、吸精蛊是**各人
+    /// 按自己的回合**结算，快的人结算得勤；倒下的人条不涨，也就不再结算。
+    pub(crate) fn own_turn(&mut self, slot: usize) {
+        if let Some(c) = self.get_mut(slot) {
+            c.tick_states();
+        }
+        self.gu_drain_tick(slot);
     }
 
     /// 这一帧该谁：出手条满的优先，其次蓄力条满的。`skip` 里的这一帧不再交出——原版主调度
@@ -823,8 +841,9 @@ impl Battle {
     }
 
     /// A combatant has finished acting: reset its gauge (`FUN_004db710`)
-    /// and, if it was the last enemy slot, count a round — which is how
-    /// the original decides when to run status effects.
+    /// and, if it was the last enemy slot, count a round (`+0x220`, only
+    /// used against the round cap; status effects run per unit, see
+    /// [`Self::own_turn`]).
     ///
     /// The original's test is literally "slot 10 acted". Most battles do
     /// not field six enemies, and an empty slot 10 never acts, so taken
@@ -848,20 +867,9 @@ impl Battle {
         (0..SLOTS).rev().find(|s| self.combatants[*s].is_some())
     }
 
-    /// Roll the round over: every combatant's states tick, then 吸精蛊 drains
-    /// (`FUN_004ecb20` 里紧跟在 `FUN_004f48c0` 后面)。
+    /// 全场过了一回合（`+0x220`，只拿来比回合上限）。
     pub fn end_round(&mut self) {
         self.round += 1;
-        for slot in 0..SLOTS {
-            // [推断] 原版的钩子对 `+0x241` 在场的位都跑，倒下的算不算没查（`+0x242` 谁清的
-            // 还开着）；移植端和状态结算一样只跑活着的。
-            if let Some(c) = self.get_mut(slot) {
-                if c.in_play() {
-                    c.tick_states();
-                    self.gu_drain_tick(slot);
-                }
-            }
-        }
     }
 
     /// 吸精蛊一个回合（0x4ecb9b–0x4ecc3a）：回合数 +1，到 4 摘掉标记；第 1、2、3 回合按

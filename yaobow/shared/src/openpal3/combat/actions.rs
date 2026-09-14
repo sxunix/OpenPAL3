@@ -250,7 +250,7 @@ pub const SKILL_DRAIN_HP: u32 = 0x1069;
 /// 鬼狱还神：按伤害量给施术者回神（同上，`FUN_004f31c0`）。
 pub const SKILL_DRAIN_MP: u32 = 0x10d0;
 /// 吸精蛊：在目标身上做标记，之后三个回合吸它的精给紫萱（`FUN_004f2690` 置标记，
-/// `FUN_004ecb20` 每回合吸，见 `Battle::end_round`）。
+/// `FUN_004ecb20` 每回合吸，见 `Battle::own_turn`）。
 pub const SKILL_GU_DRAIN: u32 = 0x1132;
 
 /// 特技顺手偷到的东西。
@@ -718,12 +718,12 @@ mod tests {
         // 350 × 0.05 = 17.5 → 17，× 0.1 = 35，× 0.15 = 52.5 → 52。
         for (n, amount) in [(1, 17), (2, 35), (3, 52), (4, 0)] {
             let (t, z) = (hp(&b, 5), hp(&b, 3));
-            b.end_round();
+            b.own_turn(5);
             assert_eq!(hp(&b, 5), t - amount, "第 {n} 回合");
             assert_eq!(hp(&b, 3), z + amount, "第 {n} 回合");
         }
         assert_eq!(b.get(5).unwrap().gu_drain, None, "第 4 回合摘掉");
-        b.end_round();
+        b.own_turn(5);
         assert_eq!((hp(&b, 5), hp(&b, 3)), (before.0 - 104, before.1 + 104));
     }
 
@@ -737,7 +737,7 @@ mod tests {
         monster.max_hp = 1000;
         monster.gu_drain = Some(0);
         b.place(5, monster);
-        b.end_round();
+        b.own_turn(5);
         let m = b.get(5).unwrap();
         assert!(!m.alive);
         assert_eq!(m.killed_by, Some(3));
