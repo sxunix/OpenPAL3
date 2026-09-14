@@ -14,11 +14,11 @@
 //! 我方偷袭（`+0x219`）且 `FUN_004c6410()+4` 时播 [`SNEAK_SEQUENCE`]，否则
 //! [`STAND_SEQUENCE`]。
 //!
-//! 移镜头（`FUN_00506340`）做了「匀速」分支（`+0x59 != 0 && +0x5b == 0`，绝大多数记录）
-//! 和 `+0x59 == 0` 那一支；另有盯着目标（`+0x65`）、绕圈（`+0x5d`，`FUN_005075e0`）、
-//! 滑行（`+0x5e`，`FUN_00507b20`）。没做的三支——`FUN_00506340` 里 `+0x5b` 那一支、
-//! `FUN_005075e0` 里 `+0x5a != 0` 那一支、跟随目标（`+0x66`）——发行的 flexcam.dat 里
-//! 没有一条记录用到。逆向记录在 `switch/re/notes/combat_camera.md`。
+//! 移镜头（`FUN_00506340`）三支都做了：「匀速」（`+0x59 != 0 && +0x5b == 0`，绝大多数记录）、
+//! `+0x59 == 0`、`+0x5b`（按距离算完，`+0x5a` 再开就什么都不做）；另有盯着目标（`+0x65`）、
+//! 绕圈（`+0x5d`，`FUN_005075e0`）、滑行（`+0x5e`，`FUN_00507b20`）。`+0x5b` 那一支和绕圈的
+//! `+0x5a != 0`（直接返回）发行的 flexcam.dat 里没有记录走到，照原版补上；没做的只剩跟随目标
+//! （`+0x66`），数据里一条都没有。逆向记录在 `switch/re/notes/combat_camera.md`。
 
 use super::stage::CombatCamera;
 
@@ -92,6 +92,14 @@ impl CamRecord {
     /// `+0x5c`：这一步要移镜头（`FUN_005061a0` 才会调 `FUN_00506340`）。
     pub fn moves_camera(&self) -> bool {
         self.flags[4] != 0
+    }
+    /// `+0x5a`：和 `+0x5b` 一起开时 `FUN_00506340`、`FUN_005075e0` 都直接返回。
+    pub fn idles(&self) -> bool {
+        self.flags[2] != 0
+    }
+    /// `+0x5b`：`FUN_00506340` 走「按距离算完」那一支（见 [`CamPlayer`]）。
+    pub fn capped(&self) -> bool {
+        self.flags[3] != 0
     }
     /// `+0x5f`：走满距离就算完。
     pub fn stops_at_distance(&self) -> bool {
@@ -275,6 +283,13 @@ impl CamPlayer {
             if !rec.uniform() {
                 return self.drift(rec, dt);
             }
+            if rec.capped() {
+                if rec.idles() {
+                    // 0x506340 的 `+0x5b && +0x5a`：直接返回，这一步永远不完。
+                    return self.pose;
+                }
+                return self.capped_move(rec, dt);
+            }
         } else if rec.glides() {
             return self.glide(rec, dt);
         } else if rec.orbits() {
@@ -411,6 +426,49 @@ impl CamPlayer {
             roll: lerp(from.roll, rec.to.roll),
         };
         if frac >= 1. {
+            self.done = true;
+        }
+        self.pose
+    }
+
+    /// `FUN_00506340` 的 `+0x59 && +0x5b && !+0x5a` 那一支：路程 = t·`+0x6c` + 两段加速度，
+    /// 只夹上限（起止距离）；比例 = 路程 / 距离（距离 0 时取 1）；位置 = 起点 + 方向 × 路程，
+    /// 角度从记录**自己的**起点角度（`+0x2c..+0x34`——`+0x58` 没开时 `FUN_005062d0` 已经把
+    /// 当前机位写进去）按比例插到终点，`+0x61` 在 `+0x69014` 上加减的那一圈这一支不用。
+    /// 走满距离算完（原版同时把 `+0x1c` 改成已用的时间，移植端不再用它）。
+    fn capped_move(&mut self, rec: CamRecord, dt: f32) -> CombatCamera {
+        if self.start.is_none() {
+            let from = if rec.keeps_from() {
+                rec.from
+            } else {
+                self.pose
+            };
+            self.start = Some((from, distance(&from, &rec.to), rec.speed));
+        }
+        let (from, dist, speed) = self.start.unwrap_or((self.pose, 0., 0.));
+        self.t += dt;
+        let t = self.t;
+        let moved = (t * speed + rec.accel_distance(t)).min(dist);
+        let frac = if dist == 0. { 1. } else { moved / dist };
+        let (ux, uy, uz) = if dist > 0. {
+            (
+                (rec.to.x - from.x) / dist,
+                (rec.to.y - from.y) / dist,
+                (rec.to.z - from.z) / dist,
+            )
+        } else {
+            (0., 0., 0.)
+        };
+        let lerp = |a: f32, b: f32| a + (b - a) * frac;
+        self.pose = CombatCamera {
+            x: from.x + ux * moved,
+            y: from.y + uy * moved,
+            z: from.z + uz * moved,
+            yaw: lerp(from.yaw, rec.to.yaw),
+            pitch: lerp(from.pitch, rec.to.pitch),
+            roll: lerp(from.roll, rec.to.roll),
+        };
+        if dist <= moved {
             self.done = true;
         }
         self.pose
@@ -575,6 +633,35 @@ mod tests {
             orbit_center: [0.; 3],
             orbit_height: 0.,
         }
+    }
+
+    #[test]
+    fn a_capped_step_ends_when_the_distance_is_covered() {
+        let mut r = rec(100., pose(0., 0.), pose(10., 2.));
+        r.flags[3] = 1; // +0x5b
+        r.flags[9] = 1; // +0x61：这一支不用那一圈
+        r.speed = 20.;
+        let mut p =
+            CamPlayer::new(vec![r, rec(1., pose(0., 0.), pose(0., 0.))], pose(0., 0.)).unwrap();
+        let half = p.update(0.25);
+        assert!((half.x - 5.).abs() < 1e-4);
+        assert!((half.yaw - 1.).abs() < 1e-4, "角度按走过的比例插");
+        let end = p.update(0.5);
+        assert_eq!((end.x, end.yaw), (10., 2.), "只夹上限");
+        assert!(p.done, "走满就完，不等时长 100 秒");
+    }
+
+    #[test]
+    fn a_capped_step_with_0x5a_never_moves_or_ends() {
+        let mut r = rec(1., pose(0., 0.), pose(10., 2.));
+        r.flags[2] = 1; // +0x5a
+        r.flags[3] = 1; // +0x5b
+        r.speed = 20.;
+        let mut p = CamPlayer::new(vec![r], pose(3., 0.)).unwrap();
+        for _ in 0..100 {
+            assert_eq!(p.update(0.1).x, 3.);
+        }
+        assert!(!p.finished());
     }
 
     #[test]
