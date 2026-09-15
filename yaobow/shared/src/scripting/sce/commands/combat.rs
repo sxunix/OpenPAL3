@@ -186,6 +186,8 @@ pub struct SceCommandCombat {
     /// 舞台场景 `+0x268`），平时藏着。
     /// 原版只载一份、每帧对亮着的位各画一次；这里每个我方位一个实体。
     pointers: Vec<ComRc<radiance::comdef::IEntity>>,
+    /// 五灵环（`CBStageScene`）：开场和阵型面板开关时淡入淡出。
+    lineup_ring: Option<crate::openpal3::combat::lineup_ring::LineupRingFx>,
     /// 战斗时钟（战斗系统 `+0x50`）：开战 `FUN_00512580` 清零，每帧战斗更新
     /// `FUN_00513060` 一开头 += dt × 倍率 `+0x6c`。倍率默认 1.0（`DAT_00570054`），
     /// 只有 `time` 类特效（`FUN_004d53e0`，移植端没接）和调试对话框
@@ -650,6 +652,7 @@ impl SceCommandCombat {
             combat_scene: None,
             stage: None,
             pointers: Vec::new(),
+            lineup_ring: None,
             battle_clock: 0.,
             hud: None,
             actors: Vec::new(),
@@ -968,6 +971,22 @@ impl SceCommandCombat {
                 pointer.set_visible(false);
                 scene.add_entity(pointer.clone());
                 self.pointers.push(pointer);
+            }
+        }
+
+        // 五灵环（`FUN_0050fee0` 载两张贴图），平时不画，开场和阵型面板开关时淡入淡出。
+        {
+            let data = db.combat();
+            if let Some(fx) = crate::openpal3::combat::lineup_ring::LineupRingFx::build(
+                &factory,
+                vfs,
+                data.five_lineup.clone(),
+                data.enemy_five_lineup.clone(),
+            ) {
+                for e in fx.entities() {
+                    scene.add_entity(e);
+                }
+                self.lineup_ring = Some(fx);
             }
         }
 
@@ -3174,6 +3193,17 @@ impl SceCommand for SceCommandCombat {
         self.drive_cues(delta_sec);
         self.animate_stage(delta_sec);
         self.place_pointer();
+        if let Some(fx) = self.lineup_ring.as_mut() {
+            let (element, panel_open) = self.session.as_ref().map_or((None, false), |s| {
+                (
+                    s.battle.scene_element,
+                    s.turn
+                        .as_ref()
+                        .is_some_and(|t| matches!(t.menu, Menu::Lineup { .. })),
+                )
+            });
+            fx.update(self.battle_clock, self.sneak.1, element, panel_open);
+        }
         // 特效 `camera` 类（adv_director 从 flexeff 转过来）：先停当前序列
         // （FUN_00505800，停在原地），序列号 > 0 再从当前机位播它（FUN_00505770）。
         let mut camera_requests = state.take_combat_camera_requests();

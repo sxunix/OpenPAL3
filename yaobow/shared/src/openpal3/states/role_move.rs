@@ -243,6 +243,86 @@ impl RoleConstants {
     }
 }
 
+/// `datascript\scene.txt` 的 `monster` 一节（`FUN_0041efa0` 读进 0x58b260 起、步长 0x14）。三档的都按
+/// S / M / L 排。出厂值：FreeRange 40/60/100、FreeSpeed 30/50/100、FindFov 90（没用上）、
+/// FindRadius 100/200/400、AttackSpeed 160/210/240、AttackRange 10。
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MonsterConstants {
+    pub free_range: [f32; 3],
+    pub free_speed: [f32; 3],
+    pub find_fov: f32,
+    pub find_radius: [f32; 3],
+    pub attack_speed: [f32; 3],
+    /// 追出去的范围是 FreeRange 的几倍。
+    pub attack_range: f32,
+}
+
+impl Default for MonsterConstants {
+    fn default() -> Self {
+        Self {
+            free_range: [40., 60., 100.],
+            free_speed: [30., 50., 100.],
+            find_fov: 90.,
+            find_radius: [100., 200., 400.],
+            attack_speed: [160., 210., 240.],
+            attack_range: 10.,
+        }
+    }
+}
+
+impl MonsterConstants {
+    /// 解析 `scene.txt` 的 `monster` 一节，格式同 [`RoleConstants::parse`]。
+    pub fn parse(text: &str) -> Self {
+        let mut out = Self::default();
+        let mut in_section = false;
+        for raw in text.lines() {
+            let line = raw.split(';').next().unwrap_or("").trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("BEGIN,") {
+                in_section = rest.trim().eq_ignore_ascii_case("monster");
+                continue;
+            }
+            if line.eq_ignore_ascii_case("END") {
+                if in_section {
+                    break;
+                }
+                continue;
+            }
+            if !in_section {
+                continue;
+            }
+            let mut it = line.split_whitespace();
+            let (Some(key), Some(value)) = (it.next(), it.next()) else {
+                continue;
+            };
+            let Ok(v) = value.trim_matches(|c| c == '$' || c == '&').parse::<f32>() else {
+                continue;
+            };
+            let slot = match key {
+                "FreeRangeS" => &mut out.free_range[0],
+                "FreeRangeM" => &mut out.free_range[1],
+                "FreeRangeL" => &mut out.free_range[2],
+                "FreeSpeedS" => &mut out.free_speed[0],
+                "FreeSpeedM" => &mut out.free_speed[1],
+                "FreeSpeedL" => &mut out.free_speed[2],
+                "FindFov" => &mut out.find_fov,
+                "FindRadiusS" => &mut out.find_radius[0],
+                "FindRadiusM" => &mut out.find_radius[1],
+                "FindRadiusL" => &mut out.find_radius[2],
+                "AttackSpeedS" => &mut out.attack_speed[0],
+                "AttackSpeedM" => &mut out.attack_speed[1],
+                "AttackSpeedL" => &mut out.attack_speed[2],
+                "AttackRange" => &mut out.attack_range,
+                _ => continue,
+            };
+            *slot = v;
+        }
+        out
+    }
+}
+
 /// 目标离得比这还近就当作已经到了，一步都不迈。
 ///
 /// `FUN_00412b60` 一进来就量一次距离：
@@ -302,6 +382,20 @@ FreeSpeedS\t$30&\r
 WalkSpeed\t$99999&\t;不该读到——这是别的节\r
 END\r
 ";
+
+    #[test]
+    fn monster_constants_come_from_their_own_section() {
+        let m = MonsterConstants::parse(SAMPLE);
+        assert_eq!(m.free_speed, [30., 50., 100.]);
+        let m = MonsterConstants::parse(&SAMPLE.replace("FreeSpeedS\t$30&", "FreeSpeedS\t$35&"));
+        assert_eq!(m.free_speed[0], 35.);
+        assert_eq!(m.attack_range, 10., "没写的用出厂值");
+        assert_eq!(
+            RoleConstants::parse(SAMPLE).walk_speed,
+            80.,
+            "monster 节的 WalkSpeed 不串到 role 节"
+        );
+    }
 
     #[test]
     fn the_three_modes_come_from_the_fourth_parameter() {

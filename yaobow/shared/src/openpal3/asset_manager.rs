@@ -623,6 +623,33 @@ impl AssetManager {
         self.vfs.read_to_end(path)
     }
 
+    /// 场景物件模型文件在哪（找法和 [`crate::openpal3::scene::ScnScene`] 载入物件时一样：`_` 开头的在场景目录，
+    /// 夜里先找 `1\`，先 `.pol` 后 `.cvd`；带扩展名的在 `object\`；其余是 `item\名\名.pol`）。
+    pub fn scn_object_model_path(
+        &self,
+        cpk_name: &str,
+        scn_name: &str,
+        obj_name: &str,
+        is_night: bool,
+    ) -> Option<PathBuf> {
+        if obj_name.starts_with('_') {
+            let folder = self.scene_path.join(cpk_name).join(scn_name);
+            for ext in ["pol", "cvd"] {
+                let mut paths = vec![];
+                if is_night {
+                    paths.push(folder.join("1").join(obj_name).with_extension(ext));
+                }
+                paths.push(folder.join(obj_name).with_extension(ext));
+                if let Some(p) = paths.into_iter().find(|p| self.vfs.open(p).is_ok()) {
+                    return Some(p);
+                }
+            }
+            return None;
+        }
+        let path = self.get_object_item_path(obj_name);
+        self.vfs.open(&path).is_ok().then_some(path)
+    }
+
     fn get_object_item_path(&self, obj_name: &str) -> PathBuf {
         if obj_name.contains('.') {
             self.basedata_path.join("object").join(&obj_name)

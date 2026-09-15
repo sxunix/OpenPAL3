@@ -17,6 +17,7 @@ pub mod combo;
 pub mod encounter;
 pub mod formulas;
 pub mod hud;
+pub mod lineup_ring;
 pub mod linker;
 pub mod motion;
 pub mod result;

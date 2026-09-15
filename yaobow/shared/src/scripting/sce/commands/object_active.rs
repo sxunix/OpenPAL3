@@ -26,6 +26,7 @@ impl SceCommand for SceCommandObjectActive {
         if let Some(e) = s.get_root_object(self.object_id) {
             e.set_visible(self.active != 0);
         }
+        s.set_object_active(self.object_id, self.active != 0);
 
         true
     }

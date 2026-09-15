@@ -73,6 +73,7 @@ impl AdventureDirector {
                 scripted_camera_seeded: false,
                 layer_switch_triggered: false,
                 agent_bridge: None,
+                player_slide_dir: None,
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
@@ -188,6 +189,7 @@ impl AdventureDirector {
                 scripted_camera_seeded: false,
                 layer_switch_triggered: false,
                 agent_bridge: None,
+                player_slide_dir: None,
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
@@ -622,6 +624,8 @@ struct AdventureDirectorProps {
     /// is not running; `Some(_)` gates pause/step + provides the
     /// synthetic-input overlay backing `/v1/input/*`.
     agent_bridge: Option<Rc<AgentBridge>>,
+    /// 主角上一次贴墙滑的方向（角色 `+0x534`，`FUN_0041bad0` 初始化成朝向）。
+    player_slide_dir: Option<Vec3>,
     /// 140 下雪. The simulation always exists; the entity is built the
     /// first time a script turns the weather on, and hidden rather than
     /// removed when it turns it off.
@@ -1919,6 +1923,56 @@ impl AdventureDirectorProps {
             .unwrap_or(OUT_OF_RANGE)
     }
 
+    /// 主角走不通时贴墙滑（`FUN_00414350` 行为 3 那一支）。在主角身边按自己的朝向取 4 个点——右前、左前各
+    /// (6, 6)，正右、正左各 12（格宽 12 的 0.5 倍和 1 倍）——逐个看走不走得通；有一个走得通就沿某个方向走
+    /// 这一步原本的长度，落点那一格走得通才挪。方向是最后一个探测点那组值归一化后 y 置 0：走得通时那组值
+    /// 是偏移，走不通时是那个点的**世界坐标**（原版就这样，照抄）；跟上一次滑的方向点积 < −0.1 就还用上一次的。
+    fn slide_player(
+        &mut self,
+        scene_manager: &ComRc<ISceneManager>,
+        layer: usize,
+        role: &ComRc<radiance::comdef::IEntity>,
+        pos: &Vec3,
+        target: &Vec3,
+    ) -> Option<Vec3> {
+        let scn = scene_manager.scn_scene()?;
+        let scene = scn.inner::<crate::openpal3::scene::ScnScene>();
+        let facing = crate::openpal3::scene::ScnScene::facing_of(role);
+        // 右 = 前 × 上（`FUN_004122c0`）。
+        let right = Vec3::new(-facing.z, 0., facing.x);
+        let mut v = Vec3::new(0., 0., 0.);
+        let mut found = false;
+        for (r, f) in [(6., 6.), (-6., 6.), (12., 0.), (-12., 0.)] {
+            let off = Vec3::add(&Vec3::scalar_mul(r, &right), &Vec3::scalar_mul(f, &facing));
+            let p = Vec3::add(pos, &off);
+            if scene.walkable_at(layer, &p) {
+                v = off;
+                found = true;
+            } else {
+                v = p;
+            }
+        }
+        if !found {
+            return None;
+        }
+        let (dx, dz) = (target.x - pos.x, target.z - pos.z);
+        let len = (dx * dx + dz * dz).sqrt();
+        let n = Vec3::normalized(&v);
+        let mut d = Vec3::new(n.x, 0., n.z);
+        // [推断] 原版在角色初始化时存朝向，这里第一次滑的时候才取。
+        let prev = self.player_slide_dir.get_or_insert(facing);
+        if d.x * prev.x + d.z * prev.z < -0.1 {
+            d = *prev;
+        }
+        *prev = d;
+        let mut to = Vec3::add(pos, &Vec3::scalar_mul(len, &d));
+        if !scene.walkable_at(layer, &to) {
+            return None;
+        }
+        to.y = scene.get_height(layer, scene.scene_coord_to_nav_coord(layer, &to));
+        Some(to)
+    }
+
     fn move_role(
         &mut self,
         scene_manager: ComRc<ISceneManager>,
@@ -1950,12 +2004,13 @@ impl AdventureDirectorProps {
             &position,
             &Vec3::scalar_mul(speed * delta_sec, &moving_direction),
         );
-        let (target_nav_coord, height, distance_to_border) = {
+        let (target_nav_coord, height, walkable) = {
             let scn = scene_manager.scn_scene().unwrap();
             let scene = scn.inner::<crate::openpal3::scene::ScnScene>();
             let tnc = scene.scene_coord_to_nav_coord(nav_layer, &target_position);
             let h = scene.get_height(nav_layer, tnc);
-            let d = scene.get_distance_to_border_by_scene_coord(nav_layer, &target_position);
+            // 能不能走照原版 `FUN_00421020`：格子记录 +4 字节 > 1，再按格子上的场景物件改判。
+            let d = scene.walkable_at(nav_layer, &target_position);
             (tnc, h, d)
         };
         let _ = target_nav_coord;
@@ -1964,26 +2019,37 @@ impl AdventureDirectorProps {
         let role = scene_manager
             .get_resolved_role(self.sce_vm.state(), -1)
             .unwrap();
-        if moving_direction.norm() > 0.5
-            && (self.sce_vm.global_state().pass_through_wall()
-                || distance_to_border > std::f32::EPSILON)
-        {
+        let free = self.sce_vm.global_state().pass_through_wall() || walkable;
+        let slid = if moving_direction.norm() > 0.5 && !free {
+            self.slide_player(
+                &scene_manager,
+                nav_layer,
+                &role,
+                &position,
+                &target_position,
+            )
+        } else {
+            None
+        };
+        if moving_direction.norm() > 0.5 && (free || slid.is_some()) {
             match mode {
                 MoveMode::Run => role_controller.inner::<RoleController>().run(),
                 _ => role_controller.inner::<RoleController>().walk(),
             }
+            // 朝向跟速度（`FUN_004122c0`）——滑的时候也是输入的方向。
             let look_at = Vec3::new(target_position.x, position.y, target_position.z);
+            let dest = slid.unwrap_or(target_position);
             role.transform()
                 .borrow_mut()
                 .look_at(&look_at)
-                .set_position(&target_position);
+                .set_position(&dest);
 
             self.sce_vm
                 .global_state_mut()
                 .persistent_state_mut()
-                .set_position(target_position);
+                .set_position(dest);
 
-            position = target_position
+            position = dest
         } else {
             role_controller.inner::<RoleController>().idle();
         }
@@ -2194,6 +2260,26 @@ impl AdventureDirectorProps {
                 .step_patrols(delta_sec);
         }
 
+        // 野外怪物 AI（`FUN_00417420`）。
+        {
+            let gs = self.sce_vm.global_state();
+            if let (Some(db), Some(player)) = (
+                gs.game_db().cloned(),
+                self.scene_manager
+                    .get_resolved_role(self.sce_vm.state(), -1),
+            ) {
+                let layer = RoleController::get_role_controller(player.clone())
+                    .map(|rc| rc.inner::<RoleController>().nav_layer())
+                    .unwrap_or(0);
+                let monster = *gs.monster_constants();
+                let role = *gs.role_constants();
+                if let Some(scene_rc) = self.scene_manager.scn_scene() {
+                    scene_rc
+                        .inner::<crate::openpal3::scene::ScnScene>()
+                        .step_field_monsters(delta_sec, &player, layer, &db, &monster, &role);
+                }
+            }
+        }
         // 野外怪物撞上主角就开战（`FUN_00417420` 末尾 → `FUN_00407560`）。战斗命令一初始化就把舞台
         // 压到场景栈顶，这一帧后面按冒险场景取主角的代码就不能再跑了。
         if self.check_field_encounter() {

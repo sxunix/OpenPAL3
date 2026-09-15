@@ -10,7 +10,7 @@ use crate::openpal3::asset_manager::AssetManager;
 use super::camera::Pal3Camera;
 use super::game_db::GameDb;
 use super::persistent_state::PersistentState;
-use super::role_move::{RoleConstants, SCENE_TXT};
+use super::role_move::{MonsterConstants, RoleConstants, SCENE_TXT};
 use common::store_ext::StoreExt2;
 use radiance::{
     audio::{AudioEngine, AudioMemorySource, AudioSource, AudioSourceState, Codec as AudioCodec},
@@ -41,6 +41,8 @@ pub struct GlobalState {
     game_db: Option<Rc<GameDb>>,
     /// `datascript\scene.txt` 的 `role` 一节——走跑速度那一组常数。
     role_constants: RoleConstants,
+    /// `datascript\scene.txt` 的 `monster` 一节——野外怪物追击那一组常数。
+    monster_constants: MonsterConstants,
 
     pass_through_wall: bool,
     divine_tree_flower_initialized: bool,
@@ -74,6 +76,11 @@ impl GlobalState {
             .read_to_end_from_gbk(SCENE_TXT)
             .map(|text| RoleConstants::parse(&text))
             .unwrap_or_default();
+        let monster_constants = asset_mgr
+            .vfs()
+            .read_to_end_from_gbk(SCENE_TXT)
+            .map(|text| MonsterConstants::parse(&text))
+            .unwrap_or_default();
 
         let game_db = GameDb::load(asset_mgr.vfs(), &PathBuf::from("/basedata/basedata"));
         if let Some(db) = game_db.as_ref() {
@@ -94,6 +101,7 @@ impl GlobalState {
             video_player,
             game_db,
             role_constants,
+            monster_constants,
             pass_through_wall: false,
             divine_tree_flower_initialized: false,
             effect_position: Vec3::new(0., 0., 0.),
@@ -118,6 +126,11 @@ impl GlobalState {
     /// 走跑速度那一组常数（`datascript\scene.txt` 的 `role` 节）。
     pub fn role_constants(&self) -> &RoleConstants {
         &self.role_constants
+    }
+
+    /// 野外怪物追击那一组常数（`datascript\scene.txt` 的 `monster` 节）。
+    pub fn monster_constants(&self) -> &MonsterConstants {
+        &self.monster_constants
     }
 
     pub fn adv_input_enabled(&self) -> bool {

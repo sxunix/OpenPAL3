@@ -47,6 +47,10 @@ pub struct ScnScene {
     object_motions: RefCell<Vec<ObjectMotion>>,
     /// 原版这里用的是 CRT 的 `rand()`，和别处共用一条序列；移植端单开一条，按时间播种。
     object_rng: RefCell<CrtRand>,
+    /// 野外怪物的 AI（`FUN_00417420`），第一次推的时候按角色建。
+    field_monsters: RefCell<Vec<super::field_monster::FieldMonster>>,
+    /// 场景物件挡路的格子表（`FUN_00420940`），载入物件后建。
+    object_blocking: RefCell<Option<super::object_block::ObjectBlocking>>,
 }
 
 ComObject_ScnSceneComponent!(super::ScnScene);
@@ -84,6 +88,8 @@ impl ScnScene {
             ladder_triggers: RefCell::new(vec![]),
             object_moves: RefCell::new(vec![]),
             object_motions: RefCell::new(vec![]),
+            field_monsters: RefCell::new(vec![]),
+            object_blocking: RefCell::new(None),
             object_rng: RefCell::new(CrtRand::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -507,6 +513,136 @@ impl ScnScene {
         None
     }
 
+    /// 推野外怪物一帧（`FUN_00411f60` → `FUN_00417420`）：决策、受力、找路在
+    /// [`super::field_monster::FieldMonster`]，这里挪位置——速度平方超过 0.005 才挪，一步最多 18（`FUN_00411e00`），落点由 `FieldMonster::settle` 判（`FUN_00414350`），高度取
+    /// 导航网格，朝向跟速度（`FUN_004122c0`），走着播走的动作、停了播待机。
+    pub fn step_field_monsters(
+        &self,
+        dt: f32,
+        player: &ComRc<IEntity>,
+        player_layer: usize,
+        db: &crate::openpal3::states::game_db::GameDb,
+        monster: &crate::openpal3::states::role_move::MonsterConstants,
+        role_consts: &crate::openpal3::states::role_move::RoleConstants,
+    ) {
+        use super::field_monster::{FieldMonster, Levels};
+        let player_pos = player.transform().borrow().position();
+        let mut monsters = self.field_monsters.borrow_mut();
+        if monsters.is_empty() {
+            for role in &self.scn_file.roles {
+                if !role.is_combat_npc() || role.monster_ids().iter().all(|id| *id == 0) {
+                    continue;
+                }
+                let Some(e) = self.get_role_entity(role.index as i32) else {
+                    continue;
+                };
+                let levels = db
+                    .combat_actor(role.monster_ids()[0])
+                    .map(|a| Levels {
+                        move_range: a.move_range_level,
+                        move_speed: a.move_speed_level,
+                        chase_speed: a.chase_speed_level,
+                    })
+                    .unwrap_or_default();
+                monsters.push(FieldMonster::new(
+                    role.index,
+                    (role.position_x, role.position_z),
+                    Self::facing_of(&e),
+                    levels,
+                    monster,
+                    role_consts,
+                ));
+            }
+        }
+        let mut rng = self.object_rng.borrow_mut();
+        for m in monsters.iter_mut() {
+            let Some(e) = self.get_role_entity(m.role_index as i32) else {
+                continue;
+            };
+            if !e.visible() {
+                continue;
+            }
+            let Some(rc) = RoleController::get_role_controller(e.clone()) else {
+                continue;
+            };
+            let rc = rc.inner::<RoleController>();
+            let layer = rc.nav_layer();
+            let nav = FieldNavView { scene: self, layer };
+            let pos = e.transform().borrow().position();
+            let facing = Self::facing_of(&e);
+            let before = m.state;
+            let (v, placed) = m.step(
+                dt,
+                &pos,
+                &facing,
+                &player_pos,
+                layer == player_layer,
+                &mut rng,
+                &nav,
+                monster,
+                role_consts,
+            );
+            if m.state != before {
+                log::info!(
+                    "Field AI: ROLE_{} {:?} → {:?}，位置 ({:.0}, {:.0})",
+                    m.role_index,
+                    before,
+                    m.state,
+                    pos.x,
+                    pos.z
+                );
+            }
+            let pos = match placed {
+                Some(p) => self.place_field_monster(&e, layer, p, None),
+                None => pos,
+            };
+            if v.x * v.x + v.z * v.z <= 0.005 {
+                rc.idle();
+                continue;
+            }
+            let mut step = Vec3::scalar_mul(dt, &v);
+            let len = step.norm();
+            if len > 18. {
+                step = Vec3::scalar_mul(18. / len, &step);
+            }
+            match m.settle(&pos, &Vec3::add(&pos, &step), &facing, &nav) {
+                // `FUN_00411f60`：落下去地面高度跟原来差 45 以上就退回原处、停下。
+                Some(to)
+                    if (self.get_height(layer, self.scene_coord_to_nav_coord(layer, &to))
+                        - pos.y)
+                        .abs()
+                        > 45. =>
+                {
+                    m.stop();
+                    rc.idle();
+                }
+                Some(to) => {
+                    self.place_field_monster(&e, layer, to, Some(&v));
+                    rc.walk();
+                }
+                None => rc.idle(),
+            }
+        }
+    }
+
+    /// 把怪放到 `to`，高度取导航网格；给了速度就面朝速度方向。
+    fn place_field_monster(
+        &self,
+        e: &ComRc<IEntity>,
+        layer: usize,
+        mut to: Vec3,
+        facing: Option<&Vec3>,
+    ) -> Vec3 {
+        to.y = self.get_height(layer, self.scene_coord_to_nav_coord(layer, &to));
+        let transform = e.transform();
+        let mut t = transform.borrow_mut();
+        t.set_position(&to);
+        if let Some(v) = facing {
+            t.look_at(&Vec3::new(to.x + v.x, to.y, to.z + v.z));
+        }
+        to
+    }
+
     /// 打赢 / 逃掉以后撞上的那只怪退场（`FUN_004055d0`：`*(DAT_00c11754 + 0x278) = 0`）。重进场景时从
     /// `.scn` 重新摆，所以还会回来。
     pub fn retire_field_monster(&self, role_index: u8) {
@@ -519,7 +655,7 @@ impl ScnScene {
     }
 
     /// 角色面朝哪边：`Transform::look_at` 把「背离目标」写在矩阵第 2 列，取反就是面朝的方向。
-    fn facing_of(entity: &ComRc<IEntity>) -> Vec3 {
+    pub fn facing_of(entity: &ComRc<IEntity>) -> Vec3 {
         let t = entity.transform();
         let t = t.borrow();
         let m = t.matrix();
@@ -890,6 +1026,265 @@ impl ScnScene {
         for entity in entities {
             self.scene.add_entity(entity);
         }
+        self.build_object_blocking();
+    }
+
+    /// 建场景物件挡路的格子表（`FUN_0041fa90` → `FUN_00420940`），见 [`super::object_block`]。
+    fn build_object_blocking(&self) {
+        use super::object_block::{BlockNode, LayerGrid, ObjectBlocking};
+        let layers = self.nav.layer_count();
+        let grids = (0..layers)
+            .map(|l| {
+                let (w, h) = self.nav.size(l);
+                let min = self.nav_min_coord(l);
+                LayerGrid {
+                    w: w as i32,
+                    h: h as i32,
+                    min_x: min.x,
+                    min_z: min.z,
+                }
+            })
+            .collect();
+        let nodes: Vec<BlockNode> = self
+            .scn_file
+            .nodes
+            .iter()
+            .map(|n| {
+                let layer = (n.nav_layer & 0xff) as usize;
+                BlockNode {
+                    object_id: n.object_id(),
+                    name: n.name.clone(),
+                    kind: (n.node_type & 0xff) as u8,
+                    trigger_type: (n.w24 & 0xff) as u8,
+                    non_blocking: (n.w24 >> 8) as u8,
+                    init_active: (n.index >> 8) != 0,
+                    switch_state: (n.w2 >> 8) as u8,
+                    // `FUN_0041fa90`：层号超出这个场景的层数就当 0。
+                    layer: if layer < layers { layer } else { 0 },
+                    p0: n.ladder_nav_coord1.0,
+                    p3: n.ladder_nav_coord2.1,
+                    trigger_rect: [
+                        n.nav_trigger_coord_min.0,
+                        n.nav_trigger_coord_min.1,
+                        n.nav_trigger_coord_max.0,
+                        n.nav_trigger_coord_max.1,
+                    ],
+                    position: n.position,
+                    y_deg: n.rotation,
+                    x_deg: f32::from_bits(n.dw184.first().copied().unwrap_or(0)),
+                }
+            })
+            .collect();
+        let models: Vec<_> = self
+            .scn_file
+            .nodes
+            .iter()
+            .map(|n| self.object_model_box(&n.name))
+            .collect();
+        let b = ObjectBlocking::build(
+            &nodes,
+            &models,
+            grids,
+            (&self.cpk_name, &self.scn_file.scn_base_name),
+        );
+        for (i, id, kind, tiles, nb) in b.summary() {
+            log::debug!(
+                "物件挡路：{}/{} #{i} OBJECT_{id} 类型 {kind:#x} {} 压 {tiles} 格 {}",
+                self.cpk_name,
+                self.scn_file.scn_base_name,
+                self.scn_file.nodes[i].name,
+                if nb { "可通过" } else { "挡路" }
+            );
+        }
+        *self.object_blocking.borrow_mut() = Some(b);
+    }
+
+    /// 物件模型的包围盒（`FUN_00429af0` 载入时把动画停在第 0 帧调 `gbGeomNode::GetTotalOBBox`）：
+    /// 带网格的节点只有一个时 = 节点矩阵 × 网格的最小 / 最大点；多个时把各节点的包围盒变换后并起来，
+    /// 矩阵只放平移——原版这里把平移写成 (x 中心, x 中心, y 中心)，照抄。POL 取文件里各网格包围盒的并
+    /// （[推断] 原版把整份 POL 当一个节点）；CVD 的网格包围盒用第 0 帧顶点的最小 / 最大值（[推断]）。
+    fn object_model_box(&self, name: &str) -> super::object_block::Model {
+        use super::object_block::{Model, Obb};
+        use common::store_ext::StoreExt2;
+        use radiance::math::{Mat44, Transform};
+        if name.is_empty() {
+            return Model::None;
+        }
+        if name.starts_with('+') {
+            return Model::Fx;
+        }
+        let Some(path) = self.asset_mgr.scn_object_model_path(
+            &self.cpk_name,
+            &self.scn_file.scn_base_name,
+            name,
+            self.scn_file.is_night,
+        ) else {
+            return Model::None;
+        };
+        let translate = |c: [f32; 3]| {
+            let mut m = Mat44::new_identity();
+            m.floats_mut()[0][3] = c[0];
+            m.floats_mut()[1][3] = c[1];
+            m.floats_mut()[2][3] = c[2];
+            m
+        };
+        let xf = |m: &Mat44, p: [f32; 3]| {
+            let f = m.floats();
+            [0, 1, 2].map(|r| f[r][0] * p[0] + f[r][1] * p[1] + f[r][2] * p[2] + f[r][3])
+        };
+        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase());
+        if ext.as_deref() == Some("pol") {
+            let Ok(data) = self.asset_mgr.vfs().read_to_end(&path) else {
+                return Model::None;
+            };
+            let Ok(pol) = fileformats::pol::read_pol(&mut std::io::Cursor::new(data)) else {
+                return Model::None;
+            };
+            let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+            for m in &pol.meshes {
+                for (k, (a, b)) in [
+                    (m.aabb_min.x, m.aabb_max.x),
+                    (m.aabb_min.y, m.aabb_max.y),
+                    (m.aabb_min.z, m.aabb_max.z),
+                ]
+                .into_iter()
+                .enumerate()
+                {
+                    lo[k] = lo[k].min(a);
+                    hi[k] = hi[k].max(b);
+                }
+            }
+            if lo[0] > hi[0] {
+                return Model::None;
+            }
+            return Model::Box(Obb {
+                m: translate([0, 1, 2].map(|k| (lo[k] + hi[k]) * 0.5)),
+                ext: [0, 1, 2].map(|k| hi[k] - lo[k]),
+            });
+        }
+        let Ok(cvd) =
+            crate::openpal3::loaders::cvd_loader::cvd_load_from_file(self.asset_mgr.vfs(), &path)
+        else {
+            return Model::None;
+        };
+        // 各带网格节点：第 0 帧的节点矩阵（和 `CvdModelComponent::setup_transform` 同样的拼法，父子逐级相乘）
+        // 和网格第 0 帧的最小 / 最大点。
+        fn walk(
+            nodes: &[crate::openpal3::loaders::cvd_loader::CvdModelNode],
+            parent: &Mat44,
+            out: &mut Vec<(Mat44, [f32; 3], [f32; 3])>,
+        ) {
+            for node in nodes {
+                let mut world = *parent;
+                if let Some(model) = &node.model {
+                    let mut t = Transform::new();
+                    if let Some(f) = model
+                        .position_keyframes
+                        .as_ref()
+                        .and_then(|k| k.frames.first())
+                    {
+                        t.translate_local(&f.position);
+                    }
+                    let sf = model.scale_factor;
+                    t.scale_local(&Vec3::new(sf, sf, sf));
+                    if let Some(f) = model
+                        .rotation_keyframes
+                        .as_ref()
+                        .and_then(|k| k.frames.first())
+                    {
+                        t.rotate_quaternion_local(&f.quaternion);
+                    }
+                    if let Some(f) = model
+                        .scale_keyframes
+                        .as_ref()
+                        .and_then(|k| k.frames.first())
+                    {
+                        let q2 = f.quaternion;
+                        let mut q3 = q2;
+                        q3.inverse();
+                        t.rotate_quaternion_local(&q2)
+                            .scale_local(&f.scale)
+                            .rotate_quaternion_local(&q3);
+                    }
+                    world = Mat44::multiplied(parent, t.matrix());
+                    if let Some(frame) = model.mesh.frames.first().filter(|f| !f.is_empty()) {
+                        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                        for v in frame {
+                            for (k, c) in [v.position.x, v.position.y, v.position.z]
+                                .into_iter()
+                                .enumerate()
+                            {
+                                lo[k] = lo[k].min(c);
+                                hi[k] = hi[k].max(c);
+                            }
+                        }
+                        out.push((world, lo, hi));
+                    }
+                }
+                if let Some(children) = &node.children {
+                    walk(children, &world, out);
+                }
+            }
+        }
+        let mut meshes = vec![];
+        walk(&cvd.models, &Mat44::new_identity(), &mut meshes);
+        match meshes.as_slice() {
+            [] => Model::None,
+            [(m, lo, hi)] => Model::Box(Obb {
+                m: Mat44::multiplied(m, &translate([0, 1, 2].map(|k| (lo[k] + hi[k]) * 0.5))),
+                ext: [0, 1, 2].map(|k| hi[k] - lo[k]),
+            }),
+            many => {
+                let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                for (m, a, b) in many {
+                    for c in 0..8 {
+                        let p = xf(
+                            m,
+                            [
+                                if c & 1 == 0 { a[0] } else { b[0] },
+                                if c & 2 == 0 { a[1] } else { b[1] },
+                                if c & 4 == 0 { a[2] } else { b[2] },
+                            ],
+                        );
+                        for k in 0..3 {
+                            lo[k] = lo[k].min(p[k]);
+                            hi[k] = hi[k].max(p[k]);
+                        }
+                    }
+                }
+                let cx = (hi[0] + lo[0]) * 0.5;
+                let cy = (hi[1] + lo[1]) * 0.5;
+                Model::Box(Obb {
+                    m: translate([cx, cx, cy]),
+                    ext: [0, 1, 2].map(|k| hi[k] - lo[k]),
+                })
+            }
+        }
+    }
+
+    /// `FUN_00421020`：导航格 (x, z) 能不能走——格子记录 +4 字节 > 1，再按格子上登记的场景物件改判。
+    pub fn tile_walkable(&self, layer: usize, x: i32, z: i32) -> bool {
+        let base = self
+            .nav
+            .get(layer, x, z)
+            .is_some_and(|t| (t.distance_to_border & 0xff) > 1);
+        match &*self.object_blocking.borrow() {
+            Some(b) => b.walkable(self.nav.layer(layer), x, z, base),
+            None => base,
+        }
+    }
+
+    /// 场景坐标落在的那一格能不能走（格子坐标截断）。
+    pub fn walkable_at(&self, layer: usize, p: &Vec3) -> bool {
+        let (x, z) = self.scene_coord_to_nav_coord(layer, p);
+        self.tile_walkable(layer, x as i32, z as i32)
+    }
+
+    /// 脚本改了物件在不在场（`ObjectActive`），挡路跟着变。
+    pub fn set_object_active(&self, object_id: i32, active: bool) {
+        if let Some(b) = self.object_blocking.borrow_mut().as_mut() {
+            b.set_active(object_id, active);
+        }
     }
 
     /// Build a PAL3 scene "effect" entity for a `+`-prefixed node.
@@ -983,7 +1378,9 @@ impl ScnScene {
                     rc.set_active(role.flag_0x54 != 0);
                     // Only non-scripted ambient NPCs auto-patrol, so they don't
                     // fight SCE RoleMoveTo/RolePathTo.
-                    if role.sce_proc_id == 0 && role.patrol_path.len() >= 2 {
+                    // 野外怪物不走 `.scn` 的路径：`FUN_00417040` 把它们的行为一律改成 5（追击）。
+                    if role.sce_proc_id == 0 && role.patrol_path.len() >= 2 && !role.is_combat_npc()
+                    {
                         rc.set_patrol(
                             role.patrol_path.clone(),
                             role.path_mode,
@@ -1020,6 +1417,9 @@ impl ScnNodeTypes {
     pub const LADDER2: u16 = 40;
 }
 
+/// 导航格宽（见 [`Nav::new`]）。
+pub const NAV_BLOCK_SIZE: f32 = 12.;
+
 pub struct Nav {
     nav_file: NavFile,
     block_sizes: Vec<(f32, f32)>,
@@ -1031,13 +1431,19 @@ impl Nav {
         layer.min(self.nav_file.maps.len().saturating_sub(1))
     }
 
+    /// 一层的格数（宽, 高）。
+    pub fn size(&self, layer: usize) -> (u32, u32) {
+        let m = &self.nav_file.maps[self.layer(layer)];
+        (m.width, m.height)
+    }
+
     pub fn new(nav_file: NavFile) -> Self {
         let mut block_sizes = vec![];
-        for i in 0..nav_file.maps.len() {
-            let area = Vec3::sub(&nav_file.maps[i].max_coord, &nav_file.maps[i].min_coord);
-            let width = nav_file.maps[i].width + 1;
-            let height = nav_file.maps[i].height + 1;
-            block_sizes.push((area.x / width as f32, area.z / height as f32))
+        // 原版的格宽是写死的 12（寻路、找层间通道、传送板三处各有一份全局，都在静态初始化时从
+        // 0x56a6cc / 0x56a984 / 0x56ab10 拷过来，值都是 12.0），不按文件里的范围算。原先这里用
+        // 范围 / (格数 + 1)，M01 上是 11.999 / 11.994，离最小坐标远了会差出一格。
+        for _ in 0..nav_file.maps.len() {
+            block_sizes.push((NAV_BLOCK_SIZE, NAV_BLOCK_SIZE))
         }
         Self {
             nav_file,
@@ -1211,4 +1617,41 @@ struct ObjectMove {
     to: Vec3,
     duration: f32,
     elapsed: f32,
+}
+
+/// 野外怪物找路看到的一层导航网格。能不能走是 [`ScnScene::tile_walkable`]（`FUN_00421020`，含场景物件），
+/// 代价类别是格子记录 +4 那个字节。
+struct FieldNavView<'a> {
+    scene: &'a ScnScene,
+    layer: usize,
+}
+
+impl super::nav_path::NavGrid for FieldNavView<'_> {
+    fn walkable(&self, x: i32, z: i32) -> bool {
+        self.scene.tile_walkable(self.layer, x, z)
+    }
+
+    fn tile_type(&self, x: i32, z: i32) -> u8 {
+        self.scene
+            .nav
+            .get(self.layer, x, z)
+            .map_or(0, |t| (t.distance_to_border & 0xff) as u8)
+    }
+}
+
+impl super::nav_path::FieldNav for FieldNavView<'_> {
+    fn tile_of(&self, p: &Vec3) -> (i32, i32) {
+        let (x, z) = self.scene.scene_coord_to_nav_coord(self.layer, p);
+        (x as i32, z as i32)
+    }
+
+    fn tile_center(&self, x: i32, z: i32) -> Vec3 {
+        let min = self.scene.nav_min_coord(self.layer);
+        let block = self.scene.nav_block_size(self.layer);
+        Vec3::new(
+            (x as f32 + 0.5) * block.0 + min.x,
+            0.,
+            (z as f32 + 0.5) * block.1 + min.z,
+        )
+    }
 }

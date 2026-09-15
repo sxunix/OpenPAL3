@@ -2,6 +2,7 @@ mod cvd_entity;
 mod effect;
 pub mod emoji;
 mod error;
+mod field_monster;
 pub mod flexeff_audio;
 pub mod flexeff_cylinder;
 pub mod flexeff_explosive;
@@ -10,6 +11,8 @@ pub mod flexeff_meteor;
 pub mod flexeff_model;
 pub mod flexeff_quad;
 pub mod flexeff_shock;
+mod nav_path;
+mod object_block;
 mod particles;
 mod role_controller;
 mod scene;
@@ -22,7 +25,7 @@ pub use cvd_entity::{
 };
 pub use effect::build_effect;
 pub use particles::{
-    MAX_PARTICLES, Particle, ParticleEffect, ParticleGroup, build_particle_entity,
+    MAX_PARTICLES, Particle, ParticleEffect, ParticleGroup, build_particle_entity, pack_color,
     write_particle_mesh,
 };
 pub use role_controller::{
