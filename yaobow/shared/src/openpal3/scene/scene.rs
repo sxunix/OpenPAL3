@@ -548,6 +548,8 @@ impl ScnScene {
                     role.index,
                     (role.position_x, role.position_z),
                     Self::facing_of(&e),
+                    RoleController::get_role_controller(e.clone())
+                        .map_or(0, |rc| rc.inner::<RoleController>().nav_layer()),
                     levels,
                     monster,
                     role_consts,
@@ -566,8 +568,7 @@ impl ScnScene {
                 continue;
             };
             let rc = rc.inner::<RoleController>();
-            let layer = rc.nav_layer();
-            let nav = FieldNavView { scene: self, layer };
+            m.layer = rc.nav_layer();
             let pos = e.transform().borrow().position();
             let facing = Self::facing_of(&e);
             let before = m.state;
@@ -576,12 +577,18 @@ impl ScnScene {
                 &pos,
                 &facing,
                 &player_pos,
-                layer == player_layer,
+                player_layer,
                 &mut rng,
-                &nav,
+                &SceneLayers { scene: self },
                 monster,
                 role_consts,
             );
+            // 跨层追的时候换了层（`FUN_00413c00` / `FUN_0041b6c0`）。
+            if m.layer != rc.nav_layer() {
+                rc.set_nav_layer(m.layer);
+            }
+            let layer = m.layer;
+            let nav = FieldNavView { scene: self, layer };
             if m.state != before {
                 log::info!(
                     "Field AI: ROLE_{} {:?} → {:?}，位置 ({:.0}, {:.0})",
@@ -1617,6 +1624,40 @@ struct ObjectMove {
     to: Vec3,
     duration: f32,
     elapsed: f32,
+}
+
+/// 野外怪物看到的几层导航网格和层间矩形（导航文件 v2 每层 8 个）。
+struct SceneLayers<'a> {
+    scene: &'a ScnScene,
+}
+
+impl super::field_monster::Layers for SceneLayers<'_> {
+    type Nav<'b>
+        = FieldNavView<'b>
+    where
+        Self: 'b;
+
+    fn nav(&self, layer: usize) -> FieldNavView<'_> {
+        FieldNavView {
+            scene: self.scene,
+            layer,
+        }
+    }
+
+    fn trigger(&self, layer: usize, idx: usize) -> Option<[i32; 4]> {
+        let map = self.scene.nav.nav_file.maps.get(layer)?;
+        let t = map.layer_triggers.as_ref()?.get(idx)?;
+        Some([
+            t.nav_coord_min.0,
+            t.nav_coord_min.1,
+            t.nav_coord_max.0,
+            t.nav_coord_max.1,
+        ])
+    }
+
+    fn height(&self, layer: usize, x: i32, z: i32) -> f32 {
+        self.scene.nav.get(layer, x, z).map_or(0., |t| t.height)
+    }
 }
 
 /// 野外怪物找路看到的一层导航网格。能不能走是 [`ScnScene::tile_walkable`]（`FUN_00421020`，含场景物件），

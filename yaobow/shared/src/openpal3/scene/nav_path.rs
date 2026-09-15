@@ -55,6 +55,24 @@ pub trait NavGrid {
     fn tile_type(&self, x: i32, z: i32) -> u8;
 }
 
+impl<T: NavGrid + ?Sized> NavGrid for &T {
+    fn walkable(&self, x: i32, z: i32) -> bool {
+        (**self).walkable(x, z)
+    }
+    fn tile_type(&self, x: i32, z: i32) -> u8 {
+        (**self).tile_type(x, z)
+    }
+}
+
+impl<T: FieldNav + ?Sized> FieldNav for &T {
+    fn tile_of(&self, p: &Vec3) -> (i32, i32) {
+        (**self).tile_of(p)
+    }
+    fn tile_center(&self, x: i32, z: i32) -> Vec3 {
+        (**self).tile_center(x, z)
+    }
+}
+
 /// 带坐标换算的导航网格。
 pub trait FieldNav: NavGrid {
     /// 场景坐标落在哪一格（`__ftol`，截断）。
