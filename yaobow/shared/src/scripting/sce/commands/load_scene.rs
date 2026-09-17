@@ -36,35 +36,77 @@ impl SceCommandLoadScene {
         Self { name, sub_name }
     }
 
-    /// Put back every scene object the story has slid with opcode 90.
+    /// 把存档里记着的物件状态摆回去（原版存档里每个物件一条记录，建场景时就按它建，
+    /// `FUN_00538fa0` 存、`FUN_0042c3a0` 决定哪些要存；脚本 158 是逐物件的例外）。
     ///
-    /// The original persists a moved position through the object's
-    /// `+0x244` flag and rebuilds the object from saved state on the way
-    /// in; opcode 158 is what opts an object out of that. Without this,
-    /// a bridge lowered before leaving would be back up on return.
-    fn restore_moved_objects(&self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
+    /// 移植端物件是照 `.scn` 建完再改：先摆位置（脚本 90 挪过的、乌龟沉下去的、传送板升上去的），
+    /// 再是在不在场（脚本 85）、在第几层（传送板换层），最后是物件自己的状态——放下的吊桥要变成
+    /// 可通过、动画停在最后一帧，沉下去的乌龟动画同样停在最后一帧。
+    fn restore_scene_objects(&self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
+        use radiance::comdef::IEntityExt;
         let Some(scene_rc) = scene_manager.scn_scene() else {
             return;
         };
         let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
-        let saved: Vec<(i32, radiance::math::Vec3)> = {
-            let p_state = state.global_state().persistent_state();
+        type Saved = (
+            i32,
+            Option<radiance::math::Vec3>,
+            Option<bool>,
+            Option<u8>,
+            i32,
+        );
+        let saved: Vec<Saved> = {
+            let p = state.global_state().persistent_state();
             scene
                 .object_ids()
                 .into_iter()
-                .filter(|id| p_state.object_loads_from_save(*id))
-                .filter_map(|id| {
-                    p_state
-                        .scene_object_position(&self.name, &self.sub_name, id)
-                        .map(|p| (id, p))
+                .filter(|id| p.object_loads_from_save(*id))
+                .map(|id| {
+                    (
+                        id,
+                        p.scene_object_position(&self.name, &self.sub_name, id),
+                        p.scene_object_active(&self.name, &self.sub_name, id),
+                        p.scene_object_layer(&self.name, &self.sub_name, id),
+                        p.scene_object_state(&self.name, &self.sub_name, id),
+                    )
                 })
                 .collect()
         };
 
-        for (id, position) in saved {
-            if let Some(entity) = scene.get_root_object(id) {
-                use radiance::comdef::IEntityExt;
-                entity.transform().borrow_mut().set_position(&position);
+        for (id, position, active, layer, object_state) in saved {
+            if let (Some(p), Some(entity)) = (position, scene.get_root_object(id)) {
+                entity.transform().borrow_mut().set_position(&p);
+            }
+            if let Some(active) = active {
+                if let Some(entity) = scene.get_root_object(id) {
+                    entity.set_visible(active);
+                }
+                scene.set_object_active(id, active);
+            }
+            if let Some(layer) = layer {
+                scene.set_object_layer(id, layer as usize);
+            }
+            if position.is_some() || active.is_some() || layer.is_some() || object_state != 0 {
+                log::debug!(
+                    "存档物件：{}/{} OBJECT_{id} 位置 {:?} 在场 {:?} 层 {:?} 状态 {object_state}",
+                    self.name,
+                    self.sub_name,
+                    position.map(|p| (p.x as i32, p.y as i32, p.z as i32)),
+                    active,
+                    layer
+                );
+            }
+            if object_state != 0 {
+                scene.set_object_state(id, object_state as u8);
+                let kind = scene.object_node_type(id).unwrap_or(0) & 0xff;
+                if matches!(kind, 0x13 | 0x1d) {
+                    scene.hold_object_anim_end(id);
+                }
+                if kind == 0x13 {
+                    if let Some(i) = scene.object_index_of(id) {
+                        scene.set_object_passable(i, true);
+                    }
+                }
             }
         }
     }
@@ -105,7 +147,7 @@ impl SceCommandLoadScene {
             .persistent_state_mut()
             .set_scene_name(self.name.clone(), self.sub_name.clone());
 
-        self.restore_moved_objects(scene_manager.clone(), state);
+        self.restore_scene_objects(scene_manager.clone(), state);
         self.restore_longkui_model(scene_manager.clone(), state);
         if cpk_changed {
             let sce = Rc::new(state.asset_mgr().load_sce(&self.name));

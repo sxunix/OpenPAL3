@@ -1242,6 +1242,44 @@ impl ScnScene {
         }
     }
 
+    /// `.scn` 里第 `i` 个物件的脚本编号。
+    pub fn object_id_at(&self, i: usize) -> Option<i32> {
+        self.scn_file.nodes.get(i).map(|n| n.object_id())
+    }
+
+    /// 物件 `object_id` 在 `.scn` 里的序号。
+    pub fn object_index_of(&self, object_id: i32) -> Option<usize> {
+        self.object_actions.borrow().index_of(object_id)
+    }
+
+    /// 读档 / 换场景回来时把物件的状态摆回去。
+    pub fn set_object_state(&self, object_id: i32, state: u8) {
+        let mut a = self.object_actions.borrow_mut();
+        if let Some(i) = a.index_of(object_id) {
+            a.set_state(i, state);
+        }
+    }
+
+    /// 把物件的动画停在最后一帧（放下的吊桥读档回来就是放下的）。
+    pub fn hold_object_anim_end(&self, object_id: i32) {
+        let Some(e) = self.get_root_object(object_id) else {
+            return;
+        };
+        let mut cvds = vec![];
+        cvd_components(&e, &mut cvds);
+        for c in cvds {
+            c.inner::<CvdModelComponent>().hold_last_frame();
+        }
+    }
+
+    /// 物件换层（动作 0xe 的物件那一半，读档回来也走这里）：清掉旧格子、按现在的位置在新层登记。
+    pub fn set_object_layer(&self, object_id: i32, layer: usize) {
+        let Some(i) = self.object_actions.borrow().index_of(object_id) else {
+            return;
+        };
+        self.set_object_tiles(i, false, layer);
+    }
+
     /// 物件 `object_id` 的状态（+0x50）。
     pub fn object_state(&self, object_id: i32) -> Option<u8> {
         let a = self.object_actions.borrow();

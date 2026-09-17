@@ -366,6 +366,16 @@ impl CvdModelComponent {
         }
     }
 
+    /// 停在最后一帧（读档回来时，放下的吊桥要直接是放下的样子）。
+    pub fn hold_last_frame(&self) {
+        let duration = self.duration();
+        *self.play_mode.borrow_mut() = CvdPlayMode::Hold;
+        self.elapsed.set(duration);
+        if duration > 0. {
+            self.apply_at(duration);
+        }
+    }
+
     /// 回到第 0 帧停住（`[vtbl+0x18](0)` + `SetTimeScale(0)`）。
     pub fn rewind(&self) {
         *self.play_mode.borrow_mut() = CvdPlayMode::Hold;

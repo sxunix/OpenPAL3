@@ -2697,6 +2697,23 @@ struct ObjWorld<'a> {
 }
 
 impl ObjWorld<'_> {
+    /// 记一条物件状态进存档（换场景、读档回来照它建）。
+    fn save_override(
+        &mut self,
+        i: usize,
+        f: impl FnOnce(&mut crate::openpal3::states::persistent_state::PersistentState, &str, &str, i32),
+    ) {
+        let (city, scene) = (
+            self.scene.name().to_string(),
+            self.scene.sub_name().to_string(),
+        );
+        let Some(id) = self.scene.object_id_at(i) else {
+            return;
+        };
+        let mut p = self.state.global_state_mut().persistent_state_mut();
+        f(&mut p, &city, &scene, id);
+    }
+
     fn player_layer(&self) -> usize {
         self.player
             .as_ref()
@@ -2748,6 +2765,10 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         if let Some(e) = self.scene.object_entity_at(i) {
             e.transform().borrow_mut().set_position(p);
         }
+        let p = *p;
+        self.save_override(i, |s, city, scene, id| {
+            s.set_scene_object_position(city, scene, id, p)
+        });
     }
 
     fn player_pos(&self) -> Vec3 {
@@ -2911,12 +2932,23 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         self.procs.push(id);
     }
 
+    fn save_state(&mut self, i: usize, state: u8) {
+        self.save_override(i, |s, city, scene, id| {
+            s.set_scene_object_state(city, scene, id, state as i32)
+        });
+    }
+
     fn object_tiles(&mut self, i: usize, clear: bool, layer: usize) {
         log::debug!(
             "场景物件：#{i} {}格子（层 {layer}）",
             if clear { "清掉" } else { "重新登记" }
         );
         self.scene.set_object_tiles(i, clear, layer);
+        if !clear {
+            self.save_override(i, |s, city, scene, id| {
+                s.set_scene_object_layer(city, scene, id, layer as u8)
+            });
+        }
     }
 
     fn set_player_layer(&mut self, layer: usize) {

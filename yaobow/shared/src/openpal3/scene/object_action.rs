@@ -141,6 +141,8 @@ pub trait World {
     fn object_model_height(&self, i: usize) -> f32;
     /// 第 `layer` 层 (`x`, `z`) 格：中心点（y 是格子自己的高度，越界是 0）和连物件的地面高度（`FUN_00421230`）。
     fn tile_point(&self, layer: usize, x: i32, z: i32) -> (Vec3, f32);
+    /// 物件的状态（+0x50）变了，记进存档（原版靠物件的「被改过」标记 +0x240，存档里带着状态）。
+    fn save_state(&mut self, i: usize, state: u8);
     /// `FUN_0040fc70`：队里几个人。
     fn party_size(&self) -> usize;
     /// `FUN_00430570(key)` + `FUN_00450bc0`：弹一句提示。
@@ -181,6 +183,14 @@ impl ObjectActions {
 
     pub fn state(&self, i: usize) -> Option<u8> {
         self.objs.get(i).map(|o| o.state)
+    }
+
+    /// 读档 / 换场景回来时把状态摆回去（原版把物件状态存进存档，见 `FUN_00538fa0`）。
+    pub fn set_state(&mut self, i: usize, state: u8) {
+        if let Some(o) = self.objs.get_mut(i) {
+            o.state = state;
+            o.timer = 0.;
+        }
     }
 
     /// `FUN_0042c1a0`：队列空、状态 0。
@@ -384,16 +394,22 @@ impl ObjectActions {
             }
             self.advance(i, dt, w);
             let o = &mut self.objs[i];
+            let mut changed = None;
             if o.kind == 0x1d {
                 if o.state == 1 {
                     o.state = 2;
                     o.timer = 0.;
+                    changed = Some(2);
                 } else if o.state == 2 {
                     o.timer += dt;
                     if o.timer > TURTLE_SETTLE_SECS {
                         o.state = 3;
+                        changed = Some(3);
                     }
                 }
+            }
+            if let Some(state) = changed {
+                w.save_state(i, state);
             }
         }
     }
@@ -426,6 +442,7 @@ impl ObjectActions {
                     let o = &mut self.objs[i];
                     o.state = state;
                     o.timer = 0.;
+                    w.save_state(i, state);
                     if wait != 0 {
                         return;
                     }
@@ -558,6 +575,7 @@ mod tests {
         procs: Vec<i32>,
         tiles: Vec<(usize, bool, usize)>,
         player_layer: usize,
+        saved_states: Vec<(usize, u8)>,
     }
 
     impl World for Mock {
@@ -638,6 +656,9 @@ mod tests {
         fn hint(&mut self, key: &str) {
             self.hints.push(key.into());
         }
+        fn save_state(&mut self, i: usize, state: u8) {
+            self.saved_states.push((i, state));
+        }
     }
 
     impl Mock {
@@ -683,6 +704,7 @@ mod tests {
             procs: vec![],
             tiles: vec![],
             player_layer: 0,
+            saved_states: vec![],
         };
         (a, w)
     }
