@@ -168,7 +168,8 @@ impl SceCommandClimb {
         // connectivity test works on nav coordinates, so ask it the same
         // question the original does.
         let from = actor.transform().borrow().position();
-        let flat = Vec3::new(stand.x - from.x, -from.y, stand.z - from.z);
+        // 原版中间那一项是角色 +8（离地的相对高度，站在地上是 0），不是世界高度。
+        let flat = Vec3::new(stand.x - from.x, 0., stand.z - from.z);
         if flat.norm() > OUT_OF_RANGE {
             let layer = controller.nav_layer();
             let nav = scene.nav();

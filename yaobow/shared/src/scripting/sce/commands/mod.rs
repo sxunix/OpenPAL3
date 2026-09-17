@@ -1,5 +1,6 @@
 mod _let;
 mod appraise;
+pub(crate) use appraise::play_sfx;
 mod between;
 mod call;
 mod camera_anim;

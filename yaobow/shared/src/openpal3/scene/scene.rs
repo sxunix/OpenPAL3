@@ -51,6 +51,12 @@ pub struct ScnScene {
     field_monsters: RefCell<Vec<super::field_monster::FieldMonster>>,
     /// 场景物件挡路的格子表（`FUN_00420940`），载入物件后建。
     object_blocking: RefCell<Option<super::object_block::ObjectBlocking>>,
+    /// 场景物件的动作队列和状态（`FUN_00424c20` / `FUN_0042f460`），载入物件后建。
+    object_actions: RefCell<super::object_action::ObjectActions>,
+    /// 脚本 124 叫物件（事件 2）时先记下，冒险循环带着主角一起处理。
+    object_events: RefCell<Vec<(i32, u8)>>,
+    /// 上一帧主角脚下的物件（场景 `+0x7865c`）。
+    player_object: RefCell<Option<usize>>,
 }
 
 ComObject_ScnSceneComponent!(super::ScnScene);
@@ -90,6 +96,9 @@ impl ScnScene {
             object_motions: RefCell::new(vec![]),
             field_monsters: RefCell::new(vec![]),
             object_blocking: RefCell::new(None),
+            object_actions: RefCell::new(Default::default()),
+            object_events: RefCell::new(vec![]),
+            player_object: RefCell::new(None),
             object_rng: RefCell::new(CrtRand::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -524,6 +533,7 @@ impl ScnScene {
         db: &crate::openpal3::states::game_db::GameDb,
         monster: &crate::openpal3::states::role_move::MonsterConstants,
         role_consts: &crate::openpal3::states::role_move::RoleConstants,
+        frozen: bool,
     ) {
         use super::field_monster::{FieldMonster, Levels};
         let player_pos = player.transform().borrow().position();
@@ -569,14 +579,18 @@ impl ScnScene {
             };
             let rc = rc.inner::<RoleController>();
             m.layer = rc.nav_layer();
+            m.frozen = frozen;
             let pos = e.transform().borrow().position();
             let facing = Self::facing_of(&e);
             let before = m.state;
+            // 原版角色 +8 是离地相对高度（站地上恒 0），世界高度另存在 +0x98 / +0xa4，所以 AI 里的距离都不带 y。
+            let flat = Vec3::new(pos.x, 0., pos.z);
+            let player_flat = Vec3::new(player_pos.x, 0., player_pos.z);
             let (v, placed) = m.step(
                 dt,
-                &pos,
+                &flat,
                 &facing,
-                &player_pos,
+                &player_flat,
                 player_layer,
                 &mut rng,
                 &SceneLayers { scene: self },
@@ -1034,6 +1048,256 @@ impl ScnScene {
             self.scene.add_entity(entity);
         }
         self.build_object_blocking();
+        let nodes: Vec<_> = self
+            .scn_file
+            .nodes
+            .iter()
+            .map(|n| super::object_action::ObjNode {
+                object_id: n.object_id(),
+                kind: (n.node_type & 0xff) as u8,
+                // `FUN_0041fa90`：层号超出这个场景的层数就当 0。
+                layer: if ((n.nav_layer & 0xff) as usize) < self.nav.layer_count() {
+                    (n.nav_layer & 0xff) as usize
+                } else {
+                    0
+                },
+                p: [
+                    n.ladder_nav_coord1.0,
+                    n.ladder_nav_coord1.1,
+                    n.ladder_nav_coord2.0,
+                    n.ladder_nav_coord2.1,
+                ],
+                link_id: n.w148,
+            })
+            .collect();
+        *self.object_actions.borrow_mut() = super::object_action::ObjectActions::new(&nodes);
+    }
+
+    /// `FUN_00421230`：一格的地面高度。格子上登记了在场的物件时按类型换成物件的高度（物件 +0x2c）：
+    /// 5/7/0x13/0x21/0x26/0x28 取物件高度，0x1d（乌龟）再加 24，0x16/0x22/0x25 格子能走时取两者大的、不能走
+    /// 时取物件高度。越界是 0。[未做] 0xb 且参数 0 为 1 的按模型矩阵取（`FUN_00429db0`），这里还按格子。
+    pub fn floor_height(&self, layer: usize, p: &Vec3) -> f32 {
+        use super::field_monster::Layers as _;
+        use super::nav_path::{FieldNav as _, NavGrid as _};
+        let nav = FieldNavView { scene: self, layer };
+        let (x, z) = nav.tile_of(p);
+        let (w, h) = self.nav.size(layer);
+        if x < 0 || z < 0 || x >= w as i32 || z >= h as i32 {
+            return 0.;
+        }
+        let base = SceneLayers { scene: self }.height(layer, x, z);
+        let owner = self.object_blocking.borrow().as_ref().and_then(|b| {
+            b.owner(layer, x, z)
+                .filter(|i| b.active(*i))
+                .map(|i| (i, b.kind(i).unwrap_or(0)))
+        });
+        let Some((i, kind)) = owner else {
+            return base;
+        };
+        let Some(y) = self
+            .object_entity_at(i)
+            .map(|e| e.transform().borrow().position().y)
+        else {
+            return base;
+        };
+        match kind {
+            0x16 | 0x22 | 0x25 if nav.tile_type(x, z) > 1 => base.max(y),
+            0x16 | 0x22 | 0x25 | 5 | 7 | 0x13 | 0x21 | 0x26 | 0x28 => y,
+            0x1d => y + 24.,
+            _ => base,
+        }
+    }
+
+    /// `.scn` 里第 `i` 个物件的实体。
+    pub fn object_entity_at(&self, i: usize) -> Option<ComRc<IEntity>> {
+        self.scn_file
+            .nodes
+            .get(i)
+            .and_then(|n| self.get_root_object(n.object_id()))
+    }
+
+    /// 第 `i` 个物件在不在场（+0xad）。
+    pub fn object_active_at(&self, i: usize) -> bool {
+        self.object_blocking
+            .borrow()
+            .as_ref()
+            .is_some_and(|b| b.active(i))
+    }
+
+    /// 物件动作 10：第 `i` 个物件的「可通过」。
+    pub fn set_object_passable(&self, i: usize, passable: bool) {
+        if let Some(b) = self.object_blocking.borrow_mut().as_mut() {
+            b.set_passable(i, passable);
+        }
+    }
+
+    /// 物件动作 9：清掉第 `i` 个物件压住的格子，或者按它现在的位置在第 `layer` 层重新登记。
+    pub fn set_object_tiles(&self, i: usize, clear: bool, layer: usize) {
+        let pos = self
+            .object_entity_at(i)
+            .map(|e| e.transform().borrow().position());
+        if let Some(b) = self.object_blocking.borrow_mut().as_mut() {
+            b.clear(i);
+            if !clear {
+                if let Some(p) = pos {
+                    b.register_at(i, layer, p);
+                }
+            }
+        }
+    }
+
+    /// 第 `i` 个物件模型包围盒的 y 边长（`FUN_00429db0` 的 +0xa4）。
+    pub fn object_model_height(&self, i: usize) -> f32 {
+        self.object_blocking
+            .borrow()
+            .as_ref()
+            .map_or(0., |b| b.model_height(i))
+    }
+
+    /// 第 `layer` 层 (`x`, `z`) 格的中心（y 取格子自己的高度，越界是 0）和连物件的地面高度。
+    pub fn tile_point(&self, layer: usize, x: i32, z: i32) -> (Vec3, f32) {
+        use super::field_monster::Layers as _;
+        let min = self.nav_min_coord(layer);
+        let (w, h) = self.nav.size(layer);
+        let inside = x >= 0 && z >= 0 && x < w as i32 && z < h as i32;
+        let y = if inside {
+            SceneLayers { scene: self }.height(layer, x, z)
+        } else {
+            0.
+        };
+        let c = Vec3::new(
+            (x as f32 + 0.5) * NAV_BLOCK_SIZE + min.x,
+            y,
+            (z as f32 + 0.5) * NAV_BLOCK_SIZE + min.z,
+        );
+        (c, self.floor_height(layer, &c))
+    }
+
+    /// 主角脚下那格登记的物件（在场的）和它的类型。
+    fn tile_object(&self, layer: usize, x: i32, z: i32) -> Option<(usize, u8)> {
+        let b = self.object_blocking.borrow();
+        let b = b.as_ref()?;
+        let i = b.owner(layer, x, z)?;
+        b.active(i).then(|| (i, b.kind(i).unwrap_or(0)))
+    }
+
+    /// `FUN_0041ee60`：主角脚下那格是跳跃区（0x2c）或神树传送点（0x26），能跳。[推断] `FUN_00420a10` 查的就是物件格子表。
+    pub fn jump_zone(&self, layer: usize, pos: &Vec3) -> bool {
+        use super::nav_path::FieldNav as _;
+        let (x, z) = FieldNavView { scene: self, layer }.tile_of(pos);
+        matches!(self.tile_object(layer, x, z), Some((_, 0x2c | 0x26)))
+    }
+
+    /// `FUN_00414a30` 定落点：离 `from` 超过 168 就拉近，高度取连物件的地面高度；从主角那格到落点那格的格子直线
+    /// （`FUN_004218b0`）不通就落在直线上最后一个能走的格子中心。直线上每格要在界内，且是跳跃区、能走（记录 +4
+    /// 字节 > 1）或地面类型 1（缺口）（`FUN_004214b0`）；能走按 `FUN_00421020`。
+    pub fn jump_target(&self, layer: usize, from: &Vec3, aim: &Vec3) -> Vec3 {
+        use super::nav_path::FieldNav as _;
+        use super::player_jump::{clamp_aim, line};
+        let mut t = clamp_aim(from, aim);
+        t.y = self.floor_height(layer, &t);
+        let nav = FieldNavView { scene: self, layer };
+        let (w, h) = self.nav.size(layer);
+        let passable = |x: i32, z: i32| {
+            if x < 0 || z < 0 || x >= w as i32 || z >= h as i32 {
+                return false;
+            }
+            let owner_kind = self
+                .object_blocking
+                .borrow()
+                .as_ref()
+                .and_then(|b| b.owner(layer, x, z).and_then(|i| b.kind(i)));
+            if owner_kind == Some(0x2c) {
+                return true;
+            }
+            let raw = self
+                .nav
+                .get(layer, x, z)
+                .map_or(0, |p| p.distance_to_border);
+            (raw & 0xff) > 1 || (raw >> 8) & 0xff == 1
+        };
+        let walkable = |x: i32, z: i32| self.tile_walkable(layer, x, z);
+        let (ok, (lx, lz)) = line(nav.tile_of(from), nav.tile_of(&t), passable, walkable);
+        if !ok {
+            let (c, floor) = self.tile_point(layer, lx, lz);
+            t = Vec3::new(c.x, floor, c.z);
+        }
+        t
+    }
+
+    /// 跳下来落地（`FUN_00420b40(主角, dt, 1)`）：脚下那格是在场的神树传送点就发事件 3（带「上一帧也在它上面」），
+    /// 不改记下的物件。
+    pub fn player_landed<W: super::object_action::World>(
+        &self,
+        layer: usize,
+        pos: &Vec3,
+        dt: f32,
+        w: &mut W,
+    ) {
+        use super::nav_path::FieldNav as _;
+        let (x, z) = FieldNavView { scene: self, layer }.tile_of(pos);
+        if let Some((i, 0x26)) = self.tile_object(layer, x, z) {
+            let same = *self.player_object.borrow() == Some(i);
+            self.object_actions.borrow_mut().event(i, 3, same, dt, w);
+        }
+    }
+
+    /// 物件 `object_id` 的状态（+0x50）。
+    pub fn object_state(&self, object_id: i32) -> Option<u8> {
+        let a = self.object_actions.borrow();
+        a.index_of(object_id).and_then(|i| a.state(i))
+    }
+
+    /// 有物件的动作队列没做完。
+    pub fn object_actions_busy(&self) -> bool {
+        self.object_actions.borrow().busy()
+    }
+
+    /// 脚本叫物件（124 → `FUN_00424c20(player, 2, 0, 0.001)`）：先记下，冒险循环里带着主角处理。
+    pub fn post_object_event(&self, object_id: i32, ev: u8) {
+        self.object_events.borrow_mut().push((object_id, ev));
+    }
+
+    /// 每帧推物件的动作队列和状态（`FUN_00426eb0` 里 `FUN_0042f460` 和状态机那部分），先把脚本记下的事件发出去。
+    pub fn step_object_actions<W: super::object_action::World>(&self, dt: f32, w: &mut W) {
+        let events: Vec<_> = self.object_events.borrow_mut().drain(..).collect();
+        let mut a = self.object_actions.borrow_mut();
+        for (id, ev) in events {
+            if let Some(i) = a.index_of(id) {
+                // 124 调的是 `FUN_00424c20(主角, 2, 0, 0.001)`。
+                a.event(i, ev, false, 0.001, w);
+            }
+        }
+        a.step(dt, w);
+    }
+
+    /// `FUN_00420b40`（事件 0）：主角脚下那格登记了在场的物件就叫它（带「上一帧也站在它上面」）；换了物件时
+    /// 旧的那个走 `FUN_0042af80`。
+    pub fn player_on_object<W: super::object_action::World>(
+        &self,
+        layer: usize,
+        pos: &Vec3,
+        dt: f32,
+        w: &mut W,
+    ) {
+        use super::nav_path::FieldNav as _;
+        let (x, z) = FieldNavView { scene: self, layer }.tile_of(pos);
+        let here = self
+            .object_blocking
+            .borrow()
+            .as_ref()
+            .and_then(|b| b.owner(layer, x, z));
+        let last = *self.player_object.borrow();
+        let mut a = self.object_actions.borrow_mut();
+        if let Some(i) = here {
+            if self.object_active_at(i) {
+                a.event(i, 0, here == last, dt, w);
+            }
+        }
+        if let (Some(l), true) = (last, last != here) {
+            a.leave(l);
+        }
+        *self.player_object.borrow_mut() = here;
     }
 
     /// 建场景物件挡路的格子表（`FUN_0041fa90` → `FUN_00420940`），见 [`super::object_block`]。

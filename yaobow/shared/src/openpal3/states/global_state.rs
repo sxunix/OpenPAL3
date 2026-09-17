@@ -54,6 +54,8 @@ pub struct GlobalState {
     camera: Pal3Camera,
     /// `DAT_00d92784`：鉴定小游戏（104）的结果，108 `GetAppr` 读它。
     appraise_result: i32,
+    /// `DAT_0058b230`：冻结计数，初值 1，小于 1 时主角不能动、野怪停住（场景物件的动作 8，`FUN_0041e720`）。
+    object_freeze: i32,
 }
 
 impl GlobalState {
@@ -107,7 +109,22 @@ impl GlobalState {
             effect_position: Vec3::new(0., 0., 0.),
             camera: Pal3Camera::default(),
             appraise_result: 0,
+            object_freeze: 1,
         }
+    }
+
+    pub fn object_freeze(&self) -> i32 {
+        self.object_freeze
+    }
+
+    /// 场景物件动作 8（`FUN_0041e720`）：`release` 加一，否则减一。
+    pub fn add_object_freeze(&mut self, release: bool) {
+        self.object_freeze += if release { 1 } else { -1 };
+    }
+
+    /// 冻结计数小于 1。
+    pub fn frozen(&self) -> bool {
+        self.object_freeze < 1
     }
 
     pub fn appraise_result(&self) -> i32 {

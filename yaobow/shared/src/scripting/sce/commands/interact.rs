@@ -16,6 +16,7 @@
 //! | 22 | 把物件抬到 `+0xf8` 给的高度，再按一次放回 |
 //! | 23 | 翻转开关标志 `+0xaf`；动画型物件重播一遍，时间缩放 2.0 |
 //! | 28 | 只翻转开关标志（`+0xf8 == 1` 时） |
+//! | 19（0x13，吊桥） | 放下来：交给场景物件的动作队列（[`crate::openpal3::scene::object_action`]） |
 //! | 其它 | 对 `param_2 == 2` 不响应 |
 //!
 //! Every acting arm also decrements the object's remaining-uses counter
@@ -51,7 +52,7 @@ pub const PLAIN_ANIM_SPEED: f32 = 1.0;
 
 /// Node types whose arm acts when the caller passes 2, i.e. the ones
 /// 124 can do anything with at all.
-pub const INTERACTIVE_TYPES: [u16; 5] = [1, 2, 22, 23, 28];
+pub const INTERACTIVE_TYPES: [u16; 6] = [1, 2, 19, 22, 23, 28];
 
 fn cvd_components(entity: &ComRc<IEntity>, out: &mut Vec<ComRc<ICvdModel>>) {
     if let Some(c) = entity
@@ -132,6 +133,8 @@ impl SceCommand for SceCommandInteractWithObject {
                 let _ = self.toggle_switch(&scene, state);
             }
             22 => self.lift(&scene, state),
+            // 吊桥（`FUN_00424c20` case 0x13）排的动作要带着主角做，交给冒险循环。
+            19 => scene.post_object_event(self.object_id, 2),
             other => log::debug!(
                 "Trigger: 物件 {} 的 node type {other} 对这种交互不响应",
                 self.object_id
@@ -195,7 +198,7 @@ mod tests {
     fn only_five_node_types_answer_this_kind_of_interaction() {
         // Everything else in `FUN_00424c20` returns early for the 2 this
         // opcode passes; the list is what the switch actually acts on.
-        assert_eq!(INTERACTIVE_TYPES, [1, 2, 22, 23, 28]);
+        assert_eq!(INTERACTIVE_TYPES, [1, 2, 19, 22, 23, 28]);
         assert_eq!(SWITCH_ANIM_SPEED, 2.0);
         assert_eq!(PLAIN_ANIM_SPEED, 1.0);
     }

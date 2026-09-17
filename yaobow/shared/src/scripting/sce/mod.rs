@@ -97,6 +97,11 @@ pub struct SceState {
     note: Option<(String, f32)>,
     /// 提示框的九宫格外框 `ui\flex\note0..8.tga`，第一次显示时读。
     note_frame: Vec<Option<std::rc::Rc<radiance::rendering::Sprite>>>,
+    /// 主角头上「跳」的图标：左上角在屏幕上的归一化坐标（x、y ∈ −1..1，y 朝上）；`None` 收起。
+    jump_icon: Option<[f32; 2]>,
+    /// 图标的帧（`ui\scene\tiao%d.tga`，第一次显示时按编号一直读到没有），和已经显示了多久。
+    jump_icon_frames: Option<Vec<std::rc::Rc<radiance::rendering::Sprite>>>,
+    jump_icon_clock: f32,
     /// What the dialog box is showing, so the agent snapshot can report
     /// it. The box itself lives in a p7 renderer that cannot be read
     /// back, and an automation driver has no other way to tell "waiting
@@ -176,6 +181,9 @@ impl SceState {
             status_renderer,
             note: None,
             note_frame: Vec::new(),
+            jump_icon: None,
+            jump_icon_frames: None,
+            jump_icon_clock: 0.,
             dialog: None,
             snow: false,
             water_magic: false,
@@ -421,6 +429,47 @@ impl SceState {
 
     pub fn show_note(&mut self, text: String) {
         self.note = Some((text, NOTE_SECONDS));
+    }
+
+    /// 设主角头上「跳」的图标（`FUN_0041d9a0` → `FUN_00445e70` 开关、`FUN_00445d20` 挪位置）。
+    pub fn set_jump_icon(&mut self, ndc: Option<[f32; 2]>) {
+        self.jump_icon = ndc;
+    }
+
+    /// 画「跳」的图标（控件在 `FUN_00408be0` 建：40×32，`ui\scene\tiao%d.tga` 逐帧，每秒 4 帧循环——`FUN_0043a3e0`
+    /// 攒够 1/4 秒换下一帧）。左上角是归一化坐标换成像素：x = (ndc.x + 1)·W/2，y = (1 − ndc.y)·H/2（0x41dceb 起）。
+    pub fn render_jump_icon(&mut self, ui: &imgui::Ui, delta_sec: f32) {
+        const FPS: f32 = 4.;
+        let Some([nx, ny]) = self.jump_icon else {
+            self.jump_icon_clock = 0.;
+            return;
+        };
+        if self.jump_icon_frames.is_none() {
+            let mut frames = vec![];
+            while let Some(s) = self.asset_mgr.load_sprite(format!(
+                "/basedata/basedata/ui/scene/tiao{}.tga",
+                frames.len()
+            )) {
+                frames.push(s);
+            }
+            self.jump_icon_frames = Some(frames);
+        }
+        let Some(frames) = self.jump_icon_frames.as_ref().filter(|f| !f.is_empty()) else {
+            return;
+        };
+        self.jump_icon_clock += delta_sec;
+        let tex = frames[(self.jump_icon_clock * FPS) as usize % frames.len()].clone();
+        let [sw, sh] = ui.io().display_size;
+        let (x, y) = ((nx + 1.) * sw * 0.5, (1. - ny) * sh * 0.5);
+        crate::scripting::sce::commands::overlay(ui, "JumpIcon", |ui, _at, scale| {
+            ui.get_window_draw_list()
+                .add_image(
+                    tex.imgui_texture_id(),
+                    [x, y],
+                    [x + 40. * scale, y + 32. * scale],
+                )
+                .build();
+        });
     }
 
     /// 画提示框、到点收起（`FUN_00450bc0` 排版，`FUN_00445500` 画）。

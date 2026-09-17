@@ -74,6 +74,9 @@ impl AdventureDirector {
                 layer_switch_triggered: false,
                 agent_bridge: None,
                 player_slide_dir: None,
+                object_walk: None,
+                last_nav_trigger: None,
+                player_jump: None,
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
@@ -190,6 +193,9 @@ impl AdventureDirector {
                 layer_switch_triggered: false,
                 agent_bridge: None,
                 player_slide_dir: None,
+                object_walk: None,
+                last_nav_trigger: None,
+                player_jump: None,
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
@@ -626,6 +632,13 @@ struct AdventureDirectorProps {
     agent_bridge: Option<Rc<AgentBridge>>,
     /// 主角上一次贴墙滑的方向（角色 `+0x534`，`FUN_0041bad0` 初始化成朝向）。
     player_slide_dir: Option<Vec3>,
+    /// 场景物件的动作 2 正牵着主角走（`FUN_00412b60` 设的移动方式 4）。
+    object_walk: Option<ObjectWalk>,
+    /// 上一帧主角站着的导航触发区的过程号。原版类型 0 触发点（`FUN_00424c20` case 0）只在「上一帧不在同一个物件上」
+    /// 时跑过程，站着不动不会每帧重跑。
+    last_nav_trigger: Option<u32>,
+    /// 主角正在跳（`FUN_00414a30` → 行为 4、动作 0）；第二项是跳的动作放出来没有。
+    player_jump: Option<(crate::openpal3::scene::player_jump::Jump, bool)>,
     /// 140 下雪. The simulation always exists; the entity is built the
     /// first time a script turns the weather on, and hidden rather than
     /// removed when it turns it off.
@@ -1949,7 +1962,8 @@ impl AdventureDirectorProps {
                 v = off;
                 found = true;
             } else {
-                v = p;
+                // 角色 +8 是离地相对高度（站地上是 0），这组值的 y 也就是 0。
+                v = Vec3::new(p.x, 0., p.z);
             }
         }
         if !found {
@@ -1971,6 +1985,213 @@ impl AdventureDirectorProps {
         }
         to.y = scene.get_height(layer, scene.scene_coord_to_nav_coord(layer, &to));
         Some(to)
+    }
+
+    /// 场景物件的动作队列和状态（`FUN_00426eb0` 里 `FUN_0042f460` 和状态机那部分）。
+    fn step_object_actions(&mut self, dt: f32) {
+        let Some(scene_rc) = self.scene_manager.scn_scene() else {
+            return;
+        };
+        let player = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1);
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let mut w = ObjWorld {
+            scene,
+            player,
+            state: self.sce_vm.state_mut(),
+            walk: &mut self.object_walk,
+            procs: vec![],
+        };
+        scene.step_object_actions(dt, &mut w);
+        let procs = std::mem::take(&mut w.procs);
+        self.run_object_procs(procs);
+    }
+
+    /// 物件动作 4 要跑的过程（`FUN_00432170(id, 0)`）：编号 ≥ 100 在当前场景的 `.sce` 里。
+    fn run_object_procs(&mut self, procs: Vec<i32>) {
+        for id in procs {
+            if id >= 100 {
+                log::debug!("场景物件：跑过程 {id}");
+                self.sce_vm.call_proc(id as u32);
+            } else {
+                // [未做] 编号 < 100 查的是另一张表（`DAT_00d8c2e8`），用到的物件都没有。
+                log::warn!("场景物件：过程 {id} 在另一张表里，没接");
+            }
+        }
+    }
+
+    /// 起跳（`FUN_0041d9a0` → `FUN_00414a30`）：迷宫里（场景类型 2，`DAT_00d8bbec == 2`）、主角站在跳跃区上
+    /// （`FUN_0041ee60`）按跳。[移植] 原版右键点地面给落点，这里用 J / 手柄 Y（北）键，朝摇杆方向（没推就朝面向）
+    /// 跳最远的 168，落点由 `ScnScene::jump_target` 按原版规则拉回能落的格子。
+    fn try_player_jump(&mut self) {
+        use crate::openpal3::scene::player_jump::{ANIM, Jump, MAX_DIST};
+        let pressed = {
+            let input = self.input_engine.borrow();
+            input.get_key_state(Key::J).pressed()
+                || input.get_key_state(Key::GamePadNorth).pressed()
+        };
+        if !pressed {
+            return;
+        }
+        let Some(scene_rc) = self.scene_manager.scn_scene() else {
+            return;
+        };
+        let Some(player) = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)
+        else {
+            return;
+        };
+        let Some(rc) = RoleController::get_role_controller(player.clone()) else {
+            return;
+        };
+        let layer = rc.inner::<RoleController>().nav_layer();
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let pos = player.transform().borrow().position();
+        if scene.scene_type() != 2 || !scene.jump_zone(layer, &pos) {
+            return;
+        }
+        let (stick, _) = get_moving_direction_and_throw(
+            self.input_engine.clone(),
+            self.scene_manager.scene().unwrap(),
+        );
+        let dir = if stick.norm() > 0.5 {
+            stick
+        } else {
+            crate::openpal3::scene::ScnScene::facing_of(&player)
+        };
+        let n = (dir.x * dir.x + dir.z * dir.z).sqrt();
+        if n < 1e-4 {
+            return;
+        }
+        let aim = Vec3::new(
+            pos.x + dir.x / n * MAX_DIST,
+            0.,
+            pos.z + dir.z / n * MAX_DIST,
+        );
+        let target = scene.jump_target(layer, &pos, &aim);
+        log::debug!(
+            "主角起跳：({:.0}, {:.0}, {:.0}) → ({:.0}, {:.0}, {:.0})",
+            pos.x,
+            pos.y,
+            pos.z,
+            target.x,
+            target.y,
+            target.z
+        );
+        player
+            .transform()
+            .borrow_mut()
+            .look_at(&Vec3::new(target.x, pos.y, target.z));
+        let anim = rc
+            .inner::<RoleController>()
+            .play_anim(ANIM, crate::openpal3::scene::RoleAnimationRepeatMode::Hold);
+        self.player_jump = Some((Jump::new(pos, target), anim));
+    }
+
+    /// 「跳」的图标该不该出、左上角在哪（`FUN_0041d9a0` 0x41dc6d 起）：迷宫里站在跳跃区上时，主角头顶
+    /// （`FUN_00419a80`：位置 + 模型高，[推断] 移植用角色模型高）再高 10 投到屏幕（归一化坐标，y 朝上）。
+    fn jump_icon_ndc(&self) -> Option<[f32; 2]> {
+        let scene_rc = self.scene_manager.scn_scene()?;
+        let player = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)?;
+        let rc = RoleController::get_role_controller(player.clone())?;
+        let rc = rc.inner::<RoleController>();
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let pos = player.transform().borrow().position();
+        if scene.scene_type() != 2 || !scene.jump_zone(rc.nav_layer(), &pos) {
+            return None;
+        }
+        let head = [pos.x, pos.y + rc.model_height() + 10., pos.z, 1.];
+        let world = self.scene_manager.scene()?;
+        let cam = world.camera();
+        let m = radiance::math::Mat44::multiplied(cam.projection_matrix(), &cam.view_matrix());
+        let r = m.floats();
+        let clip = |i: usize| (0..4).map(|k| r[i][k] * head[k]).sum::<f32>();
+        let w = clip(3);
+        (w > 1e-4).then(|| [clip(0) / w, clip(1) / w])
+    }
+
+    /// 跳的每一帧（`FUN_004150c0` case 0）；落地后 `FUN_00420b40(主角, dt, 1)`。
+    fn step_player_jump(&mut self, dt: f32) {
+        let Some((mut jump, anim)) = self.player_jump.take() else {
+            return;
+        };
+        let Some(player) = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)
+        else {
+            return;
+        };
+        let rc = RoleController::get_role_controller(player.clone());
+        let anim_done = !anim
+            || rc.as_ref().is_none_or(|rc| {
+                rc.inner::<RoleController>().state()
+                    != crate::openpal3::scene::RoleState::PlayingAnimation
+            });
+        let (pos, done) = jump.step(dt, anim_done);
+        player.transform().borrow_mut().set_position(&pos);
+        self.sce_vm
+            .global_state_mut()
+            .persistent_state_mut()
+            .set_position(pos);
+        if !done {
+            self.player_jump = Some((jump, anim));
+            return;
+        }
+        log::debug!("主角落地：({:.0}, {:.0}, {:.0})", pos.x, pos.y, pos.z);
+        let layer = rc
+            .as_ref()
+            .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
+        if let Some(rc) = &rc {
+            rc.inner::<RoleController>().idle();
+        }
+        let Some(scene_rc) = self.scene_manager.scn_scene() else {
+            return;
+        };
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let mut w = ObjWorld {
+            scene,
+            player: Some(player),
+            state: self.sce_vm.state_mut(),
+            walk: &mut self.object_walk,
+            procs: vec![],
+        };
+        scene.player_landed(layer, &pos, dt, &mut w);
+        let procs = std::mem::take(&mut w.procs);
+        self.run_object_procs(procs);
+    }
+
+    /// `FUN_00420b40`：主角脚下那格的物件（被动作牵着走、移动方式 4 的时候不查）。
+    fn player_on_object(&mut self, dt: f32) {
+        if self.object_walk.is_some() {
+            return;
+        }
+        let Some(scene_rc) = self.scene_manager.scn_scene() else {
+            return;
+        };
+        let Some(player) = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)
+        else {
+            return;
+        };
+        let layer = RoleController::get_role_controller(player.clone())
+            .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
+        let pos = player.transform().borrow().position();
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let mut w = ObjWorld {
+            scene,
+            player: Some(player),
+            state: self.sce_vm.state_mut(),
+            walk: &mut self.object_walk,
+            procs: vec![],
+        };
+        scene.player_on_object(layer, &pos, dt, &mut w);
+        let procs = std::mem::take(&mut w.procs);
+        self.run_object_procs(procs);
     }
 
     fn move_role(
@@ -2008,7 +2229,8 @@ impl AdventureDirectorProps {
             let scn = scene_manager.scn_scene().unwrap();
             let scene = scn.inner::<crate::openpal3::scene::ScnScene>();
             let tnc = scene.scene_coord_to_nav_coord(nav_layer, &target_position);
-            let h = scene.get_height(nav_layer, tnc);
+            // 地面高度照 `FUN_00412230` → `FUN_00421230`：格子上有吊桥、乌龟这类物件时站在物件上。
+            let h = scene.floor_height(nav_layer, &target_position);
             // 能不能走照原版 `FUN_00421020`：格子记录 +4 字节 > 1，再按格子上的场景物件改判。
             let d = scene.walkable_at(nav_layer, &target_position);
             (tnc, h, d)
@@ -2050,7 +2272,7 @@ impl AdventureDirectorProps {
                 .set_position(dest);
 
             position = dest
-        } else {
+        } else if self.object_walk.is_none() && self.player_jump.is_none() {
             role_controller.inner::<RoleController>().idle();
         }
 
@@ -2219,6 +2441,8 @@ impl AdventureDirectorProps {
             scn.step_object_moves(delta_sec);
             scn.step_scene_objects(delta_sec);
         }
+        // 场景物件的动作队列和状态（`FUN_00426eb0`）同样每帧推，过场里也推。
+        self.step_object_actions(delta_sec);
 
         // Weather is drawn over the whole frame in the original, after
         // the scene graph ends, so it keeps running through cutscenes.
@@ -2227,6 +2451,8 @@ impl AdventureDirectorProps {
         self.step_flexeff(delta_sec);
 
         if !adv_enabled {
+            // [移植] 过场里把「跳」的图标收起（原版这时不更新它）。
+            self.sce_vm.state_mut().set_jump_icon(None);
             return None;
         }
         if freeze {
@@ -2240,16 +2466,38 @@ impl AdventureDirectorProps {
         self.step_cave_wolf(delta_sec);
         self.test_save();
 
-        let (moving_direction, throw) = get_moving_direction_and_throw(
-            self.input_engine.clone(),
-            self.scene_manager.scene().unwrap(),
-        );
+        // 冻结计数小于 1（场景物件的动作 8）：主角不听输入（`FUN_0041d9a0`）、野怪停住、不撞怪、不查脚下物件。
+        let frozen = self.sce_vm.global_state().frozen();
+        // 跳的时候主角是行为 4：不听输入、不查脚下物件和触发区（`FUN_0041d9a0` / `FUN_00422e40`）。
+        if self.player_jump.is_some() {
+            self.step_player_jump(delta_sec);
+        } else if !frozen {
+            self.try_player_jump();
+        }
+        let frozen = frozen || self.player_jump.is_some();
+        // 头上「跳」的图标跟着 `FUN_0041d9a0` 每帧更新；冻着、跳着的时候那个函数不跑，图标保持原样。
+        if !frozen {
+            let icon = self.jump_icon_ndc();
+            self.sce_vm.state_mut().set_jump_icon(icon);
+        }
+        let (moving_direction, throw) = if frozen {
+            (Vec3::new(0., 0., 0.), 0.)
+        } else {
+            get_moving_direction_and_throw(
+                self.input_engine.clone(),
+                self.scene_manager.scene().unwrap(),
+            )
+        };
         self.move_role(
             self.scene_manager.clone(),
             delta_sec,
             &moving_direction,
             throw,
         );
+        // 主角脚下的场景物件（`FUN_00422e40` → `FUN_00420b40`）。
+        if !frozen {
+            self.player_on_object(delta_sec);
+        }
 
         // Advance ambient NPC patrols (non-scripted townsfolk walking their
         // authored loop). Scripted roles are untouched.
@@ -2276,13 +2524,15 @@ impl AdventureDirectorProps {
                 if let Some(scene_rc) = self.scene_manager.scn_scene() {
                     scene_rc
                         .inner::<crate::openpal3::scene::ScnScene>()
-                        .step_field_monsters(delta_sec, &player, layer, &db, &monster, &role);
+                        .step_field_monsters(
+                            delta_sec, &player, layer, &db, &monster, &role, frozen,
+                        );
                 }
             }
         }
         // 野外怪物撞上主角就开战（`FUN_00417420` 末尾 → `FUN_00407560`）。战斗命令一初始化就把舞台
         // 压到场景栈顶，这一帧后面按冒险场景取主角的代码就不能再跑了。
-        if self.check_field_encounter() {
+        if !frozen && self.check_field_encounter() {
             return None;
         }
 
@@ -2306,7 +2556,10 @@ impl AdventureDirectorProps {
             let s = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
             s.test_nav_trigger(nav_layer, &position)
         };
-        if let Some(proc_id) = proc_id_opt {
+        let proc_id_opt = proc_id_opt.filter(|_| !frozen);
+        let entered = proc_id_opt.filter(|id| self.last_nav_trigger != Some(*id));
+        self.last_nav_trigger = proc_id_opt;
+        if let Some(proc_id) = entered {
             debug!("New proc triggerd by nav: {}", proc_id);
             self.sce_vm.call_proc(proc_id);
         }
@@ -2364,9 +2617,10 @@ impl AdventureDirectorProps {
         let input = self.input_engine.borrow_mut();
         // Space matches the original PC binding (空格 = 对话/调查/确定);
         // F is the upstream OpenPAL3 binding, GamePadEast the pad one.
-        if input.get_key_state(Key::F).pressed()
-            || input.get_key_state(Key::Space).pressed()
-            || input.get_key_state(Key::GamePadEast).pressed()
+        if !frozen
+            && (input.get_key_state(Key::F).pressed()
+                || input.get_key_state(Key::Space).pressed()
+                || input.get_key_state(Key::GamePadEast).pressed())
         {
             let trigger_proc_id = {
                 let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
@@ -2421,5 +2675,287 @@ impl AdventureDirectorProps {
         }
 
         None
+    }
+}
+
+/// 场景物件的动作 2 牵着主角走（`FUN_00412b60` 设的移动方式 4：起点 +0x554、终点 +0x540、按走的速度）。
+#[derive(Debug, Clone, Copy)]
+struct ObjectWalk {
+    start: Vec3,
+    target: Vec3,
+    speed: f32,
+}
+
+/// 场景物件的动作要碰的主角、模型、音效、冻结计数。
+struct ObjWorld<'a> {
+    scene: &'a crate::openpal3::scene::ScnScene,
+    player: Option<ComRc<radiance::comdef::IEntity>>,
+    state: &'a mut crate::scripting::sce::SceState,
+    walk: &'a mut Option<ObjectWalk>,
+    /// 动作 4 要跑的过程，推完一帧再交给 SCE 虚拟机。
+    procs: Vec<i32>,
+}
+
+impl ObjWorld<'_> {
+    fn player_layer(&self) -> usize {
+        self.player
+            .as_ref()
+            .and_then(|p| RoleController::get_role_controller(p.clone()))
+            .map_or(0, |rc| rc.inner::<RoleController>().nav_layer())
+    }
+
+    fn set_player(&mut self, p: &Vec3) {
+        if let Some(e) = &self.player {
+            e.transform().borrow_mut().set_position(p);
+        }
+        self.state
+            .global_state_mut()
+            .persistent_state_mut()
+            .set_position(*p);
+    }
+
+    fn idle(&self) {
+        if let Some(rc) = self
+            .player
+            .as_ref()
+            .and_then(|p| RoleController::get_role_controller(p.clone()))
+        {
+            rc.inner::<RoleController>().idle();
+        }
+    }
+
+    fn cvds(&self, i: usize) -> Vec<ComRc<crate::openpal3::comdef::ICvdModel>> {
+        let mut v = vec![];
+        if let Some(e) = self.scene.object_entity_at(i) {
+            crate::openpal3::scene::cvd_components(&e, &mut v);
+        }
+        v
+    }
+}
+
+impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
+    fn active(&self, i: usize) -> bool {
+        self.scene.object_active_at(i)
+    }
+
+    fn object_pos(&self, i: usize) -> Vec3 {
+        self.scene
+            .object_entity_at(i)
+            .map_or(Vec3::new(0., 0., 0.), |e| e.transform().borrow().position())
+    }
+
+    fn set_object_pos(&mut self, i: usize, p: &Vec3) {
+        if let Some(e) = self.scene.object_entity_at(i) {
+            e.transform().borrow_mut().set_position(p);
+        }
+    }
+
+    fn player_pos(&self) -> Vec3 {
+        self.player
+            .as_ref()
+            .map_or(Vec3::new(0., 0., 0.), |e| e.transform().borrow().position())
+    }
+
+    /// `FUN_00416490`：放到这一点，再按脚下重算高度（`FUN_00412230`）。
+    fn carry_player(&mut self, p: &Vec3) {
+        let mut q = *p;
+        q.y = self.scene.floor_height(self.player_layer(), &q);
+        self.set_player(&q);
+    }
+
+    fn fix_player_height(&mut self) {
+        let mut p = self.player_pos();
+        p.y = self.scene.floor_height(self.player_layer(), &p);
+        self.set_player(&p);
+    }
+
+    fn play_anim(&mut self, i: usize, speed: f32) {
+        log::debug!("场景物件：#{i} 播动画");
+        for c in self.cvds(i) {
+            c.inner::<crate::openpal3::scene::CvdModelComponent>()
+                .play(crate::openpal3::scene::CvdPlayMode::Once, speed);
+        }
+    }
+
+    fn anim_done(&self, i: usize) -> bool {
+        self.cvds(i).iter().all(|c| {
+            c.inner::<crate::openpal3::scene::CvdModelComponent>()
+                .finished()
+        })
+    }
+
+    /// `FUN_0041e720`：冻住时主角停下。
+    fn freeze(&mut self, release: bool) {
+        self.state.global_state_mut().add_object_freeze(release);
+        log::debug!(
+            "场景物件：冻结计数 {}",
+            self.state.global_state().object_freeze()
+        );
+        if self.state.global_state().frozen() && self.walk.is_none() {
+            self.idle();
+        }
+    }
+
+    fn set_passable(&mut self, i: usize, passable: bool) {
+        log::debug!("场景物件：#{i} 可通过 {passable}");
+        self.scene.set_object_passable(i, passable);
+    }
+
+    /// `FUN_00416550`：朝 (x, z) 方向转，离得不到 0.005 不转。
+    fn face_player(&mut self, p: &Vec3) {
+        let Some(e) = &self.player else {
+            return;
+        };
+        let pos = e.transform().borrow().position();
+        let (dx, dz) = (p.x - pos.x, p.z - pos.z);
+        if (dx * dx + dz * dz).sqrt() >= 0.005 {
+            e.transform()
+                .borrow_mut()
+                .look_at(&Vec3::new(p.x, pos.y, p.z));
+        }
+    }
+
+    /// `FUN_00412b60(to, 1)`：离目标（x、z）不到 12 就不走（移动方式 0）。
+    fn walk_begin(&mut self, to: &Vec3) {
+        let pos = self.player_pos();
+        let (dx, dz) = (to.x - pos.x, to.z - pos.z);
+        if (dx * dx + dz * dz).sqrt() < 12. {
+            *self.walk = None;
+            return;
+        }
+        let speed = self
+            .state
+            .global_state()
+            .role_constants()
+            .speed(MoveMode::Walk, true, 0.);
+        log::debug!(
+            "场景物件：主角从 ({:.0}, {:.0}) 走到 ({:.0}, {:.0})，速度 {speed}",
+            pos.x,
+            pos.z,
+            to.x,
+            to.z
+        );
+        *self.walk = Some(ObjectWalk {
+            start: pos,
+            target: *to,
+            speed,
+        });
+        if let Some(rc) = self
+            .player
+            .as_ref()
+            .and_then(|p| RoleController::get_role_controller(p.clone()))
+        {
+            rc.inner::<RoleController>().walk();
+        }
+    }
+
+    /// `FUN_0042f460` case 2：先 `FUN_00413cd0` case 4（在起点→终点上的投影到了终点前 0.1 以内就停、放到终点，
+    /// `FUN_00414350` + `FUN_00412230`），没到就按 归一化(终点 − 位置) × 走的速度 挪一步；`check` 时落点不能走
+    /// 就停在原地，`fix` 时按脚下重算高度、否则保持原高度。
+    fn walk_step(&mut self, dt: f32, check: bool, fix: bool) -> bool {
+        let Some(wk) = *self.walk else {
+            return true;
+        };
+        let pos = self.player_pos();
+        let layer = self.player_layer();
+        let (sx, sz) = (wk.target.x - wk.start.x, wk.target.z - wk.start.z);
+        let len = (sx * sx + sz * sz).sqrt();
+        let (rx, rz) = (pos.x - wk.start.x, pos.z - wk.start.z);
+        let arrived = len < 5e-5 || {
+            let proj = (rx * sx + rz * sz) / len;
+            proj >= 0. && proj - len > -0.1
+        };
+        if arrived {
+            let mut p = Vec3::new(wk.target.x, pos.y, wk.target.z);
+            if self.scene.walkable_at(layer, &p) {
+                p.y = self.scene.floor_height(layer, &p);
+                self.set_player(&p);
+            }
+            log::debug!("场景物件：主角走到了 ({:.0}, {:.1}, {:.0})", p.x, p.y, p.z);
+            *self.walk = None;
+            self.idle();
+            return true;
+        }
+        let (dx, dz) = (wk.target.x - pos.x, wk.target.z - pos.z);
+        let n = (dx * dx + dz * dz).sqrt();
+        let (vx, vz) = if n > 0. {
+            (dx / n * wk.speed, dz / n * wk.speed)
+        } else {
+            (0., 0.)
+        };
+        let mut next = Vec3::new(pos.x + vx * dt, pos.y, pos.z + vz * dt);
+        if check && !self.scene.walkable_at(layer, &next) {
+            log::debug!("场景物件：主角走到 ({:.0}, {:.0}) 被挡住", pos.x, pos.z);
+            *self.walk = None;
+            self.idle();
+            return true;
+        }
+        if fix {
+            next.y = self.scene.floor_height(layer, &next);
+        }
+        if let Some(e) = &self.player {
+            e.transform()
+                .borrow_mut()
+                .look_at(&Vec3::new(next.x + vx, next.y, next.z + vz));
+        }
+        self.set_player(&next);
+        false
+    }
+
+    fn sound(&mut self, name: &str) {
+        log::debug!("场景物件：音效 {name}");
+        crate::scripting::sce::commands::play_sfx(self.state, name);
+    }
+
+    fn call_proc(&mut self, id: i32) {
+        self.procs.push(id);
+    }
+
+    fn object_tiles(&mut self, i: usize, clear: bool, layer: usize) {
+        log::debug!(
+            "场景物件：#{i} {}格子（层 {layer}）",
+            if clear { "清掉" } else { "重新登记" }
+        );
+        self.scene.set_object_tiles(i, clear, layer);
+    }
+
+    fn set_player_layer(&mut self, layer: usize) {
+        log::debug!("场景物件：主角换到层 {layer}");
+        if let Some(rc) = self
+            .player
+            .as_ref()
+            .and_then(|p| RoleController::get_role_controller(p.clone()))
+        {
+            rc.inner::<RoleController>().set_nav_layer(layer);
+        }
+    }
+
+    fn object_model_height(&self, i: usize) -> f32 {
+        self.scene.object_model_height(i)
+    }
+
+    fn tile_point(&self, layer: usize, x: i32, z: i32) -> (Vec3, f32) {
+        self.scene.tile_point(layer, x, z)
+    }
+
+    fn party_size(&self) -> usize {
+        self.state.global_state().persistent_state().team().len()
+    }
+
+    /// `FUN_00430570(key)` 取 `lang.txt` 的文字、`FUN_00450bc0` 弹提示框（和脚本 68 同一个框）。
+    fn hint(&mut self, key: &str) {
+        let text = common::store_ext::StoreExt2::read_to_end_from_gbk(
+            self.state.asset_mgr().vfs(),
+            crate::openpal3::combat::result::LANG_PATH,
+        )
+        .ok()
+        .and_then(|t| crate::openpal3::combat::result::lang_value(&t, key));
+        match text {
+            Some(t) => {
+                log::debug!("场景物件：提示「{key}」= {t}");
+                self.state.show_note(t);
+            }
+            None => log::warn!("场景物件：lang.txt 里没有 {key}"),
+        }
     }
 }

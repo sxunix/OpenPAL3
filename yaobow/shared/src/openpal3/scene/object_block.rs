@@ -91,6 +91,10 @@ pub struct ObjectBlocking {
     grids: Vec<LayerGrid>,
     maps: Vec<Vec<u8>>,
     objs: Vec<Obj>,
+    /// 重新登记（物件动作 9）要用：各物件的 `.scn` 字段（位置、层随物件动作改）、模型包围盒、场景名。
+    nodes: Vec<BlockNode>,
+    models: Vec<Model>,
+    scene: (String, String),
 }
 
 impl ObjectBlocking {
@@ -119,6 +123,9 @@ impl ObjectBlocking {
                     active: n.init_active,
                 })
                 .collect(),
+            nodes: nodes.to_vec(),
+            models: models.to_vec(),
+            scene: (scene.0.to_string(), scene.1.to_string()),
         };
         for layer in 0..b.grids.len() {
             for (i, n) in nodes.iter().enumerate() {
@@ -139,6 +146,53 @@ impl ObjectBlocking {
         for o in self.objs.iter_mut().filter(|o| o.object_id == object_id) {
             o.active = active;
         }
+    }
+
+    /// 物件动作 10（`FUN_0042ebe0` case 10）改「可通过」+0xd1。`i` 是物件在 `.scn` 里的序号。
+    pub fn set_passable(&mut self, i: usize, passable: bool) {
+        if let Some(o) = self.objs.get_mut(i) {
+            o.non_blocking = passable;
+        }
+    }
+
+    /// `FUN_0042a010(1)`：清掉物件 `i` 压住的格子（各层）。
+    pub fn clear(&mut self, i: usize) {
+        for map in self.maps.iter_mut() {
+            for v in map.iter_mut().filter(|v| **v as usize == i) {
+                *v = NONE;
+            }
+        }
+    }
+
+    /// `FUN_0042a010(0)`：按物件现在的位置、层重新按模型包围盒登记（物件动作 9，上下传送板换层后用）。
+    pub fn register_at(&mut self, i: usize, layer: usize, position: Vec3) {
+        if i >= self.nodes.len() || layer >= self.grids.len() || i >= NONE as usize {
+            return;
+        }
+        self.nodes[i].layer = layer;
+        self.nodes[i].position = position;
+        let n = self.nodes[i].clone();
+        let model = self.models[i];
+        let scene = self.scene.clone();
+        self.register(i, &n, model, (&scene.0, &scene.1));
+    }
+
+    /// `FUN_00429db0` 给的包围盒 y 边长（模型类型 2/3 的 +0xa4）；没有模型是 0。
+    pub fn model_height(&self, i: usize) -> f32 {
+        match self.models.get(i) {
+            Some(Model::Box(obb)) => obb.ext[1],
+            _ => 0.,
+        }
+    }
+
+    /// 物件 `i` 在不在场（+0xad）。
+    pub fn active(&self, i: usize) -> bool {
+        self.objs.get(i).is_some_and(|o| o.active)
+    }
+
+    /// 物件 `i` 的类型。
+    pub fn kind(&self, i: usize) -> Option<u8> {
+        self.objs.get(i).map(|o| o.kind)
     }
 
     /// `FUN_00421020`：这一格能不能走。`base` 是格子自己的判定（记录 +4 字节 > 1）。格子上有在场的物件时：

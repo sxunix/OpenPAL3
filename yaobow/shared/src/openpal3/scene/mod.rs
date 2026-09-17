@@ -12,15 +12,17 @@ pub mod flexeff_model;
 pub mod flexeff_quad;
 pub mod flexeff_shock;
 mod nav_path;
+pub mod object_action;
 mod object_block;
 mod particles;
+pub mod player_jump;
 mod role_controller;
 mod scene;
 mod shadow;
 mod snow;
 
 pub use cvd_entity::{
-    CvdModelComponent, CvdPlayMode, SCENE_CVD_SPEED, create_entity_from_cvd_model,
+    CvdModelComponent, CvdPlayMode, SCENE_CVD_SPEED, create_entity_from_cvd_model, cvd_components,
     play_cvd_subtree, scene_object_initial_play,
 };
 pub use effect::build_effect;

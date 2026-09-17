@@ -6,8 +6,9 @@
 //! （`+0x588`：0 待命、1 追、2 回、3 定住）→ 受力积进速度（`+0x510 += +0x528 × dt`，y 清零，截到最高速
 //! `+0x508`）→ `FUN_00411e00` 挪位置（一步最多 18）。
 //!
-//! 原版好几处距离把角色的绝对 y 也算了进去（路径点的 y 是 0），场景地面高的时候效果会变：沿 A* 路径走时
-//! 期望速度大半朝下、水平方向慢很多；「走到目标 12 以内」永远不成立。这些都照抄。
+//! 原版角色 +4 / +0xc 是世界 x / z，+8 是离地的相对高度（站地上恒 0），世界高度另存在 +0x98 / +0xa4。所以
+//! 反编译里好几处距离带着 +8（比如「x、z 差平方加 +8 的平方」），在地上都等于只看水平距离；调用方传进来的位置
+//! y 一律是 0。
 
 use radiance::math::Vec3;
 
@@ -31,6 +32,8 @@ pub enum State {
     Idle,
     Chase,
     Return,
+    /// `+0x588 = 3`：冻住了（冻结计数小于 1）。
+    Frozen,
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +81,8 @@ pub struct FieldMonster {
     link: usize,
     /// 看不见目标时隔多少帧重跑一次 A*（`+0x5b8`）。
     repath: u32,
+    /// 冻结计数小于 1（`DAT_0058b230`），调用方每帧写。
+    pub frozen: bool,
 }
 
 /// 离怪物这么近直接发现，不看视野（`FUN_004178a0`）。
@@ -142,6 +147,7 @@ impl FieldMonster {
             target_layer: layer,
             link: 0,
             repath: 0,
+            frozen: false,
         };
         if levels.move_range != 0 {
             m.start_wander(monster, role);
@@ -186,7 +192,7 @@ impl FieldMonster {
     }
 
     /// `FUN_004178a0`：看见主角没有。主角得在同一层、离出生点不超过 `+0x594 × 0.8`（原版这个距离
-    /// 把主角的绝对 y 也算进去了）；离怪不到 120 直接看见，不到 `+0x598` 且在怪正前方（点积 > 0.7）、
+    /// 带着主角的 +8，在地上是 0）；离怪不到 120 直接看见，不到 `+0x598` 且在怪正前方（点积 > 0.7）、
     /// 导航网格上看得见（`FUN_004215b0`）也算。
     pub fn detects<W: Layers>(
         &self,
@@ -216,7 +222,7 @@ impl FieldMonster {
         false
     }
 
-    /// `FUN_00412d90`：A* 找路去 `target`。离目标（带怪的 y）不到 12 就什么都不做；找不到路就停下。
+    /// `FUN_00412d90`：A* 找路去 `target`。离目标（带怪的 +8，在地上是 0）不到 12 就什么都不做；找不到路就停下。
     /// 速度方式一直是 1，不重算速度。
     fn path_to<W: Layers>(&mut self, target: &Vec3, pos: &Vec3, w: &W) -> bool {
         let (dx, dz) = (target.x - pos.x, target.z - pos.z);
@@ -243,7 +249,7 @@ impl FieldMonster {
 
     /// `FUN_00413010`：目标在同一层就 [`Self::path_to`]。不在同一层：在这一层的 8 个层间矩形里挑中心离怪
     /// 最近的（格距平方严格更小才换；x0 == x1 == 0 的是空的），格距平方 < 33 才走——已经站在中心那格就换层、
-    /// 瞬移到另一层同一个矩形的中心（`FUN_00413c00`，然后 `FUN_00412d90` 朝旧层的那个中心找路，y 刚清零，
+    /// 瞬移到另一层同一个矩形的中心（`FUN_00413c00`，然后 `FUN_00412d90` 朝旧层的那个中心找路，+8 刚清零，
     /// 基本当场就到）；否则 A* 走到中心，移动方式 7，记下最终目标和它的层。都不近就什么都不做。
     fn retarget<W: Layers>(
         &mut self,
@@ -392,7 +398,7 @@ impl FieldMonster {
     }
 
     /// `FUN_0041b6c0`：怪在记下的那个层间矩形里吗？在就去另一层的同一个矩形里挑离怪最近的格（先 z 后 x，
-    /// 严格更小才换），那一点在怪正前方（方向连怪的 −y 一起归一化，点积 > 0.3）而且离怪不到 72 就换层、
+    /// 严格更小才换），那一点在怪正前方（方向带着怪的 −(+8)，在地上是 0；点积 > 0.3）而且离怪不到 72 就换层、
     /// 挪过去（`FUN_00416490`）。在矩形里就返回 `true`（不管换没换）。
     fn cross_link<W: Layers>(
         &mut self,
@@ -528,10 +534,13 @@ impl FieldMonster {
         }
         let here = placed.unwrap_or(*pos);
 
+        // 这一帧刚开始追的（跳到 `switchD_00417454_default`），冻着也不停、只是不挪。
+        let mut chased = false;
         match self.state {
             State::Idle => {
                 if self.detects(&here, facing, player, player_layer, w) {
                     self.begin_chase(player, player_layer, &here, w, &mut placed, monster, role);
+                    chased = true;
                 } else {
                     self.pull_back(&here);
                 }
@@ -539,7 +548,7 @@ impl FieldMonster {
             State::Chase => {
                 self.chase_path(player, &here, player_layer, false, w, &mut placed);
                 let here = placed.unwrap_or(*pos);
-                // 离出生点超过 `+0x594` 就回（这个距离带着怪自己的绝对 y）。
+                // 离出生点超过 `+0x594` 就回（这个距离带着怪的 +8，在地上是 0）。
                 let (hx, hz) = (here.x - self.home.0, here.z - self.home.1);
                 if (hx * hx + here.y * here.y + hz * hz).sqrt() > self.leash {
                     self.state = State::Return;
@@ -556,8 +565,33 @@ impl FieldMonster {
                     self.wander = *facing;
                 } else if self.detects(&here, facing, player, player_layer, w) {
                     self.begin_chase(player, player_layer, &here, w, &mut placed, monster, role);
+                    chased = true;
                 }
             }
+            State::Frozen => {
+                // 解冻：回出生点。`FUN_00412d90` 找到路时速度方式从 0 换成 1，重算最高速。
+                if !self.frozen {
+                    self.state = State::Return;
+                    self.target_is_entity = false;
+                    let home = Vec3::new(self.home.0, 0., self.home.1);
+                    self.path_to(&home, &here, w);
+                    if matches!(self.motion, Motion::Path(_)) {
+                        self.set_speed(monster, role);
+                    }
+                }
+            }
+        }
+
+        // 冻结计数小于 1：停下（`FUN_004142e0` + `FUN_004181e0`：速度方式 0，最高速、推力清零）、置状态 3；
+        // 冻着的时候受力不积、不挪。
+        if self.frozen {
+            if !chased && self.state != State::Frozen {
+                self.stop();
+                self.max_speed = 0.;
+                self.max_force = 0.;
+                self.state = State::Frozen;
+            }
+            return (Vec3::new(0., 0., 0.), placed);
         }
 
         // `FUN_00417420` 末尾：受力积进速度，y 清零，截到最高速。
@@ -596,8 +630,7 @@ impl FieldMonster {
     }
 
     /// `FUN_0041ad40`：照现在的速度 1.4 秒后会出活动范围，就加一把往出生点的力（超出多少 × 1.4），
-    /// 总受力截到最大推力。原版拿晃的方向当临时变量，算完它就指着出生点了——连怪的 y 一起归一化，
-    /// 地面高的场景里这把力大半朝下、拉回来得很慢。
+    /// 总受力截到最大推力。原版拿晃的方向当临时变量，算完它就指着出生点了（y 分量是怪的 −(+8)，在地上是 0）。
     fn pull_back(&mut self, pos: &Vec3) {
         let (px, pz) = (
             self.velocity.x * 1.4 + pos.x - self.home.0,

@@ -94,6 +94,7 @@ impl SceVm {
         let ui = self.ui.ui();
         self.state.render_screen_effect(ui);
         self.state.render_note(ui, delta_sec);
+        self.state.render_jump_icon(ui, delta_sec);
         if self.active_commands.len() == 0 {
             loop {
                 match self.state.get_next_cmd() {
