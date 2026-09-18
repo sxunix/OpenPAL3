@@ -2025,7 +2025,7 @@ impl AdventureDirectorProps {
     /// （`FUN_0041ee60`）按跳。[移植] 原版右键点地面给落点，这里用 J / 手柄 Y（北）键，朝摇杆方向（没推就朝面向）
     /// 跳最远的 168，落点由 `ScnScene::jump_target` 按原版规则拉回能落的格子。
     fn try_player_jump(&mut self) {
-        use crate::openpal3::scene::player_jump::{ANIM, Jump, MAX_DIST};
+        use crate::openpal3::scene::player_jump::{ANIM, Jump};
         let pressed = {
             let input = self.input_engine.borrow();
             input.get_key_state(Key::J).pressed()
@@ -2065,12 +2065,8 @@ impl AdventureDirectorProps {
         if n < 1e-4 {
             return;
         }
-        let aim = Vec3::new(
-            pos.x + dir.x / n * MAX_DIST,
-            0.,
-            pos.z + dir.z / n * MAX_DIST,
-        );
-        let target = scene.jump_target(layer, &pos, &aim);
+        let dir = Vec3::new(dir.x / n, 0., dir.z / n);
+        let target = scene.jump_target(layer, &pos, &dir);
         log::debug!(
             "主角起跳：({:.0}, {:.0}, {:.0}) → ({:.0}, {:.0}, {:.0})",
             pos.x,

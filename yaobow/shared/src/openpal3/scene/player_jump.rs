@@ -21,6 +21,29 @@ pub const WINDUP_SECS: f32 = 0.5;
 /// [移植] 落地动画一直没播完时最多等这么久（原版只等动画）。
 pub const LAND_TIMEOUT_SECS: f32 = 2.;
 
+/// [移植] 沿瞄准方向采点的间距（半格）。
+pub const AIM_STEP: f32 = 6.;
+
+/// [移植] 原版右键点地面给落点，手柄上没有这一下。沿瞄准方向采样挑落点：第 `k` 个采样点在
+/// `主角 + 方向 × k × AIM_STEP`。先找第一个站不住的采样点（缺口），再取它之后第一个站得住的——
+/// 也就是「跳到缺口对面」；一路都站得住（没缺口）就取站得住的最远那个；都站不住返回 `None`。
+/// 挑完还要走原版那一套（拉回 168、取地面高度、格子直线）。
+pub fn aim_sample(count: usize, walkable: impl Fn(usize) -> bool) -> Option<usize> {
+    let mut last = None;
+    let mut gap = false;
+    for k in 1..=count {
+        if walkable(k) {
+            if gap {
+                return Some(k);
+            }
+            last = Some(k);
+        } else {
+            gap = true;
+        }
+    }
+    last
+}
+
 /// `FUN_00414a30` 开头：落点离 `from`（x、z）超过 [`MAX_DIST`] 就拉到 [`MAX_DIST`] 那一点；y 置 0，调用方再取地面高度。
 pub fn clamp_aim(from: &Vec3, aim: &Vec3) -> Vec3 {
     let (dx, dz) = (aim.x - from.x, aim.z - from.z);
@@ -190,6 +213,18 @@ mod tests {
         assert_eq!(a.y, 0.);
         let b = clamp_aim(&Vec3::new(0., 0., 0.), &Vec3::new(100., 7., 0.));
         assert_eq!((b.x, b.y, b.z), (100., 0., 0.));
+    }
+
+    #[test]
+    fn aim_picks_the_far_side_of_a_gap() {
+        // 1..=3 站得住、4..=6 是缺口、7 起又站得住：跳到缺口对面第一块地。
+        assert_eq!(aim_sample(28, |k| !(4..=6).contains(&k)), Some(7));
+        // 没有缺口：能跳多远跳多远。
+        assert_eq!(aim_sample(28, |_| true), Some(28));
+        // 缺口一直到头：落在缺口这边最远的地方。
+        assert_eq!(aim_sample(28, |k| k <= 5), Some(5));
+        // 脚底下一步就站不住（悬崖边朝外跳）：没得挑。
+        assert_eq!(aim_sample(28, |_| false), None);
     }
 
     #[test]
