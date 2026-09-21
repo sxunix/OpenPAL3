@@ -1191,23 +1191,7 @@ impl ScnScene {
     /// `FUN_00414a30` 定落点：离 `from` 超过 168 就拉近，高度取连物件的地面高度；从主角那格到落点那格的格子直线
     /// （`FUN_004218b0`）不通就落在直线上最后一个能走的格子中心。直线上每格要在界内，且是跳跃区、能走（记录 +4
     /// 字节 > 1）或地面类型 1（缺口）（`FUN_004214b0`）；能走按 `FUN_00421020`。
-    /// [移植] 挑落点：原版用鼠标点地面，这里沿 `dir`（单位向量，y 不看）每 `AIM_STEP` 采一个点，
-    /// 落在缺口对面第一块站得住的地方（没缺口就尽量远），再交给 [`Self::jump_target_at`] 走原版那一套。
-    pub fn jump_target(&self, layer: usize, from: &Vec3, dir: &Vec3) -> Vec3 {
-        use super::player_jump::{AIM_STEP, MAX_DIST, aim_sample};
-        let count = (MAX_DIST / AIM_STEP) as usize;
-        let point = |k: usize| {
-            Vec3::new(
-                from.x + dir.x * AIM_STEP * k as f32,
-                0.,
-                from.z + dir.z * AIM_STEP * k as f32,
-            )
-        };
-        let k = aim_sample(count, |k| self.walkable_at(layer, &point(k))).unwrap_or(count);
-        self.jump_target_at(layer, from, &point(k))
-    }
-
-    pub fn jump_target_at(&self, layer: usize, from: &Vec3, aim: &Vec3) -> Vec3 {
+    pub fn jump_target(&self, layer: usize, from: &Vec3, aim: &Vec3) -> Vec3 {
         use super::nav_path::FieldNav as _;
         use super::player_jump::{clamp_aim, line};
         let mut t = clamp_aim(from, aim);

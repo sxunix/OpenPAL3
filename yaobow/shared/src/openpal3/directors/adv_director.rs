@@ -77,6 +77,7 @@ impl AdventureDirector {
                 object_walk: None,
                 last_nav_trigger: None,
                 player_jump: None,
+                jump_charge: None,
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
@@ -196,6 +197,7 @@ impl AdventureDirector {
                 object_walk: None,
                 last_nav_trigger: None,
                 player_jump: None,
+                jump_charge: None,
                 snow: crate::openpal3::scene::Snow::new(),
                 snow_entity: None,
                 snow_failed: false,
@@ -639,6 +641,8 @@ struct AdventureDirectorProps {
     last_nav_trigger: Option<u32>,
     /// 主角正在跳（`FUN_00414a30` → 行为 4、动作 0）；第二项是跳的动作放出来没有。
     player_jump: Option<(crate::openpal3::scene::player_jump::Jump, bool)>,
+    /// [移植] 跳键按住了多久（蓄力）。原版是右键点地面直接给落点，手柄上没有这一下。
+    jump_charge: Option<f32>,
     /// 140 下雪. The simulation always exists; the entity is built the
     /// first time a script turns the weather on, and hidden rather than
     /// removed when it turns it off.
@@ -2021,37 +2025,78 @@ impl AdventureDirectorProps {
         }
     }
 
-    /// 起跳（`FUN_0041d9a0` → `FUN_00414a30`）：迷宫里（场景类型 2，`DAT_00d8bbec == 2`）、主角站在跳跃区上
-    /// （`FUN_0041ee60`）按跳。[移植] 原版右键点地面给落点，这里用 J / 手柄 Y（北）键，朝摇杆方向（没推就朝面向）
-    /// 跳最远的 168，落点由 `ScnScene::jump_target` 按原版规则拉回能落的格子。
-    fn try_player_jump(&mut self) {
-        use crate::openpal3::scene::player_jump::{ANIM, Jump};
-        let pressed = {
+    /// 能不能跳（`FUN_0041ee60`）：迷宫里（场景类型 2，原版 `DAT_00d8bbec == 2`）、主角脚下那格是跳跃区
+    /// （0x2c）或神树传送点（0x26）。返回主角和它所在的层。
+    fn jump_spot(&self) -> Option<(ComRc<radiance::comdef::IEntity>, usize)> {
+        let scene_rc = self.scene_manager.scn_scene()?;
+        let player = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)?;
+        let rc = RoleController::get_role_controller(player.clone())?;
+        let layer = rc.inner::<RoleController>().nav_layer();
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let pos = player.transform().borrow().position();
+        (scene.scene_type() == 2 && scene.jump_zone(layer, &pos)).then_some((player, layer))
+    }
+
+    /// 「跳」的图标该不该出、左上角在哪（`FUN_0041d9a0` 0x41dc6d 起）：站在跳跃区上时，主角头顶
+    /// （`FUN_00419a80`：位置 + 模型包围盒高，[推断] 移植用角色模型高）再高 10 投到屏幕（归一化坐标，y 朝上）。
+    fn jump_icon_ndc(&self) -> Option<[f32; 2]> {
+        let (player, _) = self.jump_spot()?;
+        let rc = RoleController::get_role_controller(player.clone())?;
+        let pos = player.transform().borrow().position();
+        let head = [
+            pos.x,
+            pos.y + rc.inner::<RoleController>().model_height() + 10.,
+            pos.z,
+            1.,
+        ];
+        let world = self.scene_manager.scene()?;
+        let cam = world.camera();
+        let m = radiance::math::Mat44::multiplied(cam.projection_matrix(), &cam.view_matrix());
+        let r = m.floats();
+        let clip = |i: usize| (0..4).map(|k| r[i][k] * head[k]).sum::<f32>();
+        let w = clip(3);
+        (w > 1e-4).then(|| [clip(0) / w, clip(1) / w])
+    }
+
+    /// [移植] 蓄力跳：站在跳跃区上按住 J / 手柄 Y（北）蓄力，松手起跳，按多久对应跳多远
+    /// （[`charge_distance`](crate::openpal3::scene::player_jump::charge_distance)：两格到最远 168）。
+    /// 原版是右键点地面直接给落点（`FUN_0041d9a0` → `FUN_00414a30`），手柄上没有这一下。
+    fn update_jump_charge(&mut self, dt: f32) {
+        let held = {
             let input = self.input_engine.borrow();
-            input.get_key_state(Key::J).pressed()
-                || input.get_key_state(Key::GamePadNorth).pressed()
+            input.get_key_state(Key::J).is_down()
+                || input.get_key_state(Key::GamePadNorth).is_down()
         };
-        if !pressed {
+        if !held {
+            if let Some(t) = self.jump_charge.take() {
+                self.launch_jump(t);
+            }
             return;
         }
-        let Some(scene_rc) = self.scene_manager.scn_scene() else {
+        if self.jump_spot().is_none() {
+            self.jump_charge = None;
             return;
-        };
-        let Some(player) = self
-            .scene_manager
-            .get_resolved_role(self.sce_vm.state(), -1)
-        else {
+        }
+        self.jump_charge = Some(self.jump_charge.unwrap_or(0.) + dt);
+    }
+
+    /// 松手起跳：按住的秒数换成距离，方向取摇杆（没推就朝面向），落点还是原版那一套
+    /// （`FUN_00414a30`：拉回 168、取连物件的地面高度、格子直线不通就落在最后一个能走的格子）。
+    fn launch_jump(&mut self, held: f32) {
+        use crate::openpal3::scene::player_jump::{ANIM, Jump, charge_distance};
+        let Some((player, layer)) = self.jump_spot() else {
             return;
         };
         let Some(rc) = RoleController::get_role_controller(player.clone()) else {
             return;
         };
-        let layer = rc.inner::<RoleController>().nav_layer();
+        let Some(scene_rc) = self.scene_manager.scn_scene() else {
+            return;
+        };
         let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
         let pos = player.transform().borrow().position();
-        if scene.scene_type() != 2 || !scene.jump_zone(layer, &pos) {
-            return;
-        }
         let (stick, _) = get_moving_direction_and_throw(
             self.input_engine.clone(),
             self.scene_manager.scene().unwrap(),
@@ -2065,10 +2110,11 @@ impl AdventureDirectorProps {
         if n < 1e-4 {
             return;
         }
-        let dir = Vec3::new(dir.x / n, 0., dir.z / n);
-        let target = scene.jump_target(layer, &pos, &dir);
+        let dist = charge_distance(held);
+        let aim = Vec3::new(pos.x + dir.x / n * dist, 0., pos.z + dir.z / n * dist);
+        let target = scene.jump_target(layer, &pos, &aim);
         log::debug!(
-            "主角起跳：({:.0}, {:.0}, {:.0}) → ({:.0}, {:.0}, {:.0})",
+            "主角起跳：按住 {held:.2} 秒 = {dist:.0}，({:.0}, {:.0}, {:.0}) → ({:.0}, {:.0}, {:.0})",
             pos.x,
             pos.y,
             pos.z,
@@ -2084,30 +2130,6 @@ impl AdventureDirectorProps {
             .inner::<RoleController>()
             .play_anim(ANIM, crate::openpal3::scene::RoleAnimationRepeatMode::Hold);
         self.player_jump = Some((Jump::new(pos, target), anim));
-    }
-
-    /// 「跳」的图标该不该出、左上角在哪（`FUN_0041d9a0` 0x41dc6d 起）：迷宫里站在跳跃区上时，主角头顶
-    /// （`FUN_00419a80`：位置 + 模型高，[推断] 移植用角色模型高）再高 10 投到屏幕（归一化坐标，y 朝上）。
-    fn jump_icon_ndc(&self) -> Option<[f32; 2]> {
-        let scene_rc = self.scene_manager.scn_scene()?;
-        let player = self
-            .scene_manager
-            .get_resolved_role(self.sce_vm.state(), -1)?;
-        let rc = RoleController::get_role_controller(player.clone())?;
-        let rc = rc.inner::<RoleController>();
-        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
-        let pos = player.transform().borrow().position();
-        if scene.scene_type() != 2 || !scene.jump_zone(rc.nav_layer(), &pos) {
-            return None;
-        }
-        let head = [pos.x, pos.y + rc.model_height() + 10., pos.z, 1.];
-        let world = self.scene_manager.scene()?;
-        let cam = world.camera();
-        let m = radiance::math::Mat44::multiplied(cam.projection_matrix(), &cam.view_matrix());
-        let r = m.floats();
-        let clip = |i: usize| (0..4).map(|k| r[i][k] * head[k]).sum::<f32>();
-        let w = clip(3);
-        (w > 1e-4).then(|| [clip(0) / w, clip(1) / w])
     }
 
     /// 跳的每一帧（`FUN_004150c0` case 0）；落地后 `FUN_00420b40(主角, dt, 1)`。
@@ -2468,9 +2490,10 @@ impl AdventureDirectorProps {
         if self.player_jump.is_some() {
             self.step_player_jump(delta_sec);
         } else if !frozen {
-            self.try_player_jump();
+            self.update_jump_charge(delta_sec);
         }
-        let frozen = frozen || self.player_jump.is_some();
+        // 蓄力时主角站着不动（原版瞄落点的时候也不走），但头上的图标照出。
+        let frozen = frozen || self.player_jump.is_some() || self.jump_charge.is_some();
         // 头上「跳」的图标跟着 `FUN_0041d9a0` 每帧更新；冻着、跳着的时候那个函数不跑，图标保持原样。
         if !frozen {
             let icon = self.jump_icon_ndc();

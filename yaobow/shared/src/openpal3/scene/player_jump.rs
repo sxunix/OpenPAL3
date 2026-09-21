@@ -21,27 +21,16 @@ pub const WINDUP_SECS: f32 = 0.5;
 /// [移植] 落地动画一直没播完时最多等这么久（原版只等动画）。
 pub const LAND_TIMEOUT_SECS: f32 = 2.;
 
-/// [移植] 沿瞄准方向采点的间距（半格）。
-pub const AIM_STEP: f32 = 6.;
+/// [移植] 蓄力跳：按住跳键这么久就到最远（[`MAX_DIST`]），松手起跳。
+pub const CHARGE_SECS: f32 = 0.8;
+/// [移植] 点一下就松手时跳多远（两格）。
+pub const MIN_DIST: f32 = 24.;
 
-/// [移植] 原版右键点地面给落点，手柄上没有这一下。沿瞄准方向采样挑落点：第 `k` 个采样点在
-/// `主角 + 方向 × k × AIM_STEP`。先找第一个站不住的采样点（缺口），再取它之后第一个站得住的——
-/// 也就是「跳到缺口对面」；一路都站得住（没缺口）就取站得住的最远那个；都站不住返回 `None`。
-/// 挑完还要走原版那一套（拉回 168、取地面高度、格子直线）。
-pub fn aim_sample(count: usize, walkable: impl Fn(usize) -> bool) -> Option<usize> {
-    let mut last = None;
-    let mut gap = false;
-    for k in 1..=count {
-        if walkable(k) {
-            if gap {
-                return Some(k);
-            }
-            last = Some(k);
-        } else {
-            gap = true;
-        }
-    }
-    last
+/// [移植] 原版右键点地面选落点，手柄上没有这一下，改成按住跳键蓄力：按住 `held` 秒对应的距离，
+/// 从 [`MIN_DIST`] 线性涨到 [`MAX_DIST`]。挑完的点照样走原版那一套（拉回 168、取地面高度、格子直线）。
+pub fn charge_distance(held: f32) -> f32 {
+    let t = (held / CHARGE_SECS).clamp(0., 1.);
+    MIN_DIST + (MAX_DIST - MIN_DIST) * t
 }
 
 /// `FUN_00414a30` 开头：落点离 `from`（x、z）超过 [`MAX_DIST`] 就拉到 [`MAX_DIST`] 那一点；y 置 0，调用方再取地面高度。
@@ -216,15 +205,12 @@ mod tests {
     }
 
     #[test]
-    fn aim_picks_the_far_side_of_a_gap() {
-        // 1..=3 站得住、4..=6 是缺口、7 起又站得住：跳到缺口对面第一块地。
-        assert_eq!(aim_sample(28, |k| !(4..=6).contains(&k)), Some(7));
-        // 没有缺口：能跳多远跳多远。
-        assert_eq!(aim_sample(28, |_| true), Some(28));
-        // 缺口一直到头：落在缺口这边最远的地方。
-        assert_eq!(aim_sample(28, |k| k <= 5), Some(5));
-        // 脚底下一步就站不住（悬崖边朝外跳）：没得挑。
-        assert_eq!(aim_sample(28, |_| false), None);
+    fn charge_maps_hold_time_to_distance() {
+        assert_eq!(charge_distance(0.), MIN_DIST);
+        assert_eq!(charge_distance(CHARGE_SECS), MAX_DIST);
+        assert_eq!(charge_distance(5.), MAX_DIST);
+        let half = charge_distance(CHARGE_SECS * 0.5);
+        assert!((half - (MIN_DIST + MAX_DIST) * 0.5).abs() < 1e-3, "{half}");
     }
 
     #[test]
