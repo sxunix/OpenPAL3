@@ -944,12 +944,61 @@ swap(this->+0x80..+0x88, this->+0x8c..+0x94);
   ~~切镜头~~ —— 已接：照原版读 `EditorCam*`、开战播 flexcam 0 号序列（a85e04d，见 `combat_camera.md`）。
 - ~~动作~~ —— 已做（4826615 起，按原版动作名表播待机 / 攻击 / 挨打 / 仙术 / 防御 / 倒下，见 `combat_motion.md`）。
 - ~~五灵环~~ —— 已做（2026-09-15，开场和阵型面板开关时淡入淡出，见上面「五灵环」一节）。
-- 战场光照（2026-09-15 查到一半）：原版战场载入（`FUN_00511340`）读 `cbscene\<场景>\<场景>.lgt`，`gbLoadLightFile` 把每条记录建成
-  点光源节点（舞台 `+0x264`）。但渲染 `FUN_004fc3a0` 分两轮 `gbSceneGraph::Begin/End`：**第一轮**画各战斗位的角色（`FUN_00509b90`）
-  和选目标指针（舞台 `+0x268`，每位上下浮动、按 sin(时钟×10) 伸缩），这一轮**不挂灯光节点**；**第二轮**画舞台、灯光节点、特效。所以
-  `.lgt` 不照角色——试过给角色加 `.lgt` 点光源，指针变棕、角色背面变暗，已撤回；角色继续用全白环境光。舞台模型在原版里怎么受这组
-  灯光没查（移植的舞台 POL 走烘焙光照材质，不吃动态灯光），环境光也没查到（exe 不调 `gbGfxManager::SetAmbientLight`，gbengine 里
-  也没找到调用者），这一项先放着。
+- 战场光照（2026-09-23 查完，结论和 09-15 的半成品相反，见下）：原版战场载入（`FUN_00511340`）读 `cbscene\<场景>\<场景>.lgt`，
+  分别放在舞台对象的 `+0x25c`（舞台 POL）、`+0x260`（舞台 CVD）、`+0x264`（**灯光节点**，`gbLoadLightFile` 的返回值）、
+  `+0x268`（选目标指针）。09-15 记成「`+0x264` 是舞台」是错的。
+  `FUN_00510ca0` 就是舞台的 Render（它的守卫 `+0x158` 正是 `FUN_00511340` 载入成功时置 1 的那个标志），依次画舞台 POL、
+  **灯光节点**、上下浮动的指针、以及绕圈摆放的阵型标记；而 `FUN_004fc3a0` 的**第一轮** `gbSceneGraph::Begin/End` 里就调了它。
+  所以「第一轮不挂灯、灯只在第二轮照舞台」是错的：**第一轮 = 舞台 + 灯 + 角色，第二轮 = 灯 + 特效**，角色和舞台都吃灯。
+
+  引擎侧（`gbengine.dll`，D3D9 固定管线 + 静态链进来的 D3DX effect 框架）：
+
+  - 材质就是**明文 HLSL**，在包里的 `/basedata/basedata/gfxscript/*.gbf`（98 个）。`gbEffectMgr` 初始化时按「标志位 → 文件名」
+    一次性全注册（`0x1001d23d` 起一串 `NewRenderEffect(名字, 标志)`），`GetRenderEffect(标志)`（`0x1001d8b0`）按标志查。
+    标志位：`0x001` 刚体几何 / `0x200` 蒙皮，`0x002` 有光照贴图（名字里的 `1M`），`0x004` 一盏灯、`0x008` 两盏灯（`1L`/`2L`），
+    `0x020` 雾（`f1`，逐顶点 FOG + `fogplane`），`0x040` 透明两遍（`t`，对应 POL 的 `use_alpha`：第一遍 AlphaRef 245 不透明、
+    第二遍 AlphaBlend 不写 Z），`0x400` 顶点色（`c1`）。`0x080`/`0x100`（`t1_1M`/`t2_1M`）那两支**直接跳过灯光**
+    （`0x100158f0` 的 `test ecx, 0x180`）。
+  - 舞台这类**带光照贴图**的面：没灯时用 `geom_1M.gbf` —— 阶段 0 `SelectArg1(光照贴图)`（Clamp），阶段 1
+    `Modulate2X(漫反射贴图)`（Wrap），顶点色只参与 alpha；有一盏灯时换 `geom_1M_1L.gbf` —— 顶点色
+    `= 衰减 × max(N·L,0) × diffuse + ambient`，阶段 0 变成 **`ADD(光照贴图, 顶点色)`**，阶段 1 仍是 `Modulate2X(漫反射贴图)`。
+    **灯是加在光照贴图上、再乘贴图的**，不是乘上去的。带光照贴图的面**最多吃一盏灯**（没有 `geom_1M_2L`）。
+  - 不带光照贴图的面（角色、单贴图物件）：`newgeom` / `geom_1L` / `geom_2L`，顶点色 = Σ 灯 + ambient，再和贴图 `Modulate`。
+  - 每个渲染对象挑几盏灯：`gbSceneGraph::CalEffectiveVolMod`（`0x10014dc0`）拿本批所有灯算 `GetEffectOnPoint`，
+    留下 > 0 的排序，按节点类型分两桶、**每桶最多 2 盏**。`gbLightObj::GetEffectOnPoint`（`0x100132a0`）=
+    `min(1, 1/(A0+A1·d+A2·d²)) × (r+g+b) × (1/3)`。PAL3 的灯全是无衰减的（见下），所以 **排序与距离无关，永远是颜色最亮的那盏赢**。
+  - uniform 怎么填（`0x10015874` 起）：`lightpos` 变换到物体空间；`lightatten` = D3DLIGHT9 的 Atten0/1/2；
+    `diffuse` = 灯的 Diffuse × 材质 Diffuse；**`ambient` = (全局环境光 + 灯的 Ambient) × 材质 Ambient + 自发光系数 × 材质 Emissive**。
+  - **全局环境光默认 (0.2, 0.2, 0.2, 1.0)**，写在 `gbGfxManager` 构造里（`0x1001d9b9`，字段在 `+0x1ac`）；自发光系数 `+0x1bc` 初值 0。
+    exe 从不调 `SetAmbientLight` / `EnableEmissive` / `SetEmissiveFactor`，所以这两个值全程不变。
+
+  数据侧（`pal3_combat_stage_census` 那套路径，5 张战场实测）：
+
+  - 战场 POL 的顶点成分全是 `POS|NORMAL|UV|UV2`，每个材质**两张贴图**：第 0 张 `^L_*.bmp` 是烘焙光照贴图（对应引擎的
+    `gbStaticMesh::LightMapDir`），第 1 张才是漫反射 tga；`tex_coord` 是光照贴图 UV（都在 0..1），`tex_coord2` 是漫反射 UV（会超 1、要 Wrap）。
+    移植端 `loaders/pol.rs` 里换过来的那一手是对的。
+  - POL 材质的 `unknown_68` 那 16 个浮点就是一整个 **D3DMATERIAL9**（Diffuse / Ambient / Specular / Emissive），
+    `unknown_float` 是 Power。战场舞台一律 Diffuse (1,1,1,0.99~1)、Ambient (1,1,1,1)、Specular 0.045、Emissive 0、Power 32。
+    代进上面的式子：舞台的 `ambient` uniform **就是 0.2**。
+  - `.lgt` 的字段解读要改（`fileformats/src/pal3/lgt.rs` 的注释）：`gbLoadLightFile`（`0x100135a0`）读完 0x40 字节矩阵后，
+    把文件剩下的 0x54 字节**逐字段原样搬进 `gbLightObj`**，所以
+    文件 `+0x40`=类型、`+0x44` 四个浮点=**Diffuse RGBA**、`+0x54` 四个浮点=**Ambient RGBA**（全是 0）、
+    `+0x64`=有无漫反射、`+0x68`=**有无高光**、`+0x78`=Range、`+0x7c`=衰减类型、`+0x80`=衰减参数。
+    旧注释把 `+0x64` 叫 `light_type`、`+0x68` 叫 `flag`（并当成开关）是错的——`+0x68` 为 0 只是「这盏灯不出高光」，
+    而 `.gbf` 里 `specular` 这个 uniform 根本没被用，所以那几盏灯照样亮。衰减类型全是 0 ⇒ `Atten=(1,0,0)` ⇒ 衰减恒为 1。
+  - 按原版模型实测「加到光照贴图上的那一项」（取最亮的一盏灯，`N·L × 颜色 + 0.2`）：
+    z01 中位 0.39 / p90 1.34（最强灯 1.36 白光，在 (51,37,0)）、z02 中位 0.26 / p90 0.56、z04a 中位 0.32 / p90 1.04、
+    z08 中位 0.29 / p90 0.80、z20 中位 0.20 / p90 0.91。**不是可忽略的小量**。
+
+  移植端现状与差距：战斗场景是 `SceneLighting::new([1,1,1], vec![])`（全白环境光 + 不读 `.lgt`），舞台走
+  `create_entity_from_pol_model`，两张贴图的面落到 `LightMapMaterialDef` + `with_lightmap_params(1.333, 0.0)`，
+  即 `光照贴图 × 1.333 × 漫反射贴图`；原版是 `(光照贴图 + 灯项) × 漫反射贴图 × 2`。差两处：**倍率 1.333 vs 2.0**，
+  以及**整个加性灯项没有**。角色这边原版也吃灯（`geom_1L`/`2L`，环境光 0.2），移植端是全白环境光 + 不吃灯，
+  等于把「每盏灯的 N·L」拍平成常数 1 —— 09-15 那次「给角色加 `.lgt` 点光源结果变暗」的失败，原因是当时没加 0.2 的
+  环境光底、也没用「最多两盏、按亮度取」的选灯规则，不是原版不照角色。
+  野外场景走的是同一套材质，所以这个差距**不只影响战斗**。
+  还缺的一样证据：本机跑不了原版 exe，没有可对照的画面，所以改完只能靠公式自洽，不能靠肉眼比对。
+  本机也跑不了原版 exe，没有可对照的画面。
 - ~~升级成长曲线本身~~ —— 五条曲线（`FUN_004fa210` / `004fa280` / `004fa330` /
   `004fa3a0` / `004fa440`）和经验门槛表（`FUN_004fa4e0`）移植里都已实现，
   见 `states/growth.rs` 与 `GameDb::level_for_exp`。
