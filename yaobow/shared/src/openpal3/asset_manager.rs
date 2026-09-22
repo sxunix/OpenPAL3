@@ -389,6 +389,25 @@ impl AssetManager {
             .with_extension("mv3")
     }
 
+    /// `.mv3` 里的命名标记（`Mv3ActionDesc`：帧号 + 名字，帧号 / 4580 是秒）。原版把它们当动画消息推给
+    /// 角色节点，`FUN_00537070(名字)` 取一条；跳跃等的是 `holds`（起跳完）和 `hold`（空中定格）。
+    pub fn mv3_events(&self, role_name: &str, action_name: &str) -> Vec<(f32, String)> {
+        let path = self.mv3_path(role_name, action_name);
+        let Ok(data) = self.vfs.read_to_end(&path) else {
+            return vec![];
+        };
+        let Ok(mv3) = fileformats::mv3::read_mv3(&mut std::io::Cursor::new(data)) else {
+            return vec![];
+        };
+        mv3.action_desc
+            .iter()
+            .filter_map(|a| {
+                let name = a.name.as_str().ok()?.to_string();
+                (!name.is_empty()).then_some((a.tick as f32 / 4580., name))
+            })
+            .collect()
+    }
+
     pub fn load_scn_pol(
         &self,
         cpk_name: &str,

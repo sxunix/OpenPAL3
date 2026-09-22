@@ -2126,9 +2126,12 @@ impl AdventureDirectorProps {
             .transform()
             .borrow_mut()
             .look_at(&Vec3::new(target.x, pos.y, target.z));
-        let anim = rc
-            .inner::<RoleController>()
-            .play_anim(ANIM, crate::openpal3::scene::RoleAnimationRepeatMode::Hold);
+        let rc = rc.inner::<RoleController>();
+        let anim = rc.play_anim(ANIM, crate::openpal3::scene::RoleAnimationRepeatMode::Hold);
+        // 起跳那一下按 4 倍速放（`FUN_00536d00(4.0)`）；`.mv3` 的 hold 标记这里不让动画自己停，
+        // 由跳跃按标记调倍率（原版就是这么干的）。
+        rc.set_anim_hold_enabled(false);
+        rc.set_anim_time_scale(4.);
         self.player_jump = Some((Jump::new(pos, target), anim));
     }
 
@@ -2149,7 +2152,38 @@ impl AdventureDirectorProps {
                 rc.inner::<RoleController>().state()
                     != crate::openpal3::scene::RoleState::PlayingAnimation
             });
-        let (pos, done) = jump.step(dt, anim_done);
+        // 动作标记：`holds` 起跳做完（换 1 倍速往上飞）、`hold` 空中定格（倍率 0）。
+        let (holds, hold) = match rc.as_ref() {
+            Some(rc) if anim => {
+                let rc = rc.inner::<RoleController>();
+                (rc.take_anim_event("holds"), rc.take_anim_event("hold"))
+            }
+            _ => (false, false),
+        };
+        let before = jump.phase();
+        let (pos, done) = jump.step(dt, holds, anim_done);
+        if let Some(rc) = rc.as_ref().filter(|_| anim) {
+            let rc = rc.inner::<RoleController>();
+            let after = jump.phase();
+            if after != before {
+                // 起跳做完换 1 倍速，落地那一下 2 倍速（`FUN_004150c0` case 0 的 `FUN_00536d00`）。
+                match after {
+                    crate::openpal3::scene::player_jump::Phase::Rise => rc.set_anim_time_scale(1.),
+                    crate::openpal3::scene::player_jump::Phase::Land => rc.set_anim_time_scale(2.),
+                    _ => {}
+                }
+            }
+            // `hold` 只在空中管用（原版是阶段 1 / 2 收这条消息）：落地那一段要按 2 倍速把动作放完。
+            if hold
+                && matches!(
+                    after,
+                    crate::openpal3::scene::player_jump::Phase::Rise
+                        | crate::openpal3::scene::player_jump::Phase::Fall
+                )
+            {
+                rc.set_anim_time_scale(0.);
+            }
+        }
         player.transform().borrow_mut().set_position(&pos);
         self.sce_vm
             .global_state_mut()

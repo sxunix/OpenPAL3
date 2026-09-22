@@ -137,6 +137,11 @@ impl AnimatedMeshComponent {
         self.render(0.);
     }
 
+    /// 当前播放到第几秒（PAL3 靠动画节点的消息判断播到哪儿，移植端直接读这个时钟）。
+    pub fn morph_time(&self) -> f32 {
+        self.props().last_time
+    }
+
     pub fn is_to_hold(&self) -> bool {
         self.props().hold_enabled
             && !self.props().hold

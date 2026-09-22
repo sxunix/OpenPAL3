@@ -95,7 +95,7 @@ pub fn line(
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Phase {
+pub enum Phase {
     /// `+0x4d0 = 0`：起跳，不动。
     Windup,
     /// 1：往上。
@@ -149,12 +149,19 @@ impl Jump {
         self.vel
     }
 
-    /// 推一帧（`FUN_004150c0` case 0）：返回（主角这一帧的位置，跳完没有）。`anim_done` 是落地动画播完没有。
-    pub fn step(&mut self, dt: f32, anim_done: bool) -> (Vec3, bool) {
+    /// 现在在哪一段（调用方按段换动作倍率：起跳 4、飞 1、空中定格 0、落地 2）。
+    pub fn phase(&self) -> Phase {
+        self.phase
+    }
+
+    /// 推一帧（`FUN_004150c0` case 0）：返回（主角这一帧的位置，跳完没有）。`holds` 是动作放出了 `holds`
+    /// 标记（起跳那一下做完了），`anim_done` 是落地动作播完没有。
+    pub fn step(&mut self, dt: f32, holds: bool, anim_done: bool) -> (Vec3, bool) {
         let mut done = false;
         match self.phase {
             Phase::Windup => {
-                if self.t > WINDUP_SECS {
+                // 原版等动画消息 `holds`，最多等 0.5 秒。
+                if holds || self.t > WINDUP_SECS {
                     self.phase = Phase::Rise;
                 }
             }
@@ -232,7 +239,7 @@ mod tests {
         let mut j = Jump::new(from, to);
         let mut t = 0.;
         loop {
-            let (p, done) = j.step(dt, true);
+            let (p, done) = j.step(dt, false, true);
             t += dt;
             if done {
                 return (p, t);
@@ -254,8 +261,8 @@ mod tests {
         let dt = 1. / 240.;
         let mut last = from;
         loop {
-            let (p, _) = j.step(dt, false);
-            if j.phase == Phase::Land {
+            let (p, _) = j.step(dt, false, false);
+            if j.phase() == Phase::Land {
                 break;
             }
             last = p;

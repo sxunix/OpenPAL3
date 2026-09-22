@@ -113,6 +113,10 @@ pub struct RoleController {
     /// between characters: 景天 is 76, 龙葵 63, 花盈 28.
     model_height: Cell<f32>,
     model_radius: Cell<f32>,
+    /// 每个动作的命名标记（`.mv3` 的 `Mv3ActionDesc`，秒 + 名字）。原版把它们当动画消息推给角色节点。
+    anim_events: RefCell<HashMap<String, Vec<(f32, String)>>>,
+    /// 这一遍播放里已经取走的标记（原版 `gbVisNode::PopMessage` 取一条少一条）。
+    anim_events_taken: RefCell<Vec<String>>,
 }
 
 ComObject_RoleController!(super::RoleController);
@@ -203,6 +207,8 @@ impl RoleController {
             unique_materials: Cell::new(false),
             model_height: Cell::new(model_height),
             model_radius: Cell::new(model_radius),
+            anim_events: RefCell::new(HashMap::new()),
+            anim_events_taken: RefCell::new(vec![]),
         }
     }
 
@@ -371,6 +377,15 @@ impl RoleController {
         anim: ComRc<IAnimatedMeshComponent>,
         repeat_mode: RoleAnimationRepeatMode,
     ) {
+        if !self.anim_events.borrow().contains_key(&anim_name) {
+            let events = self
+                .asset_mgr
+                .mv3_events(&self.model_name.borrow(), &anim_name);
+            self.anim_events
+                .borrow_mut()
+                .insert(anim_name.clone(), events);
+        }
+        self.anim_events_taken.borrow_mut().clear();
         *self.active_anim_name.borrow_mut() = anim_name;
         *self.anim_repeat_mode.borrow_mut() = repeat_mode;
         *self.state.borrow_mut() = RoleState::PlayingAnimation;
@@ -443,6 +458,49 @@ impl RoleController {
     /// 正在放的动作名（`play_anim` 最后一次设的）。
     pub fn active_anim_name(&self) -> String {
         self.active_anim_name.borrow().clone()
+    }
+
+    /// 动作的时间倍率（原版 `gbVisNode::SetTimeScale`，跳跃分 4 / 1 / 0 / 2 四档）。
+    pub fn set_anim_time_scale(&self, scale: f32) {
+        if let Some(anim) = self.anim_now() {
+            anim.inner::<AnimatedMeshComponent>().set_time_scale(scale);
+        }
+    }
+
+    /// `.mv3` 的「hold」标记要不要让动画自己停住。跳跃自己按标记调倍率，不用它。
+    pub fn set_anim_hold_enabled(&self, enabled: bool) {
+        if let Some(anim) = self.anim_now() {
+            anim.inner::<AnimatedMeshComponent>()
+                .set_hold_enabled(enabled);
+        }
+    }
+
+    /// 取一条动画标记（`FUN_00537070`）：播到这个标记了就返回 `true`，同一遍播放里只返回一次。
+    pub fn take_anim_event(&self, name: &str) -> bool {
+        if self.anim_events_taken.borrow().iter().any(|n| n == name) {
+            return false;
+        }
+        let Some(anim) = self.anim_now() else {
+            return false;
+        };
+        let now = anim.inner::<AnimatedMeshComponent>().morph_time();
+        let active = self.active_anim_name.borrow().clone();
+        let reached = self
+            .anim_events
+            .borrow()
+            .get(&active)
+            .is_some_and(|events| events.iter().any(|(t, n)| n == name && *t <= now));
+        if reached {
+            self.anim_events_taken.borrow_mut().push(name.to_string());
+        }
+        reached
+    }
+
+    /// 现在在播的那个动作组件（没有就返回 `None`，和 [`Self::active_anim`] 不同，它不 unwrap）。
+    fn anim_now(&self) -> Option<ComRc<IAnimatedMeshComponent>> {
+        self.animations
+            .get(&*self.active_anim_name.borrow())
+            .map(|a| a.value().clone())
     }
 
     pub fn state(&self) -> RoleState {
