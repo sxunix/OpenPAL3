@@ -96,12 +96,15 @@ pub struct ObjNode {
     pub link_id: u16,
     /// 物件自己带的音效名（+0x234，`.scn` 记录 +0x188）。非空就用它，不查类型表。
     pub sound: Option<String>,
+    /// 物件自己那条 SCE 过程（+0x12c，`.scn` 记录 +0x80）。见 [`ObjectActions::run`] 里动作 5 的说明。
+    pub proc: i32,
 }
 
 #[derive(Debug, Clone)]
 struct Obj {
     kind: u8,
     sound: Option<String>,
+    proc: i32,
     layer: usize,
     p: [i32; 4],
     link: Option<usize>,
@@ -169,6 +172,7 @@ impl ObjectActions {
             .map(|n| Obj {
                 kind: n.kind,
                 sound: n.sound.clone(),
+                proc: n.proc,
                 layer: n.layer,
                 p: n.p,
                 // `FUN_0042bf90` → `FUN_00421560`：按编号找。[推断] 和脚本找物件一样只比低字节。
@@ -454,8 +458,14 @@ impl ObjectActions {
                     }
                 }
                 Act::Link { wait } => {
-                    if let Some(l) = self.objs[i].link {
-                        self.event(l, 2, false, 0.001, w);
+                    match (self.objs[i].link, self.objs[i].proc) {
+                        (Some(l), _) => self.event(l, 2, false, 0.001, w),
+                        // **[推断]** 没连着别的物件、但自己挂了过程时跑那条过程。原版 `FUN_0042bf90` 只管
+                        // 连着的那个，没连就什么都不做；可 M24 的两只乌龟（0x1d）恰恰没连、挂着过程 505 / 506，
+                        // 而 506 的内容就是对五个巨锤（物件 5..9）各来一次「与物件交互」——一个连接位放不下五个
+                        // 目标，显然是要靠这条过程。原版走哪条路没找到，这里按数据的意思补上。
+                        (None, proc) if proc != 0 => w.call_proc(proc),
+                        _ => {}
                     }
                     if wait {
                         return;
@@ -704,6 +714,7 @@ mod tests {
                 p: [3, 0, 0, 0],
                 link_id: 0xb,
                 sound: None,
+                proc: 0,
             },
             ObjNode {
                 object_id: 11,
@@ -712,6 +723,7 @@ mod tests {
                 p: [0, 0, 0, 0],
                 link_id: 0xffff,
                 sound: None,
+                proc: 0,
             },
         ]);
         let w = Mock {
@@ -821,6 +833,33 @@ mod tests {
     }
 
     #[test]
+    fn turtle_without_a_link_runs_its_own_proc() {
+        // M24/2 的乌龟：没连着别的物件，挂着过程 506（对五个巨锤各来一次「与物件交互」）。
+        let mut a = ObjectActions::new(&[ObjNode {
+            object_id: 10,
+            kind: 0x1d,
+            layer: 0,
+            p: [4, 0, 0, 0],
+            link_id: 0xffff,
+            sound: None,
+            proc: 506,
+        }]);
+        let (_, mut w) = m01();
+        w.pos = vec![Vec3::new(0., 100., 0.)];
+        w.player = Vec3::new(10., 100., 0.);
+        w.party = 4;
+        w.passable = vec![true];
+        w.anim_left = vec![0];
+        a.event(0, 0, false, 0.1, &mut w);
+        let dt = 0.125;
+        for _ in 0..60 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(w.procs, [506]);
+        assert_eq!(a.state(0), Some(3));
+    }
+
+    #[test]
     fn object_sound_prefers_its_own_name() {
         // 物件自己带名字就用它（M01/1 的吊桥记录里写的是 wg007，不是类型表的 wg001）。
         assert_eq!(object_sound(Some("wg007"), 0x13, 0), Some("wg007"));
@@ -840,6 +879,7 @@ mod tests {
                 p: [4, 0, 0, 0],
                 link_id: 0x104,
                 sound: None,
+                proc: 0,
             },
             ObjNode {
                 object_id: 5,
@@ -848,6 +888,7 @@ mod tests {
                 p: [4, 0, 0, 0],
                 link_id: 0xffff,
                 sound: None,
+                proc: 0,
             },
         ]);
         assert_eq!(a.objs[0].link, Some(0));
@@ -869,6 +910,7 @@ mod tests {
             p,
             link_id: 0xffff,
             sound: None,
+            proc: 0,
         }]);
         (a, w)
     }

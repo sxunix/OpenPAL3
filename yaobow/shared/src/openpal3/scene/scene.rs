@@ -1069,6 +1069,7 @@ impl ScnScene {
                 ],
                 link_id: n.w148,
                 sound: n.sound_name(),
+                proc: n.sce_proc_id as i32,
             })
             .collect();
         *self.object_actions.borrow_mut() = super::object_action::ObjectActions::new(&nodes);
