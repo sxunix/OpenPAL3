@@ -1068,6 +1068,7 @@ impl ScnScene {
                     n.ladder_nav_coord2.1,
                 ],
                 link_id: n.w148,
+                sound: n.sound_name(),
             })
             .collect();
         *self.object_actions.borrow_mut() = super::object_action::ObjectActions::new(&nodes);

@@ -2012,15 +2012,22 @@ impl AdventureDirectorProps {
         self.run_object_procs(procs);
     }
 
-    /// 物件动作 4 要跑的过程（`FUN_00432170(id, 0)`）：编号 ≥ 100 在当前场景的 `.sce` 里。
+    /// 物件动作 4 要跑的过程（`FUN_00432170(id, 0)`）：编号 ≥ 100 在当前场景的 `.sce` 里，
+    /// < 100 在 `init.sce` 里（两张表 `DAT_00d8c308` / `DAT_00d8c2e8`，`FUN_00431fb0` 装的）。
     fn run_object_procs(&mut self, procs: Vec<i32>) {
         for id in procs {
+            log::debug!("场景物件：跑过程 {id}");
             if id >= 100 {
-                log::debug!("场景物件：跑过程 {id}");
                 self.sce_vm.call_proc(id as u32);
             } else {
-                // [未做] 编号 < 100 查的是另一张表（`DAT_00d8c2e8`），用到的物件都没有。
-                log::warn!("场景物件：过程 {id} 在另一张表里，没接");
+                let init = std::rc::Rc::new(self.sce_vm.state().asset_mgr().load_init_sce());
+                if !self
+                    .sce_vm
+                    .state_mut()
+                    .call_proc_in(init, "init", id as u32)
+                {
+                    log::warn!("场景物件：init.sce 里没有 proc {id}");
+                }
             }
         }
     }
@@ -2983,6 +2990,10 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
 
     fn call_proc(&mut self, id: i32) {
         self.procs.push(id);
+    }
+
+    fn proc_running(&self) -> bool {
+        self.state.context().is_running()
     }
 
     fn save_state(&mut self, i: usize, state: u8) {

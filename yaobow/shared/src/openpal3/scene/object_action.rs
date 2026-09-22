@@ -94,11 +94,14 @@ pub struct ObjNode {
     pub p: [i32; 4],
     /// 连着的物件编号（+0x1f4，`.scn` 记录 +0x148），0xffff 是没有。
     pub link_id: u16,
+    /// 物件自己带的音效名（+0x234，`.scn` 记录 +0x188）。非空就用它，不查类型表。
+    pub sound: Option<String>,
 }
 
 #[derive(Debug, Clone)]
 struct Obj {
     kind: u8,
+    sound: Option<String>,
     layer: usize,
     p: [i32; 4],
     link: Option<usize>,
@@ -143,6 +146,8 @@ pub trait World {
     fn tile_point(&self, layer: usize, x: i32, z: i32) -> (Vec3, f32);
     /// 物件的状态（+0x50）变了，记进存档（原版靠物件的「被改过」标记 +0x240，存档里带着状态）。
     fn save_state(&mut self, i: usize, state: u8);
+    /// 有脚本过程在跑没有（`FUN_004324b0`：动作 4 参数非 0 时要等它跑完）。
+    fn proc_running(&self) -> bool;
     /// `FUN_0040fc70`：队里几个人。
     fn party_size(&self) -> usize;
     /// `FUN_00430570(key)` + `FUN_00450bc0`：弹一句提示。
@@ -163,6 +168,7 @@ impl ObjectActions {
             .iter()
             .map(|n| Obj {
                 kind: n.kind,
+                sound: n.sound.clone(),
                 layer: n.layer,
                 p: n.p,
                 // `FUN_0042bf90` → `FUN_00421560`：按编号找。[推断] 和脚本找物件一样只比低字节。
@@ -459,7 +465,12 @@ impl ObjectActions {
                     w.play_anim(i, ANIM_SPEED);
                     return;
                 }
-                Act::Proc { id, .. } => w.call_proc(id),
+                Act::Proc { id, wait } => {
+                    w.call_proc(id);
+                    if wait {
+                        return;
+                    }
+                }
                 Act::Tiles(clear) => {
                     let layer = self.objs[i].layer;
                     w.object_tiles(i, clear, layer);
@@ -474,8 +485,10 @@ impl ObjectActions {
                 Act::Passable(v) => w.set_passable(i, v),
                 Act::Face(p) => w.face_player(&p),
                 Act::Sound(p) => {
-                    if let Some(name) = sound_name(self.objs[i].kind, p) {
-                        w.sound(name);
+                    let o = &self.objs[i];
+                    if let Some(name) = object_sound(o.sound.as_deref(), o.kind, p) {
+                        let name = name.to_string();
+                        w.sound(&name);
                     }
                 }
             }
@@ -529,6 +542,8 @@ impl ObjectActions {
             },
             // 没有连着的物件就当场算完。
             Act::Link { .. } => done = link_idle.unwrap_or(true),
+            // 等过程跑完（`FUN_004324b0`）。[移植] 只能看「有没有脚本在跑」，认不出是不是自己起的那条。
+            Act::Proc { wait: true, .. } => done = !w.proc_running(),
             // `hold`：原版把时间倍率置 0、跳到最后一帧；移植端单播本来就停在最后一帧。
             Act::Anim { .. } => {
                 if !w.anim_done(i) {
@@ -554,6 +569,11 @@ fn sound_name(kind: u8, p: i32) -> Option<&'static str> {
     }
 }
 
+/// `FUN_0042c440` 开头：物件自己带名字（+0x234 非空）就用它，否则按类型查表。
+fn object_sound<'a>(own: Option<&'a str>, kind: u8, p: i32) -> Option<&'a str> {
+    own.or_else(|| sound_name(kind, p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -576,6 +596,7 @@ mod tests {
         tiles: Vec<(usize, bool, usize)>,
         player_layer: usize,
         saved_states: Vec<(usize, u8)>,
+        proc_busy: bool,
     }
 
     impl World for Mock {
@@ -635,6 +656,9 @@ mod tests {
         fn party_size(&self) -> usize {
             self.party
         }
+        fn proc_running(&self) -> bool {
+            self.proc_busy
+        }
         fn call_proc(&mut self, id: i32) {
             self.procs.push(id);
         }
@@ -679,6 +703,7 @@ mod tests {
                 layer: 0,
                 p: [3, 0, 0, 0],
                 link_id: 0xb,
+                sound: None,
             },
             ObjNode {
                 object_id: 11,
@@ -686,6 +711,7 @@ mod tests {
                 layer: 0,
                 p: [0, 0, 0, 0],
                 link_id: 0xffff,
+                sound: None,
             },
         ]);
         let w = Mock {
@@ -705,6 +731,7 @@ mod tests {
             tiles: vec![],
             player_layer: 0,
             saved_states: vec![],
+            proc_busy: false,
         };
         (a, w)
     }
@@ -794,6 +821,16 @@ mod tests {
     }
 
     #[test]
+    fn object_sound_prefers_its_own_name() {
+        // 物件自己带名字就用它（M01/1 的吊桥记录里写的是 wg007，不是类型表的 wg001）。
+        assert_eq!(object_sound(Some("wg007"), 0x13, 0), Some("wg007"));
+        assert_eq!(object_sound(None, 0x13, 0), Some("wg001"));
+        assert_eq!(object_sound(None, 0x1d, 0), Some("wg005"));
+        assert_eq!(object_sound(None, 0x1d, 1), Some("we026"));
+        assert_eq!(object_sound(None, 0x11, 0), None);
+    }
+
+    #[test]
     fn link_by_low_byte_and_missing_link() {
         let a = ObjectActions::new(&[
             ObjNode {
@@ -802,6 +839,7 @@ mod tests {
                 layer: 0,
                 p: [4, 0, 0, 0],
                 link_id: 0x104,
+                sound: None,
             },
             ObjNode {
                 object_id: 5,
@@ -809,6 +847,7 @@ mod tests {
                 layer: 0,
                 p: [4, 0, 0, 0],
                 link_id: 0xffff,
+                sound: None,
             },
         ]);
         assert_eq!(a.objs[0].link, Some(0));
@@ -829,6 +868,7 @@ mod tests {
             layer,
             p,
             link_id: 0xffff,
+            sound: None,
         }]);
         (a, w)
     }

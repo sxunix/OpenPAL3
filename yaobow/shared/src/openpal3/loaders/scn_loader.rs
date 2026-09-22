@@ -47,6 +47,20 @@ impl ScnNode {
     /// in — so a scene numbering its nodes from 257 (M02 does) exposes
     /// them to scripts as 1, 2, 3. The low byte is unique within every
     /// shipped `.scn`.
+    /// 物件自己带的音效名（记录 +0x188 起 8 字节，运行时抄到物件 +0x234）。`FUN_0042c440` 先看它，
+    /// 非空就用它，空了才按物件类型查表。
+    pub fn sound_name(&self) -> Option<String> {
+        let bytes: Vec<u8> = self
+            .dw184
+            .get(1..3)?
+            .iter()
+            .flat_map(|v| v.to_le_bytes())
+            .collect();
+        let end = bytes.iter().position(|c| *c == 0).unwrap_or(bytes.len());
+        let name = String::from_utf8_lossy(&bytes[..end]).to_string();
+        (!name.is_empty() && name.chars().all(|c| c.is_ascii_graphic())).then_some(name)
+    }
+
     pub fn object_id(&self) -> i32 {
         (self.index & 0xff) as i32
     }
