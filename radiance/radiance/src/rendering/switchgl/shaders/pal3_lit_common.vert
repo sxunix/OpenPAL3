@@ -47,7 +47,10 @@ void main() {
     v_viewDepth = -viewPos.z;
 
     vec3 worldPos = world.xyz;
-    vec3 N = normalize(mat3(modelMatrix) * normal);
+    // ES 1.00 不保证能用 mat3(mat4) 这种降阶构造，显式取前三列的 xyz
+    // （就是左上 3×3），桌面 GL 和 ES 都合法。
+    mat3 m3 = mat3(modelMatrix[0].xyz, modelMatrix[1].xyz, modelMatrix[2].xyz);
+    vec3 N = normalize(m3 * normal);
     vec3 ambient = ambientLight.rgb;
 
     // 挑最亮的两盏（原版 GetEffectOnPoint 的距离项对 PAL3 的无衰减灯恒为 1，
@@ -64,8 +67,9 @@ void main() {
     }
 
     // geom_2L 里每盏灯各加一次 ambient，所以两盏灯环境项是两份。
-    int lightCount = (best0 >= 0 ? 1 : 0) + (best1 >= 0 ? 1 : 0);
-    vec3 lit = ambient * float(max(lightCount, 1));
+    // 注意 GLSL ES 1.00 的 max 只有浮点重载，这里不能拿整数去算。
+    float lightCount = (best0 >= 0 ? 1.0 : 0.0) + (best1 >= 0 ? 1.0 : 0.0);
+    vec3 lit = ambient * max(lightCount, 1.0);
     for (int i = 0; i < 16; i++) {
         if (i == best0 || i == best1) { lit += lightContrib(i, worldPos, N); }
     }

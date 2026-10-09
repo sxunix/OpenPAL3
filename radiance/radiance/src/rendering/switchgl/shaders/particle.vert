@@ -19,9 +19,10 @@ void main() {
     gl_Position = projectionMatrix * mvPosition;
     v_texcoord = texcoord;
 
-    float packed = texcoord2.x;
-    float r = floor(packed / 65536.0);
-    float g = floor((packed - r * 65536.0) / 256.0);
-    float b = packed - r * 65536.0 - g * 256.0;
+    // 别拿 packed 当变量名：它是 GLSL ES 1.00 的保留字，上机会编不过。
+    float rgb24 = texcoord2.x;
+    float r = floor(rgb24 / 65536.0);
+    float g = floor((rgb24 - r * 65536.0) / 256.0);
+    float b = rgb24 - r * 65536.0 - g * 256.0;
     v_color = vec4(r / 255.0, g / 255.0, b / 255.0, texcoord2.y) * tint;
 }
