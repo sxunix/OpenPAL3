@@ -14,8 +14,9 @@
 //!   - 框本身 `FUN_00445db0(0)` 居中在 800×600 屏幕上。
 //! * 选中时列表发 0x3ef 事件，6 号槽 0x451aa0 把序号存进 `+0x50` 并收起框；66 取的就是它。
 //!
+//! 九宫格的排法和夹取规则照 `FUN_00445500` 来，见 [`frame_pieces`]。
+//!
 //! [推断] 的地方：
-//! - 九宫格排法按对话框那一套（0 左上、1 左下、2 右下、3 右上、4 左、5 下、6 右、7 上、8 中）；
 //! - 行内文字左缩 8 像素、竖直居中；高亮条横向铺满一行、竖直居中；
 //! - 原版开场不高亮任何一项，靠鼠标悬停；移植端开场先高亮第一项，手柄才能直接选。
 //!
@@ -107,12 +108,21 @@ pub fn row_at(items: usize, b: Rect, x: f32, y: f32) -> Option<usize> {
     (k < items).then_some(k)
 }
 
-/// 九宫格九块的 rect，排法同对话框：0 左上、1 左下、2 右下、3 右上、4 左、5 下、6 右、7 上、8 中。
+/// 九宫格九块的 rect。排法照 `FUN_00445500` 逐块算出来的矩形：
+/// **0 左上、1 左下、2 右下、3 右上、4 左、5 下、6 右、7 上、8 中**。
+///
+/// 块尺寸只有一个值（控件 `+0xb8`，取贴图 0 的 `+0x18`，这里九张都是
+/// 32×32），宽高**各自再夹到矩形的一半**：
+/// `pw = min(块, (右−左)/2)`、`ph = min(块, (下−上)/2)`。框不够大时原版是
+/// 把角块画小、让两边在中线相接，不是让它们重叠——一项的菜单框正好只有
+/// 60 px 高（`(1+2)×20`）会走到这一支。中间那块只在还有剩余空间时才画
+/// （`0x4456f2` 的 `if (x0 < x1 && y0 < y1)`）。
 pub fn frame_pieces(b: Rect) -> [Rect; 9] {
-    let c = FRAME_PIECE;
     let (x0, y0, x1, y1) = b;
-    let (ix0, iy0) = (x0 + c, y0 + c);
-    let (ix1, iy1) = ((x1 - c).max(ix0), (y1 - c).max(iy0));
+    let pw = FRAME_PIECE.min((x1 - x0) / 2);
+    let ph = FRAME_PIECE.min((y1 - y0) / 2);
+    let (ix0, iy0) = (x0 + pw, y0 + ph);
+    let (ix1, iy1) = (x1 - pw, y1 - ph);
     [
         (x0, y0, ix0, iy0),
         (x0, iy1, ix0, y1),
@@ -122,7 +132,11 @@ pub fn frame_pieces(b: Rect) -> [Rect; 9] {
         (ix0, iy1, ix1, y1),
         (ix1, iy0, x1, iy1),
         (ix0, y0, ix1, iy0),
-        (ix0, iy0, ix1, iy1),
+        if ix0 < ix1 && iy0 < iy1 {
+            (ix0, iy0, ix1, iy1)
+        } else {
+            (ix0, iy0, ix0, iy0)
+        },
     ]
 }
 
@@ -285,6 +299,28 @@ mod tests {
 
     fn items(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn frame_pieces_shrink_instead_of_overlapping() {
+        // 一项的框是 (1+2)×20 = 60 px 高，比两块 32 还矮；原版
+        // （`FUN_00445500`）把块夹到一半，上下在中线相接。
+        let b = box_rect(&items(&["好"]));
+        assert_eq!(b.3 - b.1, 60);
+        let p = frame_pieces(b);
+        let (top_left, bottom_left) = (p[0], p[1]);
+        assert_eq!(top_left.3 - top_left.1, 30, "角块高度该夹到一半");
+        assert_eq!(top_left.3, bottom_left.1, "上下该在中线相接，不重叠");
+        // 中间一行没地方了，中块退化成空矩形。
+        assert_eq!(p[8].0, p[8].2);
+        assert_eq!(p[8].1, p[8].3);
+
+        // 够大的框照常：角块就是整块 32。
+        let big = box_rect(&items(&["一", "二", "三", "四"]));
+        let q = frame_pieces(big);
+        assert_eq!(q[0].2 - q[0].0, FRAME_PIECE);
+        assert_eq!(q[0].3 - q[0].1, FRAME_PIECE);
+        assert!(q[8].0 < q[8].2 && q[8].1 < q[8].3);
     }
 
     #[test]
