@@ -477,7 +477,7 @@ walkable_at / set_object_active`（`ObjectActive` 命令同步在不在场）、
 **移植端**（2026-09-14）：`ScnRole::is_combat_npc / monster_ids / monster_count`、`RoleController::model_radius`、
 `ScnScene::touching_field_monster / retire_field_monster`、冒险导演每帧 `check_field_encounter`、`SceCommandCombat::new_field`
 （`Encounter::field`）、`FUN_004edc60` 的 50%、`seed_gauges`、被偷袭方转身、偷袭横幅、战后退场。
-**[推断]**：高度差用位置 y 代替 `+0xa4`；碰撞半径按包围盒边长（不是半边长）。怪物 AI 在 `scene/field_monster.rs`（状态机、受力、找路调用、落点）和 `scene/nav_path.rs`（A*、视线、路径几何、256 项系数表
+**[推断]**：碰撞半径按包围盒边长（不是半边长）。（高度差那条已经不算推断：`+0xa4` 就是世界高度，见 `role_move.md` §409，移植端位置的 y 存的正是它。）怪物 AI 在 `scene/field_monster.rs`（状态机、受力、找路调用、落点）和 `scene/nav_path.rs`（A*、视线、路径几何、256 项系数表
 原样照搬），冒险导演每帧在撞上判定之前调 `ScnScene::step_field_monsters`；战斗 NPC 不再走 `.scn` 的巡逻路径。
 `DAT_0058b230` 定住已做（物件动作 8 加减；载入场景那一对移植不需要，载入是同步的）；格子上的场景物件对能不能走的改判
 （`FUN_00421020` 后半）也已做，见上。**[推断]** `FUN_004015b0` 往下传用的栈是后进先出。

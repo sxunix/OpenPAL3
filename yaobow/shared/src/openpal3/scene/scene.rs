@@ -409,8 +409,16 @@ impl ScnScene {
             .map(|n| n.ladder_nav_coord1.0)
     }
 
-    /// 场景类型，`.scn` 头 +114 的那个 dword。实机拿它分迷宫和别的场景，
-    /// 2 = 迷宫 `[推断]`：抽查过的 M01/M06/M11/M22 都是 2，Q01/Q02 是 0。
+    /// 场景类型，`.scn` 头 +114 的那个 dword。原版把它搬到全局
+    /// `DAT_00d8bbec`（`0x4229db`：从 `DAT_00c12ba8` 取），**跳跃探测就是拿
+    /// 它 == 2 当门槛**（`0x41db97` 把 `ebp` 置 2，`0x41dba5` / `0x41dc5f`
+    /// 两处比完才调 `FUN_0041ee60`）；== 1 的那支（`0x41c22f`）每帧把
+    /// `+0x21c` 累加进 `+0x188`，像是跟地形高度那套。
+    ///
+    /// 全量普查 566 个 `.scn`：值 0 有 40 个、1 有 386 个、2 有 140 个，
+    /// **是逐 block 的**（同一个 cpk 下三种都有，不是整张图一个值）；2 基本
+    /// 集中在 M\* 的 block 上。叫它「迷宫」仍是按用途起的名 `[推断]`，
+    /// 但「2 才能跳」这件事是查实的。
     pub fn scene_type(&self) -> u32 {
         self.scn_file.global_scene_index
     }
@@ -490,7 +498,9 @@ impl ScnScene {
                 continue;
             }
             let m = e.transform().borrow().position();
-            // [推断] 原版比的是两人的 `+0xa4`，移植端用位置的 y。
+            // 原版比的是两人的 `+0xa4`，那就是世界高度（角色 `+8` 是相对
+            // 高度、站地上恒 0，世界高另存在 `+0x98` / `+0xa4`，见
+            // `role_move.md` §409），移植端的位置 y 存的就是世界高，等价。
             if (m.y - p.y).abs() >= 24. {
                 continue;
             }
@@ -1183,7 +1193,13 @@ impl ScnScene {
         b.active(i).then(|| (i, b.kind(i).unwrap_or(0)))
     }
 
-    /// `FUN_0041ee60`：主角脚下那格是跳跃区（0x2c）或神树传送点（0x26），能跳。[推断] `FUN_00420a10` 查的就是物件格子表。
+    /// `FUN_0041ee60`：主角脚下那格是跳跃区（0x2c）或神树传送点（0x26），能跳。
+    ///
+    /// `FUN_00420a10(层, x, z)` 确认就是物件格子表：先按该层的
+    /// `+0x98`/`+0x9c`（格子宽高）做边界检查，再 `FUN_004209f0` 从字节网格
+    /// 取一字节（`表[+0xc] + 行距[+4]·z + x`）当物件号，小于物件数 `+0xdc`
+    /// 就返回物件记录 `+0xe0 + 号·0x380`；`FUN_0041ee60` 拿记录的 `+0xf4`
+    /// （物件类型）比 0x2c / 0x26。
     pub fn jump_zone(&self, layer: usize, pos: &Vec3) -> bool {
         use super::nav_path::FieldNav as _;
         let (x, z) = FieldNavView { scene: self, layer }.tile_of(pos);
