@@ -287,6 +287,85 @@ pub mod layout {
     /// 放大视图里的暗格（`ExhibitZoom` 纹素 56..567 × 89..441 加原点）。
     pub const ZOOM_PANE: Rect = (146, 187, 657, 539);
 
+    /// 原版 3D 控件的一台正交相机（`FUN_00439740` 建、`FUN_0043a070` 给
+    /// 尺度、`FUN_00439850` 给位置）。
+    ///
+    /// `gbCamera` 的 FOV 为 0 就是正交（`SetAsCurrent` 0x10021a8e 的分支），
+    /// 这时半宽 = `OrthoSize`、半高 = 半宽 × 视口高/宽（`GetViewSizeOnNearPlane`
+    /// 0x10021a53）。所以横竖的像素/世界单位是同一个值 `SCREEN_W / (2·ortho)`。
+    ///
+    /// `FUN_00439850(a, b)` 把相机摆到世界 (cam_x, cam_y, 1600) 看向
+    /// (cam_x, cam_y, 0)、up = +Y：
+    ///
+    /// ```text
+    /// cam_x = −(2a/宽 − 1) · ortho
+    /// cam_y = −(1 − 2b/高) · ortho
+    /// ```
+    ///
+    /// 注意纵向这一行用的是 `ortho` 而不是半高，原版就是这么算的，照抄。
+    #[derive(Debug, Clone, Copy)]
+    pub struct View3d {
+        pub ortho: f32,
+        a: f32,
+        b: f32,
+    }
+
+    impl View3d {
+        const fn new(ortho: f32, a: f32, b: f32) -> Self {
+            Self { ortho, a, b }
+        }
+
+        /// 相机在世界里的 x/y。
+        pub fn cam(&self) -> (f32, f32) {
+            (
+                -(2. * self.a / SCREEN_W as f32 - 1.) * self.ortho,
+                -(1. - 2. * self.b / SCREEN_H as f32) * self.ortho,
+            )
+        }
+
+        /// 一个世界单位占几个虚拟像素。
+        pub fn scale(&self) -> f32 {
+            SCREEN_W as f32 / (2. * self.ortho)
+        }
+
+        /// 世界 (wx, wy) 落在虚拟屏幕的哪个像素。
+        pub fn to_screen(&self, wx: f32, wy: f32) -> (f32, f32) {
+            let k = self.scale();
+            let (cx, cy) = self.cam();
+            (
+                SCREEN_W as f32 * 0.5 + (wx - cx) * k,
+                SCREEN_H as f32 * 0.5 - (wy - cy) * k,
+            )
+        }
+    }
+
+    /// 展示页五件（控件 0xaa0b08）。
+    pub const VIEW_EXHIBIT: View3d = View3d::new(1180., 400., 300.);
+    /// 展示页的放大视图（控件 0xaa0b09）。
+    pub const VIEW_EXHIBIT_ZOOM: View3d = View3d::new(560., 400., 360.);
+    /// Do 页左右两件（控件 0xaa0c25 / 0xaa0c26）。
+    pub const VIEW_DO: View3d = View3d::new(600., 400., 320.);
+    /// Do 页的放大视图（控件 0xaa0c27）。
+    pub const VIEW_DO_ZOOM: View3d = View3d::new(580., 400., 346.);
+
+    /// 展示页五件的世界坐标（状态对象 `+0x8ac` 起的五个 vec3）。
+    pub const EXHIBIT_POS: [(f32, f32); 5] = [
+        (-380., 136.),
+        (380., 136.),
+        (-620., -520.),
+        (0., -520.),
+        (620., -520.),
+    ];
+    /// Do 页左右两件的世界坐标（状态对象 `+0x1340` 起的两个 vec3）。
+    /// 真品放第 `side` 项，赝品放另一项。
+    pub const DO_POS: [(f32, f32); 2] = [(-220., -80.), (220., -80.)];
+
+    /// 自转速度，度/秒。3D 控件 `+0xec` 为 1 就是持续自转，速度取 `+0xf4`
+    /// 的整数值（0x439b0e 那支：`角度 += (int)[+0xf4] · dt`，满 360 归零）；
+    /// 鉴定的三处都写 0x3a = 58（0x525e62 / 0x525ecf / 0x528966）。
+    /// 两个放大视图没调过 `FUN_0043a090`，`+0xec` 是 0，不自转。
+    pub const SPIN_DEG_PER_SEC: f32 = 58.;
+
     /// Do 页背景 `doingBk.tga`。
     pub const DO_BK: Rect = (0x88, 0x5a, 0x2ca, 0x256);
     /// 3D 视图控件 0xaa0c27。

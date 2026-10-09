@@ -9,8 +9,10 @@
 //! 1 像素，所以原版控件的像素坐标能直接当世界坐标用。按钮、数字、文字走
 //! imgui，画在 3D 之上。
 //!
-//! 没在实机上比对过的地方都标了 `[推断]`：文物在格子里的尺寸和转速、背景
-//! 片的 uv 朝向、说明牌上文字的位置、「鉴定」按钮的位置、键盘操作。
+//! 文物的摆放、大小和转速照原版的 3D 控件来（正交相机，见
+//! [`layout::View3d`]），不是按格子塞。剩下没在实机上比对过的地方仍标
+//! `[推断]`：背景片的 uv 朝向、说明牌上文字的位置、「鉴定」按钮的位置、
+//! 放大视图里拖动转模型的速度、键盘操作。
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -40,15 +42,10 @@ use crate::scripting::sce::{SceCommand, SceState};
 /// 背景片放在 z = −ZB，按 (D + ZB) / D 放大，看起来就和贴在 z = 0 一样，
 /// 但文物总在它前面。
 const BACKDROP_DEPTH: f32 = 500.;
-/// 展示格里文物的目标尺寸（像素）`[推断]`。
-const EXHIBIT_FIT: f32 = 110.;
-/// Do 页左右两件的目标尺寸 `[推断]`。
-const DO_FIT: f32 = 200.;
-/// 放大视图里的目标尺寸 `[推断]`。
-const ZOOM_FIT: f32 = 300.;
-/// 放大视图里的自转速度（弧度/秒）`[推断]`。
-const SPIN_SPEED: f32 = 0.8;
-/// 拖动转模型：每像素多少弧度 `[推断]`。
+/// 自转速度（弧度/秒）。原版是 58 度/秒，见 [`layout::SPIN_DEG_PER_SEC`]。
+const SPIN_SPEED: f32 = layout::SPIN_DEG_PER_SEC * std::f32::consts::PI / 180.;
+/// 拖动转模型：每像素多少弧度 `[推断]`。原版在鉴定这一段里没有直接设角度
+/// 的调用（`FUN_0043a0e0` 的三个调用点都不在 0x525000–0x529500），换算没查到。
 const DRAG_SPEED: f32 = 0.012;
 
 pub(crate) const WHITE: [f32; 4] = [1., 1., 1., 1.];
@@ -152,9 +149,6 @@ struct Drag {
 
 struct Model {
     entity: ComRc<IEntity>,
-    /// 包围盒中心和最长边，用来把它塞进格子。
-    center: Vec3,
-    extent: f32,
 }
 
 struct Backdrop {
@@ -257,13 +251,8 @@ impl AppraiseGame {
                     format!("APPRAISE_{i}_{k}"),
                     false,
                 );
-                let (center, extent) = Self::measure(&entity);
                 scene.add_entity(entity.clone());
-                pair[k] = Some(Model {
-                    entity,
-                    center,
-                    extent,
-                });
+                pair[k] = Some(Model { entity });
             }
             models.push(pair);
         }
@@ -338,38 +327,6 @@ impl AppraiseGame {
 
     fn vfs_path(rel: &str) -> PathBuf {
         PathBuf::from("/basedata/basedata").join(rel)
-    }
-
-    /// 包围盒中心和最长边。
-    fn measure(entity: &ComRc<IEntity>) -> (Vec3, f32) {
-        let mut lo = [f32::MAX; 3];
-        let mut hi = [f32::MIN; 3];
-        if let Some(mesh) = entity.get_component(IStaticMeshComponent::uuid()) {
-            if let Some(mesh) = mesh.query_interface::<IStaticMeshComponent>() {
-                let inner = mesh.inner::<StaticMeshComponent>();
-                for g in inner.get_geometries().iter() {
-                    if let Some((a, b)) = g.vertices.aabb_min_max() {
-                        for k in 0..3 {
-                            lo[k] = lo[k].min(a[k]);
-                            hi[k] = hi[k].max(b[k]);
-                        }
-                    }
-                }
-            }
-        }
-        if lo[0] > hi[0] {
-            return (Vec3::new(0., 0., 0.), 1.);
-        }
-        let center = Vec3::new(
-            (lo[0] + hi[0]) * 0.5,
-            (lo[1] + hi[1]) * 0.5,
-            (lo[2] + hi[2]) * 0.5,
-        );
-        let extent = (hi[0] - lo[0])
-            .max(hi[1] - lo[1])
-            .max(hi[2] - lo[2])
-            .max(1e-3);
-        (center, extent)
     }
 
     /// 一张贴图片：左上角在虚拟屏幕 (x, y)，宽高 w×h 像素，放在 z = 0。
@@ -489,20 +446,30 @@ impl AppraiseGame {
     }
 
     /// 把一件文物摆到虚拟屏幕 (cx, cy) 处，最长边缩到 `fit` 像素，绕 y 转 `angle`。
-    fn place_model(&self, pair: usize, which: usize, cx: f32, cy: f32, fit: f32, angle: f32) {
+    /// 照原版摆一件文物：模型按它自己的世界坐标放在 `view` 这台正交相机下，
+    /// **不重新居中、也不按格子缩放**——在屏幕上多大完全由 `OrthoSize` 决定
+    /// （`SCREEN_W / (2·ortho)` 个虚拟像素每世界单位）。
+    fn place_model(
+        &self,
+        pair: usize,
+        which: usize,
+        view: &layout::View3d,
+        world: (f32, f32),
+        angle: f32,
+    ) {
         let Some(m) = self.models.get(pair).and_then(|p| p[which].as_ref()) else {
             return;
         };
-        let (wx, wy) = Self::to_world(cx, cy);
-        let s = fit / m.extent;
+        let (sx, sy) = view.to_screen(world.0, world.1);
+        let (wx, wy) = Self::to_world(sx, sy);
+        let k = view.scale();
         m.entity.set_visible(true);
         m.entity
             .transform()
             .borrow_mut()
             .set_position(&Vec3::new(wx, wy, 0.))
             .rotate_axis_angle_local(&Vec3::UP, angle)
-            .scale_local(&Vec3::new(s, s, s))
-            .translate_local(&Vec3::new(-m.center.x, -m.center.y, -m.center.z));
+            .scale_local(&Vec3::new(k, k, k));
     }
 
     fn text(&self, i: usize) -> &str {
@@ -621,10 +588,16 @@ impl AppraiseGame {
         match zoom {
             None => {
                 self.show_backdrop(self.exhibit_bk.as_ref());
-                for (i, slot) in layout::EXHIBIT_SLOTS.iter().enumerate() {
-                    let (cx, cy) = layout::center(*slot);
-                    // 展示页真品静止摆着 `[推断]`。
-                    self.place_model(i, 0, cx, cy, EXHIBIT_FIT, 0.);
+                // 展示页五件在原版里是持续自转的（控件 0xaa0b08 的
+                // `FUN_0043a090(1, …)` → 模式 1），五件共用一台相机、同一个角度。
+                for i in 0..layout::EXHIBIT_POS.len() {
+                    self.place_model(
+                        i,
+                        0,
+                        &layout::VIEW_EXHIBIT,
+                        layout::EXHIBIT_POS[i],
+                        self.spin,
+                    );
                 }
                 let do_button = self.do_button.clone();
                 let hovered_slot = layout::EXHIBIT_SLOTS
@@ -690,8 +663,8 @@ impl AppraiseGame {
             }
             Some(i) => {
                 self.show_backdrop(self.exhibit_zoom.as_ref());
-                let (cx, cy) = layout::center(layout::ZOOM_PANE);
-                self.place_model(i, 0, cx, cy, ZOOM_FIT, self.spin);
+                // 放大视图（控件 0xaa0b09）没设过自转模式，原版是静止的。
+                self.place_model(i, 0, &layout::VIEW_EXHIBIT_ZOOM, (0., 0.), 0.);
                 let name = self.names[i].0.clone();
                 let diffent = self
                     .diffent
@@ -775,12 +748,6 @@ impl AppraiseGame {
 
         let cur = self.round.current;
         let side = self.round.side;
-        let (real_pos, fake_pos) = if side == 0 {
-            (layout::DO_LEFT, layout::DO_RIGHT)
-        } else {
-            (layout::DO_RIGHT, layout::DO_LEFT)
-        };
-
         // 放大视图里：右键关，拖动转
         if let Some(z) = self.do_zoom_side {
             self.show_backdrop(self.do_zoom.as_ref());
@@ -791,8 +758,7 @@ impl AppraiseGame {
                 let scale = (sw / layout::SCREEN_W as f32).min(sh / layout::SCREEN_H as f32);
                 self.do_angle += dx / scale.max(1e-3) * DRAG_SPEED;
             }
-            let (cx, cy) = layout::center(layout::ZOOM_PANE);
-            self.place_model(cur, which, cx, cy, ZOOM_FIT, self.do_angle);
+            self.place_model(cur, which, &layout::VIEW_DO_ZOOM, (0., 0.), self.do_angle);
             if right || ui.is_key_pressed(imgui::Key::Escape) {
                 self.do_zoom_side = None;
             }
@@ -801,10 +767,12 @@ impl AppraiseGame {
         }
 
         self.show_backdrop(self.doing_bk.as_ref());
-        let (rx, ry) = layout::center(real_pos);
-        let (fx, fy) = layout::center(fake_pos);
-        self.place_model(cur, 0, rx, ry, DO_FIT, self.do_angle);
-        self.place_model(cur, 1, fx, fy, DO_FIT, self.do_angle);
+        // 真品放世界位置表的第 `side` 项，赝品放另一项；两件都持续自转
+        // （控件 0xaa0c25/26 都是模式 1）。
+        let real_world = layout::DO_POS[side as usize & 1];
+        let fake_world = layout::DO_POS[1 - (side as usize & 1)];
+        self.place_model(cur, 0, &layout::VIEW_DO, real_world, self.spin);
+        self.place_model(cur, 1, &layout::VIEW_DO, fake_world, self.spin);
 
         // 拖放大镜
         if let Some(drag) = self.drag {
