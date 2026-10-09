@@ -764,8 +764,14 @@ impl FlexParticle {
         }
         self.moved = Vec3::add(&self.moved, &Vec3::scalar_mul(delta_sec, &self.velocity));
         // `SetAxisAngle(轴, (t − 起点) × +36)` 后转 `(+32, 0, 0)`；gbengine 的
-        // SetAxisAngle 乘 π/180 × 0.5 进四元数，所以角度是度。转向按
-        // 右手 Rodrigues **[推断]**（Rotate 是行向量乘法，未逐项核对正负）。
+        // SetAxisAngle 乘 π/180 × 0.5 进四元数，所以角度是度。
+        //
+        // 转向是**右手 Rodrigues**，已核：`gbQuaternion::GetMatrix`
+        // （gbengine `0x10026b60`）按倍积填出 `m00 = 1−yy−zz`、
+        // `m01 = xy+wz`、`m10 = xy−wz`，这正是标准列向量旋转矩阵的**转置**；
+        // 而引擎用行向量（`gbMatrix4::Transform` `0x100252c0` 算
+        // `out.x = x·m00 + y·m10 + z·m20 + m30`），`v·Mᵀ` 就等于把标准右手
+        // 旋转作用在 v 上。所以正角 = 绕轴右手定则。
         let k = if self.axis.norm() < 1e-6 {
             Vec3::new(0., 1., 0.)
         } else {
@@ -2047,7 +2053,14 @@ impl AdventureDirectorProps {
     }
 
     /// 「跳」的图标该不该出、左上角在哪（`FUN_0041d9a0` 0x41dc6d 起）：站在跳跃区上时，主角头顶
-    /// （`FUN_00419a80`：位置 + 模型包围盒高，[推断] 移植用角色模型高）再高 10 投到屏幕（归一化坐标，y 朝上）。
+    /// （`FUN_00419a80`）再高 10 投到屏幕（归一化坐标，y 朝上）。
+    ///
+    /// 头顶怎么算已核：`FUN_00419a80` 取角色世界位置 `+0xa0/+0xa4/+0xa8`，
+    /// 再把几何节点虚表 `+0x1c` 写出的 gbOBBox 的 `+0x44` 加到 y 上
+    /// （`0x419abf` 读的就是那块缓冲区的 +68）。gbOBBox 的三条边长在
+    /// `+0x40..+0x48`、`GetRadius` 要乘 0.5，所以 `+0x44` 是**整条 Y 边长，
+    /// 即模型高**（和 `lineup_page_layout.md` §177 查到的是同一个字段）——
+    /// 移植端用角色模型高是对的。
     fn jump_icon_ndc(&self) -> Option<[f32; 2]> {
         let (player, _) = self.jump_spot()?;
         let rc = RoleController::get_role_controller(player.clone())?;
