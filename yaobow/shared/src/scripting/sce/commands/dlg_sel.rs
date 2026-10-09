@@ -16,9 +16,11 @@
 //!
 //! 九宫格的排法和夹取规则照 `FUN_00445500` 来，见 [`frame_pieces`]。
 //!
-//! [推断] 的地方：
-//! - 行内文字左缩 8 像素、竖直居中；高亮条横向铺满一行、竖直居中；
-//! - 原版开场不高亮任何一项，靠鼠标悬停；移植端开场先高亮第一项，手柄才能直接选。
+//! 行内文字的位置和高亮条的矩形都照列表控件画行那段（`0x43e8e0` 起）来，
+//! 见 [`row_rect`] / [`highlight_rect`]。
+//!
+//! 和原版有意不同的一处（不是没查清）：原版开场不高亮任何一项、靠鼠标悬停，
+//! 移植端开场先高亮第一项，手柄才能直接选。
 //!
 //! 操作：十字键 / 方向键上下移动，A / 空格确认；鼠标（触屏）悬停高亮、点击选中；
 //! 数字键 1..9、0 直接选（旧行为保留）。
@@ -48,12 +50,18 @@ const SCREEN_H: i32 = 600;
 pub const ROW_HEIGHT: i32 = 20;
 /// 列表相对框四边的内缩（框宽、框高各减 20 后居中）。
 pub const LIST_INSET: i32 = 10;
-/// 行内文字的左缩进 **[推断]**。
+/// 行内文字相对列表左边的缩进。列表控件画行时
+/// （`0x43e95a` / `0x43e91e`）文字原点是
+/// `(左 + [+0x49c] + 8, 上 + [+0x4a0] + 8 + 行号·行高)`，
+/// 两个偏移字段在这个框里是 0，所以就是 8。
 pub const TEXT_INSET: i32 = 8;
+/// 列表上边到第一行的内边距，和 [`TEXT_INSET`] 是同一个 8。
+pub const LIST_PAD: i32 = 8;
 /// 九宫格每块的边长（`note0..8.tga` 都是 32×32）。
 pub const FRAME_PIECE: i32 = 32;
-/// 高亮条的高度（`SelPic.tga` 128×16）。
-pub const HIGHLIGHT_HEIGHT: i32 = 16;
+/// 高亮条贴图 `SelPic.tga` 的高（128×16）。**画出来不是这个高**——
+/// 原版把它拉到 `行高 − 2`，见 [`highlight_rect`]。
+pub const HIGHLIGHT_TEX_HEIGHT: i32 = 16;
 /// 0xfffafa。
 const TEXT_COLOR: [f32; 4] = [1.0, 0.98, 0.98, 1.0];
 
@@ -86,16 +94,19 @@ pub fn list_rect(b: Rect) -> Rect {
     )
 }
 
-/// 第 `k` 行。
+/// 第 `k` 行。第一行从列表上边再下 [`LIST_PAD`] 开始（`0x43e95a`
+/// 的 `lea edi, [上 + [+0x4a0] + 8]`），之后逐行加行高。
 pub fn row_rect(area: Rect, k: usize) -> Rect {
-    let y = area.1 + k as i32 * ROW_HEIGHT;
+    let y = area.1 + LIST_PAD + k as i32 * ROW_HEIGHT;
     (area.0, y, area.2, y + ROW_HEIGHT)
 }
 
-/// 高亮条：横向铺满一行、竖直居中 **[推断]**。
-pub fn highlight_rect(row: Rect) -> Rect {
-    let pad = (ROW_HEIGHT - HIGHLIGHT_HEIGHT) / 2;
-    (row.0, row.1 + pad, row.2, row.1 + pad + HIGHLIGHT_HEIGHT)
+/// 高亮条（`0x43eab4` 起算的那个矩形）：左边留 4、右边留 2（原版还要再减
+/// 滚动条宽 `[+0x494]`，这个框没有滚动条），纵向**和行顶齐平**、高
+/// `行高 − 2`，底再夹到列表下边。贴图会被拉到这个高度。
+pub fn highlight_rect(row: Rect, area: Rect) -> Rect {
+    let y1 = (row.1 + ROW_HEIGHT - 2).min(area.3);
+    (row.0 + 4, row.1, row.2 - 2, y1)
 }
 
 /// 虚拟坐标 `(x, y)` 落在第几行。
@@ -104,7 +115,11 @@ pub fn row_at(items: usize, b: Rect, x: f32, y: f32) -> Option<usize> {
     if x < area.0 as f32 || x >= area.2 as f32 || y < area.1 as f32 {
         return None;
     }
-    let k = ((y - area.1 as f32) / ROW_HEIGHT as f32) as usize;
+    let top = (area.1 + LIST_PAD) as f32;
+    if y < top {
+        return None;
+    }
+    let k = ((y - top) / ROW_HEIGHT as f32) as usize;
     (k < items).then_some(k)
 }
 
@@ -264,15 +279,15 @@ impl SceCommandDlgSel {
             }
             let area = list_rect(b);
             let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
-            let font_px = ui.current_font_size();
             for (k, text) in self.list.iter().enumerate() {
                 let row = row_rect(area, k);
                 if k == self.cursor {
-                    draw_sprite(&list, self.select.as_deref(), highlight_rect(row), at);
+                    draw_sprite(&list, self.select.as_deref(), highlight_rect(row, area), at);
                 }
+                // 文字顶就在行顶（`FUN_00540fd0` 拿 y 当上边、y + 字号当下边），
+                // 不另做竖直居中。
                 let [sx, sy] = at(row.0 + TEXT_INSET, row.1);
-                let dy = (ROW_HEIGHT as f32 * scale - font_px) * 0.5;
-                list.add_text([sx, sy + dy], TEXT_COLOR, text);
+                list.add_text([sx, sy], TEXT_COLOR, text);
             }
         });
     }
@@ -345,11 +360,18 @@ mod tests {
         let b = box_rect(&items(&["是", "否"]));
         let area = list_rect(b);
         assert_eq!(area, (370, 270, 430, 330));
-        assert_eq!(row_rect(area, 1), (370, 290, 430, 310));
-        assert_eq!(highlight_rect(row_rect(area, 0)), (370, 272, 430, 288));
-        assert_eq!(row_at(2, b, 380., 295.), Some(1));
-        assert_eq!(row_at(2, b, 380., 315.), None, "第三行没有选项");
-        assert_eq!(row_at(2, b, 365., 275.), None, "框边上不算");
+        // 第一行从列表上边再下 8 开始（原版 0x43e95a）。
+        assert_eq!(row_rect(area, 0), (370, 278, 430, 298));
+        assert_eq!(row_rect(area, 1), (370, 298, 430, 318));
+        // 高亮条左留 4、右留 2，和行顶齐平、高 行高−2。
+        assert_eq!(
+            highlight_rect(row_rect(area, 0), area),
+            (374, 278, 428, 296)
+        );
+        assert_eq!(row_at(2, b, 380., 303.), Some(1));
+        assert_eq!(row_at(2, b, 380., 275.), None, "第一行上面那 8 像素不算");
+        assert_eq!(row_at(2, b, 380., 323.), None, "第三行没有选项");
+        assert_eq!(row_at(2, b, 365., 283.), None, "框边上不算");
     }
 
     #[test]
