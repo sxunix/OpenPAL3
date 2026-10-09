@@ -166,6 +166,14 @@ fn get_shader_proram_data(shader: ShaderProgram) -> ShaderProgramData {
             include_bytes!("shaders/simple_triangle.frag"),
             VertexComponents::POSITION | VertexComponents::NORMAL | VertexComponents::TEXCOORD,
         ),
+        // PSVita 没有逐颗着色的粒子程序，退回普通贴图着色器（声明 TEXCOORD2
+        // 好让顶点步幅对上——每颗的颜色就打包在那一路里，这里只是不解包）。
+        ShaderProgram::Particle => ShaderProgramData::new(
+            "Particle",
+            include_bytes!("shaders/simple_triangle.vert"),
+            include_bytes!("shaders/simple_triangle.frag"),
+            VertexComponents::POSITION | VertexComponents::TEXCOORD | VertexComponents::TEXCOORD2,
+        ),
         ShaderProgram::Pal3Geom => ShaderProgramData::new(
             "Pal3Geom",
             include_bytes!("shaders/simple_triangle.vert"),
