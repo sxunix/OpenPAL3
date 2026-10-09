@@ -38,12 +38,6 @@ pub enum ShaderProgram {
     /// Requires `POSITION | NORMAL | TEXCOORD`. Lives under `shaders/openpal3/`.
     Pal3Geom,
 
-    /// PAL3 static prop shader (CVD items) — ambient-only (`gfxscript/geom.gbf`
-    /// no-light pass): texture × scene ambient, no per-vertex directional term.
-    /// Keeps CVD props evenly dim instead of split bright/dark. Requires
-    /// `POSITION | NORMAL | TEXCOORD`. Lives under `shaders/openpal3/`.
-    Pal3Prop,
-
     /// PAL5 terrain multi-layer splat shader. Blends up to four terrain
     /// textures (`texSampler[0..4]`) per-texel by a weight atlas
     /// (`texSampler[4]`, RGBA = the four layers' weights), then applies the

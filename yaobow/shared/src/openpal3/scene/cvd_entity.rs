@@ -11,7 +11,7 @@ use radiance::components::mesh::{
 };
 use radiance::math::{Mat44, Quaternion, Vec2, Vec3};
 use radiance::rendering::{
-    ComponentFactory, MaterialDef, Pal3PropMaterialDef, VertexBuffer, VertexComponents,
+    ComponentFactory, MaterialDef, Pal3GeomMaterialDef, VertexBuffer, VertexComponents,
 };
 use radiance::scene::CoreEntity;
 use std::{
@@ -180,11 +180,12 @@ fn load_texture<P: AsRef<Path>>(
         model_dir.join(&material.texture_name)
     };
 
-    // CVD props carry no baked lightmap; like the original engine, shade them
-    // with the scene's dynamic `.lgt` lights via the lit material (CVD vertices
-    // ship normals). Keep the default `BlendMode::AlphaTest` cutout fallback,
-    // matching the legacy renderer's "always cutout" behavior.
-    Pal3PropMaterialDef::create(texture_path.to_str().unwrap(), |name| vfs.open(name).ok())
+    // CVD 在原版里和 POL 同样是 `gbGeomNode`，走同一条 `AttachSelf`
+    // （gbengine.dll `0x10011280`）：没有光照贴图 ⇒ 挂灯的 flag 传 0 ⇒ 照样吃
+    // 最多两盏灯，落到 `geom_1L` / `geom_2L`。所以这里和 POL 单贴图面用同一套
+    // 材质，不另给「只有环境光」的那一套。CVD 顶点自带法线。
+    // 保留默认的 `BlendMode::AlphaTest` 抠图回退，和旧渲染器的行为一致。
+    Pal3GeomMaterialDef::create(texture_path.to_str().unwrap(), |name| vfs.open(name).ok())
 }
 
 /// How a CVD node's keyframe tracks are driven.

@@ -50,26 +50,33 @@ void main() {
     vec3 worldPos = world.xyz;
     vec3 N = normalize(normal * mat3(perInstanceUbo.model));
 
-    // Scenery uses the dim scene ambient directly (unlike actors, which carry a
-    // high material ambient).
+    // 环境项 = 场景环境光 × 材质 Ambient（PAL3 的材质 Ambient 都是 (1,1,1)，
+    // 自发光系数全程 0），所以直接取场景环境光。
     vec3 ambient = perFrameUbo.ambient.rgb;
 
-    // Pick the two nearest enabled lights (geom_1L/geom_2L).
+    // 挑两盏灯。原版排序用 `gbLightObj::GetEffectOnPoint`（gbengine.dll
+    // `0x100132a0`）= `min(1, 1/(a0 + a1·d + a2·d²)) × (r+g+b)/3`；PAL3 的 `.lgt`
+    // 衰减类型一律是 0 ⇒ `a=(1,0,0)` ⇒ 那个系数恒为 1，**排序与距离无关，按颜色最亮取**。
     int count = int(perFrameUbo.ambient.w);
     int best0 = -1, best1 = -1;
-    float d0 = 1e30, d1 = 1e30;
+    float r0 = 0.0, r1 = 0.0;
     for (int i = 0; i < count; i++) {
-        float dist = distance(perFrameUbo.lightPos[i].xyz, worldPos);
-        if (dist < d0) {
-            d1 = d0; best1 = best0;
-            d0 = dist; best0 = i;
-        } else if (dist < d1) {
-            d1 = dist; best1 = i;
+        vec3 c = perFrameUbo.lightColor[i].rgb;
+        float rank = c.r + c.g + c.b;
+        if (rank > r0) {
+            r1 = r0; best1 = best0;
+            r0 = rank; best0 = i;
+        } else if (rank > r1) {
+            r1 = rank; best1 = i;
         }
     }
 
-    // Per-vertex Gouraud accumulation, exactly as geom_1L/geom_2L.gbf.
-    vec3 lit = ambient;
+    // 逐顶点 Gouraud 累加，照 geom_1L / geom_2L.gbf。注意 `geom_2L` 里
+    // **每盏灯各加一次 ambient**（`color1 = … + ambient[0]`、`color2 = … + ambient[1]`，
+    // 再相加），所以两盏灯时环境项是两份；一盏灯或没灯时是一份
+    // （没灯走 `geom.gbf`，顶点色就等于 ambient）。
+    int lightCount = (best0 >= 0 ? 1 : 0) + (best1 >= 0 ? 1 : 0);
+    vec3 lit = ambient * float(max(lightCount, 1));
     int idx[2] = int[2](best0, best1);
     for (int k = 0; k < 2; k++) {
         int i = idx[k];

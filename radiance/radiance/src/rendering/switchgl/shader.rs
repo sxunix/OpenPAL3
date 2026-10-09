@@ -101,14 +101,7 @@ impl SwitchGLShader {
                 glGetUniformLocation(program, c.as_ptr())
             };
 
-            // Actors keep PAL3's high material ambient; scenery uses the dim
-            // scene ambient as-is. Program state, set once.
-            let floor = match shader {
-                ShaderProgram::Pal3Actor | ShaderProgram::TexturedDynamicLit => 0.55f32,
-                _ => 0.0f32,
-            };
             glUseProgram(program);
-            glUniform1f(loc("ambientFloor"), floor);
             // Neutral defaults so programs render sanely before the first
             // per-draw upload (and for programs the engine never feeds).
             glUniform4fv(loc("tint"), 1, [1.0f32, 1.0, 1.0, 1.0].as_ptr());
@@ -246,12 +239,6 @@ fn get_shader_program_data(shader: ShaderProgram) -> ShaderProgramData {
         ),
         ShaderProgram::Pal3Geom => ShaderProgramData::new(
             "Pal3Geom",
-            include_bytes!("shaders/pal3_lit_common.vert"),
-            include_bytes!("shaders/pal3_lit_common.frag"),
-            VertexComponents::POSITION | VertexComponents::NORMAL | VertexComponents::TEXCOORD,
-        ),
-        ShaderProgram::Pal3Prop => ShaderProgramData::new(
-            "Pal3Prop",
             include_bytes!("shaders/pal3_lit_common.vert"),
             include_bytes!("shaders/pal3_lit_common.frag"),
             VertexComponents::POSITION | VertexComponents::NORMAL | VertexComponents::TEXCOORD,

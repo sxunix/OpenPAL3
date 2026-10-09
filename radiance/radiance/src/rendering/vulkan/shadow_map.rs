@@ -450,9 +450,6 @@ fn program_components(program: ShaderProgram) -> VertexComponents {
         ShaderProgram::Pal3Geom => {
             VertexComponents::POSITION | VertexComponents::NORMAL | VertexComponents::TEXCOORD
         }
-        ShaderProgram::Pal3Prop => {
-            VertexComponents::POSITION | VertexComponents::NORMAL | VertexComponents::TEXCOORD
-        }
     }
 }
 

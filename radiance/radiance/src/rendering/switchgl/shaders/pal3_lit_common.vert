@@ -1,24 +1,21 @@
 #version 100
 // Shared vertex stage for PAL3's Gouraud-lit programs (actor/geom/prop) on
 // GLES2. Ported from the Vulkan pal3_actor/pal3_geom pair: per-vertex
-// 2-nearest-light Lambert, clamped, texture-modulated in the fragment stage.
+// 2-light Lambert（按亮度取），clamped, texture-modulated in the fragment stage.
 // Differences from the Vulkan original, by necessity or convention:
 //  * column-vector math (P*V*M) — equivalent to the row-vector original
 //    because radiance's row-major Mat44 read untransposed by GL *is* the
 //    transpose;
 //  * no Vulkan clip matrix (GL NDC wants the projection as-is);
 //  * the light table matches the Vulkan original: 16 uploaded lights, the
-//    2 nearest picked per vertex (was capped at 4 during bring-up, which
-//    dropped the key lamps in scenes with more lights and left them dark);
-//  * GLSL ES 100 has no array constructors, so the 2-nearest pick is unrolled.
-// `ambientFloor` distinguishes actors (0.55) from scenery (0.0).
+//    2 brightest picked per vertex;
+//  * GLSL ES 100 has no array constructors, so the pick is unrolled.
 uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
 uniform vec4 ambientLight;    // rgb = ambient, w = light count
 uniform vec4 lightPos[16];     // xyz = world pos, w = outer range
 uniform vec4 lightColor[16];   // rgb = color, w = inner range
-uniform float ambientFloor;
 uniform vec4 uvXform;         // xy = scale, zw = offset
 
 attribute vec3 position;
@@ -51,20 +48,24 @@ void main() {
 
     vec3 worldPos = world.xyz;
     vec3 N = normalize(mat3(modelMatrix) * normal);
-    vec3 ambient = max(ambientLight.rgb, vec3(ambientFloor));
+    vec3 ambient = ambientLight.rgb;
 
-    // 2-nearest pick over at most 4 lights, unrolled (no arrays in ES 100).
+    // 挑最亮的两盏（原版 GetEffectOnPoint 的距离项对 PAL3 的无衰减灯恒为 1，
+    // 排序只看颜色）。ES 100 没有数组构造式，展开写。
     int count = int(ambientLight.w);
     int best0 = -1; int best1 = -1;
-    float d0 = 1.0e30; float d1 = 1.0e30;
+    float r0 = 0.0; float r1 = 0.0;
     for (int i = 0; i < 16; i++) {
         if (i >= count) { break; }
-        float dist = distance(lightPos[i].xyz, worldPos);
-        if (dist < d0) { d1 = d0; best1 = best0; d0 = dist; best0 = i; }
-        else if (dist < d1) { d1 = dist; best1 = i; }
+        vec3 c = lightColor[i].rgb;
+        float rank = c.r + c.g + c.b;
+        if (rank > r0) { r1 = r0; best1 = best0; r0 = rank; best0 = i; }
+        else if (rank > r1) { r1 = rank; best1 = i; }
     }
 
-    vec3 lit = ambient;
+    // geom_2L 里每盏灯各加一次 ambient，所以两盏灯环境项是两份。
+    int lightCount = (best0 >= 0 ? 1 : 0) + (best1 >= 0 ? 1 : 0);
+    vec3 lit = ambient * float(max(lightCount, 1));
     for (int i = 0; i < 16; i++) {
         if (i == best0 || i == best1) { lit += lightContrib(i, worldPos, N); }
     }

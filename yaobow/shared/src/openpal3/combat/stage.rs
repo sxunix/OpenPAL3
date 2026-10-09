@@ -11,6 +11,9 @@
 
 use std::path::PathBuf;
 
+use radiance::math::Vec3;
+use radiance::scene::{SceneLight, SceneLighting};
+
 use crate::openpal3::states::combat_data::StagePos;
 
 /// 我方五个战斗位用的模型名，和 `PLAYER_COMBAT_IDS` 一一对应
@@ -55,6 +58,48 @@ pub fn scene_light_path(scene: &str) -> PathBuf {
     let upper = scene.to_uppercase();
     let lower = scene.to_lowercase();
     PathBuf::from(format!("{COMBAT_SCENE_DIR}/{upper}/{lower}.lgt"))
+}
+
+/// 引擎的全局环境光。原版 `gbGfxManager` 构造里写死 (0.2, 0.2, 0.2, 1)
+/// （gbengine.dll `0x1001d9b9`，字段 `+0x1ac`），而 `SetAmbientLight` /
+/// `EnableEmissive` / `SetEmissiveFactor` 三个入口在 exe 的导入表里都没有、
+/// gbengine 内部也没人调，所以这个值和自发光系数（0）全程不变。
+///
+/// 着色器里的环境项 = (全局环境光 + 灯自己的 Ambient) × 材质 Ambient
+/// + 自发光系数 × 材质 Emissive。PAL3 的材质 Ambient 一律 (1,1,1)、
+/// `.lgt` 每盏灯的 Ambient 全是 0、自发光系数是 0，所以就等于这个常数。
+pub const AMBIENT: [f32; 3] = [0.2, 0.2, 0.2];
+
+/// 读一张战场的 `.lgt`，连同 [`AMBIENT`] 一起给战斗场景。
+///
+/// 原版战斗里灯是挂着的：`FUN_00510ca0`（舞台的 Render）在第一轮
+/// `gbSceneGraph::Begin/End` 里依次画舞台 POL、**灯光节点**、指针和阵型标记，
+/// 角色也在同一轮，所以角色吃这组灯（舞台本身不吃，它带光照贴图，
+/// 见 `combat_flow.md`）。读不到就只给环境光。
+pub fn scene_lighting(vfs: &mini_fs::MiniFs, scene: &str) -> SceneLighting {
+    use common::store_ext::StoreExt2;
+
+    let path = scene_light_path(scene);
+    let lights = vfs
+        .read_to_end(&path)
+        .ok()
+        .and_then(|buf| fileformats::pal3::lgt::read_lgt(&mut std::io::Cursor::new(buf)).ok())
+        .map(|lgt| {
+            lgt.lights
+                .iter()
+                .map(|l| {
+                    let p = l.position();
+                    SceneLight::with_range(Vec3::new(p[0], p[1], p[2]), l.color, l.range)
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_else(|| {
+            log::warn!("Combat: 战场光照读不到 {}", path.display());
+            vec![]
+        });
+
+    log::debug!("Combat: 战场 {scene} {} 盏灯", lights.len());
+    SceneLighting::new(AMBIENT, lights)
 }
 
 /// 一台相机的位姿（`cbCam.ini` 的一节，或 `flexcam.dat` 记录里的起止机位）。

@@ -865,33 +865,6 @@ fn decode_pal3_texture(buf: &[u8]) -> Option<image::RgbaImage> {
         image::imageops::flip_vertical(&img)
     })
 }
-
-/// Builds a PAL3 static prop material ([`ShaderProgram::Pal3Prop`]) for CVD
-/// items: ambient-only (texture × scene ambient), no per-vertex directional
-/// term, matching the original `gfxscript/geom.gbf` no-light pass.
-pub struct Pal3PropMaterialDef;
-impl Pal3PropMaterialDef {
-    pub fn create<R: Read>(
-        texture_name: &str,
-        get_reader: impl FnOnce(&str) -> Option<R>,
-    ) -> MaterialDef {
-        let texture =
-            TextureStore::get_or_update(texture_name, || match get_reader(texture_name) {
-                Some(mut r) => {
-                    let mut buf = Vec::new();
-                    r.read_to_end(&mut buf).unwrap();
-                    decode_pal3_texture(&buf)
-                }
-                _ => None,
-            });
-
-        MaterialDef::builder(ShaderProgram::Pal3Prop)
-            .debug_name("pal3_prop_material")
-            .textures_with_samplers(vec![texture], vec![SamplerDef::default()])
-            .build()
-    }
-}
-
 pub struct LightMapMaterialDef;
 impl LightMapMaterialDef {
     pub fn create<R: Read>(

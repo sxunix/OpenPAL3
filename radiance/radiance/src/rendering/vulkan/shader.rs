@@ -182,10 +182,6 @@ static PAL3_GEOM_VERT: &'static [u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/pal3_geom.vert.spv"));
 static PAL3_GEOM_FRAG: &'static [u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/pal3_geom.frag.spv"));
-static PAL3_PROP_VERT: &'static [u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/pal3_prop.vert.spv"));
-static PAL3_PROP_FRAG: &'static [u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/pal3_prop.frag.spv"));
 
 fn get_shader_proram_data(shader: ShaderProgram) -> ShaderProgramData {
     match shader {
@@ -244,12 +240,6 @@ fn get_shader_proram_data(shader: ShaderProgram) -> ShaderProgramData {
             "pal3_geom",
             PAL3_GEOM_VERT,
             PAL3_GEOM_FRAG,
-            VertexComponents::POSITION | VertexComponents::NORMAL | VertexComponents::TEXCOORD,
-        ),
-        ShaderProgram::Pal3Prop => ShaderProgramData::new(
-            "pal3_prop",
-            PAL3_PROP_VERT,
-            PAL3_PROP_FRAG,
             VertexComponents::POSITION | VertexComponents::NORMAL | VertexComponents::TEXCOORD,
         ),
     }

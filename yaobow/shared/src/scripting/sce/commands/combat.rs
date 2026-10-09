@@ -800,7 +800,7 @@ impl SceCommandCombat {
         use crate::openpal3::combat::stage;
         use common::store_ext::StoreExt2;
         use mini_fs::StoreExt;
-        use radiance::scene::{CoreScene, SceneLighting};
+        use radiance::scene::CoreScene;
 
         let Some(scene_name) = self.combat_scene.clone() else {
             log::warn!("Combat: 没算出战场名，舞台不建");
@@ -821,7 +821,9 @@ impl SceCommandCombat {
         }
 
         let scene = CoreScene::create();
-        scene.set_lighting(SceneLighting::new([1., 1., 1.], vec![]));
+        // 原版战斗第一轮里灯是挂着的（`FUN_00510ca0` 画舞台时一并画灯光节点），
+        // 角色吃这组灯；环境光是引擎默认的 0.2。舞台本身带光照贴图、不吃灯。
+        scene.set_lighting(stage::scene_lighting(vfs, &scene_name));
         scene.add_entity(crate::openpal3::loaders::pol::create_entity_from_pol_model(
             &factory,
             vfs,

@@ -143,14 +143,13 @@ impl AssetManager {
     /// preferred, falling back to the base `.lgt`. Missing or unreadable files
     /// fall back to an ambient-only environment so actors stay visible.
     fn load_lgt(&self, cpk_name: &str, scn_base_name: &str, is_night: bool) -> SceneLighting {
-        // A modest ambient floor so surfaces facing away from every light are
-        // not pure black; dimmer at night. Kept neutral (not blue-tinted) so
-        // actors aren't pushed cool against warm interiors.
-        let ambient = if is_night {
-            [0.10, 0.10, 0.10]
-        } else {
-            [0.10, 0.10, 0.10]
-        };
+        // 环境光照原版来：`gbGfxManager` 构造里写死 (0.2, 0.2, 0.2)
+        // （gbengine.dll `0x1001d9b9`，字段 `+0x1ac`），而 `SetAmbientLight`
+        // 在 exe 的导入表里根本没有，所以全程不变——白天夜里都一样。
+        // 着色器里的环境项 = 这个值 × 材质 Ambient + 自发光系数 × 材质 Emissive，
+        // PAL3 的材质 Ambient 都是 (1,1,1)、自发光系数全程 0，所以直接等于它。
+        let _ = is_night;
+        let ambient = crate::openpal3::combat::stage::AMBIENT;
 
         let base_folder = self.scene_path.join(cpk_name).join(scn_base_name);
         let mut candidate_paths = vec![];
