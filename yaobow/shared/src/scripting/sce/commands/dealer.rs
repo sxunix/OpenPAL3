@@ -66,6 +66,12 @@ mod lang {
     pub const COUNT: usize = 4;
     pub const HELD: usize = 44;
     pub const TOTAL: usize = 123;
+    /// 没人能装备（`FUN_00462120` 里数完五个人都不能穿时显示的
+    /// `DAT_00dd4a3c`）。槽位是这么定的：exe 里 `&DAT_00dc733c + 角色号·0x100`
+    /// 是五个主角名，而表里第 64–68 条正好是景天/雪见/龙葵/紫萱/长卿，
+    /// 所以 `LangN` 在 `0xdc733c + (N−64)·0x100`；代进 `0xdd4a3c` 得 N = 279，
+    /// 内容「没有人可以装备」。（这张表共 400 条，下标就是编号。）
+    pub const NOBODY_CAN_WEAR: usize = 279;
 }
 
 /// 原版菜单背后每帧再贴一张场景截图（`0x459900`）：打开时 `FUN_004bdc40` 把场景按
@@ -140,15 +146,16 @@ struct Worn {
     slot: usize,
 }
 
-/// 没人能穿时说的话。原版这里显示 `DAT_00dd4a3c`（`FUN_00462120`），内容没查 [推断]。
-const NOBODY_CAN_WEAR: &str = "队中无人能装备此物";
-
 #[derive(Debug, Clone)]
 struct Card {
     role: usize,
     head: Rect,
-    /// 小图标亮不亮：那一格穿着东西 [推断]——原版在买下并穿上时点亮
-    /// （`FUN_00469eb0`），进页时怎么初始化没有追。
+    /// 小图标亮不亮：那一格穿着东西 [推断]。已查清的部分：`FUN_00462280`
+    /// 对这一行的装备，把队里能穿它的人（`物品+0x266+人`）那一格小图标
+    /// **开闪**（`FUN_00444d10`），`FUN_00462340` 五个一起停闪
+    /// （`FUN_00444d20`）——这两个管的是闪，不是亮；预穿的状态记在
+    /// `+0x16d00`（开关）、`+0x16d01+人`（每格一字节）、`+0x16d24`（每格的
+    /// 物品号）。进页时拿现有装备点亮这件事仍没追到，保持现在的读法。
     small: [bool; 6],
     /// 这件装备能穿时：（左右、大图标号、箭头）。
     groups: Vec<(cmp::Side, usize, Vec<cmp::Arrow>)>,
@@ -679,7 +686,9 @@ impl SceCommandDealerMenu {
         };
         match who.as_slice() {
             [] => {
-                self.talk = NOBODY_CAN_WEAR.to_string();
+                self.talk = self
+                    .text(lang::NOBODY_CAN_WEAR, "没有人可以装备")
+                    .to_string();
                 self.wear_mode = false;
             }
             [r] if g.item_type != 10 => {
@@ -753,7 +762,10 @@ impl SceCommandDealerMenu {
         self.top = 0;
         self.cart.clear();
         self.reset_wear();
-        // 卖页读 `EntrySale` 的地方没在 exe 里找到，照字段意思用 [推断]。
+        // `EntrySale` 确实是解析出来的字段（exe 里有一张 0x20 步长的字段名表：
+        // `MC` / `Patience` / `BeginTalk` / `EntryBuy` / `EntrySale` /
+        // `NormalAcptTalk`…），但卖页把它显示出来的地方没在 exe 里找到，
+        // 照字段意思用 [推断]。
         self.talk = match page {
             Page::Sell => self.shop.entry_sale.clone(),
             _ => self.shop.entry_buy.clone(),
