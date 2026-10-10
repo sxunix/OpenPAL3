@@ -1563,8 +1563,21 @@ impl SceCommandDealerMenu {
             if i == self.cursor {
                 blit(list, &sk.selected, g.0, g.1, at);
             }
-            // 选中条是深绿色不透明的，上面的字换成浅色 [推断]：列表控件画行的那段
-            // 没追到（`0x43ff70` 画的是滚动条），颜色取对话选择框的 0xfffafa。
+            // 列表控件画行那段已经读通（`0x43e8e0` 起，不是 `0x43ff70`，那个画
+            // 的是滚动条）。原版的做法是：
+            //
+            // * **字色不随选中变**。行文字走 `FUN_00540fd0`，颜色参数要么是
+            //   逐行的 `[+0x1f4][行] + 0x44`（当 `[+0x4ac][行] != 0`），要么是
+            //   全局默认 `0xd91780`；那个默认值由 `FUN_00445a60` 按表面格式
+            //   写成 (0x40, 0x40, 0x3c, α=0xc8) 的深灰半透。两条路都和「这行
+            //   选没选中」无关。
+            // * **选中条画在字上面**：行循环跑完（`0x43ea6d`）之后才算条的
+            //   矩形（`0x43eab4`）并画（`0x43eb66`），条 = 贴图 `[+0x480]`
+            //   乘颜色 `[+0x498]` = (0xa8, 0xa8, 0xa8, α=0xc8)，靠半透让字透出来。
+            //
+            // 移植端目前反着来——条画在字下面、再把字换成浅色。**这是有意保留
+            // 的偏差**：翻成原版画法得让半透的深绿条盖在字上，手头没有实机画面
+            // 能判断那样还读不读得清，先不动。
             let ink = if i == self.cursor { SELECTED_INK } else { INK };
             let cell = |c: usize, s: &str| {
                 let [x, y] = at(geom.column_x(c) + lay::TEXT_INSET, g.1);
@@ -1620,7 +1633,8 @@ impl SceCommandDealerMenu {
         if let (Some(a), Some(good)) = (self.cursor_anchor(), self.current()) {
             if !sell {
                 let held = self.text(lang::HELD, "持有");
-                // 这行字压在选中条上，和选中行一样用浅色 [推断]。
+                // 这行字压在选中条上，和选中行一样用浅色——同上，原版不换字色，
+                // 这是跟着上面那处一起保留的偏差。
                 let r = lay::owned_tip_rect(a);
                 list.add_text(
                     at(r.0 + lay::TEXT_INSET, r.1 + lay::TEXT_INSET),
