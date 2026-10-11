@@ -16,20 +16,41 @@
 //! （`grid` 和 `meteor` 同样读这批字段，所以它不是 `cylinder` 专属——先前笔记
 //! 里写成「只有 cylinder 在读」是因为当时只扫了 cylinder 自己的地址区间。）
 //!
-//! # 几何
+//! # 几何：整条柱面在建实例时就定死了
 //!
-//! 环的生成在 `FUN_004c5350`：
+//! 环的生成在 `FUN_004c5350`，**全程只有 `FUN_004c4060`（Create）调一次**
+//! （全文件唯一调用点），每帧的 tick `FUN_004c45a0` 和补间 `0x4c4b00` 都不
+//! 再碰半径和上下环高度——`0x4c4b00` 里所有 `fstp [esi+…]` 只落在 `+0xa0`
+//! ..`+0xa8`（转角）、`+0xac`..`+0xb4`（位置）、`+0x50`..`+0x5c`（ARGB）。
 //!
 //! ```text
-//! n    = 对象+0x70   // DivisionCount，取整
-//! step = 对象+0x68 / n   // RotAngle ÷ 段数，每段的角度增量
-//! 每段角 a：
-//!   底环顶点 = (sin(a) * BottomRadius, 0,     cos(a) * BottomRadius)
-//!   顶环顶点 = (sin(a) * TopRadius,    Width, cos(a) * TopRadius)
+//! n    = 对象+0x70         // DivisionCount，fistp 取整
+//! step = 对象+0x68 / n     // RotAngle ÷ 段数，每段的角度增量（度）
+//! 第 j 圈（j = 0..=n），a = j × step：
+//!   顶半径 = TopRadius    + j × step × TopRadiusIncreaseSpeed
+//!   底半径 = BottomRadius + j × step × BottomRadiusIncreaseSpeed
+//!   顶高   = Width        + j × step × TopRiseSpeed
+//!   底高   = 0            + j × step × BottomRiseSpeed
+//!   j 为奇数时：顶半径 -= TopShrink，底半径 -= BottomShrink
+//!   顶点 = (sin(a) × 半径, 高, cos(a) × 半径)
 //! ```
 //!
+//! 两处要点：
+//!
+//! * **那四个 `…Speed` 乘的是「每段多少度」，不是 dt。** 0x4c4190 起
+//!   `fVar3 = RotAngle / n` 之后循环体里是 `半径 += fVar3 × Speed`，整段都在
+//!   建网格，没有时间参与。按「每秒」理解的话，`yanwu4.tga`（扫角 1800°、
+//!   100 段、0.02）一秒只涨 0.02，等于没有；按每段算是 3 → 39，才是它名字
+//!   里的那股盘旋上升的烟。实机 184 条 cylinder 里 18 条带这组值。
+//! * **`Shrink` 隔一圈收一次。** `FUN_004c5350` 里 `bVar9` 从 `true` 开始、
+//!   每段末尾取反，为真时把该圈的顶/底半径各减掉一次 `Shrink`，减完的值不写
+//!   回 `+0x7c`/`+0x80`，所以不累积。效果是锯齿边的光圈——`guang11.tga`
+//!   360° 20 段、半径 3、shrink 1，就是一圈十个尖。**184 条里 107 条带
+//!   shrink**，不是边角料。
+//!
 //! 也就是说 **`Width` 是柱高、`RotAngle` 是总共扫过多少度**——名字有点误导，
-//! 但代码就是这么用的。`RotAngle` 取 360 就是整圈，取小一点就是一段弧。
+//! 但代码就是这么用的。`RotAngle` 取 360 就是整圈，取小一点就是一段弧，比
+//! 360 大就是螺旋。
 //!
 //! # 补间
 //!
@@ -67,18 +88,19 @@ pub struct CylinderDef {
     pub height: f32,
     /// `+232` → 对象 `+0x70`：分几段。原版 `fistp` 取整。
     pub divisions: u32,
-    /// `+236` / `+240` → 对象 `+0x74` / `+0x78`。
+    /// `+236` / `+240` → 对象 `+0x74` / `+0x78`：奇数圈往里收多少，做锯齿边。
     pub top_shrink: f32,
     pub bottom_shrink: f32,
-    /// `+244` / `+248` → 对象 `+0x7c` / `+0x80`：上下半径。
+    /// `+244` / `+248` → 对象 `+0x7c` / `+0x80`：上下半径的起点。
     pub top_radius: f32,
     pub bottom_radius: f32,
-    /// `+252` / `+256` → 对象 `+0x84` / `+0x88`：半径每秒涨多少。
-    pub top_radius_speed: f32,
-    pub bottom_radius_speed: f32,
-    /// `+260` / `+264` → 对象 `+0x8c` / `+0x90`：上下环每秒升多高。
-    pub top_rise_speed: f32,
-    pub bottom_rise_speed: f32,
+    /// `+252` / `+256` → 对象 `+0x84` / `+0x88`：**每扫过一度**半径涨多少。
+    /// 名字（Unity 叫 `…IncreaseSpeed`）像是每秒，实际乘的是每段的角度。
+    pub top_radius_per_deg: f32,
+    pub bottom_radius_per_deg: f32,
+    /// `+260` / `+264` → 对象 `+0x8c` / `+0x90`：**每扫过一度**上下环升多高。
+    pub top_rise_per_deg: f32,
+    pub bottom_rise_per_deg: f32,
     /// `+268` → 对象 `+0x94`：贴图沿柱面重复几次。
     pub texture_repeat: f32,
     /// `+180` → 对象 `+0x98`。
@@ -109,10 +131,10 @@ impl CylinderDef {
             bottom_shrink: f(240),
             top_radius: f(244),
             bottom_radius: f(248),
-            top_radius_speed: f(252),
-            bottom_radius_speed: f(256),
-            top_rise_speed: f(260),
-            bottom_rise_speed: f(264),
+            top_radius_per_deg: f(252),
+            bottom_radius_per_deg: f(256),
+            top_rise_per_deg: f(260),
+            bottom_rise_per_deg: f(264),
             texture_repeat: f(268),
             fps: f(180),
             offset: [f(184), f(188), f(192)],
@@ -169,15 +191,12 @@ pub struct CylinderEffect {
     /// 和 `quad` 共用的那两个：子块 `+72` 延迟、`+76` 时长。
     pub delay: f32,
     pub duration: f32,
-    /// 当下的位置、转角、半径、上下环高度、颜色、贴图滚动量。
+    /// 当下的位置、转角、颜色、贴图滚动量。半径和上下环高度不在这里——
+    /// 它们在建实例时就烘进网格了，见模块文档。
     pub position: [f32; 3],
     pub pitch: f32,
     pub yaw: f32,
     pub roll: f32,
-    pub top_radius: f32,
-    pub bottom_radius: f32,
-    pub top_y: f32,
-    pub bottom_y: f32,
     pub color: [f32; 4],
     pub scroll: f32,
     elapsed: f32,
@@ -198,10 +217,6 @@ impl CylinderEffect {
             pitch: def.pitch,
             yaw: def.yaw,
             roll: def.roll,
-            top_radius: def.top_radius,
-            bottom_radius: def.bottom_radius,
-            top_y: def.height,
-            bottom_y: 0.,
             color: [
                 ((c >> 24) & 0xff) as f32,
                 ((c >> 16) & 0xff) as f32,
@@ -244,11 +259,6 @@ impl CylinderEffect {
         self.pitch += dt * r.pitch;
         self.yaw += dt * r.yaw;
         self.roll += dt * r.roll;
-        // 半径和上下环的高度按定义里的速度自己走（对象 +0x84..+0x90）。
-        self.top_radius += dt * self.def.top_radius_speed;
-        self.bottom_radius += dt * self.def.bottom_radius_speed;
-        self.top_y += dt * self.def.top_rise_speed;
-        self.bottom_y += dt * self.def.bottom_rise_speed;
         self.color[0] += dt * r.alpha;
         self.color[1] += dt * r.red;
         self.color[2] += dt * r.green;
@@ -260,32 +270,32 @@ impl CylinderEffect {
         }
     }
 
-    /// 这一帧的柱面：`divisions + 1` 圈顶点，每圈一对（下、上）。
+    /// 柱面的 `divisions + 1` 圈顶点，每圈一对（下、上）加一个 u。
     ///
-    /// 顶点在特效自己的局部空间里，调用方按 X → Y → Z 转完再平移到
-    /// [`Self::position`]。uv 的 u 沿柱面走 `texture_repeat` 圈，v 是
+    /// 网格是静态的——`FUN_004c5350` 只在建实例时跑一遍，所以这里不依赖
+    /// 任何随时间变的量。顶点在特效自己的局部空间里，调用方按 X → Y → Z
+    /// 转完再平移到 [`Self::position`]；u 沿柱面走 `texture_repeat` 圈，v 是
     /// `0..1` 加上 [`Self::scroll`]。
     pub fn rings(&self) -> Vec<([f32; 3], [f32; 3], f32)> {
-        let n = self.def.divisions.max(1);
-        let step = self.def.sweep_deg / n as f32;
-        let repeat = if self.def.texture_repeat == 0. {
-            1.
-        } else {
-            self.def.texture_repeat
-        };
+        let d = &self.def;
+        let n = d.divisions.max(1);
+        let step = d.sweep_deg / n as f32;
         (0..=n)
-            .map(|i| {
-                let a = (step * i as f32).to_radians();
-                let (s, c) = a.sin_cos();
-                let u = i as f32 / n as f32 * repeat;
+            .map(|j| {
+                let swept = step * j as f32;
+                let (s, c) = swept.to_radians().sin_cos();
+                // 奇数圈往里收一次，不累积（0x4c5440 那个每段取反的 bVar9）。
+                let shrunk = j % 2 == 1;
+                let top_r = d.top_radius + swept * d.top_radius_per_deg
+                    - if shrunk { d.top_shrink } else { 0. };
+                let bottom_r = d.bottom_radius + swept * d.bottom_radius_per_deg
+                    - if shrunk { d.bottom_shrink } else { 0. };
+                let top_y = d.height + swept * d.top_rise_per_deg;
+                let bottom_y = swept * d.bottom_rise_per_deg;
                 (
-                    [
-                        s * self.bottom_radius,
-                        self.bottom_y,
-                        c * self.bottom_radius,
-                    ],
-                    [s * self.top_radius, self.top_y, c * self.top_radius],
-                    u,
+                    [s * bottom_r, bottom_y, c * bottom_r],
+                    [s * top_r, top_y, c * top_r],
+                    j as f32 / n as f32 * d.texture_repeat,
                 )
             })
             .collect()
@@ -305,10 +315,10 @@ mod tests {
             bottom_shrink: 0.,
             top_radius: 2.,
             bottom_radius: 3.,
-            top_radius_speed: 0.,
-            bottom_radius_speed: 0.,
-            top_rise_speed: 0.,
-            bottom_rise_speed: 0.,
+            top_radius_per_deg: 0.,
+            bottom_radius_per_deg: 0.,
+            top_rise_per_deg: 0.,
+            bottom_rise_per_deg: 0.,
             texture_repeat: 1.,
             fps: 0.,
             offset: [0., 0., 0.],
@@ -359,16 +369,48 @@ mod tests {
     }
 
     #[test]
-    fn the_radii_and_rings_move_at_the_definitions_speeds() {
+    fn the_radii_ramp_per_degree_swept_not_per_second() {
+        // 360° / 8 段 = 每段 45°。顶半径每度涨 0.01，走满一圈就是 +3.6。
         let mut d = a_def();
-        d.top_radius_speed = 1.;
-        d.bottom_radius_speed = -1.;
-        d.top_rise_speed = 2.;
+        d.top_radius_per_deg = 0.01;
+        d.bottom_radius_per_deg = -0.005;
+        d.top_rise_per_deg = 0.02;
         let mut e = CylinderEffect::new(d, &sub_with(&[(76, 10.0)]), [0., 0., 0.]);
+        let before = e.rings();
+        // 第 2 圈扫过 90°：顶半径 2 + 0.9、底半径 3 − 0.45、顶高 4 + 1.8。
+        let (lo, hi, _) = before[2];
+        assert!((hi[0] - 2.9).abs() < 1e-4, "顶半径 {}", hi[0]);
+        assert!((lo[0] - 2.55).abs() < 1e-4, "底半径 {}", lo[0]);
+        assert!((hi[1] - 5.8).abs() < 1e-4, "顶高 {}", hi[1]);
+        // 时间走了也不变——网格在建实例时就定死了。
         e.step(1.0);
-        assert!((e.top_radius - 3.).abs() < 1e-4);
-        assert!((e.bottom_radius - 2.).abs() < 1e-4);
-        assert!((e.top_y - 6.).abs() < 1e-4);
+        assert_eq!(e.rings(), before, "跑了一秒，柱面不该变形");
+    }
+
+    #[test]
+    fn shrink_pulls_in_every_other_ring() {
+        // guang11.tga 的形状：360° 20 段、半径 3、shrink 1 → 一圈十个尖。
+        let mut d = a_def();
+        d.divisions = 20;
+        d.top_radius = 3.;
+        d.bottom_radius = 3.;
+        d.top_shrink = 1.;
+        d.bottom_shrink = 1.;
+        let e = CylinderEffect::new(d, &sub_with(&[(76, 1.0)]), [0., 0., 0.]);
+        let r = e.rings();
+        for (j, (lo, hi, _)) in r.iter().enumerate() {
+            let want = if j % 2 == 1 { 2. } else { 3. };
+            let got = (hi[0] * hi[0] + hi[2] * hi[2]).sqrt();
+            assert!(
+                (got - want).abs() < 1e-4,
+                "第 {j} 圈顶半径 {got}，该是 {want}"
+            );
+            let got = (lo[0] * lo[0] + lo[2] * lo[2]).sqrt();
+            assert!(
+                (got - want).abs() < 1e-4,
+                "第 {j} 圈底半径 {got}，该是 {want}"
+            );
+        }
     }
 
     #[test]

@@ -65,7 +65,7 @@ loop:
   为什么组里那串数看着像"几十亿的乱数"。
 * **`+212` 是有效位**，为零的记录不参与查找。
 
-这两条是从指令里证出来的。其余字段沿用 Pal3.Unity 的
+这两条是从指令里证出来的。其余字段最初沿用 Pal3.Unity 的
 `EffectDefinitionFile.cs`（GPL-3.0，0x7c13）：
 
 ```text
@@ -86,6 +86,31 @@ loop:
 `272 + 8 = 280`，正好收口。Unity 那边的 `NUM_OF_EFFECTS = 1324` 和这里
 `0x5a820 / 280` 算出来的完全一致。（他们的 `EffectDefinitionFileReader`
 在项目里没有任何调用点，是写了没接的死代码，但布局是对的。）
+
+### 名字不再是借来的：按类扫消费点
+
+后来把这张表逐条落到了指令上。办法是取 15 个类的 vtable，读 `+4`
+（Create）和 `+8`（Start）两个槽，看它们从记录的哪些偏移取值：
+
+| 类 | Create | Start | 读到的记录偏移 |
+|---|---|---|---|
+| particle | 0x4c8a40 | 0x4c8b80 | 40；184/188/192 |
+| quad | 0x4d1090 | 0x4d0ec0 | 40；168/172/176/208/213/215；180/184/188/192/196/200/204/214/216/220 |
+| cylinder | 0x4c4060 | — | 40；168..268 全批 |
+| meteor | 0x4cb800 | — | 同 cylinder |
+| model / audio / bink | 0x4cfeb0 / 0x4c2170 | — | 只有 40 |
+| action / camera / time / callback / quake | 0x4c0650（共用空实现） | — | 不读 |
+| grid / explosive / shock | 0x4c98f0 / 0x4c6c10 / 0x4d3ad0 | — | 不在 Create 里读 |
+
+**168..268 每个字段都有确切的消费点，含义和 Unity 给的名字一致**，逐条的
+出处写在下面各类的小节里。剩下的只有一处：
+
+> **`272..280`（`Param[2]`）是死字节。** 15 个类的 Create / Start 都不读
+> 它；全表 1263 条有效记录里只有两种取值——1216 条是
+> `ca 04 00 00 2d d5 df 77`、47 条是 `cc` × 8（MSVC 没初始化的栈填充）。
+> 一条随记录变的都没有，所以它不是数据，是转储时带出来的残留。
+> `pal3_flexeff_census.rs` 的 `the_record_tail_carries_nothing_per_effect`
+> 把这条和「帧数塞得进一个字节」一起钉住。
 
 解出来的实况：**1263 / 1324 条 `+212` 非零**。类型名是 GBK 中文，
 按出现次数排是「景天」11、「镜头」10、「雪」8、「紫」6、「龙葵」6、
@@ -388,6 +413,19 @@ if ((int)t >= 对象.FrameCount(+0x36)) {       // 图集播完一圈
 `+0x35`(NoZTest) 和 `+0x34`(Additive) 四种组合从 `[esi+4]->+8/+0xc/+0x10/+0x14`
 里选。
 
+**那四个槽是四个 `.gbf`**，`FUN_004cda10`（特效管理器初始化）建的：
+
+| 槽 | `gbEffectMgr::NewRenderEffect` 的脚本 |
+|---|---|
+| `+8` | `gfxscript\AdditiveBlendNoZ.gbf` |
+| `+0xc` | `gfxscript\AlphaBlendNoZ.gbf` |
+| `+0x10` | `gfxscript\AdditiveBlend.gbf` |
+| `+0x14` | `gfxscript\AlphaBlend.gbf` |
+
+对上 0x4d1320 起的四选一（`+0x35` 非零走前两个、`+0x34` 非零走奇数那个），
+**`+213 = 加法混合`、`+215 = 关深度` 这两个名字就不再是借 Unity 的了**，
+是从脚本文件名读出来的。
+
 **公告板**（0x4d136c 起）：中心 = 记录 `+0x10..0x18` 加 `+0x24..0x2c`，先变换
 到视图空间，四角是 `(±w, ±h)`（`w` = 记录 `+0x1c`、`h` = `+0x20`，都是**半
 长**），再按记录 `+0x30`（度，乘 π/180）在平面内转。
@@ -428,26 +466,48 @@ if ((int)t >= 对象.FrameCount(+0x36)) {       // 图集播完一圈
 | 224 | +0x68 | RotAngle | **整个柱面扫过多少度**（360 = 整圈） |
 | 228 | +0x6c | Width | **柱高**（顶环的 y） |
 | 232 | +0x70 | DivisionCount | 分几段，`fistp` 取整 |
-| 236 / 240 | +0x74 / +0x78 | Top/BottomShrink | 未跟 |
-| 244 / 248 | +0x7c / +0x80 | Top/BottomRadius | 上下半径 |
-| 252 / 256 | +0x84 / +0x88 | …RadiusIncreaseSpeed | 半径每秒涨多少 |
-| 260 / 264 | +0x8c / +0x90 | Top/BottomRiseSpeed | 上下环每秒升多高 |
+| 236 / 240 | +0x74 / +0x78 | Top/BottomShrink | **奇数圈的半径各减掉一次**，做锯齿边 |
+| 244 / 248 | +0x7c / +0x80 | Top/BottomRadius | 上下半径的起点 |
+| 252 / 256 | +0x84 / +0x88 | …RadiusIncreaseSpeed | **每扫过一度**半径涨多少 |
+| 260 / 264 | +0x8c / +0x90 | Top/BottomRiseSpeed | **每扫过一度**上下环升多高 |
 | 268 | +0x94 | TextureRepeat | 贴图沿柱面重复几次 |
 
-环的生成在 `FUN_004c5350`：
+环的生成在 `FUN_004c5350`，**全文件只有 `FUN_004c4060`（Create）一个调用
+点**：柱面是建实例时一次性烘出来的静态网格。每帧的 tick `FUN_004c45a0` 和
+补间回调 `0x4c4b00` 都不再碰半径和上下环高度——`0x4c4b00` 里所有
+`fstp [esi+…]` 只落在 `+0xa0`..`+0xa8`（转角）、`+0xac`..`+0xb4`（位置）、
+`+0x50`..`+0x5c`（ARGB）。
 
 ```text
 n    = DivisionCount
-step = RotAngle / n
-每段角 a：
-  底环 = (sin(a) * BottomRadius, 0,     cos(a) * BottomRadius)
-  顶环 = (sin(a) * TopRadius,    Width, cos(a) * TopRadius)
+step = RotAngle / n          // 每段多少度
+第 j 圈（j = 0..=n），a = j × step：
+  顶半径 = TopRadius    + j × step × TopRadiusIncreaseSpeed
+  底半径 = BottomRadius + j × step × BottomRadiusIncreaseSpeed
+  顶高   = Width        + j × step × TopRiseSpeed
+  底高   = 0            + j × step × BottomRiseSpeed
+  j 为奇数：顶半径 -= TopShrink，底半径 -= BottomShrink
+  底环 = (sin(a) × 底半径, 底高, cos(a) × 底半径)
+  顶环 = (sin(a) × 顶半径, 顶高, cos(a) × 顶半径)
 ```
+
+两处以前读错的：
+
+* **那四个 `…Speed` 乘的是 `step`（每段多少度），不是 dt。** 0x4c4190 起
+  `fVar3 = RotAngle / n`，循环体里就是 `半径 += fVar3 × Speed`，整段都在建
+  网格，没有时间参与。按「每秒」理解，`yanwu4.tga`（扫角 1800°、100 段、
+  0.02）一秒只涨 0.02，等于没有；按每段算是 3 → 39，才是它名字里那股盘旋
+  上升的烟。实机 184 条 cylinder 里 18 条带这组值。
+* **`Shrink` 隔一圈收一次。** 循环里 `bVar9` 从 `true` 开始、每段末尾取
+  反，为真时把该圈的顶/底半径各减掉一次 `Shrink`；减完的值不写回
+  `+0x7c`/`+0x80`，所以不累积。`guang11.tga` 360° 20 段、半径 3、shrink 1，
+  就是一圈十个尖的光圈。**184 条里 107 条带 shrink**，不是边角料。
 
 `Width` 和 `RotAngle` 这两个名字有点误导，代码里就是柱高和扫角。实机 184 条
 定义的取值很能说明问题：扫角多是 360（整环）、240 / 220（弧），其中
 `yanwu4.tga` 是 **1800 度——五圈的螺旋**；柱高 5–20、段数 20–100、半径 1–8、
-贴图重复 1–4。资源名也对得上（`guangquan` 光圈、`guanghuan` 光环）。
+贴图重复 1–4（没有一条写 0）。资源名也对得上（`guangquan` 光圈、
+`guanghuan` 光环）。
 
 补间同样是「`字段 += dt × 子块速率`」，但**吃的子块偏移和 `quad` 不同**：
 
@@ -523,7 +583,8 @@ sprintf(buf, "%s%03d", 前缀, (int)号码)      // 格式串在 0x5d4e54
 
 ## 还差什么
 
-* `Top/BottomShrink`（定义 236/240）搬进了对象但用法没跟。
+* ~~`Top/BottomShrink`（定义 236/240）搬进了对象但用法没跟。~~ —— 已跟：
+  `FUN_004c5350` 里按 `bVar9` 隔一圈把半径各减掉一次，见上面 cylinder 一节。
 * `callback` 子块的 `+8` / `+44`（有负值）没跟。
 * ~~`grid` / `meteor` 的几何和补间~~ —— 已做（见上）。
 * 实例本身由特效管理器什么时候回收，没跟；移植里按「两条时间线都到期」
@@ -532,7 +593,10 @@ sprintf(buf, "%s%03d", 前缀, (int)号码)      // 格式串在 0x5d4e54
 ## 还没做的
 
 * 子块 124 字节里各类自己那部分的字段语义——要逐个类跟它们的 update。
-* 定义表里 `[推断]` 那些字段没有逐个回到指令核对，只核了取值合理性。
+  （通用的两个已定：`+72` 延迟、`+76` 时长，出处见 `FUN_004d3010` 的第 5/6
+  个参数和 `FUN_004d22f0` 0x4d2904 起那段裁 dt 的代码。）
+* ~~定义表里 `[推断]` 那些字段没有逐个回到指令核对~~ —— 已核，见上面
+  「名字不再是借来的」。
 * ~~`flexcam.dat` / `efflinker.dat` 两张表~~ —— 都已接：flexcam 镜头（c54839a）、efflinker 链接表（c472d60）。
 
 15 个类的移植现状（2026-09-13）：`adv_director.rs` 按类名分派，15 个全接了——particle、quad、action、camera、

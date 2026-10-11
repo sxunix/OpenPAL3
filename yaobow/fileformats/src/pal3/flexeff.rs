@@ -45,10 +45,23 @@
 //!   while (ecx < 0x17a7b74)      // 0x17a7b74 - 0x174d354 = 0x5a820
 //! ```
 //!
-//! 所以 **+36 是查找键（CRC）**、**+212 是有效位**，这两条是从二进制证出来
-//! 的。其余字段名沿用 Pal3.Unity 的 `EffectDefinitionFile.cs`（GPL-3.0，
-//! 0x7c13）——它给的 280 字节布局和这里的步长一致，字段含义标 `[推断]`，
-//! 因为我只核对了取值合理性，没有逐个回到指令。
+//! 所以 **+36 是查找键（CRC）**、**+212 是有效位**。
+//!
+//! 布局最初沿用 Pal3.Unity 的 `EffectDefinitionFile.cs`（GPL-3.0，0x7c13），
+//! 后来按「哪个特效类读哪个偏移」逐条回到了指令：取 15 个类的 vtable，读
+//! `+4`（Create）和 `+8`（Start）两个槽，看它们从记录里取什么。结论是
+//! **168..268 这一段每个字段都有确切的消费点**，名字和 Unity 给的一致；
+//! 逐字段的出处见 `switch/re/notes/flexeff_format.md`，要点：
+//!
+//! * `quad` 的 `FUN_004d1090` / `FUN_004d0ec0` 覆盖 168/172/176/180/184/188/
+//!   192/196/200/204/208/213/214/215/216/220；
+//! * `cylinder` 的 `FUN_004c4060` 覆盖 224..268（`grid`、`meteor` 同读）；
+//! * `particle` / `model` / `audio` / `bink` 只取 40 那段资源名。
+//!
+//! 收尾的 **272..280（Unity 叫 `Param[2]`）是死字节**：15 个类的 Create /
+//! Start 都不读它，而且全表只有两种取值——1216 条是
+//! `ca 04 00 00 2d d5 df 77`、47 条是 `cc` × 8（MSVC 没初始化的栈填充）。
+//! 一条随记录变的都没有，所以它不是数据，是转储时带出来的残留。
 //!
 //! # 特效组表
 //!
@@ -122,9 +135,16 @@ pub const GROUP_SUB_ENABLED: usize = 0x58;
 /// 为零。
 pub const GROUP_SUB_USED: usize = 96;
 
-/// 跨全部 15 个类都恒非零的那个浮点字段。取值集中在 0.2 / 0.5 / 1.0 / 2.0。
-/// 语义未定 `[推断]`。
-pub const GROUP_SUB_COMMON_F32: usize = 76;
+/// 这一段动作的**时长（秒）**。`FUN_004d2080` 0x4d229d 把它当第 6 个参数
+/// 交给 `FUN_004d3010`，落到时间线记录的 `+0x18`；`FUN_004d22f0` 0x4d2904
+/// 起拿它裁本帧的 dt：`if (now − 起始 > 时长) dt -= (now − 起始 − 时长)`，
+/// 让补间正好停在时长上。每段动作都得有时长，所以 15 个类里它都非零；
+/// 取值集中在 0.2 / 0.5 / 1.0 / 2.0。`+72` 是配套的延迟。
+pub const GROUP_SUB_DURATION: usize = 76;
+
+/// `+72`：这一段相对**上一段开始**的延迟（秒）。`FUN_004d3010` 的第 5 个
+/// 参数，落到时间线记录的 `+0x14`。负数表示「等上一段跑完」。
+pub const GROUP_SUB_DELAY: usize = 72;
 
 /// 特效实例记录的字节数——`vfunc+0x30` 里搜空槽的步长。
 pub const EFFECT_INSTANCE_SIZE: usize = 0x98;
@@ -136,8 +156,8 @@ pub const EFFECT_INSTANCE_PARAMS: usize = 0x18;
 /// 并行数组相对组头的偏移，`lea esi, [ebx + 0xec9eb4]`。
 pub const GROUP_SLOTS: usize = 0x44;
 
-// 记录内的字段偏移。36 和 212 出自 `FUN_004ce000`，其余 [推断] 自
-// Pal3.Unity 的 `EffectDefinitionFile.cs`。
+// 记录内的字段偏移。36 和 212 出自 `FUN_004ce000`，168..268 出自各特效类
+// 的 Create / Start（见模块文档），272 还没有消费点。
 pub const DEF_CLASS_CRC: usize = 0;
 pub const DEF_TYPE_NAME: (usize, usize) = (4, 32);
 pub const DEF_KEY: usize = 36;
@@ -384,7 +404,13 @@ impl<'a> EffectDef<'a> {
         gbk(self.bytes, DEF_ASSET.0, DEF_ASSET.1)
     }
 
-    /// `[推断]` 图集的行列数与总帧数。
+    /// 图集的列数、行数、总帧数。
+    ///
+    /// `FUN_004d1090` 把前两个交给 `FUN_004d1fd0(列, 行)`，那里按
+    /// 「外层走行、内层走列」建表，每格 16 字节写
+    /// `(u0, v0, u1, v1) = (列/列数, 1−(行+1)/行数, u0+1/列数, 1−行/行数)`
+    /// ——**行优先、v 翻转**。第三个（`+176`）原版是 `mov dl, byte [edi+0xb0]`
+    /// 只取一个字节，拿来给帧号取模；实机 1263 条里没有一条超过 255。
     pub fn frames(&self) -> (u32, u32, u32) {
         (
             u32_at(self.bytes, DEF_FRAMES_PER_ROW),
@@ -393,12 +419,15 @@ impl<'a> EffectDef<'a> {
         )
     }
 
-    /// `[推断]` 播放帧率。
+    /// 播放帧率。`FUN_004d0ec0` 搬进 `quad` 对象的 `+0x54`，帧号按
+    /// `帧 += fps × dt` 走（`FUN_004d17d0`）。
     pub fn fps(&self) -> f32 {
         f32_at(self.bytes, DEF_FPS)
     }
 
-    /// `[推断]` 初始位置。
+    /// 初始位置——是**加在调用方给的发射点上的偏移**，不是绝对坐标。
+    /// `FUN_004d0ec0` 0x4d0e8c 起：`对象+0x5c = 参数.x + 记录+184`，
+    /// y / z 同理；`particle` 的 `FUN_004c8b80` 也是这三个。
     pub fn init_position(&self) -> (f32, f32, f32) {
         (
             f32_at(self.bytes, DEF_INIT_POSITION),
@@ -407,22 +436,36 @@ impl<'a> EffectDef<'a> {
         )
     }
 
-    /// `[推断]` 初始大小。
+    /// 初始大小。`FUN_004d0ec0` 把这**一个**值同时写进 `quad` 的宽
+    /// （`+0x68`）和高（`+0x6c`），所以四边形默认是正方的。
     pub fn init_size(&self) -> f32 {
         f32_at(self.bytes, DEF_INIT_SIZE)
     }
 
-    /// `[推断]` 初始颜色。
+    /// 初始颜色，ARGB。`FUN_004d0ec0` 依次取 `>>24`、`>>16 & 0xff`、
+    /// `>>8 & 0xff`、`& 0xff` 写进四个浮点；`cylinder` 的 `FUN_004c5350`
+    /// 则把原值直接写进顶点的 diffuse（0x44 字节顶点的 `+0x40`），
+    /// 那个位置就是 D3DCOLOR 的 `0xAARRGGBB`。
     pub fn init_color(&self) -> u32 {
         u32_at(self.bytes, DEF_INIT_COLOR)
     }
 
-    /// `[推断]` 这条特效最多用掉的四边形数。
+    /// 这条特效最多用掉的四边形数。`FUN_004d1090` 拿它开三个数组
+    /// （`×0x50`、`×0x44`、`×4`），并写进对象的 `+0x44` 当上限。
     pub fn max_quads(&self) -> u32 {
         u32_at(self.bytes, DEF_MAX_QUADS)
     }
 
-    /// `[推断]` 加法混合 / 公告板 / 关掉深度测试。
+    /// 加法混合（+213）/ 公告板（+214）/ 关掉深度测试（+215）。
+    ///
+    /// 前后两个是从 `.gbf` 的名字证出来的：`FUN_004cda10` 在特效管理器上
+    /// 建了四个渲染效果——`+8` `gfxscript/AdditiveBlendNoZ.gbf`、`+0xc`
+    /// `AlphaBlendNoZ.gbf`、`+0x10` `AdditiveBlend.gbf`、`+0x14`
+    /// `AlphaBlend.gbf`——而 `FUN_004d1300` 0x4d1320 起正是按
+    /// 「`+215` 选 NoZ 那一半、`+213` 选 Additive 那一半」四选一。
+    /// 中间那个在 `FUN_004d1ca0` 分叉：置位时四角直接按四边形自己的世界
+    /// 位置摊开、绘制走 `0x4d136c` 那支去取相机矩阵，清零时四角摆在局部
+    /// 原点、走普通变换。
     pub fn flags(&self) -> (bool, bool, bool) {
         (
             self.bytes[DEF_ADDITIVE] != 0,

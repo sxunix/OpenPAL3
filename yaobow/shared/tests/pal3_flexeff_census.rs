@@ -544,3 +544,32 @@ fn the_callback_chain_is_a_finite_dag() {
     assert!(deepest <= 8, "callback 链深 {deepest} 层，超出预期");
     println!("callback: {refs} 处引用，链最深 {deepest} 层");
 }
+
+/// 定义记录尾部两件事：帧数塞得进一个字节，`272..280` 是死字节。
+///
+/// 第一条钉的是原版 `mov dl, byte [edi+0xb0]` 这个只取一字节的读法——真要
+/// 有记录写了 256 以上，那说明这个偏移根本不是帧数。第二条钉的是
+/// `Param[2]` 不值得解释：全表只有两种取值，跟记录内容无关。
+#[test]
+fn the_record_tail_carries_nothing_per_effect() {
+    let Some(eff) = load() else {
+        eprintln!("skipping: set YAOBOW_PAL3_ASSETS to an installed PAL3 directory");
+        return;
+    };
+    let mut tails: BTreeMap<[u8; 8], usize> = BTreeMap::new();
+    for d in eff.definitions() {
+        let b = d.raw();
+        let frames = u32::from_le_bytes(b[176..180].try_into().unwrap());
+        assert!(
+            frames <= 255,
+            "定义 {} 的帧数 {frames} 塞不进一个字节，原版只读 byte [edi+0xb0]",
+            d.index
+        );
+        *tails.entry(b[272..280].try_into().unwrap()).or_default() += 1;
+    }
+    assert!(
+        tails.len() <= 2,
+        "272..280 出现了 {} 种取值，不再是死字节了",
+        tails.len()
+    );
+}
