@@ -19,11 +19,21 @@
 //! * `+0x14` FUN_004cffb0：推时间线；实例没了就清可见；然后 `gbGeomNode::Update()`（引擎时钟推动画）。
 //! * `+0x10` 0x4d01c0：可见时矩阵栈 平移(位置 + 绕圈偏移) → 绕 X → 绕 Y → 绕 Z → 缩放，再 `Render`。
 //!
-//! [推断] 的地方：
-//! - 按帧累加的量按原版 60 fps 换算成每秒（encamp 指针速度同样处理）；
-//! - 动画循环播放（`gbGeomNode::Update` 没跟进去看）；
-//! - 转角按度、右手系，矩阵栈「后压的先作用」；
-//! - alpha 移植端还没有接到材质上（实机数据没用到 `+56`）。
+//! gbengine 的几条底层约定都在 `engine/math/gbmath.cpp` 里查实了，见
+//! [`super::flexeff_explosive`] 开头：角度按度、旋转右手系、矩阵栈
+//! 「后压的先作用」。 这一类的实际作用顺序是
+//! 缩放 → Z → Y → X → 平移。
+//!
+//! 动画**确实是循环的**：`gbGeomNode` 构造里 `nLoop = 0`
+//! （`geometry/gbgeomnode.cpp:27`，头文件注明「nLoop==0 表示无限循环」），
+//! `CEffModel` 从不调 `SetLoop`；`gbGeomNode::Update` 按
+//! `pGfxMgr->GetDeltaTime() * TimeScale` 推进，到头就把 `CurTime` 减一个周期。
+//!
+//! 两处移植端自己定的：
+//! - 按帧累加的量（缩放、转角，`EffModel.cpp:238`..`:245` 确实不乘 `fDeltaTime`）
+//!   按 60 帧每秒换算成每秒。原版没有帧率上限，快慢跟着机器走，只能挑一个；
+//!   `encamp` 的指针速度、`dealer::flash_alpha` 都是同一个选择。
+//! - alpha（`+56` → `gbVisNode::SetBlend`）还没接到材质上，实机数据也没用到。
 
 use crosscom::ComRc;
 use fileformats::pal3::flexeff::EffectDef;
@@ -33,7 +43,8 @@ use radiance::math::{Transform, Vec3};
 use crate::openpal3::comdef::ICvdModel;
 use crate::openpal3::scene::{CvdModelComponent, CvdPlayMode};
 
-/// 按帧累加的量换成每秒时用的帧率 **[推断]**。
+/// 按帧累加的量换成每秒时用的帧率。原版没有帧率上限，这是移植端挑的数，
+/// 不是查出来的——见模块开头。
 pub const ORIGINAL_FPS: f32 = 60.;
 
 /// 定义记录里 `model` 用得上的量。

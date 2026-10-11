@@ -351,10 +351,28 @@ pub mod layout {
         (370, 496, 448, 574),
         (538, 336, 616, 414),
     ];
-    /// 结果对话框（kind 0，带「是」钮）。
-    pub const RESULT_DIALOG: Rect = (246, 245, 446, 345);
-    /// 说明牌之后的过场框（kind 3，按任意键）。
+    /// 结果对话框（`MUIDialog`，`DLG_YES`）。建的时候传进去的是
+    /// `(246, 245)` 加 200×100，但 `MUIDialog::Create` 的 `DLG_YES` 一支把
+    /// 右下改写成 `左 + 308` / `上 + 109`（`muidialog.cpp:177`），所以实际是
+    /// 308×109。背景贴图 `UI\GameMainUI\MUIDialog\Normal\DlgBackground.tga`
+    /// 在 `UI_opt.tli` 图集里（`m_opt` 为 true），移植端还是画的框。
+    pub const RESULT_DIALOG: Rect = (246, 245, 246 + 308, 245 + 109);
+    /// 结果框里那个「是」钮：`m_btnW` = 90、`m_btnH` = 26（`muidialog.cpp:10`），
+    /// `top = 框下 − (26 + 6)`、`left = 框左 + 框宽/2 − 45`（`muidialog.cpp:186`）。
+    /// 贴图 `…\MUIDialog\Normal\Yes0/1/2.tga`，同样在图集里。
+    pub const RESULT_YES: Rect = (
+        RESULT_DIALOG.0 + (RESULT_DIALOG.2 - RESULT_DIALOG.0) / 2 - 45,
+        RESULT_DIALOG.3 - 32,
+        RESULT_DIALOG.0 + (RESULT_DIALOG.2 - RESULT_DIALOG.0) / 2 + 45,
+        RESULT_DIALOG.3 - 6,
+    );
+    /// 框里正文的边距：左上各 6，右 6，下 38（`m_rect.bottom − (32 + 6)`）。
+    pub const DIALOG_TEXT_INSET: i32 = 6;
+    /// 说明牌之后的过场框（`DLG_MSGBOX`，按任意键）。这一类不改尺寸，
+    /// 传进去多大就是多大（`Encampment_ui.cpp:150`），背景是 `UI\Flex\Note`，
+    /// 正文往下让 22（`SetTextOffset(0, 22)`）。
     pub const WAIT_DIALOG: Rect = (250, 200, 550, 328);
+    pub const WAIT_TEXT_OFFSET_Y: i32 = 22;
 
     /// 第 i 块结果面板的 x（`FUN_0052d0f0`）。第五块 x = 808 在屏幕外，原版如此。
     pub const PANEL_X: [i32; 5] = [0, 0xca, 0x194, 0x25e, 0x328];
@@ -371,9 +389,22 @@ pub mod layout {
     pub const PANEL_SHEN_BAR: Rect = (0x38, 0xa4, 0x84, 0xb0);
     pub const PANEL_SHEN_VALUE: Rect = (0x42, 0x8e, 0x92, 0xae);
 
-    /// 进度条控件的边距：左 2、右 4（2 + 2）。
+    /// 进度条控件的边距。`Encampment_ui.cpp:515` 一带给精、神两条设的是
+    /// `SetRadiusWidth(2)`、`SetRRadius(2)`、`SetTRadius(2)`、`SetBRadius(1)`，
+    /// 左边距用的是默认的 0。`UIProgressBar` 里：
+    ///
+    /// * 轨道长 `m_Lenth = (右 − rradius − radius) − (左 + lradius + radius)`
+    ///   = 76 − 2 − 2 − 0 − 2 = 70；
+    /// * 填充条 `m_ProgressRc.left = 左 + radius + lradius` = 左 + 2，
+    ///   `.right = .left + m_progress`；
+    /// * 竖向 `.top = 上 + radius + tradius − 1` = 上 + 3，
+    ///   `.bottom = 下 − (radius + bradius)` = 下 − 3。
+    ///
+    /// 12 px 高的框里填充条占中间 6 px。
     pub const BAR_INSET_L: i32 = 2;
     pub const BAR_INSET_R: i32 = 4;
+    pub const BAR_INSET_T: i32 = 3;
+    pub const BAR_INSET_B: i32 = 3;
 
     pub const fn offset(r: Rect, dx: i32, dy: i32) -> Rect {
         (r.0 + dx, r.1 + dy, r.2 + dx, r.3 + dy)

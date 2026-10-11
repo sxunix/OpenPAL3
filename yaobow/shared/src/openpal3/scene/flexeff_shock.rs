@@ -23,10 +23,16 @@
 //! * 画（`+0x18` 0x4d4110）：矩阵栈依次 平移(播放点 + 偏移) → 绕 X 转 → 绕 Y 转 → 绕 Z 转 →
 //!   按大小等比缩放，再把全部面片一次画掉。渲染效果按加法 / 不测深度四选一。
 //!
-//! [推断] 的地方：
-//! - 矩阵栈的乘法顺序按「后压的先作用」理解，即 缩放 → Z → Y → X → 平移；
-//! - 转角按度、右手系；
-//! - 起播前原版没初始化时钟（`operator_new` 的数组），这里按「不画」处理。
+//! gbengine 的几条底层约定都在 `engine/math/gbmath.cpp` 里查实了，见
+//! [`super::flexeff_explosive`] 开头：角度按度、旋转右手系、矩阵栈
+//! 「后压的先作用」。 这一类的实际作用顺序是
+//! 缩放 → Z → Y → X → 平移。
+//!
+//! 起播前那段：`m_pShock = new tagShockUnit[...]`（`EffShock.cpp:87`）是 POD 数组，
+//! `fCurFrame` / `fRequireLoops` 没初值，而 `CEffShock::Render` 只看 `m_bIdle`、
+//! **不看 `m_bVisible`**（`EffShock.cpp:172`，grid 和 explosive 那两类是两个都看的）。
+//! 所以延迟期间原版画的是未初始化内存决定的帧，没法复现；移植端按「不画」处理，
+//! 是有意定的。
 
 use radiance::comdef::IEntity;
 use radiance::math::Vec3;

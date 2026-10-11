@@ -13,8 +13,9 @@
 //! 面板，精/神条 36 px/s 走到当前值 → 精条到头后点转盘退出。
 //!
 //! 贴图控件按原版画法取 uv：**矩形显示贴图左下角 w×h 那块，正立**
-//! （`FUN_005400e0`）。对话框和名字框的贴图包里没有，画框代替。没在实机上
-//! 比对过的地方标了 `[推断]`。
+//! （`FUN_005400e0`）。结果框和过场框的贴图（`MUIDialog\Normal\DlgBackground.tga`、
+//! `Yes0/1/2.tga`、`UI\Flex\Note`）散文件没有、只在 `UI_opt.tli` 图集里，
+//! 这里还是画框代替，位置和尺寸按 `muidialog.cpp` 的算法走。
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -269,8 +270,20 @@ impl EncampGame {
             }
         }
 
-        // 五个在队角色围着营火放 c09。朝向的符号约定跟场景加载器一致
-        // （`PI − 度`），没在实机上比对过 `[推断]`。
+        // 五个在队角色围着营火放 c09。朝向用的是和场景角色同一条路：原版
+        // `Encampment_sys.cpp:78` 把 `m_posAngle[i]` 交给 `SetRotObjY`，画的时候
+        // `3DObject.cpp:509` 做 `pview->Rotate(m_roty, (0,1,0))`；场景角色那边
+        // `role.cpp:302` 也是 `pview->Rotate(m_rotate, y)`，`m_rotate` 由
+        // `UpdateRotate`（`role.cpp:264`）从朝向向量算出来：
+        // `acos(f·(0,0,1))`，`f.x < 0` 时取 `2π −` 它。两边是同一个角，
+        // 所以这里照 [`crate::openpal3::scene::Scene`] 给场景角色那套符号写。
+        //
+        // 角度本身对得上：五个人的位置重心是 (4.8, −222.6)，按 gbengine 的
+        // Y 旋转「模型 +Z 转到 (sin θ, cos θ)」算，256° / 170° / 116° / 80° /
+        // 288° 指的方向和各自朝重心的方向差 2°–19°，都是朝着火堆坐的。
+        //
+        // `ROLE_FACING_BASE = π` 那个基准是全移植端共用的一个校准常量，
+        // 不是这里单独定的。
         for i in 0..5 {
             if !present[i] {
                 continue;
@@ -510,7 +523,7 @@ impl EncampGame {
         self.draw_table(ui, false);
         let text = text.to_string();
         let mouse = virtual_mouse(ui);
-        let ok = ok_button_rect();
+        let ok = layout::RESULT_YES;
         overlay(ui, "EncampResult", |ui, at, scale| {
             let list = ui.get_window_draw_list();
             let r = layout::RESULT_DIALOG;
@@ -700,14 +713,6 @@ impl EncampGame {
     }
 }
 
-/// 结果框里「是」钮的位置 `[推断]`：框底部居中。
-fn ok_button_rect() -> Rect {
-    let r = layout::RESULT_DIALOG;
-    let (cx, _) = layout::center(r);
-    let cx = cx as i32;
-    (cx - 28, r.3 - 30, cx + 28, r.3 - 6)
-}
-
 fn any_key(ui: &Ui) -> bool {
     [
         imgui::Key::Enter,
@@ -795,18 +800,24 @@ fn draw_rotated_sprite(
     .build();
 }
 
-/// 进度条：底图铺满矩形，前景从左边距 2 起画 `fill_px` 像素宽。
+/// 进度条：底图铺满矩形，前景填 `(左 + 2, 上 + 3)` 到 `(左 + 2 + fill, 下 − 3)`，
+/// 整张前景图拉伸进这块，不是裁出来的。
 ///
-/// 横向已查实：条形控件有四个边距字段，`+0x84` 是两端都减的通用边距、
-/// `+0x88`/`+0x8c` 是左右、`+0x90`/`+0x94` 是上下（四个 setter
-/// `FUN_0043fd90`/`fdc0`/`fdd0`/`fde0`）。横条的轨道是
-/// `(右 − m8c − m84) − (左 + m88 + m84)`（`FUN_0043fca0` 0x43fcdd 那支），
-/// 宿营这条设的是 m84=2、m8c=2、m90=2、m94=1、m88=0，所以起点就是左 + 2、
-/// 轨道 `右 − 左 − 6`（76 px 的框给 70 px），和这里的画法一致。
+/// 控件是 `UIProgressBar`（`ui/uiprogressbar.cpp`，exe 里那四个边距 setter
+/// `FUN_0043fd90`/`fdc0`/`fdd0`/`fde0` 分别是 `SetRadiusWidth`/`SetLRadius`/
+/// `SetRRadius`/`SetTRadius`…，四角在 `0x43ffe0` 一带算）。横竖两向的公式和
+/// 宿营这两条用的边距值都写在 [`crate::openpal3::encamp::layout::BAR_INSET_L`]
+/// 上面。
 ///
-/// 竖向仍是 `[推断]`：前景的上下范围落在 0x43ffe0 一带那段算四角的代码里，
-/// 那里 `+0xc4`/`+0xc8` 是一个固定尺寸元件的宽高、在轨道里做居中，没分辨出
-/// 哪一部分是填充条本身，所以这里先按竖向居中画。
+/// 当时没分辨出来的 `+0xc4`/`+0xc8` 是 `m_decorateW`/`m_decorateH`——填充条
+/// 末端那个固定尺寸的小装饰件，在轨道里竖向居中。宿营两条没设它
+/// （`m_pdecorate == NULL`），所以不画。
+///
+/// 拉伸这件事来自 `Render` 里这一支：`m_dir == LEFT && m_ppicInfo != NULL`
+/// 时走 `UIRenderQuad(m_ProgressRc, …, m_ppicInfo, false)`，`on == false`
+/// 让四边取 `m_ProgressRc`、uv 仍取图集里这张图的整块，于是整张图被挤进
+/// 填充矩形。宿营的 `m_opt` 是 `true`（`Encampment_ui.cpp:18`），贴图都走
+/// `UI_opt.tli` 图集，所以 `m_ppicInfo` 非空，走的就是这一支。
 fn draw_bar(
     list: &imgui::DrawListMut<'_>,
     bk: Option<&Sprite>,
@@ -821,18 +832,15 @@ fn draw_bar(
     if fill <= 0 {
         return;
     }
-    let h = (fg.height() as i32).min(r.3 - r.1);
-    let y0 = r.1 + (r.3 - r.1 - h) / 2;
     let fr = (
         r.0 + layout::BAR_INSET_L,
-        y0,
+        r.1 + layout::BAR_INSET_T,
         r.0 + layout::BAR_INSET_L + fill,
-        y0 + h,
+        r.3 - layout::BAR_INSET_B,
     );
-    let (uv0, uv1) = sprite_uv(fg, fr);
     list.add_image(fg.imgui_texture_id(), at(fr.0, fr.1), at(fr.2, fr.3))
-        .uv_min(uv0)
-        .uv_max(uv1)
+        .uv_min([0., 0.])
+        .uv_max([1., 1.])
         .build();
 }
 

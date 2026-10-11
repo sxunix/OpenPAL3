@@ -601,3 +601,35 @@ sprintf(buf, "%s%03d", 前缀, (int)号码)      // 格式串在 0x5d4e54
 
 15 个类的移植现状（2026-09-13）：`adv_director.rs` 按类名分派，15 个全接了——particle、quad、action、camera、
 time（和 quake / bink 一起）、cylinder、model、callback、grid、explosive、meteor、audio、shock、bink、quake。
+
+## gbengine 的四条底层约定（`basedata.cpk` 源码，`engine/math/gbmath.cpp`）
+
+flexeff 各个类的矩阵、转角原来都标着「推断」，现在都查实了：
+
+1. **角度按度**：`#define gbCos(x) ((float)cos(GB_PI*x/180.0f))`（`gbmath.h:262`）。
+2. **矩阵按行向量**：`gbMatrix4::Transform` 是
+   `out.x = in.x*xx + in.y*yx + in.z*zx + tx`（`:160`），即 `v' = v · M`。
+3. **矩阵栈「后压的先作用」**：`gbMatrixStack::Rotate` 做 `LeftMultiply`，
+   而 `LeftMultiply(mat)` 的实现是 `this = mat · this`（`:132` + `operator*=`）；
+   配上行向量，最后压进去的那一步最先作用在顶点上。
+4. **旋转是右手系**：`SetAxisAngle(GB_AXIS_Y, θ)` 给
+   `xx=cos, xz=−sin, zx=sin, zz=cos`，模型 +Z 转到 `(sin θ, cos θ)`；
+   走四元数那条路（`SetAxisAngle` + `GetMatrix`）出来的矩阵一模一样。
+
+另一条原来推错了：**`gbQuaternion::SetYawPitchRoll(yaw, pitch, roll)`
+（`gbmath.cpp:737`）的作用顺序是 roll(Z) → yaw(Y) → pitch(X)**，
+不是 D3DX 的 Z → X → Y。展开式正好是标准 Hamilton 积
+`q = q_X(pitch) ⊗ q_Y(yaw) ⊗ q_Z(roll)`，对应矩阵 `R_X · R_Y · R_Z`。
+`CEffExplosive::UpdateExplosive`（`combat/EffExplosive.cpp:635`）把自转的
+x 分量当 yaw、y 分量当 pitch 传进去。移植端 `flexeff_explosive::rotate_ypr`
+已经照改。
+
+## 特效实例什么时候被回收
+
+`CEffMgr::Update`（`combat/EffMgr.cpp:125`）看到 `IsIdle()` 只是把表项标成
+`bIdle`，从此不再 Update，对象仍在表里。真正释放要等 `CreateEff` 找不到空位，
+那时才 `DelAllIdleObj()` 把所有闲置的一次删光（`:300`、`:840`）；还不够就
+`DelAllCreatedObj()` 全清。
+
+另外 `Render` 的可见性判断四个类不一致：grid 和 explosive 看
+`m_bIdle || !m_bVisible`，**shock 和 quad 只看 `m_bIdle`**。

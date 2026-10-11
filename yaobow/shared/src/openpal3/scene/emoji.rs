@@ -38,14 +38,25 @@ pub const EMOJI_ENTITY_PREFIX: &str = "EMOJI_";
 /// How tall the bubble is drawn, in world units, and how far its base
 /// clears the actor's head.
 ///
-/// Both are relative to the actor rather than fixed: model heights vary
-/// a lot (景天 76 world units, 龙葵 63, 花盈 28), and a constant that
-/// sits just over 景天's head floats half a body above a shorter NPC —
-/// which is what the first pass did on screen.
+/// The original is **screen-space**, not a world-space billboard:
+/// `UIEmote::ComputePos` (`gameui/UIEmote.cpp:128`) projects
+/// `Role::GetHeadPos()` with `g_camera->PointWorldToScr`, then puts the
+/// sheet's own pixel rect there — horizontally centred on the point and
+/// with its **bottom** exactly on it (`left = ix - w/2; top = iy - h`),
+/// at the native frame size from the table in `UIEmote::Create`. The
+/// head point itself is `m_renderpos.y + box.ylen`, i.e. the actor's own
+/// model height (`gamebase/role.cpp:3202`), and `EM_HAN` (汗) alone
+/// lifts it by another 20 world units before projecting.
 ///
-/// `[推断]` — the original sizes the bubble inside the emoji widget,
-/// which was not read. Pal3.Unity places it at the actor's height with
-/// a scale of 1.5, which is the shape these two follow.
+/// yaobow draws a billboard in the scene instead, so a sprite that is a
+/// fixed number of screen pixels in the original has to become some
+/// number of world units here. These two constants are that conversion
+/// and they are a port decision, not a measurement: model heights vary
+/// a lot (景天 76 world units, 龙葵 63, 花盈 28), so a fixed world size
+/// that sits just over 景天's head floats half a body above a shorter
+/// NPC — which is what the first pass did on screen.
+///
+/// Still missing: the 汗 bubble's extra 20-unit lift.
 pub const EMOJI_HEIGHT_RATIO: f32 = 0.34;
 pub const EMOJI_CLEARANCE: f32 = 2.0;
 

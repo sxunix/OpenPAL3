@@ -10,8 +10,8 @@
 //!   `2 × 12.0` units away along that direction — which works out to
 //!   `object + 24 · (sin yaw, 0, cos yaw)`, with the actor turned to face
 //!   `yaw + 180°`, i.e. back at the ladder;
-//! * measure the object and keep `max(0.6 × height, 100.0)` at `+0x4dc` as
-//!   how far the climb travels;
+//! * measure the object and keep `min(0.6 × height, 100.0)` at `+0x4dc` as
+//!   how far the climb travels — a **cap**, not a floor;
 //! * refuse with the string `outdist` when the actor is further than
 //!   `12.0 × 5.0` from that spot **and** the straight nav path to it is
 //!   blocked;
@@ -40,9 +40,20 @@ pub const APPROACH_DISTANCE: f32 = 24.0;
 pub const CLIMB_SPEED: f32 = 40.0;
 
 /// `0x56aa4c` and `0x56a774`: the climb covers `0.6 ×` the object's height,
-/// but never less than 100 units.
+/// capped at 100 units.
+///
+/// `Role::Script_Climb` (`gamebase/role.cpp:2982`) is one line:
+///
+/// ```cpp
+/// gbOBBox box;  m_talkobj->GetCollideOBB(box);
+/// m_specact.end.y = min(100, box.ylen*0.6f);
+/// ```
+///
+/// and `0x418e94` agrees — `fld [esp+0x78]` (the OBB's `ylen`),
+/// `fmul [0x56aa4c]`, then `fld [0x56a774]` / `fcomp st(1)` keeping 100
+/// only when `100 < 0.6·ylen`.
 pub const CLIMB_HEIGHT_RATIO: f32 = 0.6;
-pub const MIN_CLIMB_HEIGHT: f32 = 100.0;
+pub const MAX_CLIMB_HEIGHT: f32 = 100.0;
 
 /// `0x56a984 × 0x56a744` — past this the original wants a clear nav path
 /// before it will start the climb.
@@ -52,23 +63,29 @@ pub const OUT_OF_RANGE: f32 = 60.0;
 const ACTION_UP: &str = "c05";
 const ACTION_DOWN: &str = "c052";
 
-/// How tall the object's own geometry is, measured from its origin. The
-/// original reads this out of the structure `FUN_00429ee0` fills for the
-/// object; the field offset there is `[推断]`, but a top-of-model height
-/// is the only reading that makes `0.6 ×` it a sensible climb.
+/// The object's bounding-box height — `gbOBBox::ylen`, which the engine
+/// writes as `aabb.max.y - aabb.min.y` (`engine/actor/gbmorphactor.cpp:132`,
+/// and the struct's own comment `center(0,0,0), width = xlen` in
+/// `engine/physics/gbcollide.h:41`), **not** the distance from the origin
+/// to the top. `FUN_00429ee0` is `SceneObj::GetCollideOBB`
+/// (`gamebase/sceneobj.cpp:3241`) and `[esp+0x78]` is that `ylen`.
 fn object_height(entity: &ComRc<IEntity>) -> f32 {
-    let mut top = 0f32;
-    if let Some(rc) = entity.get_rendering_component() {
-        for object in rc.render_objects() {
-            if let Some((_, max)) = object.as_dyn().local_aabb() {
-                top = top.max(max[1]);
+    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
+    fn walk(entity: &ComRc<IEntity>, lo: &mut f32, hi: &mut f32) {
+        if let Some(rc) = entity.get_rendering_component() {
+            for object in rc.render_objects() {
+                if let Some((min, max)) = object.as_dyn().local_aabb() {
+                    *lo = lo.min(min[1]);
+                    *hi = hi.max(max[1]);
+                }
             }
         }
+        for child in entity.children() {
+            walk(&child, lo, hi);
+        }
     }
-    for child in entity.children() {
-        top = top.max(object_height(&child));
-    }
-    top
+    walk(entity, &mut lo, &mut hi);
+    if hi > lo { hi - lo } else { 0. }
 }
 
 /// 74 攀爬.
@@ -202,7 +219,7 @@ impl SceCommandClimb {
             .get_root_object(self.object_id)
             .map(|e| object_height(&e))
             .unwrap_or(0.);
-        let travel = (height * CLIMB_HEIGHT_RATIO).max(MIN_CLIMB_HEIGHT);
+        let travel = (height * CLIMB_HEIGHT_RATIO).min(MAX_CLIMB_HEIGHT);
         log::debug!(
             "Climb: 物件 {} 高 {height:.1}，爬 {travel:.1}，站位 {:?}",
             self.object_id,
@@ -223,16 +240,16 @@ mod tests {
         assert_eq!(OUT_OF_RANGE, 5. * 12.0);
         assert_eq!(CLIMB_SPEED, 40.0);
         assert_eq!(CLIMB_HEIGHT_RATIO, 0.6);
-        assert_eq!(MIN_CLIMB_HEIGHT, 100.0);
+        assert_eq!(MAX_CLIMB_HEIGHT, 100.0);
     }
 
     #[test]
-    fn a_short_object_still_gets_the_floor_climb() {
-        let height = |h: f32| (h * CLIMB_HEIGHT_RATIO).max(MIN_CLIMB_HEIGHT);
-        assert_eq!(height(0.), MIN_CLIMB_HEIGHT);
-        assert_eq!(height(100.), MIN_CLIMB_HEIGHT);
-        // 0.6 only takes over above 166.7 units.
-        assert!((height(300.) - 180.).abs() < 1e-4);
+    fn the_climb_is_capped_at_a_hundred() {
+        let travel = |h: f32| (h * CLIMB_HEIGHT_RATIO).min(MAX_CLIMB_HEIGHT);
+        assert_eq!(travel(0.), 0.);
+        assert!((travel(100.) - 60.).abs() < 1e-4);
+        // 0.6 × 166.7 is where the cap takes over.
+        assert_eq!(travel(300.), MAX_CLIMB_HEIGHT);
     }
 
     #[test]

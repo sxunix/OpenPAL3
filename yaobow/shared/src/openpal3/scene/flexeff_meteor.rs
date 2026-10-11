@@ -517,10 +517,21 @@ pub fn write_meteor_heads(entity: &ComRc<IEntity>, effect: &MeteorEffect, right:
 
 /// 拖尾：相邻亮着的节点之间一段带子。
 ///
-/// 侧向照 FUN_004cd500：`(本节点 − 下一节点) × (本节点 − 相机)` 归一化（零向量按
-/// `gbVec3D::Normalize` 当 (0,1,0)），乘本节点宽度的一半；最后一个节点没有下一个，
-/// 沿用上一个的方向。贴图时 u 按节点序号 `i / 节点数` 走（FUN_004cd3d0 写的 uv 表），
-/// v 横跨带子 0..1 **[推断]**（哪一侧是 0 没核）。
+/// 侧向照 FUN_004cd500（`CMeteorChain::Render`）：`(本节点 − 下一节点) × (本节点 − 相机)`
+/// 归一化（零向量按 `gbVec3D::Normalize` 当 (0,1,0)），乘本节点宽度的一半；最后一个
+/// 节点没有下一个，沿用上一个的方向。
+///
+/// v 的那一侧已经查实：`CMeteorChain::Create` 给每个 `gbGeomQuad` 写死
+/// `sv = 0`、`ev = 1`，`Render` 里 `vec[0] = 位置 − 侧向`、`vec[3] = 位置 + 侧向`，
+/// 而 `gbDynVertBuf::RenderGeomQuadViaStrip`（`gfx/gbdynbuf.cpp:284`）把
+/// `vec[0]` 配 `(su, sv)`、`vec[3]` 配 `(su, ev)`。所以 **减侧向那一边是 v = 0**。
+///
+/// u 照原版的算法逐顶点给（FUN_004cd3d0 写的 uv 表）：第 0 个节点取 `quad[0].su` = 0，
+/// 往后第 j 个节点取 `quad[j].eu` = `(j + 1) / 节点数`——原版这里跳了一格，照抄。
+///
+/// 段数也照原版：`Render` 数出 `nQuad` 个亮着的节点，交给 strip 的是 `nQuad − 1`，
+/// 而 strip 画出来的是 `nQuad − 2` 段，所以**最后一个亮着的节点不参与成像**，
+/// 亮着的节点少于 3 个时整条拖尾不画。
 pub fn write_meteor_trails(entity: &ComRc<IEntity>, effect: &MeteorEffect, eye: &Vec3) {
     let e = [eye.x, eye.y, eye.z];
     let [r, g, b] = effect.rgb();
@@ -529,7 +540,7 @@ pub fn write_meteor_trails(entity: &ComRc<IEntity>, effect: &MeteorEffect, eye: 
     for m in effect.meteors() {
         let pts = effect.trail(m);
         let n = pts.len();
-        if n < 2 {
+        if n < 3 {
             continue;
         }
         let mut dir = [0., 1., 0.];
@@ -552,11 +563,15 @@ pub fn write_meteor_trails(entity: &ComRc<IEntity>, effect: &MeteorEffect, eye: 
             .collect();
         let vert = |i: usize, sign: f32, v: f32| {
             let p = add(pts[i].position, scale(sides[i], sign));
-            let u = if textured { i as f32 / n as f32 } else { 0. };
+            let u = match (textured, i) {
+                (false, _) => 0.,
+                (true, 0) => 0.,
+                (true, i) => (i + 1) as f32 / n as f32,
+            };
             let color = pack_color([r / 255., g / 255., b / 255., pts[i].alpha / 255.]);
             (Vec3::new(p[0], p[1], p[2]), (u, v), color)
         };
-        for i in 0..n - 1 {
+        for i in 0..n - 2 {
             quads.push([
                 vert(i, -1., 0.),
                 vert(i, 1., 1.),

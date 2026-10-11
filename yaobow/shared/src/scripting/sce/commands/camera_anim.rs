@@ -25,10 +25,19 @@ use crosscom::ComRc;
 use imgui::Ui;
 use radiance::comdef::{ISceneExt, ISceneManager};
 
-/// Interpolation curve (`+0x18`): Pal3.Unity documents 0 as Linear and 1
-/// as Sine. The sine form is the one the world-rotation tasks use
-/// (`(1 - cos(pi t)) / 2`, from `FUN_00438110`); the camera task's own
-/// per-frame update was not read, so the shape is `[推断]`.
+/// Interpolation curve (`+0x18`): `RoleCameraCtrl::UpdateValue`
+/// (`gamebase/rolecamera.cpp:482`) is the whole thing —
+///
+/// ```cpp
+/// switch(m_itype) {
+/// case 1:  r = (1-cos(r*3.1415927f))*0.5f;  val = start*(1-r)+target*r;  break;
+/// default: val = start*(1-r)+target*r;      break;   // case 0
+/// }
+/// ```
+///
+/// with `r = m_passtime / m_time` clamped by `m_passtime >= m_time`
+/// (`:502`). So 0 is linear, anything else is the same
+/// `(1 - cos(pi t)) / 2` the world-rotation tasks use.
 fn ease(curve: i32, t: f32) -> f32 {
     if curve == 0 {
         t

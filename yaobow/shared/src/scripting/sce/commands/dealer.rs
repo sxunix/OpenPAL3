@@ -169,15 +169,19 @@ struct Worn {
 struct Card {
     role: usize,
     head: Rect,
-    /// 小图标亮不亮：那一格穿着东西 [推断]。已查清的部分：`FUN_00462280`
-    /// 对这一行的装备，把队里能穿它的人（`物品+0x266+人`）那一格小图标
-    /// **开闪**（`FUN_00444d10`），`FUN_00462340` 五个一起停闪
-    /// （`FUN_00444d20`）——这两个管的是闪，不是亮；预穿的状态记在
-    /// `+0x16d00`（开关）、`+0x16d01+人`（每格一字节）、`+0x16d24`（每格的
-    /// 物品号）。进页时拿现有装备点亮这件事仍没追到，保持现在的读法。
+    /// 头像下那排小图标（`Equip\\*_small.tga`）：**只有这次在店里给他预穿上的那一格
+    /// 才出现**，身上原来穿着什么跟它无关。
+    ///
+    /// `equipui.cpp` 的 `m_Select[人][格]`：建的时候 `ShowWindow(false)`，
+    /// 进页（`SetControl`）时五个人六格全关，`EquipThis` 里跟着
+    /// `m_IsEquip[人][格] = true` 开，`UnEquipThis` 里跟着关。右键点这个小图标
+    /// 就是撤掉预穿（`UIWM_RCLICK` → `UnEquipThis`）。对应 exe 里 `+0x16d00`
+    /// 那一组：`+0x16d01+人` 每格一字节、`+0x16d24` 记每格的物品号。
+    ///
+    /// 小图标自己不闪；闪的是头像两侧那两个大图标，见 `draw_cards`。
     small: [bool; 6],
-    /// 这件装备能穿时：（左右、大图标号、箭头）。
-    groups: Vec<(cmp::Side, usize, Vec<cmp::Arrow>)>,
+    /// 这件装备能穿时：（身上哪一格、左右、大图标号、箭头）。
+    groups: Vec<(usize, cmp::Side, usize, Vec<cmp::Arrow>)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -786,10 +790,11 @@ impl SceCommandDealerMenu {
         self.top = 0;
         self.cart.clear();
         self.reset_wear();
-        // `EntrySale` 确实是解析出来的字段（exe 里有一张 0x20 步长的字段名表：
-        // `MC` / `Patience` / `BeginTalk` / `EntryBuy` / `EntrySale` /
-        // `NormalAcptTalk`…），但卖页把它显示出来的地方没在 exe 里找到，
-        // 照字段意思用 [推断]。
+        // 卖页说 `EntrySale`，买装备和买道具两页说 `EntryBuy`：
+        // `saleui.cpp:2521` `m_Ready.SetText(m_data.m_EntrySale)`（只在 `EXT_DEAL`
+        // 下，当铺调过来的 `EXT_HOCKSHOP` 不说话）、`equipui.cpp:5236` 和
+        // `propui.cpp:852` 都是 `m_EntryBuy`。串是空的时候原版把对话框和它旁边
+        // 那个动画一起关掉，移植端没有那个动画。
         self.talk = match page {
             Page::Sell => self.shop.entry_sale.clone(),
             _ => self.shop.entry_buy.clone(),
@@ -1367,20 +1372,33 @@ pub(super) fn blit_col(
     }
 }
 
-/// 小图标闪的透明度（控件 0x56ae84 的更新 `0x444d30`）：`FUN_00444d10` 开闪后透明度从
-/// 上限 `+0x9c` 每次更新减 `+0xa8` 减到下限 `+0xa4`，再加回上限，如此往复。这三个值
-/// 都在构造 `FUN_00444a20` 里写死：`+0xa8 = 1.0`（`0x444a2b`）、`+0xa4 = 6`
-/// （`0x444a53`）、`+0x9c` 取控件色 `+0x98..0x9b` 的 alpha，也就是 255
-/// （`0x444a67`..`0x444a91`）。一来一回 249 步。
+/// 大图标闪的透明度。控件是 `UIStaticRM`（`ui/UIStaticEX.cpp`，exe 里 vtable
+/// 0x56ae84、构造 `FUN_00444a20`、更新 `0x444d30`）：
 ///
-/// **这一步是按帧不是按秒**：`0x444d6f` 起只有 `fild [+0xa0]` → `fadd/fsub [+0xa8]`
-/// → `__ftol`，更新方法收到的时间增量一眼都没看（同一批控件里 `0x44da30` 那个就写了
-/// `dt·80`，所以引擎是给了 dt 的）。原版又没有帧率上限——没有 `Sleep`，`config.ini`
-/// 默认 `sync=0`——所以闪的快慢跟着机器走。移植端只能挑一个：按每秒 60 步折算，
-/// 一来一回 8.3 秒。这是有意定的，不是查出来的。
+/// ```cpp
+/// if (m_isAdd) { m_alpha += m_fadespeed; if (m_alpha >= m_dstAlpha) { m_alpha = m_dstAlpha; m_isAdd = false; ... } }
+/// else        { m_alpha -= m_fadespeed; if (m_alpha <= m_minAlpha) { m_alpha = m_minAlpha; m_isAdd = true; } }
+/// ```
+///
+/// 构造里 `m_minAlpha = 6`、`m_dstAlpha = m_alpha = 255`、`m_fadespeed = 1.0f`
+/// （对上 `0x444a53` / `0x444a67`..`0x444a91` / `0x444a2b`），当铺这六个图标在
+/// `equipui.cpp:451` 一带另给了 `SetBBBSpeed(_flashSpeed)`，`_flashSpeed` 在
+/// `EquipUI` 的初始化列表里是 **8.0f**。`m_alpha` 是 int，所以 255 → 6 要 32 步
+/// （`m_alpha` 落到 7 再减一次就夹到 6），一来一回 64 步。
+/// 开闪从 255 往下掉（`m_isAdd` 初值 false）。
+///
+/// `StopFlash` 只是置 `m_stop`，要等 alpha 再爬回 255 才真停，为的是停在最亮。
+/// 移植端没做这一下，`wear_mode` 一落就停。
+///
+/// **这一步是按帧不是按秒**：`Update` 拿到了 `deltatime` 但一眼没看
+/// （`0x444d6f` 起只有 `fild [+0xa0]` → `fadd/fsub [+0xa8]` → `__ftol`；同一批
+/// 控件里 `0x44da30` 那个就写了 `dt·80`）。原版又没有帧率上限——没有 `Sleep`，
+/// `config.ini` 默认 `sync=0`——所以闪的快慢跟着机器走。移植端只能挑一个：
+/// 按每秒 60 帧折算，每秒 480 个 alpha，一来一回约 1.04 秒。
 fn flash_alpha(t: f32) -> f32 {
     const MIN: f32 = 6. / 255.;
-    const RATE: f32 = 60. / 255.;
+    /// 每帧 8 个 alpha，按 60 帧每秒折算。
+    const RATE: f32 = 8. * 60. / 255.;
     let half = (1. - MIN) / RATE;
     let phase = t.max(0.) % (2. * half);
     if phase < half {
@@ -1794,16 +1812,13 @@ impl SceCommandDealerMenu {
                         .map(stats_of)
                         .unwrap_or_default();
                     let delta = std::array::from_fn(|k| g.stats[k] - worn[k]);
-                    groups.push((side, big, cmp::arrows(delta)));
+                    groups.push((slot, side, big, cmp::arrows(delta)));
                 }
             }
             self.cards.push(Card {
                 role,
                 head: cmp::head_rect(self.cards.len()),
-                small: SMALL_SLOTS.map(|s| {
-                    p.equipped(id, s).is_some()
-                        || self.worn.iter().any(|w| w.role == role && w.slot == s)
-                }),
+                small: SMALL_SLOTS.map(|s| self.worn.iter().any(|w| w.role == role && w.slot == s)),
                 groups,
             });
         }
@@ -1830,28 +1845,30 @@ impl SceCommandDealerMenu {
     fn draw_cards(&self, list: &imgui::DrawListMut<'_>, at: &dyn Fn(i32, i32) -> [f32; 2]) {
         let sk = &self.skin;
         let lift = cmp::bob(self.clock);
-        // 「选谁穿」时，能穿的人对应那一格的小图标闪（`FUN_00462280` → `FUN_00444d10`）。
-        let flashing = self
-            .current()
-            .filter(|_| self.wear_mode)
-            .map(|g| (g.applicable, equipment_slots_for_type(g.item_type)));
+        // 「选谁穿」时提醒玩家可以点：`RemindUserEquip` 把能穿这件的人那一格的**大**图标
+        // （`m_Icon`，就是 `c.groups` 画的这几个）开闪，`EquipThis` 里给已经预穿好的那个人
+        // `StopFlash`，所以剩下没挑的人才继续闪。
         let alpha = flash_alpha(self.wear_clock);
         for c in &self.cards {
             blit(list, &sk.heads[c.role], c.head.0, c.head.1, at);
-            for (k, lit) in c.small.iter().enumerate() {
-                let (x, y) = cmp::small_icon_pos(c.head, k);
-                let flash = flashing
-                    .as_ref()
-                    .is_some_and(|(who, slots)| who[c.role] && slots.contains(&SMALL_SLOTS[k]));
-                if flash {
-                    blit_col(list, &sk.small[k], x, y, [1., 1., 1., alpha], at);
-                } else if *lit {
+            for (k, worn) in c.small.iter().enumerate() {
+                if *worn {
+                    let (x, y) = cmp::small_icon_pos(c.head, k);
                     blit(list, &sk.small[k], x, y, at);
                 }
             }
-            for (side, big, arrows) in &c.groups {
+            for (slot, side, big, arrows) in &c.groups {
                 let (x, y) = cmp::big_icon_pos(c.head, *side);
-                blit(list, &sk.big[*big], x, y, at);
+                let flash = self.wear_mode
+                    && !self
+                        .worn
+                        .iter()
+                        .any(|w| w.role == c.role && w.slot == *slot);
+                if flash {
+                    blit_col(list, &sk.big[*big], x, y, [1., 1., 1., alpha], at);
+                } else {
+                    blit(list, &sk.big[*big], x, y, at);
+                }
                 for a in arrows {
                     let (x, y) = cmp::arrow_pos(c.head, *side, a.cell);
                     let tex = if a.up { &sk.up } else { &sk.down };
@@ -2062,11 +2079,13 @@ mod tests {
 
     #[test]
     fn wearable_icons_pulse_down_then_back_up() {
+        // 每帧 8 个 alpha、按 60 帧每秒折算，255 → 6 要 (255 − 6) / 480 ≈ 0.519 秒。
+        let half: f32 = (1. - 6. / 255.) / (8. * 60. / 255.);
+        assert!((half - 0.5188).abs() < 1e-3, "半程 {half}");
         assert!((flash_alpha(0.) - 1.).abs() < 1e-6, "从最亮开始往下走");
-        assert!(flash_alpha(1.) < flash_alpha(0.5));
-        let half = (1. - 6. / 255.) / (60. / 255.);
+        assert!(flash_alpha(0.4) < flash_alpha(0.2));
         assert!((flash_alpha(half) - 6. / 255.).abs() < 1e-3, "到下限");
-        assert!(flash_alpha(half + 1.) > flash_alpha(half));
+        assert!(flash_alpha(half + 0.2) > flash_alpha(half));
         assert!((flash_alpha(2. * half) - 1.).abs() < 1e-3, "一整轮回到最亮");
     }
 

@@ -839,7 +839,10 @@ impl AdventureDirectorProps {
                 return;
             }
             self.water_magic_failed = false;
-            self.water_magic = Some((ParticleEffect::new(&effect), entities));
+            self.water_magic = Some((
+                ParticleEffect::with_shapes(&effect, |n| load_par_shape(&asset_mgr, n)),
+                entities,
+            ));
         }
 
         let Some((effect, entities)) = self.water_magic.as_ref() else {
@@ -1053,7 +1056,8 @@ impl AdventureDirectorProps {
                         if entities.is_empty() {
                             continue;
                         }
-                        let effect = ParticleEffect::new(&par);
+                        let effect =
+                            ParticleEffect::with_shapes(&par, |n| load_par_shape(&asset_mgr, n));
                         effect.set_scale(scale);
                         log::info!(
                             "CEft: 粒子 {} 缩放 {scale} 偏移 {offset:?} 延迟 {} 发射 {} 秒",
@@ -1946,10 +1950,18 @@ impl AdventureDirectorProps {
             .unwrap_or(OUT_OF_RANGE)
     }
 
-    /// 主角走不通时贴墙滑（`FUN_00414350` 行为 3 那一支）。在主角身边按自己的朝向取 4 个点——右前、左前各
-    /// (6, 6)，正右、正左各 12（格宽 12 的 0.5 倍和 1 倍）——逐个看走不走得通；有一个走得通就沿某个方向走
-    /// 这一步原本的长度，落点那一格走得通才挪。方向是最后一个探测点那组值归一化后 y 置 0：走得通时那组值
-    /// 是偏移，走不通时是那个点的**世界坐标**（原版就这样，照抄）；跟上一次滑的方向点积 < −0.1 就还用上一次的。
+    /// 主角走不通时贴墙滑（`FUN_00414350` 行为 3 那一支，源码是
+    /// `Role::UpdateKeyMove` 末尾那段「自动修正位置」，`gamebase/role.cpp:1137`）。
+    ///
+    /// 四个探测点在**角色自己的坐标系**里写死：
+    /// `(±ROLE_RADIUS/2, 0, ROLE_RADIUS/2)` 和 `(±ROLE_RADIUS, 0, 0)`，
+    /// `ROLE_RADIUS = 12`，也就是右前、左前各 (6, 6)、正右、正左各 12。
+    /// 逐个 `GlobalizePosition` 成世界点再看走不走得通，**不 break**，所以
+    /// 最后一个点说了算。走得通时 `newdir = 那个点 − position`（偏移），
+    /// 走不通时 `newdir` 留着**那个点的世界坐标**没减——原版就这样，照抄。
+    ///
+    /// 然后 `newdir.Normalize(); newdir.y = 0;`（先归一化再抹 y），乘上这一步
+    /// 原本要走的距离，落点那一格走得通才真挪。
     fn slide_player(
         &mut self,
         scene_manager: &ComRc<ISceneManager>,
@@ -1983,7 +1995,12 @@ impl AdventureDirectorProps {
         let len = (dx * dx + dz * dz).sqrt();
         let n = Vec3::normalized(&v);
         let mut d = Vec3::new(n.x, 0., n.z);
-        // [推断] 原版在角色初始化时存朝向，这里第一次滑的时候才取。
+        // 原版这个「上一次滑的方向」是角色自己的成员 `m_lastautodir`，
+        // 在 `Role` 初始化时置成 `forward`（`gamebase/role.cpp:3924`），
+        // 之后每次贴墙滑都更新（`:1179`）。判定也一模一样：
+        // `if (newdir.DotProduct(&m_lastautodir) < -0.1f) newdir = m_lastautodir;`
+        // （`:1173`）。这里改成第一次滑的时候才取当时的朝向，差别只在
+        // 「角色建出来到第一次贴墙之间转过向」这种情形。
         let prev = self.player_slide_dir.get_or_insert(facing);
         if d.x * prev.x + d.z * prev.z < -0.1 {
             d = *prev;
@@ -3065,6 +3082,24 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
                 self.state.show_note(t);
             }
             None => log::warn!("场景物件：lang.txt 里没有 {key}"),
+        }
+    }
+}
+
+/// 读 `.par` 里形状 2 的发射器指的那份 `.csf` 点云。名字是相对
+/// `effect\gbParticle` 目录的反斜杠写法。
+fn load_par_shape(
+    asset_mgr: &std::rc::Rc<crate::openpal3::asset_manager::AssetManager>,
+    name: &str,
+) -> Option<Vec<[f32; 3]>> {
+    use fileformats::pal3::csf::read_csf;
+    let path = asset_mgr.particle_root().join(name.replace('\\', "/"));
+    let data = common::store_ext::StoreExt2::read_to_end(asset_mgr.vfs(), &path).ok()?;
+    match read_csf(&mut data.as_slice()) {
+        Ok(shape) => Some(shape.points),
+        Err(e) => {
+            log::warn!("读不开 {}: {e}", path.display());
+            None
         }
     }
 }

@@ -498,7 +498,9 @@ impl SceState {
         }
 
         let bytes = crate::scripting::sce::commands::dlg_sel::gbk_len(&text) as i32;
-        let (w, h) = (0x40.max((bytes + 5) * 10), 0x30);
+        // `UINote::Note`（`gameui/uinote.cpp:44`）：`max(64, strlen(str)*10 + 60)`，
+        // 高 48。`strlen` 数的是 GBK 字节。
+        let (w, h) = (0x40.max(bytes * 10 + 60), 0x30);
         let strip = ((800 - 0x112) / 2, 10, (800 - 0x112) / 2 + 0x112, 0x57);
         let x = strip.0 + (strip.2 - strip.0 - w) / 2;
         let y = strip.1 + (strip.3 - strip.1 - h) / 2;
@@ -535,10 +537,12 @@ impl SceState {
             let [tw, th] = ui.calc_text_size(&text);
             let [x0, y0] = at(b.0, b.1);
             let [x1, y1] = at(b.2, b.3);
-            // 控件默认色是近黑（0xff000505），可 `note8` 是 81% 不透明的纯黑，近黑字
-            // 在原版上也会看不见——颜色一定另有地方设，没追到。先用对话选择框同一套
-            // 外框上的 0xfffafa [推断]。
-            let ink = [1.0, 0.98, 0.98, 1.0];
+            // 字色在控件类的构造里：`UIStaticFlex::UIStaticFlex`
+            // （`ui/UIStaticFlex.cpp:16`）把从 `UIWnd` 继承来的近黑
+            // （`gbColorQuad(5,5,0)`，`ui/uiwnd.cpp:22`）改成了
+            // RGB(255, 255, 250)。`UINote` 用的正是这个类，自己没再设色。
+            // `UIStaticFlex::Render`（同文件 `:214`）还写死 align = 1，横竖都居中。
+            let ink = [1.0, 1.0, 250. / 255., 1.0];
             list.add_text(
                 [x0 + (x1 - x0 - tw) * 0.5, y0 + (y1 - y0 - th) * 0.5],
                 ink,

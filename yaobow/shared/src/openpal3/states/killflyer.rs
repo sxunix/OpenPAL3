@@ -161,9 +161,30 @@ impl FlyGame {
 
     /// 走一帧。
     ///
-    /// 飞行那一支的走法是 `[推断]`：原版每帧按速度系数朝随机目标点挪，具体
-    /// 步长没读出来，这里用「速度 × 60 像素/秒」逼近；掉落、越界和记分是照
-    /// `FUN_00529e40` 抄的。
+    /// 飞行那一支照 `KF_Sys::Update`（`subgame/KillFlyer/KF_Sys.cpp:296` 起，
+    /// exe 里 `FUN_00529e40`）：**两根轴各走各的**，不是沿着方向向量走一步——
+    ///
+    /// ```cpp
+    /// if ( m_pt[i].x < m_nextpt[i].x )      m_pt[i].x += 速度;
+    /// else if ( m_pt[i].x > m_nextpt[i].x ) m_pt[i].x -= 速度;
+    /// ... 越界检查 ... 到了就 m_isGetNextpt = true; break;
+    /// // y 同形
+    /// ```
+    ///
+    /// 所以斜着飞比直着快 √2 倍；哪根轴先到目标就立刻换一个新目标点，
+    /// 另一根轴到没到都不管（`break` 跳出整段）。目标点在整块
+    /// 800 × 600 区域里随机取。
+    ///
+    /// 越界：位置超过 `边 ∓ m_flyoutparam`（`m_flyoutparam = 28`）就
+    /// 计数加一、换目标点，加到 2 就飞走。原版**不把位置夹回来**。
+    ///
+    /// 速度 `m_speed[i] = ((rand()%12) - 6) * 0.1f + 0.8f`，也就是
+    /// 0.2 到 1.3（源码旁边那行「0.5~~1.1」的注释是错的）；
+    /// `m_specspeed[i] = m_speed[i] * 1.6f` 给 `m_type[i] != 0` 的那种用，
+    /// 移植端还没分这两种。
+    ///
+    /// 这些量都是**按帧**加的，原版没有帧率上限，这里和别处一样按
+    /// 每秒 60 帧折算。
     pub fn tick(&mut self, delta_sec: f32) {
         let floor = FIELD_H - 2. * FLY_SIZE;
         // 借出来免得和 &mut self.rng 打架。
@@ -171,27 +192,57 @@ impl FlyGame {
         for fly in self.flies.iter_mut() {
             match fly.state {
                 FlyState::Flying => {
-                    let (dx, dy) = (fly.target.0 - fly.x, fly.target.1 - fly.y);
-                    let dist = (dx * dx + dy * dy).sqrt();
-                    if dist < 1. {
+                    let step = fly.speed * 60. * delta_sec;
+                    let mut next = false;
+                    let mut out = false;
+                    // x 这一轴。
+                    if fly.x < fly.target.0 {
+                        fly.x += step;
+                        if fly.x >= FIELD_W - FLY_SIZE {
+                            (out, next) = (true, true);
+                        } else if fly.x >= fly.target.0 {
+                            fly.x = fly.target.0;
+                            next = true;
+                        }
+                    } else if fly.x > fly.target.0 {
+                        fly.x -= step;
+                        if fly.x <= FLY_SIZE {
+                            (out, next) = (true, true);
+                        } else if fly.x <= fly.target.0 {
+                            fly.x = fly.target.0;
+                            next = true;
+                        }
+                    }
+                    // y 这一轴，只有 x 没触发换点时才走（原版 `break` 的效果）。
+                    if !next {
+                        if fly.y < fly.target.1 {
+                            fly.y += step;
+                            if fly.y >= FIELD_H - FLY_SIZE {
+                                (out, next) = (true, true);
+                            } else if fly.y >= fly.target.1 {
+                                next = true;
+                            }
+                        } else if fly.y > fly.target.1 {
+                            fly.y -= step;
+                            if fly.y <= FLY_SIZE {
+                                (out, next) = (true, true);
+                            } else if fly.y <= fly.target.1 {
+                                next = true;
+                            }
+                        }
+                    }
+                    if out {
+                        fly.edges += 1;
+                        if fly.edges >= EDGE_LIMIT {
+                            fly.state = FlyState::Done;
+                            fly.edges = 0;
+                        }
+                    }
+                    if next {
                         fly.target = (
                             (rng.rand15() % FIELD_W as i32) as f32,
                             (rng.rand15() % FIELD_H as i32) as f32,
                         );
-                        continue;
-                    }
-                    let step = fly.speed * 60. * delta_sec;
-                    fly.x += dx / dist * step;
-                    fly.y += dy / dist * step;
-                    if fly.x < 0. || fly.x > FIELD_W || fly.y < 0. || fly.y > FIELD_H {
-                        fly.x = fly.x.clamp(0., FIELD_W);
-                        fly.y = fly.y.clamp(0., FIELD_H);
-                        // 原版是撞到边就把位置压回来、越界计数加一，目标点
-                        // 不换；加到 2 就飞走（`+0x6a0[i]`）。
-                        fly.edges += 1;
-                        if fly.edges >= EDGE_LIMIT {
-                            fly.state = FlyState::Done;
-                        }
                     }
                 }
                 FlyState::Falling => {

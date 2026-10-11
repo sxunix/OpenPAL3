@@ -228,7 +228,11 @@ pub fn a_star<N: NavGrid + ?Sized>(
                     nodes[o].g = g;
                     nodes[o].f = g + nodes[o].h;
                     if nodes[o].closed {
-                        // `FUN_004015b0`：顺着子节点往下传，用一个栈（[推断] 后进先出）。
+                        // `AStarPathFinder::PropagateDown`（`gamebase/astarpathfinder.cpp:316`，
+                        // exe 里 `FUN_004015b0`）：顺着子节点往下传。确实是后进先出——
+                        // `Push` 插在链表头、`Pop` 从链表头取（同文件 `:363`、`:373`）。
+                        // 原版先对 `Old` 的子节点走一遍再抽栈，这里把 `o` 先压进去，
+                        // 第一轮循环做的是同一件事。
                         let mut stack = vec![o];
                         while let Some(p) = stack.pop() {
                             for c in nodes[p].children.clone() {

@@ -110,6 +110,8 @@ impl Rand {
 /// One `gbParticleGroup` running.
 pub struct ParticleGroup {
     def: ParGroupDef,
+    /// 形状 2 的发射器撒在这份点云上，见 [`ParticleGroup::spawn_position`]。
+    shape_points: Vec<[f32; 3]>,
     particles: RefCell<Vec<Particle>>,
     /// `group+0x40`, how long the emitter has been going.
     elapsed: RefCell<f32>,
@@ -124,8 +126,13 @@ pub struct ParticleGroup {
 
 impl ParticleGroup {
     pub fn new(def: ParGroupDef, seed: u32) -> Self {
+        Self::with_shape(def, seed, vec![])
+    }
+
+    pub fn with_shape(def: ParGroupDef, seed: u32, shape_points: Vec<[f32; 3]>) -> Self {
         Self {
             def,
+            shape_points,
             particles: RefCell::new(vec![Particle::dead(); MAX_PARTICLES]),
             elapsed: RefCell::new(0.),
             pending: RefCell::new(0.),
@@ -244,8 +251,11 @@ impl ParticleGroup {
     ///   `θ ∈ [0,180°]`、`φ ∈ [0,360°]`，按
     ///   `(r·sinφ·sinθ, r·cosθ, r·cosφ·sinθ)` 摆开——θ 是从 +y 量的极角。
     /// * 其余（形状 2）：在 `.csf` 网格的点云里随机挑一个点再过一次矩阵。
-    ///   `.csf` 还没有读者，所以这一支暂时落在原点 `[推断]`；实机 65 个发射
-    ///   器里有 27 个是它。
+    ///   点云就是 [`fileformats::pal3::csf`]；`gbEmitterShape::get_vec`
+    ///   （`engine/physics/gbparteffect.cpp:136`）是
+    ///   `gbRand(0, 点数 − 1)` 挑一个点再过 `curmat`——那个矩阵只有
+    ///   `set_transform` 会写，粒子这条路上没人调，所以是单位阵。
+    ///   实机 65 个发射器里有 27 个是这一种；读不到 `.csf` 时退回原点。
     ///
     /// 缩放（exe 里那份的 FUN_004ba800）：形状上取的那一点乘发射器 `+0xb0`
     /// 的缩放，原点由 FUN_004bb0f0 预先乘过，所以两者都随缩放放大。
@@ -277,7 +287,14 @@ impl ParticleGroup {
                     o.z + r * phi.cos() * theta.sin(),
                 )
             }
-            _ => o,
+            _ => {
+                if self.shape_points.is_empty() {
+                    return o;
+                }
+                let k = (rand.next() * self.shape_points.len() as f32) as usize;
+                let p = self.shape_points[k.min(self.shape_points.len() - 1)];
+                Vec3::new(o.x + scale * p[0], o.y + scale * p[1], o.z + scale * p[2])
+            }
         }
     }
 
@@ -355,12 +372,29 @@ pub struct ParticleEffect {
 
 impl ParticleEffect {
     pub fn new(effect: &ParEffect) -> Self {
+        Self::with_shapes(effect, |_| None)
+    }
+
+    /// `load_shape` 按 `.par` 里写的名字（`csf\\star.csf` 这种，相对
+    /// `effect\gbParticle` 目录）读那份点云；读不到就让形状 2 的发射器
+    /// 退回原点。
+    pub fn with_shapes(
+        effect: &ParEffect,
+        load_shape: impl Fn(&str) -> Option<Vec<[f32; 3]>>,
+    ) -> Self {
         Self {
             groups: effect
                 .groups
                 .iter()
                 .enumerate()
-                .map(|(i, def)| ParticleGroup::new(def.clone(), 0x9e37_79b9 ^ i as u32))
+                .map(|(i, def)| {
+                    let points = if def.emitter.shape > 1 && !def.emitter.mesh.is_empty() {
+                        load_shape(&def.emitter.mesh).unwrap_or_default()
+                    } else {
+                        vec![]
+                    };
+                    ParticleGroup::with_shape(def.clone(), 0x9e37_79b9 ^ i as u32, points)
+                })
                 .collect(),
         }
     }

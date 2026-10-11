@@ -417,8 +417,18 @@ impl ScnScene {
     ///
     /// 全量普查 566 个 `.scn`：值 0 有 40 个、1 有 386 个、2 有 140 个，
     /// **是逐 block 的**（同一个 cpk 下三种都有，不是整张图一个值）；2 基本
-    /// 集中在 M\* 的 block 上。叫它「迷宫」仍是按用途起的名 `[推断]`，
-    /// 但「2 才能跳」这件事是查实的。
+    /// 集中在 M\* 的 block 上。
+    ///
+    /// 这个字段就是 `SceneInfo::type`（`gamebase/scenedata.h:238`）：
+    /// `SCNHeader` 打包后 18 字节，`SceneInfo` 的前三个 `char[32]` 占 96，
+    /// 所以 `type` 正好落在文件 `18 + 96 = 114`。枚举
+    /// （同文件 `:226`）是
+    ///
+    /// * `SCENE_STORYA = 0` 「情节关城中大地」
+    /// * `SCENE_STORYB = 1` 「情节关建筑内部」
+    /// * `SCENE_FIGHT = 2` 「战斗关」
+    ///
+    /// 所以「2 才能跳」= 只有战斗关能跳，不是什么「迷宫」。
     pub fn scene_type(&self) -> u32 {
         self.scn_file.global_scene_index
     }
@@ -1426,10 +1436,30 @@ impl ScnScene {
         *self.object_blocking.borrow_mut() = Some(b);
     }
 
-    /// 物件模型的包围盒（`FUN_00429af0` 载入时把动画停在第 0 帧调 `gbGeomNode::GetTotalOBBox`）：
-    /// 带网格的节点只有一个时 = 节点矩阵 × 网格的最小 / 最大点；多个时把各节点的包围盒变换后并起来，
-    /// 矩阵只放平移——原版这里把平移写成 (x 中心, x 中心, y 中心)，照抄。POL 取文件里各网格包围盒的并
-    /// （[推断] 原版把整份 POL 当一个节点）；CVD 的网格包围盒用第 0 帧顶点的最小 / 最大值（[推断]）。
+    /// 物件模型的包围盒（`FUN_00429af0` 载入时把动画停在第 0 帧调 `gbGeomNode::GetTotalOBBox`）。
+    ///
+    /// `gbGeomNode::GetTotalOBBox`（`engine/geometry/gbgeomnode.cpp:72`）先把自己和所有子节点里
+    /// 带网格的收集起来：
+    ///
+    /// * 0 个 → 自己的 `GetOBBox`，没网格就三个边长都是 0；
+    /// * 1 个 → 那个节点的 `GetOBBox`：矩阵取节点的 to-world，边长取网格 AABB 的
+    ///   `max − min`，再把 AABB 的中心 `LeftTranslate` 上去；
+    /// * ≥ 2 个 → 每个网格 AABB 过自己节点的 to-world，取并集，矩阵是单位阵只放中心。
+    ///
+    /// **最后那一步出货的 `gbengine.dll` 和这份源码不一样**：源码写的是
+    /// `tx/ty/tz = (min+max)*0.5` 三个轴各算各的，DLL 里 `0x10010222` 起却是
+    /// `[esi+0x30]` 和 `[esi+0x34]` 都写 `(max.x+min.x)*0.5`、`[esi+0x38]` 写
+    /// `(max.y+min.y)*0.5`——**x 中心写了两遍、z 中心丢了**。这里照 DLL 抄，
+    /// 因为跑起来的是 DLL。（也就是说 cpk 里那份 `data/engine` 和出货的
+    /// gbengine.dll 不是同一次编译，用它当参考时每条都得对一遍。）
+    ///
+    /// POL 取文件里各网格包围盒的并——`gbStaticMesh` 的 AABB 是**从文件里直接读的**
+    /// （`engine/geometry/gbstaticmesh.cpp:305`），不是算出来的。
+    ///
+    /// CVD 这里用的是第 0 帧顶点的最小 / 最大值；源码里 `gbIpolMesh` 读文件时
+    /// 是**把所有帧都扫一遍**取并集（`engine/geometry/gbipolmesh.cpp:234`），
+    /// 但上面那条说明这份源码不能直接当 DLL 的行为用，DLL 里这一段还没对过，
+    /// 所以先按现状留着。
     fn object_model_box(&self, name: &str) -> super::object_block::Model {
         use super::object_block::{Model, Obb};
         use common::store_ext::StoreExt2;

@@ -317,7 +317,16 @@ impl ObjectBlocking {
         }
         let obb = match model {
             Model::Box(obb) => obb,
-            // 存盘点按圆登记，半径写死 3，只要圆心。[推断] 特效的包围盒中心在物件原点。
+            // 存盘点按圆登记，半径写死 3（`FillMapRect`，`gamebase/sceneobj.cpp:3420`），
+            // 只要圆心。圆心取 `box.trans.Transform((0,0,0))`，也就是 OBB 自己的中心；
+            // 存盘点那个特效给的 OBB 正是以物件原点为中心的——
+            // `MXSavePoint::GetOBB`（`effect/MXSavePoint.cpp:135`）写的是
+            // `box.trans.LoadIdentity(); box.xlen = box.zlen = 48; box.ylen = 60;`。
+            //
+            // 名字以 `+` 开头的是特效物件，数字是 `MeshFxClass`
+            // （`effect/MeshFxCreator.h:19`）：+0 瘴气、+1 传送点、+2 存盘点、
+            // +3 火把、+4 战斗特效。`+4` 那个 `MXCEft::GetOBB` 是个空函数
+            // （`MXCEft.cpp:28`），原版读到的是栈上没初始化的 OBB，所以这里跳过它。
             Model::Fx if n.kind == 0x2a && n.name != "+4" => Obb {
                 m: Mat44::new_identity(),
                 ext: [0.; 3],

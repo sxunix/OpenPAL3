@@ -204,7 +204,10 @@ mod spark {
     pub const SCALE: f32 = 0.8;
     /// `+0x84` = 1.6：每帧 alpha 减这么多，再截成整数。
     pub const FADE: f32 = 1.6;
-    /// 原版按帧推，这里按 60 帧每秒折算 [推断]。
+    /// 原版一帧推一步：`UIParticle::Render` 不收时间、`UIPar_risehelix` 里全是
+    /// 逐帧累加，类里那个 `Set_FPS`（`uiparticle.cpp:192`）整份代码没有一个调用者，
+    /// 原版又没有帧率上限，所以快慢跟着机器走。移植端按每秒 60 帧折算，和
+    /// `dealer::flash_alpha` 一样是有意定的。
     pub const FRAME: f32 = 1. / 60.;
 
     #[derive(Debug, Clone, Copy)]
@@ -308,9 +311,20 @@ mod spark {
     }
 }
 
-/// `Par_Effect\spark.tga` 是黑底、没有 alpha 的 RGB 图，原版用另一套渲染状态画
-/// （`FUN_005407a0` 传 `DAT_0189505c`，普通界面贴图是 `DAT_0189504c`），看样子是叠加
-/// [推断]。imgui 只有 alpha 混合，这里把亮度当 alpha、颜色填白，再乘顶点色，近似叠加。
+/// `Par_Effect\spark.tga` 是黑底、24 位没有 alpha 通道的 RGB 图，整张图 R=G=B
+/// （1024 个非黑像素一个不是灰的，峰值 254）。
+///
+/// 原版画粒子走的是另一套渲染状态：`UIPar_risehelix` → `UIRenderPar`
+/// （`uibase.cpp:329`，exe 里 `FUN_005407a0`）用 `UI_EFFECT_TEX_PARTICLE`
+/// = `gfxscript\ui_par_tex_color.gbf` = `DAT_0189505c`，混合是
+/// `SRCALPHA / ONE`，**加法**；普通界面贴图走的 `ui_TL.gbf`（`DAT_0189504c`）
+/// 才是 `SRCALPHA / INVSRCALPHA`。贴图没有 alpha 通道，D3D 当 1 看，所以
+/// 一个粒子加上去的是 `贴图灰度 × 粒子色 × 粒子 alpha`。
+///
+/// imgui 只有 alpha 混合，这里照 [`crate::openpal3::ui_tex::bake_additive`] 的
+/// 同一套换算：alpha 取 `max(r,g,b)`、颜色取 `rgb / max`。这张图是灰的，
+/// 所以颜色正好是白，再乘顶点色（粒子色）就是上面那个乘积，误差只有被盖掉的
+/// `dst·A` 那一份。
 fn spark_texture(am: &crate::openpal3::asset_manager::AssetManager) -> Tex {
     let mut image = am.read_picture("/basedata/basedata/ui/GameMainUI/Par_Effect/spark.tga")?;
     for p in image.pixels_mut() {

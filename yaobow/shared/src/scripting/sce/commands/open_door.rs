@@ -29,16 +29,28 @@ fn cvd_components(entity: &ComRc<IEntity>, out: &mut Vec<ComRc<ICvdModel>>) {
 
 /// 87 开门.
 ///
-/// `FUN_0042bea0` only acts on animation-type-3 objects: it sets the
-/// visual node's time scale to 2.0, restarts its animation from frame 0,
-/// marks the object as playing once (`obj+0x50 = 2`), refreshes its
-/// collision, and then blocks the script on the object until the
-/// animation is done. Pal3.Unity fires and forgets at normal speed;
-/// this follows the binary.
+/// `FUN_0042bea0` is `SceneObj::Script_OpenDoor` (`gamebase/sceneobj.cpp:4257`):
 ///
-/// The animation-type check is not reproduced: yaobow has no equivalent
-/// of `obj+0x58`, so any object with CVD keyframes plays. Scripts only
-/// point 87 at doors. `[推断]`
+/// ```cpp
+/// ASSERT(m_info.type == 14);           // 门
+/// if (m_mdl.m_mdltype == 3) {          // 模型是 .cvd
+///     m_mdl.m_geom->SetTimeScale(PLAY_TIME_SCALE);   // 2.0f
+///     m_mdl.m_geom->Reset();
+///     m_subobj.state = 2;
+///     PlaySnd();
+/// }
+/// ```
+///
+/// and the opcode then blocks on `IsWaiting()`, i.e. until `m_subobj.state`
+/// is back to 0. Pal3.Unity fires and forgets at normal speed; this follows
+/// the binary.
+///
+/// 「animation type 3」就是**模型是 `.cvd`**——`MyMdl::Load`
+/// （`gamebase/sceneobj.cpp:3054`）按扩展名定 `m_mdltype`：`.cvd` 是 3、
+/// `.pol` 是 2、名字以 `+` 开头的特效是 4。所以「只对有 CVD 关键帧的物件生效」
+/// 和原版是同一条判断，不是放宽。
+///
+/// 还差一处：原版同时 `PlaySnd()` 放物件自己的音效，这里没放。
 #[derive(Clone)]
 pub struct SceCommandOpenDoor {
     object_id: i32,

@@ -27,9 +27,17 @@
 //! * 画（`+0x18` 0x4c9ca0）：矩阵栈 平移(位置 + 绕圈) → 缩放(x, 1, z) → 绕 X → 绕 Y → 绕 Z，
 //!   面片一次画掉；渲染效果按加法 / 不测深度四选一。
 //!
-//! [推断] 的地方：
-//! - 变形公式里的 t 原版是特效管理器的绝对时钟，这里用实例自己的时钟（只差一个相位）；
-//! - 矩阵栈「后压的先作用」，即 Z → Y → X → 缩放 → 平移；转角按度、右手系。
+//! gbengine 的几条底层约定都在 `engine/math/gbmath.cpp` 里查实了，见
+//! [`super::flexeff_explosive`] 开头：角度按度、旋转右手系、矩阵栈
+//! 「后压的先作用」。 这一类的实际作用顺序是
+//! Z → Y → X → 缩放(x, 1, z) → 平移。
+//!
+//! 变形公式里的 t，原版（`CEffGrid::DoWave` / `DoFlap`，`EffGrid.cpp:636`、`:661`）
+//! 用的是 `m_fCurTime`——任务基类从 `CEffMgr::Update(fCurTime)` 收到的那个绝对时钟
+//! （战斗里是 `cbsystem.cpp:345` 的 `m_fTimeFund`，场景里是 `pal3.cpp:649` 的
+//! `g_fEftTime`）。这里用实例自己的时钟，正弦里只差一个常数相位，是有意换的。
+//!
+//! `Render` 带 `m_bIdle || !m_bVisible` 的判断（`EffGrid.cpp:152`）。
 
 use crosscom::ComRc;
 use fileformats::pal3::flexeff::EffectDef;

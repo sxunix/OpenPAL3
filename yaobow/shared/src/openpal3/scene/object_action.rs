@@ -175,9 +175,15 @@ impl ObjectActions {
                 proc: n.proc,
                 layer: n.layer,
                 p: n.p,
-                // `FUN_0042bf90` → `FUN_00421560`：按编号找。[推断] 和脚本找物件一样只比低字节。
+                // `SceneObj::LinkObject`（`gamebase/sceneobj.cpp:4291`，exe 里
+                // `FUN_0042bf90`）：`linkobj != 0xFFFF` 时拿它去 `Scene::GetObjByID`
+                // （`FUN_00421560`）找。那边比的是**整个 16 位**——
+                // `movzx bx, byte ptr [edx]` 取物件的 `BYTE id`，再 `cmp bx, di`
+                // 跟传进来的 WORD 比，所以高字节非零就一个都配不上。
+                // 实机 533 个 `.scn` 里 92 条非 0xFFFF 的连接，高字节全是 0，
+                // 这条路上永远走得通。
                 link: (n.link_id != 0xffff)
-                    .then(|| ids.iter().position(|id| *id == (n.link_id & 0xff) as i32))
+                    .then(|| ids.iter().position(|id| *id == n.link_id as i32))
                     .flatten(),
                 state: 0,
                 timer: 0.,
@@ -215,6 +221,26 @@ impl ObjectActions {
         self.objs.iter().any(|o| !o.queue.is_empty())
     }
 
+    /// `SceneObj::InterActRole` 的末尾（`gamebase/sceneobj.cpp:1559`）：
+    /// 大 `switch(m_info.type)` 里凡是 `break` 出来的类型，最后都会无条件
+    /// 跑一句 `PalScriptMgr::RunScript(m_info.scriptid)`——**和有没有连接无关**，
+    /// 也不进 `Common_*` 队列，是当场跑。`return` 出去的那些（0、15 带脚本、
+    /// 16、21、30、以及各种条件不满足的提前 return）跳过这一句。
+    ///
+    /// 这里模型化的四种里：吊桥 0x13、乌龟 0x1d、上下传送板 0x28 是
+    /// `break`（要跑），神树传送点 0x26 是 `return`（不跑，它那两个过程
+    /// 走的是参数 0 / 参数 1）。
+    ///
+    /// 实机 533 个 `.scn` 里这四种带非零过程的只有两条：M24/2 的 10 号和
+    /// M24/3 的 6 号乌龟（过程 506 / 505，都没有连接）。506 的内容是对五个
+    /// 巨锤（物件 5..9）各来一次「与物件交互」——一个连接位放不下五个目标。
+    fn own_proc<W: World>(&self, i: usize, w: &mut W) {
+        let proc = self.objs[i].proc;
+        if proc != 0 {
+            w.call_proc(proc);
+        }
+    }
+
     /// `FUN_00424c20`：物件 `i` 收到事件 `ev`；`same` 是上一帧主角也站在它上面，`dt` 是这一帧的秒数。
     pub fn event<W: World>(&mut self, i: usize, ev: u8, same: bool, dt: f32, w: &mut W) {
         let Some(o) = self.objs.get(i) else {
@@ -241,6 +267,7 @@ impl ObjectActions {
                     self.push(i, a, w);
                 }
                 self.run(i, w);
+                self.own_proc(i, w);
             }
             // 乌龟：主角站上来（事件 0）。队里人不够参数 0 就提示「lessweight」；离乌龟（x、z）超过 36 不理；
             // 否则主角走到乌龟中间、乌龟播动画沉 7、叫连着的物件（吊桥）。
@@ -285,6 +312,7 @@ impl ObjectActions {
                     self.push(i, a, w);
                 }
                 self.run(i, w);
+                self.own_proc(i, w);
             }
             // 神树传送点：站在上面（事件 0、参数 0 非 0、上一帧也站着）满 4 秒，连主角升 200、跑参数 0 那个过程；
             // 跳下来落在上面（事件 3）且参数 1 非 0，降 200、跑参数 1。离开时计时清零（`FUN_0042af80`）。
@@ -380,6 +408,7 @@ impl ObjectActions {
                     self.push(i, a, w);
                 }
                 self.run(i, w);
+                self.own_proc(i, w);
             }
             _ => {}
         }
@@ -458,14 +487,10 @@ impl ObjectActions {
                     }
                 }
                 Act::Link { wait } => {
-                    match (self.objs[i].link, self.objs[i].proc) {
-                        (Some(l), _) => self.event(l, 2, false, 0.001, w),
-                        // **[推断]** 没连着别的物件、但自己挂了过程时跑那条过程。原版 `FUN_0042bf90` 只管
-                        // 连着的那个，没连就什么都不做；可 M24 的两只乌龟（0x1d）恰恰没连、挂着过程 505 / 506，
-                        // 而 506 的内容就是对五个巨锤（物件 5..9）各来一次「与物件交互」——一个连接位放不下五个
-                        // 目标，显然是要靠这条过程。原版走哪条路没找到，这里按数据的意思补上。
-                        (None, proc) if proc != 0 => w.call_proc(proc),
-                        _ => {}
+                    // 没连着就什么都不做（`LinkObject` 对 `0xFFFF` 直接返回 NULL）。
+                    // 物件自己那条过程不在这里跑，见 [`ObjectActions::own_proc`]。
+                    if let Some(l) = self.objs[i].link {
+                        self.event(l, 2, false, 0.001, w);
                     }
                     if wait {
                         return;
@@ -870,14 +895,14 @@ mod tests {
     }
 
     #[test]
-    fn link_by_low_byte_and_missing_link() {
+    fn link_matches_the_whole_word_like_the_exe() {
         let a = ObjectActions::new(&[
             ObjNode {
                 object_id: 4,
                 kind: 0x1d,
                 layer: 0,
                 p: [4, 0, 0, 0],
-                link_id: 0x104,
+                link_id: 0x5,
                 sound: None,
                 proc: 0,
             },
@@ -890,9 +915,20 @@ mod tests {
                 sound: None,
                 proc: 0,
             },
+            // 高字节非零：`cmp bx, di` 配不上任何物件（实机数据里没有这种）。
+            ObjNode {
+                object_id: 6,
+                kind: 0x1d,
+                layer: 0,
+                p: [4, 0, 0, 0],
+                link_id: 0x104,
+                sound: None,
+                proc: 0,
+            },
         ]);
-        assert_eq!(a.objs[0].link, Some(0));
+        assert_eq!(a.objs[0].link, Some(1));
         assert_eq!(a.objs[1].link, None);
+        assert_eq!(a.objs[2].link, None);
         assert_eq!(a.index_of(5), Some(1));
     }
 

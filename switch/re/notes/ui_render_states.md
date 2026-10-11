@@ -1,19 +1,23 @@
 # 原生界面的混合方式（gfxscript 里的几张 .gbf）
 
-界面四边形的渲染效果在 `FUN_0053fec0`（0x53ff00 一带）一次建好，存在一排全局里：
+> 这一份后来和 `basedata.cpk` 里的源码 `data/pal3/uibase.cpp` 对过，全部吻合。
+> 下表最后一列补上了源码里的名字，见 [`src_from_cpk.md`](src_from_cpk.md)。
 
-| 全局 | 脚本 | 混合 | 颜色 |
-| --- | --- | --- | --- |
-| `DAT_01895048` | （`NewTrivalEffect`） | — | — |
-| `DAT_0189504c` | `ui_TL.gbf` | SRCALPHA / INVSRCALPHA | 贴图 × 顶点色 |
-| `DAT_01895050` | `ui_notex_TL.gbf` | SRCALPHA / INVSRCALPHA | 只有顶点色 |
-| `DAT_01895068` | `ui_notex.gbf` | SRCALPHA / INVSRCALPHA | 只有顶点色，**开 Z 测试** |
-| `DAT_01895054` | `ui_tex_vcolor.gbf` | SRCALPHA / INVSRCALPHA | 贴图 **＋** 顶点色（ColorOp=ADD） |
-| `DAT_01895058` | `ui_tex_color.gbf` | **SRCALPHA / ONE** | 贴图 × 顶点色 |
-| `DAT_0189505c` | `ui_par_tex_color.gbf` | **SRCALPHA / ONE** | 贴图 × 顶点色 |
-| `DAT_01895060` | `ui_alpha.gbf` | SRCALPHA / INVSRCALPHA | 贴图 × 顶点色，不写 Filter（双线性） |
-| `DAT_01895064` | `ui_AddColor.gbf` | **ONE / ONE** | 只有顶点色 |
-| `DAT_0189506c` | `geom_notex_line.gbf` | — | 画线 |
+界面四边形的渲染效果在 `UIInitSystem`（`uibase.cpp:31`，exe 里 `FUN_0053fec0`，
+0x53ff00 一带）一次建好，存在一排全局里：
+
+| 全局 | 源码里的名字 | 脚本 | 混合 | 颜色 |
+| --- | --- | --- | --- | --- |
+| `DAT_01895048` | `UI_EFFECT` | （`NewTrivalEffect`） | — | — |
+| `DAT_0189504c` | `UI_EFFECT_TL` | `ui_TL.gbf` | SRCALPHA / INVSRCALPHA | 贴图 × 顶点色 |
+| `DAT_01895050` | `UI_EFFECT_NOTEX_TL` | `ui_notex_TL.gbf` | SRCALPHA / INVSRCALPHA | 只有顶点色 |
+| `DAT_01895068` | `UI_EFFECT_NOTEX2` | `ui_notex.gbf` | SRCALPHA / INVSRCALPHA | 只有顶点色，**开 Z 测试** |
+| `DAT_01895054` | `UI_EFFECT_TEX_VCOLOR` | `ui_tex_vcolor.gbf` | SRCALPHA / INVSRCALPHA | 贴图 **＋** 顶点色（ColorOp=ADD） |
+| `DAT_01895058` | `UI_EFFECT_TEX_COLOR` | `ui_tex_color.gbf` | **SRCALPHA / ONE** | 贴图 × 顶点色 |
+| `DAT_0189505c` | `UI_EFFECT_TEX_PARTICLE` | `ui_par_tex_color.gbf` | **SRCALPHA / ONE** | 贴图 × 顶点色 |
+| `DAT_01895060` | `UI_EFFECT_TEX_COLOR_ALPHA` | `ui_alpha.gbf` | SRCALPHA / INVSRCALPHA | 贴图 × 顶点色，不写 Filter（双线性） |
+| `DAT_01895064` | `UI_EFFECT_ADD_COLOR` | `ui_AddColor.gbf` | **ONE / ONE** | 只有顶点色 |
+| `DAT_0189506c` | `EFFECT_LINE` | `geom_notex_line.gbf` | — | 画线 |
 
 脚本本身在包里：`/basedata/basedata/gfxscript/*.gbf`，是文本，直接 `cat` 就能看。
 `ui_tex_color.gbf` 的内容：
@@ -42,6 +46,12 @@ MinFilter[0] = POINT; MagFilter[0] = POINT; AddressU/V[0] = CLAMP;
 | `FUN_00540c60` | **`ui_tex_color`（加法）** | 只有 `0x43eb66`：**列表选中条** |
 | `FUN_00540d20` | **`ui_tex_color`（加法）** | `0x45995d`、`0x47c2bd`、`0x4a487d`、`0x52365d`、`0x527d2d`、`0x529cdb`：界面背后那层场景截图 |
 | `FUN_00540dc0` | `ui_alpha`（可给 uv 子矩形） | `0x44035f`、`0x44039e`、`0x44040d`（进度条）、`0x444b46`、`0x444b82` |
+
+源码里对应的名字：`FUN_00540070` = `UIRenderQuad(l,t,r,b,color)`（纯色，`uibase.cpp:69`）、
+`FUN_00540c60` = `UIRenderQuadList`（`:533`）、`FUN_005407a0` = `UIRenderPar`（`:329`）、
+`FUN_00540dc0` = `UIRenderQuadAlpha`（`:689`）、`FUN_00540a20` = `UIRenderQuadA`（`:561`）。
+还有一个带 `mode` 参数的 `UIRenderQuad`（`:264`）：mode 0 走 `ui_tex_color`（加法）、
+**mode 1 走 `ui_tex_vcolor`（贴图 + 顶点色）**——大地图目的地悬停就是这一支。
 
 ## uv 的朝向
 

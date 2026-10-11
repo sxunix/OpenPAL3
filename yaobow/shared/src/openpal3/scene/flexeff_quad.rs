@@ -316,7 +316,14 @@ impl QuadEffect {
     ///
     /// 单帧特效（`FrameCount <= 1` 或 `fps == 0`）永远绕不回去，所以自己不会
     /// 消失；它们跟着整个实例走——两条时间线都到期之后没有东西再更新它们，
-    /// 这里就一并收掉 `[推断]`（实例本身由特效管理器回收，那一段没跟）。
+    /// 这里就一并收掉。
+    ///
+    /// 实例本身原版是**拖着不回收**的：`CEffMgr::Update`（`EffMgr.cpp:125`）
+    /// 见到 `IsIdle()` 只是把表项标成 `bIdle`，从此不再 Update，对象仍在表里；
+    /// 真正释放要等 `CreateEff` 找不到空位，那时才 `DelAllIdleObj()` 把所有
+    /// 闲置的一次删光（`EffMgr.cpp:300`、`:840`），还不够就 `DelAllCreatedObj()`
+    /// 全清。注意 `CEffQuad::Render` 不看 `m_bVisible`（`EffQuad.cpp:157`），
+    /// 只有 grid 和 explosive 两类看。
     fn age_quads(&mut self, delta_sec: f32) {
         let frames = self.def.frame_count;
         let fps = self.def.fps;

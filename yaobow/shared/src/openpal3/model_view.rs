@@ -165,7 +165,13 @@ impl ModelView {
             .rotate_axis_angle_local(&Vec3::UP, yaw.to_radians());
 
         let scene = CoreScene::create();
-        // 原版给视图挂了一盏方向光（绕 X 45°、绕 Y 90°）；这里和鉴宝一样用满环境光 [推断]。
+        // 原版的 3D 视图（`ui/ui3dctrl.cpp:147`）把全局那盏灯 `gs_LightNode`
+        // 按 `q_Y(90) ⊗ q_X(45)` 摆好再 `Attach()`。那盏灯在
+        // `pal3.cpp:413` 建的时候是：方向光、`m_Ambient = (1, 1, 1)`、
+        // `m_Color = (0.28, 0.28, 0.28)`。
+        //
+        // 也就是说环境光本来就是满白，方向光只额外加 0.28 的灰。这里和鉴宝
+        // 一样只给满环境光，差的是那 0.28 的方向项。
         scene.set_lighting(SceneLighting::new([1., 1., 1.], vec![]));
         entity.load();
         scene.add_entity(entity.clone());

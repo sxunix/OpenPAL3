@@ -24,14 +24,22 @@ fn ease(t: f32) -> f32 {
 /// way and its cutout discard tests the texture's own alpha, so writing
 /// the tint is enough and full opacity needs no special case.
 ///
-/// The blob shadow (`scene::shadow`, entity `ROLE_SHADOW`) is left out: it
-/// is a multiply-blended quad, and scaling a premultiplied tint into a
-/// multiply blend darkens the white around the disc, so a half-faded actor
-/// stood on a dark square. It shows only while the actor is fully opaque
-/// **[推断]** — whether `roleshadow.cpp` fades with its role was not traced.
+/// The blob shadow (`scene::shadow`, entity `ROLE_SHADOW`) is left alone,
+/// which is what the original does. `Role::SetAlpha` (`gamebase/role.cpp:3643`)
+/// only calls `SetBlend` on the actor; the shadow is a separate global pass
+/// (`g_roleshadow`, `gamebase/roleshadow.cpp`) that walks every active,
+/// in-view role and emits one quad each, consulting `m_active`, `m_bInView`
+/// and the jump special-action — never the actor's blend. So in the original
+/// **the shadow stays at full strength all through the fade**.
+///
+/// Tinting it would be wrong anyway: `gfxscript\shadow.gbf` is
+/// `SrcBlend = DESTCOLOR, DestBlend = ZERO` (a multiply) with
+/// `ColorOp[0] = SelectArg1, ColorArg1[0] = TEXTURE`, so the vertex colour
+/// never reaches the output — `RoleShadow::Render` indeed never writes
+/// `quad->color`. Scaling a premultiplied tint into a multiply blend would
+/// darken the white around the disc instead of fading it.
 pub fn set_alpha(entity: &ComRc<IEntity>, alpha: f32) -> usize {
     if entity.name() == "ROLE_SHADOW" {
-        entity.set_visible(alpha >= 0.999);
         return 0;
     }
     let mut n = 0;
@@ -48,7 +56,8 @@ pub fn set_alpha(entity: &ComRc<IEntity>, alpha: f32) -> usize {
 }
 
 /// Set the actor's tint RGB (a colour multiplier on top of its lighting).
-/// The blob shadow is skipped for the same reason as in [`set_alpha`].
+/// The blob shadow is skipped for the same reason as in [`set_alpha`]: its
+/// render state ignores the vertex colour.
 pub fn set_tint_rgb(entity: &ComRc<IEntity>, rgb: [f32; 3]) {
     if entity.name() == "ROLE_SHADOW" {
         return;

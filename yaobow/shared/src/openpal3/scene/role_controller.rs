@@ -181,6 +181,8 @@ impl RoleController {
             mv3_model_height(&asset_mgr, role_name, idle_anim_name).unwrap_or(DEFAULT_MODEL_HEIGHT);
         let model_radius =
             mv3_model_radius(&asset_mgr, role_name, idle_anim_name).unwrap_or(DEFAULT_MODEL_RADIUS);
+        // `role.cpp:357`：半径不到 6 的（小鸡那类）直接当成可重叠，不参与碰撞。
+        let overlap = i32::from(model_radius < 6.);
 
         Self {
             entity,
@@ -202,7 +204,7 @@ impl RoleController {
             patrol_forward: RefCell::new(true),
             patrol_mode: RefCell::new(0),
             patrol_speed: RefCell::new(0.),
-            overlap: RefCell::new(0),
+            overlap: RefCell::new(overlap),
             texture_override: RefCell::new(None),
             unique_materials: Cell::new(false),
             model_height: Cell::new(model_height),
@@ -876,11 +878,28 @@ fn compute_mv3_frame_normals(
 /// character's height.
 pub const DEFAULT_MODEL_HEIGHT: f32 = 76.0;
 
-/// 读不到模型时的碰撞半径。[推断] 按常见人物模型的包围盒估的。
-pub const DEFAULT_MODEL_RADIUS: f32 = 20.0;
+/// 读不到模型时的碰撞半径。原版没有这条退路（`Role::Create` 总有模型），
+/// 这里借游戏自己的 `ROLE_RADIUS`——`gamebase/roledef.h:327` 和
+/// `navigationinfo.h:15` 都写着 `const float ROLE_RADIUS = 12.0f;//角色半径`，
+/// 对话距离、跳跃距离、找路让位全按它算。
+pub const DEFAULT_MODEL_RADIUS: f32 = 12.0;
 
-/// 碰撞半径：`FUN_004125d0` 取 `0.4 × √(x² + z²)`，x / z 是模型包围盒在水平面上的两个量
-/// （`FUN_00536fd0` 给的矩阵里取出来）。[推断] 是边长还是半边长没核实，这里按边长。
+/// 碰撞半径：`Role::Create`（`gamebase/role.cpp:355`，exe 里 `FUN_004125d0`）
+///
+/// ```cpp
+/// gbOBBox box;  m_actor.GetCollideOBB(box);
+/// radius = 0.5f*sqrtf(box.xlen*box.xlen + box.zlen*box.zlen);
+/// radius *= 0.8f;
+/// if (radius < 6) m_overlap = TRUE;   // 关闭小鸡等的碰撞
+/// ```
+///
+/// `xlen` 是**边长**不是半边长：`gbOBBox` 的声明旁边注着
+/// `center(0,0,0), width = xlen`（`engine/physics/gbcollide.h:41`），
+/// `gbMVActorDef::GetCollideOBB` 也是直接写 `aabb.max.x − aabb.min.x`
+/// （`engine/actor/gbmorphactor.cpp:131`）。
+///
+/// 一处还差着：原版取的是**整个动作所有帧**的包围盒
+/// （`m_pCurAction->GetBoundBox()`），这里只量了第 0 帧。
 fn mv3_model_radius(asset_mgr: &Rc<AssetManager>, role_name: &str, action: &str) -> Option<f32> {
     let path = asset_mgr.mv3_path(role_name, action);
     let data = asset_mgr.vfs().read_to_end(&path).ok()?;

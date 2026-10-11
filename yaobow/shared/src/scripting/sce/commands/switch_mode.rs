@@ -33,7 +33,19 @@
 //! * 125 新点亮的目的地进图时闪两轮。
 //!
 //! 手柄：十字键在亮着的目的地之间挑（画面跟着挪到它），A 确认、B 选「否」。
-//! 这一套和选中时的描边都是移植加的 `[推断]`，原版是纯鼠标。
+//! 这一套是移植端加的——原版确实是纯鼠标：`UIBigMap::Update`
+//! （`gameui/UIBigMap.cpp:938`）里只有鼠标，目的地是一个个
+//! `UIButtonEXA`，命中判定还要采贴图那一点的 alpha ≥ 6
+//! （`ui/uibutton.cpp:764`），所以点的是图标的不透明部分、不是矩形。
+//!
+//! 悬停的样子原版也有：`UIButtonEXA::Render`（`ui/uibutton.cpp:640`）
+//! 在 `MOUSEON` 这一支走 `UIRenderQuad(..., m_color, tex, mode = 1, info)`，
+//! mode 1 取 `UI_EFFECT_TEX_VCOLOR` = `gfxscript\ui_tex_vcolor.gbf`
+//! ——普通 alpha 混合，但 `ColorOp = ADD`，**把顶点色加到贴图上**。
+//! 那个顶点色是每个目的地自己的一种暗色，在 `UIBigMap.cpp` 建控件时逐个
+//! `SetColor` 写死（雪岭镇 (95,71,51)、德阳 (58,80,113)、蜀山 (40,76,93)……
+//! 38 个各不相同）。imgui 只会乘不会加，照搬要给每个图标再烘一张
+//! 「贴图 + 这个颜色」的精灵；这里先用描一圈边顶着，是有意选的。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -518,7 +530,8 @@ impl BigMapScreen {
                 }
                 let lit = hover == Some(i) || (self.pad_used && i == self.cursor);
                 if lit && self.walking.is_none() {
-                    // `[推断]` 原版悬停的样子没查，先描一圈边。
+                    // 原版是把目的地自己那种暗色「加」到图标上（见模块开头），
+                    // 这里先描一圈边顶着。
                     list.add_rect(at(r.0, r.1), at(r.2, r.3), [1., 0.92, 0.45, 1.])
                         .thickness(2.)
                         .build();

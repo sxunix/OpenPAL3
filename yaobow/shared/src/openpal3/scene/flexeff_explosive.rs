@@ -23,10 +23,26 @@
 //! * 每帧（`+0x14` 0x4c7150）：帧时钟 += 帧率·dt，当前帧的 uv 方框按列、行切成小格分给各块。
 //! * 画（`+0x18` 0x4c6f20）：平移(位置 + 绕圈) → 缩放(x, 1, z) → 绕 X → 绕 Y → 绕 Z。
 //!
-//! [推断] 的地方：
-//! - 翻滚按 roll(Z) → pitch(X) → yaw(Y) 的顺序转（D3DX 的 YawPitchRoll 约定）；
-//! - 矩阵栈「后压的先作用」；转角按度、右手系；
-//! - `rand()` 用每个实例自己的种子（原版是全局的 MSVC `rand`）。
+//! 几件底层约定（都在 `engine/math/gbmath.cpp` 里查实，不再是推断）：
+//!
+//! * 角度按**度**：`gbCos(x)` 就是 `cos(PI*x/180)`（`gbmath.h:262`）。
+//! * 旋转是右手系：`gbMatrix4::SetAxisAngle(GB_AXIS_Y, θ)` 给的是
+//!   `xx=cos, xz=−sin, zx=sin, zz=cos`，矩阵按行向量用
+//!   （`Transform`: `out.x = in.x·xx + in.y·yx + in.z·zx`），
+//!   所以模型 +Z 转到 `(sin θ, cos θ)`；走四元数那条路
+//!   （`gbQuaternion::SetAxisAngle` + `GetMatrix`）出来的矩阵一模一样。
+//! * 矩阵栈确实「后压的先作用」：`gbMatrixStack::Rotate` 做的是
+//!   `LeftMultiply`，而 `LeftMultiply(mat)` 的实现是 `this = mat · this`
+//!   （`gbmath.cpp:132` + `operator*=`），配上行向量 `v' = v · M`，
+//!   最后压进去的那一步最先作用在顶点上。
+//! * **翻滚的顺序是 roll(Z) → yaw(Y) → pitch(X)**，不是 D3DX 的 Z → X → Y。
+//!   `gbQuaternion::SetYawPitchRoll(yaw, pitch, roll)`（`gbmath.cpp:737`）算的是
+//!   `q = q_X(pitch) ⊗ q_Y(yaw) ⊗ q_Z(roll)`（展开式正好是标准 Hamilton 积），
+//!   对应矩阵 `R_X · R_Y · R_Z`，作用在顶点上就是 Z 先、Y 次、X 最后。
+//!   `EffExplosive.cpp:635` 把自转的 x 分量当 yaw（绕 Y）、y 分量当 pitch（绕 X）
+//!   传进去，这里的 `spin[0]` / `spin[1]` 也照这个对应。
+//!
+//! 还剩一处移植端自己定的：`rand()` 用每个实例自己的种子，原版是全局的 MSVC `rand`。
 
 use crosscom::ComRc;
 use fileformats::pal3::flexeff::EffectDef;
@@ -128,13 +144,15 @@ pub struct ExplosiveEffect {
     tiles: Vec<Tile>,
 }
 
+/// `gbQuaternion::SetYawPitchRoll` 的展开：先绕 Z 转 roll，再绕 Y 转 yaw，
+/// 最后绕 X 转 pitch（见模块开头）。
 fn rotate_ypr(v: [f32; 3], yaw: f32, pitch: f32, roll: f32) -> [f32; 3] {
     let (sz, cz) = roll.to_radians().sin_cos();
     let v = [v[0] * cz - v[1] * sz, v[0] * sz + v[1] * cz, v[2]];
-    let (sx, cx) = pitch.to_radians().sin_cos();
-    let v = [v[0], v[1] * cx - v[2] * sx, v[1] * sx + v[2] * cx];
     let (sy, cy) = yaw.to_radians().sin_cos();
-    [v[0] * cy + v[2] * sy, v[1], -v[0] * sy + v[2] * cy]
+    let v = [v[0] * cy + v[2] * sy, v[1], -v[0] * sy + v[2] * cy];
+    let (sx, cx) = pitch.to_radians().sin_cos();
+    [v[0], v[1] * cx - v[2] * sx, v[1] * sx + v[2] * cx]
 }
 
 impl ExplosiveEffect {

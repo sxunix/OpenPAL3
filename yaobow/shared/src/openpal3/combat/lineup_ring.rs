@@ -64,7 +64,32 @@ pub fn element_roll(roll: f32, element: Option<u8>) -> f32 {
 }
 
 /// 环心的颜色（`FUN_00510180` 写 `+0x330`，ARGB 里的 RGB；alpha 画的时候换成透明度）。
-/// [推断] 没有场景五灵属性时原版不写，这里用白色。
+///
+/// `CCBStageScene::Init`（`combat/cbstagescene.cpp:190`）：
+///
+/// ```cpp
+/// switch( m_eSceneFiveMagicAttrib ) {
+/// case CBFM_Water:   m_FiveLineupCenterQuad.color.Color = 0x7F399AAD; break;
+/// case CBFM_Fire:    ... 0x7FDE7531; break;
+/// case CBFM_Thunder: ... 0x7FDE75BD; break;
+/// case CBFM_Wind:    ... 0x7F52B66B; break;
+/// case CBFM_Earth:   ... 0x7FD6AE5A; break;
+/// }
+/// ```
+///
+/// 枚举是 `CBFM_Null = 0, Water, Fire, Wind, Thunder, Earth`
+/// （`gamebase/BaseDefine.h:21`），和这里的 1..5 一一对上。里面那个 0x7F
+/// 是摆设——`ShowFiveLineupEx` 每帧只改 `.Alpha`。
+///
+/// **没有 `default` 分支**：属性是 `CBFM_Null` 时原版压根不写这个字段，环心
+/// 保持上一次（或者构造后没初始化）的颜色。这里用白色是移植端挑的，因为
+/// 原版那条路是不确定的。
+///
+/// 另外：`FightInfo` 的构造把 `eSceneFiveMagic` 定成 `CBFM_Water`
+/// （`gamebase/roledef.h:54`「默认场景属性水」），整份源码里再没有第二处写它
+/// （`cbsystem.cpp:299` 那句改土的是注释掉的测试代码）。所以这份源码跑起来
+/// 场景属性恒为水。移植端是按战斗数据库里每个战斗场景自己的属性取的，
+/// 比原版这份快照更细——出货 exe 是否另有赋值还没核。
 pub fn element_color(element: Option<u8>) -> [u8; 3] {
     match element {
         Some(1) => [0x39, 0x9a, 0xad],
@@ -135,7 +160,10 @@ pub fn ring_alphas(
         }
     }
     if open {
-        // [推断] 淡入走完以后一直亮着到关面板（关的时候从 255 淡出，说明中间是亮的）。
+        // 淡入走完以后一直按 255 画到关面板：`cbcontrol.cpp:1364` 的
+        // `if (false == m_pStage->IsTaskExist(dwFadeinTaskID))` —— 淡入那个
+        // 任务一消失，阵型面板这一支每帧就直接
+        // `ShowFiveLineup(..., 255)`，直到用户关面板才排淡出任务。
         if let Some(at) = opened_at {
             ours.push(fade_in_alpha(clock - at, PANEL_FADE));
         }
