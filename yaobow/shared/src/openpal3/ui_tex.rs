@@ -62,8 +62,32 @@ impl UiTextures {
         if let Some(hit) = self.cache.get(&key) {
             return hit.clone();
         }
-        let sprite = self.from_atlas(asset_mgr, name).or_else(|| {
-            asset_mgr.load_sprite(PathBuf::from(BASEDATA).join(name.replace('\\', "/")))
+        let sprite = self
+            .image(asset_mgr, name)
+            .map(|img| asset_mgr.sprite_from_image(img));
+        if sprite.is_none() {
+            log::warn!("UiTextures: 图集和包里都没有 {name}");
+        }
+        self.cache.insert(key, sprite.clone());
+        sprite
+    }
+
+    /// 同 [`Self::get`]，但贴图是**加法混合**上去的，取回来之前先按
+    /// [`bake_additive`] 折成普通 alpha 混合能画的样子。`tint` 是原版画它时
+    /// 乘的那个颜色，一并烘进去，画的时候不要再乘。
+    pub fn get_additive(
+        &mut self,
+        asset_mgr: &AssetManager,
+        name: &str,
+        tint: [f32; 4],
+    ) -> Option<Rc<Sprite>> {
+        let key = format!("{}#add", name.to_ascii_lowercase().replace('\\', "/"));
+        if let Some(hit) = self.cache.get(&key) {
+            return hit.clone();
+        }
+        let sprite = self.image(asset_mgr, name).map(|mut img| {
+            bake_additive(&mut img, tint);
+            asset_mgr.sprite_from_image(img)
         });
         if sprite.is_none() {
             log::warn!("UiTextures: 图集和包里都没有 {name}");
@@ -72,7 +96,14 @@ impl UiTextures {
         sprite
     }
 
-    fn from_atlas(&mut self, asset_mgr: &AssetManager, name: &str) -> Option<Rc<Sprite>> {
+    /// 取这张贴图的像素：先查图集，查不到再读散文件。
+    fn image(&mut self, asset_mgr: &AssetManager, name: &str) -> Option<image::RgbaImage> {
+        self.from_atlas(asset_mgr, name).or_else(|| {
+            asset_mgr.read_picture(PathBuf::from(BASEDATA).join(name.replace('\\', "/")))
+        })
+    }
+
+    fn from_atlas(&mut self, asset_mgr: &AssetManager, name: &str) -> Option<image::RgbaImage> {
         let e = self.dict.get(name)?;
         let (lib, x, y, w, h) = (e.lib.clone(), e.orix, e.oriy, e.w, e.h);
         let page = self
@@ -84,8 +115,54 @@ impl UiTextures {
             log::warn!("UiTextures: {name} 的子矩形越出图集页 {lib}");
             return None;
         }
-        let sub = image::imageops::crop_imm(page, x, y, w, h).to_image();
-        Some(asset_mgr.sprite_from_image(sub))
+        Some(image::imageops::crop_imm(page, x, y, w, h).to_image())
+    }
+}
+
+/// 把一张原版**加法混合**画上去的贴图，折成能用普通 alpha 混合近似画的样子。
+///
+/// 原版画 UI 四边形的那几个渲染效果建在 `0x53fec0`，列表选中条走的是
+/// `DAT_01895058` = `gfxscript\ui_tex_color.gbf`（`0x43eb66` →
+/// `FUN_00540c60` → `RenderUIQuad(…, DAT_01895058, 贴图)`，全程只有这一个
+/// 调用点）。那张 gbf 里写的是：
+///
+/// ```text
+/// SrcBlend = SRCALPHA;  DestBlend = ONE;
+/// ColorOp[0] = MODULATE; ColorArg1 = TEXTURE; ColorArg2 = DIFFUSE;
+/// AlphaOp[0] = MODULATE; AlphaArg1 = TEXTURE; AlphaArg2 = DIFFUSE;
+/// ```
+///
+/// 也就是 `dst += 贴图.rgb·色.rgb · 贴图.a·色.a`——**只加不盖**，所以条压在
+/// 行文字上面也不会把字遮住，只是把那一行提亮。相比之下同一套里的
+/// `ui_TL.gbf`（`DAT_0189504c`）才是 `SRCALPHA/INVSRCALPHA` 的普通混合。
+///
+/// 移植端的 imgui 后端整帧只有一种混合状态（普通 alpha），没法逐条命令换，
+/// 于是把该加上去的那一份 `c = 贴图.rgb·色.rgb·贴图.a·色.a` 拆成
+/// `A = max(c)`、`RGB = c / A`，再按 alpha 混合画：
+///
+/// ```text
+/// dst·(1 − A) + (c/A)·A = dst + c − dst·A
+/// ```
+///
+/// 只差 `dst·A` 这一项。列表那两张条按 (0xa8,0xa8,0xa8,0xc8) 烘出来，A 最大
+/// 分别是 45/255（`ListBoxSelPic`，256×32 的绿色横向光带，上下两头收到全黑）
+/// 和 99/255（`SelPic`，128×16 的橙色光带，自带 alpha）。底下又都是暗色，
+/// 差得有限。
+pub fn bake_additive(img: &mut image::RgbaImage, tint: [f32; 4]) {
+    for p in img.pixels_mut() {
+        let a = p[3] as f32 / 255. * tint[3];
+        let c = [0, 1, 2].map(|i| p[i] as f32 / 255. * tint[i] * a);
+        let m = c[0].max(c[1]).max(c[2]);
+        if m <= 0. {
+            *p = image::Rgba([0, 0, 0, 0]);
+            continue;
+        }
+        *p = image::Rgba([
+            (c[0] / m * 255.).round() as u8,
+            (c[1] / m * 255.).round() as u8,
+            (c[2] / m * 255.).round() as u8,
+            (m * 255.).round() as u8,
+        ]);
     }
 }
 
@@ -103,4 +180,44 @@ fn load_page(asset_mgr: &AssetManager, lib: &str) -> Option<image::RgbaImage> {
         }
     }
     asset_mgr.read_picture(&path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bake_additive;
+
+    /// 烘完的像素按普通 alpha 混合画上去，和原版加法混合的差应当正好是
+    /// `dst·A`——底色全黑时分毫不差。
+    #[test]
+    fn baking_reproduces_additive_blending_over_black() {
+        let tint = [
+            0xa8 as f32 / 255.,
+            0xa8 as f32 / 255.,
+            0xa8 as f32 / 255.,
+            0xc8 as f32 / 255.,
+        ];
+        let src = image::Rgba([38u8, 88, 75, 255]);
+        let mut img = image::RgbaImage::from_pixel(1, 1, src);
+        bake_additive(&mut img, tint);
+        let baked = img.get_pixel(0, 0).0;
+        let a = baked[3] as f32 / 255.;
+        for i in 0..3 {
+            let want = src[i] as f32 / 255. * tint[i] * (src[3] as f32 / 255. * tint[3]);
+            let got = baked[i] as f32 / 255. * a; // dst = 0
+            assert!(
+                (want - got).abs() < 1. / 255.,
+                "通道 {i}: 想要 {want}，得到 {got}"
+            );
+        }
+        // 这张贴图最亮的一点，加上去的那一份不到 1/5。
+        assert_eq!(baked[3], 45);
+    }
+
+    /// 全透明的像素烘完还是全透明，不会因为除以 0 冒出脏色。
+    #[test]
+    fn fully_transparent_pixels_stay_transparent() {
+        let mut img = image::RgbaImage::from_pixel(1, 1, image::Rgba([200, 200, 200, 0]));
+        bake_additive(&mut img, [1., 1., 1., 1.]);
+        assert_eq!(img.get_pixel(0, 0).0, [0, 0, 0, 0]);
+    }
 }

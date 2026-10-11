@@ -74,13 +74,26 @@ mod lang {
     pub const NOBODY_CAN_WEAR: usize = 279;
 }
 
-/// 原版菜单背后每帧再贴一张场景截图（`0x459900`）：打开时 `FUN_004bdc40` 把场景按
-/// 512×384 渲染进一张渲染目标，之后用白色、alpha 0x3e 拉满全屏叠上去。只有底下的
-/// 场景还在画时，这样一张 24% 的叠图才有意义——效果是场景上一层淡淡的虚影，不是
-/// 压暗 [推断]。移植端直接让场景照常画，不另加这一层。
+/// 原版菜单背后每帧再贴一张场景截图（`0x459900`，由 `0x45a493` 每帧调）：打开时
+/// `FUN_004bdc40` 把场景按 512×384 渲染进一张渲染目标，之后用白色、alpha 0x3e
+/// 拉满全屏叠上去。叠的方式是**加法**——`0x45995d` 走 `FUN_00540d20`，用的渲染
+/// 效果 `DAT_01895058` = `gfxscript\ui_tex_color.gbf`，里面写的是
+/// `SrcBlend = SRCALPHA; DestBlend = ONE`，所以画面变成 `场景 + 0.24·截图`：
+/// 一层把场景本身当光源的柔光，只提亮、不压暗。截图是半分辨率再拉满屏的，
+/// 提上去的那一份还带点糊，看着就是泛光。
+///
+/// 同形的还有五处（都是 100 来字节的同一个方法）：`0x47c260`、`0x4a4820`、
+/// `0x523600`、`0x527cd0`（鉴定）、`0x529c80`（打苍蝇）。
+///
+/// 移植端直接让场景照常画，不另加这一层。
 
-/// 选中条的颜色（列表控件 `+0x498..0x49b`，0x43e045 一带写的
-/// (0xa8, 0xa8, 0xa8, α=0xc8)）。条是贴图乘这个色，半透，画在行文字**上面**。
+/// 选中条的颜色（列表控件 `+0x498..0x49b`）。`0x43e045`..`0x43e062` 写的
+/// (R,G,B,A) = (0xa8, 0xa8, 0xa8, 0xc8)，全 exe 只有这一处写、`0x43eb3c`
+/// 这一处读，所以每个列表控件都是这个色。
+///
+/// 条是贴图乘这个色**加**到画面上（`ui_tex_color.gbf`，见
+/// [`crate::openpal3::ui_tex::bake_additive`]），画在行文字**上面**：只提亮
+/// 不遮挡，所以字色不用随选中变。
 pub(super) const LIST_SEL_TINT: [f32; 4] = [
     0xa8 as f32 / 255.,
     0xa8 as f32 / 255.,
@@ -292,6 +305,11 @@ impl Skin {
     fn load(state: &SceState) -> Self {
         let am = state.asset_mgr().clone();
         let mut t = UiTextures::new(&am);
+        let selected = t.get_additive(
+            &am,
+            "UI\\Assistant\\Communal\\ListBoxSelPic.tga",
+            LIST_SEL_TINT,
+        );
         let mut one = |name: &str| t.get(&am, name);
         let mut three = |base: &str| -> [Tex; 3] {
             [
@@ -352,7 +370,7 @@ impl Skin {
             prop_word: one("UI\\GameMainUI\\Communal\\Prop_word.tga"),
             buy_grid: one("UI\\Assistant\\Communal\\Buy_Grid.tga"),
             sale_grid: one("UI\\Assistant\\Communal\\Sale_Grid.tga"),
-            selected: one("UI\\Assistant\\Communal\\ListBoxSelPic.tga"),
+            selected,
             tab_bar: one("UI\\Flex\\Bar.tga"),
             yes,
             no,
@@ -1350,8 +1368,16 @@ pub(super) fn blit_col(
 }
 
 /// 小图标闪的透明度（控件 0x56ae84 的更新 `0x444d30`）：`FUN_00444d10` 开闪后透明度从
-/// 上限（控件原本的 255）每帧减 `+0xa8`（1.0）减到下限 `+0xa4`（6），再每帧加回上限，如此往复。
-/// 原版按帧走、帧率不固定，这里按每秒 60 帧折成秒 [推断]。
+/// 上限 `+0x9c` 每次更新减 `+0xa8` 减到下限 `+0xa4`，再加回上限，如此往复。这三个值
+/// 都在构造 `FUN_00444a20` 里写死：`+0xa8 = 1.0`（`0x444a2b`）、`+0xa4 = 6`
+/// （`0x444a53`）、`+0x9c` 取控件色 `+0x98..0x9b` 的 alpha，也就是 255
+/// （`0x444a67`..`0x444a91`）。一来一回 249 步。
+///
+/// **这一步是按帧不是按秒**：`0x444d6f` 起只有 `fild [+0xa0]` → `fadd/fsub [+0xa8]`
+/// → `__ftol`，更新方法收到的时间增量一眼都没看（同一批控件里 `0x44da30` 那个就写了
+/// `dt·80`，所以引擎是给了 dt 的）。原版又没有帧率上限——没有 `Sleep`，`config.ini`
+/// 默认 `sync=0`——所以闪的快慢跟着机器走。移植端只能挑一个：按每秒 60 步折算，
+/// 一来一回 8.3 秒。这是有意定的，不是查出来的。
 fn flash_alpha(t: f32) -> f32 {
     const MIN: f32 = 6. / 255.;
     const RATE: f32 = 60. / 255.;
@@ -1365,6 +1391,14 @@ fn flash_alpha(t: f32) -> f32 {
 }
 
 /// 三态按钮：悬停或手柄选中用 1 号图，常态 0 号。
+///
+/// 状态存在控件 `+0x60`，构造 `FUN_0043a770` 置 0，事件那段 `0x43ab20` 起写
+/// 1（悬停）和 2（按下）；画的时候 `0x43ae0b` 按 `[+0xb8 + 状态·4]` 取贴图，
+/// 所以 0/1/2 就是常态/悬停/按下。
+///
+/// 移植端没有「按下」这一态，所以 2 号图用不上，原版按下时那两处变化也没做：
+/// 字色三个通道各减 0x40（夹到 0，`0x43af04`..`0x43af48`）、字再往下挪 6
+/// （`0x43af53`）。另外没贴图的按钮（`+0x3c == 0`）字色是一直减 0x40 的。
 pub(super) fn button(
     list: &imgui::DrawListMut<'_>,
     tex: &[Tex; 3],
@@ -1472,7 +1506,14 @@ impl SceCommandDealerMenu {
             let r = lay::menu_button_rect(k);
             let lit = k == self.menu_cursor || hover == Some(Hit::Menu(k));
             button(list, &sk.rawbtn, r, lit, at);
-            // 字居中 [推断]：按钮控件的对齐方式没有逐字段读。
+            // 字居中，横竖都居中：按钮控件的构造 `FUN_0043a770` 在 `0x43a7d9`
+            // 把对齐字段 `+0xd0` 写成 1（全 exe 只有这一处写它），画字那段
+            // `0x43af66` 把它当第 5 个参数递给 `FUN_00541160`，`FUN_00541210`
+            // 里 `param_5 == 1` 就是：
+            //     x 偏移 = (右 − 字节数·字号/2 − 左) / 2
+            //     y 偏移 = (下 − 上 − 字号) / 2
+            // 字号走第 4 个参数，`0x43af6d` 压的是 1 → 16 像素；字宽按 GBK
+            // **字节**数算，一个汉字两字节正好一个字号宽，和 [`text_width`] 一致。
             let s = self.text(btn.lang_slot(), btn.fallback_label());
             let x = r.0 + (r.2 - r.0 - text_width(&s)) / 2;
             let y = r.1 + (r.3 - r.1 - lay::GLYPH) / 2;
@@ -1599,11 +1640,11 @@ impl SceCommandDealerMenu {
                 cell(3, &good.owned.to_string());
             }
         }
-        // 条压在字上面（`0x43eb66` 在行循环之后）。
+        // 条压在字上面（`0x43eb66` 在行循环之后），加法混合，颜色已经烘进贴图。
         if let Some(k) = self.cursor.checked_sub(self.top) {
             if k < geom.grid_rows && self.cursor < rows.len() {
                 let g = geom.grid_rect(k);
-                blit_col(list, &sk.selected, g.0, g.1, LIST_SEL_TINT, at);
+                blit(list, &sk.selected, g.0, g.1, at);
             }
         }
 

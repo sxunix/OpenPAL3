@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use super::appraise::{overlay, virtual_mouse};
-use super::dealer::{LIST_SEL_TINT, Tex, bar, blit, blit_col, button, label, paragraph};
+use super::dealer::{LIST_SEL_TINT, Tex, bar, blit, button, label, paragraph};
 use super::dealer_layout::{
     self as lay, INK, ScrollPart, Scrollbar, flag_bottom_rect, flag_mid_rect, flag_top_rect,
     inside, menu_button_rect,
@@ -349,6 +349,11 @@ impl Skin {
         let am = state.asset_mgr().clone();
         let spark = spark_texture(&am);
         let mut t = UiTextures::new(&am);
+        let selected = t.get_additive(
+            &am,
+            "UI\\assistant\\Communal\\ListBoxSelPic.tga",
+            LIST_SEL_TINT,
+        );
         let mut three = |t: &mut UiTextures, base: &str| -> [Tex; 3] {
             std::array::from_fn(|k| t.get(&am, &format!("{base}{k}.tga")))
         };
@@ -369,7 +374,7 @@ impl Skin {
             word: one("UI\\GameMainUI\\Communal\\Smelt_word.tga"),
             list_frame: one("UI\\GameMainUI\\Magic\\ListFrame.tga"),
             grid: one("UI\\Assistant\\Smelting\\List_Grid.tga"),
-            selected: one("UI\\assistant\\Communal\\ListBoxSelPic.tga"),
+            selected,
             scroll: std::array::from_fn(|i| {
                 one(&format!(
                     "UI\\GameMainUI\\Communal\\Scroll\\scrollbar{i}.tga"
@@ -926,13 +931,13 @@ impl SceCommandSmeltingMenu {
                 x += rect::COLUMNS[c];
             }
         }
-        // 和当铺、对话选择框一样：选中条是贴图乘 `[+0x498]` 画在文字**上面**
-        // 的（`0x43eb66` 在行循环之后），字色不随选中变。
+        // 和当铺、对话选择框一样：选中条是贴图乘 `[+0x498]` **加**在文字上面
+        // 的（`0x43eb66` 在行循环之后），只提亮不遮挡，字色不随选中变。
         if let Some(i) = self.cursor {
             if let Some(k) = i.checked_sub(self.top) {
                 if k < rect::ROWS && i < self.rows.len() {
                     let g = grid_rect(k);
-                    blit_col(list, &sk.selected, g.0, g.1, LIST_SEL_TINT, at);
+                    blit(list, &sk.selected, g.0, g.1, at);
                 }
             }
         }

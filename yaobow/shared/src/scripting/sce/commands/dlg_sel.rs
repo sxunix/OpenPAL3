@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::scripting::sce::commands::appraise::{overlay, virtual_mouse};
-use crate::scripting::sce::commands::encamp::{draw_sprite, draw_sprite_col};
+use crate::scripting::sce::commands::encamp::draw_sprite;
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use imgui::{MouseButton, Ui};
@@ -62,8 +62,10 @@ pub const FRAME_PIECE: i32 = 32;
 /// 高亮条贴图 `SelPic.tga` 的高（128×16）。**画出来不是这个高**——
 /// 原版把它拉到 `行高 − 2`，见 [`highlight_rect`]。
 pub const HIGHLIGHT_TEX_HEIGHT: i32 = 16;
-/// 条的颜色，列表控件 `+0x498..0x49b`（0x43e045 一带写的
-/// (0xa8, 0xa8, 0xa8, α=0xc8)）。
+/// 条的颜色，列表控件 `+0x498..0x49b`（`0x43e045`..`0x43e062` 写的
+/// (0xa8, 0xa8, 0xa8, α=0xc8)）。条是**加**上去的，不是盖上去的，
+/// 见 [`crate::openpal3::ui_tex::bake_additive`]；这个色在装贴图的时候
+/// 就烘进去了，画的时候不再乘。
 const HIGHLIGHT_TINT: [f32; 4] = [
     0xa8 as f32 / 255.,
     0xa8 as f32 / 255.,
@@ -118,7 +120,7 @@ pub fn row_rect(area: Rect, k: usize) -> Rect {
 /// 一个偏移 `[+0x488]`/`[+0x48c]`/`[+0x490]`，这个框是 0。
 ///
 /// 条画在文字**之上**（行循环 `0x43ea6d` 跑完才画 `0x43eb66`），贴图乘
-/// [`HIGHLIGHT_TINT`]，靠半透让字透出来；字色不随选中变。
+/// [`HIGHLIGHT_TINT`] 后**加**到画面上，只提亮不遮挡；字色不随选中变。
 pub fn highlight_rect(row: Rect, area: Rect) -> Rect {
     let y1 = (row.1 + ROW_HEIGHT - 2).min(area.3);
     (row.0 + 4, row.1, row.2 - 2, y1)
@@ -261,7 +263,12 @@ impl SceCommand for SceCommandDlgSel {
         self.frame = (0..9)
             .map(|i| tex(&format!("ui/flex/note{i}.tga")))
             .collect();
-        self.select = tex("ui/scene/SelPic.tga");
+        self.select = asset_mgr
+            .read_picture(PathBuf::from("/basedata/basedata/ui/scene/SelPic.tga"))
+            .map(|mut img| {
+                crate::openpal3::ui_tex::bake_additive(&mut img, HIGHLIGHT_TINT);
+                asset_mgr.sprite_from_image(img)
+            });
     }
 }
 
@@ -308,13 +315,7 @@ impl SceCommandDlgSel {
                 .get(self.cursor)
                 .map(|_| row_rect(area, self.cursor))
             {
-                draw_sprite_col(
-                    &list,
-                    self.select.as_deref(),
-                    highlight_rect(row, area),
-                    HIGHLIGHT_TINT,
-                    at,
-                );
+                draw_sprite(&list, self.select.as_deref(), highlight_rect(row, area), at);
             }
         });
     }

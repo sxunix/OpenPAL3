@@ -132,9 +132,13 @@ this->+0x27c34 = -1;
   离屏渲染的做法同买卖页（`commands/item_preview.rs`，`dealer_layout.md` §6b）。
 - 按钮音效见 `ui_sound.md`。
 - 选中条（2026-10-11）：这张列表和买卖页、对话选择框是同一个 UIListBox，
-  原版是行文字画完之后才把条盖上去的、字色不随选中变（`dealer_layout.md`
-  §7「选中行」那条有完整出处）。移植端原先条在字下、选中行字换浅色，现已改成
-  照原版：字一律 `INK`，条用 `LIST_SEL_TINT` = (0xa8,0xa8,0xa8,α=0xc8) 叠上去。
+  原版是行文字画完之后才把条**加**上去的（不是盖，`FUN_00540c60` 走
+  `ui_tex_color.gbf` 的 SRCALPHA/ONE，见 `ui_render_states.md`）、字色不随选中变
+  （`dealer_layout.md` §7「选中行」那条有完整出处）。移植端原先条在字下、选中行
+  字换浅色，现已改成照原版：字一律 `INK`，条在循环之后叠上去；该加的那份在装贴图
+  时折进 alpha（`openpal3::ui_tex::bake_additive`，色 `LIST_SEL_TINT` =
+  (0xa8,0xa8,0xa8,α=0xc8) 已烘进去）。格子 0x14d 宽、贴图 256 宽，原版把 u 拉满，
+  移植端 `sprite_uv` 夹到 1 也是拉满，这一侧对得上。
 - 滚动条（2026-09-13）：列表是买卖页那个控件（`FUN_00479890` 0x479fc1 起：`FUN_0043e3b0(基名, rect, 38, 27, 0)`），
   整条 (660,69,698,361)＝(x2 − 38, y1 + 1, x2, y2 − 7)，上钮 (667,83,689,109)、下钮 (667,326,689,352)，滑块 27×28，
   贴图 `Communal\Scroll\scrollbar0..9`。行为同买卖页（`dealer_layout.md` §4）：上下钮一行、点槽一页、拖滑块只挪列表。
