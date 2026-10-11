@@ -10,9 +10,13 @@
 //! imgui，画在 3D 之上。
 //!
 //! 文物的摆放、大小和转速照原版的 3D 控件来（正交相机，见
-//! [`layout::View3d`]），不是按格子塞。剩下没在实机上比对过的地方仍标
-//! `[推断]`：背景片的 uv 朝向、说明牌上文字的位置、「鉴定」按钮的位置、
-//! 放大视图里拖动转模型的速度、键盘操作。
+//! [`layout::View3d`]），不是按格子塞。界面上每个元件的矩形也都是从
+//! `FUN_00528650` / `FUN_005257b0` 的指令里读出来的，包括贴图在 2 的幂
+//! 画布里占哪一块（见 [`layout`] 开头）。
+//!
+//! 和原版不一样的两处，都是移植自己加的，不是没查到：放大视图里可以拖动
+//! 转模型（原版两个放大控件的 `+0xec` 是 0，模型不动，也没有写转角的调用），
+//! 以及数字键 1–5 / Esc / 回车这些键盘操作。
 
 use std::cell::RefCell;
 use std::path::PathBuf;
@@ -44,8 +48,11 @@ use crate::scripting::sce::{SceCommand, SceState};
 const BACKDROP_DEPTH: f32 = 500.;
 /// 自转速度（弧度/秒）。原版是 58 度/秒，见 [`layout::SPIN_DEG_PER_SEC`]。
 const SPIN_SPEED: f32 = layout::SPIN_DEG_PER_SEC * std::f32::consts::PI / 180.;
-/// 拖动转模型：每像素多少弧度 `[推断]`。原版在鉴定这一段里没有直接设角度
-/// 的调用（`FUN_0043a0e0` 的三个调用点都不在 0x525000–0x529500），换算没查到。
+/// 拖动转模型：每像素多少弧度。**原版没有这个操作**——两个放大视图控件
+/// （0xaa0b09 / 0xaa0c27）建好以后只调了 `FUN_0043a070`（尺度）和
+/// `FUN_00439850`（位置），没调 `FUN_0043a090`，所以自转模式 `+0xec` 是 0；
+/// 直接写转角的 `FUN_0043a0e0` 全程只有三个调用点，都不在
+/// 0x525000–0x529500。移植加的，速度随手定。
 const DRAG_SPEED: f32 = 0.012;
 
 pub(crate) const WHITE: [f32; 4] = [1., 1., 1., 1.];
@@ -260,23 +267,37 @@ impl AppraiseGame {
             return None;
         }
 
-        let backdrop = |name: &str| -> Option<Backdrop> {
+        let backdrop = |name: &str, rect: layout::Rect| -> Option<Backdrop> {
             let image = asset_mgr.read_picture(Self::vfs_path(name))?;
-            let (w, h) = (image.width() as f32, image.height() as f32);
-            let (ox, oy) = layout::BK_ORIGIN;
-            let entity = Self::quad(&factory, name, image, ox as f32, oy as f32, w, h);
+            let entity = Self::quad(&factory, name, image, rect);
             entity.set_visible(false);
             scene.add_entity(entity.clone());
             Some(Backdrop { entity })
         };
-        let exhibit_bk = backdrop(&format!("{EXHIBIT_DIR}/ExhibitBk.tga"));
-        let exhibit_zoom = backdrop(&format!("{EXHIBIT_DIR}/ExhibitZoom.tga"));
-        let doing_bk = backdrop(&format!("{DO_DIR}/doingBk.tga"));
-        let do_zoom = backdrop(&format!("{DO_DIR}/ExhibitZoom.tga"));
+        let exhibit_bk = backdrop(&format!("{EXHIBIT_DIR}/ExhibitBk.tga"), layout::EXHIBIT_BK);
+        let exhibit_zoom = backdrop(
+            &format!("{EXHIBIT_DIR}/ExhibitZoom.tga"),
+            layout::EXHIBIT_ZOOM_BK,
+        );
+        let doing_bk = backdrop(&format!("{DO_DIR}/doingBk.tga"), layout::DO_BK);
+        let do_zoom = backdrop(&format!("{DO_DIR}/ExhibitZoom.tga"), layout::DO_ZOOM_BK);
 
-        let sprite = |name: String| asset_mgr.load_sprite(Self::vfs_path(&name));
+        // 贴图都是左下角为原点的 `.tga`，画面贴在画布左下角、右上补透明到
+        // 2 的幂，控件矩形的宽高就是画面本身的大小（见 [`layout`] 开头）。
+        // 所以按控件矩形从画布左下角裁一块出来再做 sprite，不然 imgui 会把
+        // 补出来的空白一起拉伸进去。
+        let sprite = |name: String, rect: layout::Rect| -> Option<Rc<Sprite>> {
+            let mut image = asset_mgr.read_picture(Self::vfs_path(&name))?;
+            let (x, y, w, h) = layout::art_in_canvas(image.height(), rect);
+            let w = w.min(image.width());
+            let view = image::imageops::crop(&mut image, x, y, w, h).to_image();
+            Some(Rc::new(Sprite::load_from_image(
+                view,
+                asset_mgr.component_factory().as_ref(),
+            )))
+        };
         let numbers = (0..10)
-            .map(|n| sprite(format!("{NUMBER_DIR}/{n}.tga")))
+            .map(|n| sprite(format!("{NUMBER_DIR}/{n}.tga"), layout::SECONDS))
             .collect();
 
         Some(Self {
@@ -291,27 +312,27 @@ impl AppraiseGame {
             exhibit_zoom,
             doing_bk,
             do_zoom,
-            do_button: sprite(format!("{EXHIBIT_DIR}/Do0.tga")),
-            remark: sprite(format!("{EXHIBIT_DIR}/ExhibitRemark.tga")),
+            do_button: sprite(format!("{EXHIBIT_DIR}/Do0.tga"), layout::EXHIBIT_DO_BUTTON),
+            remark: sprite(format!("{EXHIBIT_DIR}/ExhibitRemark.tga"), layout::REMARK),
             queue: [
-                sprite(format!("{DO_DIR}/queue0.tga")),
-                sprite(format!("{DO_DIR}/queue1.tga")),
+                sprite(format!("{DO_DIR}/queue0.tga"), layout::queue_button(0)),
+                sprite(format!("{DO_DIR}/queue1.tga"), layout::queue_button(0)),
             ],
-            un_queue: sprite(format!("{DO_DIR}/unQueue.tga")),
+            un_queue: sprite(format!("{DO_DIR}/unQueue.tga"), layout::queue_button(0)),
             magnifiers: [
-                sprite(format!("{DO_DIR}/Magnifier0.tga")),
-                sprite(format!("{DO_DIR}/Magnifier1.tga")),
-                sprite(format!("{DO_DIR}/Magnifier2.tga")),
+                sprite(format!("{DO_DIR}/Magnifier0.tga"), layout::magnifier(0)),
+                sprite(format!("{DO_DIR}/Magnifier1.tga"), layout::magnifier(0)),
+                sprite(format!("{DO_DIR}/Magnifier2.tga"), layout::magnifier(0)),
             ],
-            un_magnifier: sprite(format!("{DO_DIR}/unMagnifier.tga")),
+            un_magnifier: sprite(format!("{DO_DIR}/unMagnifier.tga"), layout::magnifier(0)),
             result: [
-                sprite(format!("{DO_DIR}/Result0.tga")),
-                sprite(format!("{DO_DIR}/Result1.tga")),
+                sprite(format!("{DO_DIR}/Result0.tga"), layout::RESULT0),
+                sprite(format!("{DO_DIR}/Result1.tga"), layout::RESULT0),
             ],
             numbers,
             time_bar: [
-                sprite(format!("{DO_DIR}/TimeBarbk.tga")),
-                sprite(format!("{DO_DIR}/TimeBarFo.tga")),
+                sprite(format!("{DO_DIR}/TimeBarbk.tga"), layout::TIME_BAR),
+                sprite(format!("{DO_DIR}/TimeBarFo.tga"), layout::TIME_BAR),
             ],
             spin: 0.,
             do_zoom_side: None,
@@ -329,19 +350,23 @@ impl AppraiseGame {
         PathBuf::from("/basedata/basedata").join(rel)
     }
 
-    /// 一张贴图片：左上角在虚拟屏幕 (x, y)，宽高 w×h 像素，放在 z = 0。
-    /// uv 以左上角为 (0,0) `[推断]`。
+    /// 一张背景片：盖住控件矩形 `rect`，放在 z = 0。
+    ///
+    /// uv 不是整张图：`.tga` 是左下角为原点的，画面贴在 2 的幂画布的
+    /// **左下角**，右边和上边补透明。控件矩形的宽高就是画面的大小，所以
+    /// u 取 `0..宽/画布宽`、v（自上而下）取 `1−高/画布高..1`。四张背景
+    /// 都是 1024×512 的画布装 626×466 左右的画面，对得上。
     fn quad(
         factory: &Rc<dyn radiance::rendering::ComponentFactory>,
         name: &str,
         image: image::RgbaImage,
-        x: f32,
-        y: f32,
-        w: f32,
-        h: f32,
+        rect: layout::Rect,
     ) -> ComRc<IEntity> {
-        let (x0, y0) = Self::to_world(x, y);
-        let (x1, y1) = Self::to_world(x + w, y + h);
+        let (tw, th) = (image.width() as f32, image.height() as f32);
+        let (x0, y0) = Self::to_world(rect.0 as f32, rect.1 as f32);
+        let (x1, y1) = Self::to_world(rect.2 as f32, rect.3 as f32);
+        let u1 = ((rect.2 - rect.0) as f32 / tw).min(1.);
+        let v0 = 1. - ((rect.3 - rect.1) as f32 / th).min(1.);
         let verts = vec![
             Vec3::new(x0, y0, 0.),
             Vec3::new(x1, y0, 0.),
@@ -349,9 +374,9 @@ impl AppraiseGame {
             Vec3::new(x0, y1, 0.),
         ];
         let texcoords = vec![
-            TexCoord::new(0., 0.),
-            TexCoord::new(1., 0.),
-            TexCoord::new(1., 1.),
+            TexCoord::new(0., v0),
+            TexCoord::new(u1, v0),
+            TexCoord::new(u1, 1.),
             TexCoord::new(0., 1.),
         ];
         // 两面都画，免得绕向和背面剔除对不上。
@@ -644,7 +669,7 @@ impl AppraiseGame {
                     self.enter_do(state);
                     return;
                 }
-                // 数字键 1–5 也能放大看 `[推断]`。
+                // 数字键 1–5 也能放大看：原版只有鼠标，这是移植加的。
                 for (i, key) in [
                     imgui::Key::Alpha1,
                     imgui::Key::Alpha2,
@@ -683,7 +708,9 @@ impl AppraiseGame {
         }
     }
 
-    /// 说明牌：名字一行，鉴别要点在下面 `[推断]` 位置。
+    /// 说明牌（展示页的放大视图）：牌子 `+0x518`、名字 0xaa0c21、要点
+    /// 0xaa0c19，三个矩形都照原版。原版的文字区 [`layout::REMARK_TEXT`]
+    /// 比牌子本身高 54 px，长文字会漏到牌子外面，这里照抄。
     fn draw_remark(&self, ui: &Ui, name: &str, body: &str) {
         let remark = self.remark.clone();
         let name = name.to_string();
@@ -706,7 +733,7 @@ impl AppraiseGame {
                 list.add_text(at(n.0, n.1), TEXT_COLOR, &name);
             }
             let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
-            let t = layout::REMARK_TEXT;
+            let t = layout::REMARK_DIFFENT;
             let width = (t.2 - t.0) as f32 * scale;
             let mut y = at(t.0, t.1)[1];
             let line_h = ui.text_line_height_with_spacing();
@@ -736,7 +763,8 @@ impl AppraiseGame {
         let down = ui.is_mouse_down(MouseButton::Left);
         let right = ui.is_mouse_clicked(MouseButton::Right);
 
-        // 计时（`FUN_00526740`，每 1000 ms 一格）
+        // 计时（`FUN_00526740`：`now − 上次 > 1000` 才走一格；提示框开着
+        // （`+0x183c`）或者已经答错（`+0x3abd`）时整段跳过，不走表）
         self.timer_acc += delta_sec;
         while self.timer_acc >= 1. {
             self.timer_acc -= 1.;
@@ -881,7 +909,11 @@ impl AppraiseGame {
             play_sfx(state, sfx::WRONG);
             let diffent = self.diffent.get(cur).cloned().unwrap_or_default();
             let text = format!("{}\\n{}", self.text(lang::FAILED), diffent);
-            // 先看「鉴定失败 + 要点」，再看结算 `[推断]` 顺序。
+            // 原版就是这个顺序：`FUN_005273d0` 末段把 Lang195 送进通用对话框
+            // （`FUN_004a1530(1)` 弹出来），同时把这件的 Diffent 写进说明牌的
+            // 文字控件 `+0x13f0` 并让它显形，`+0x3abe` 清零、`+0x3abd` 置 1；
+            // 等玩家关掉这个框，每帧的 `FUN_00526740` 在 0x526765 轮询到
+            // 「关了」，看见 `+0x3abd != 0` 就调 `FUN_00527610` 弹结算框。
             let settle = self.settlement_note();
             self.phase = Phase::Note {
                 text: assis_lang::unescape(&text),
@@ -931,10 +963,12 @@ impl AppraiseGame {
             // 秒数 + 时间条
             let sec = round.timer.sec.clamp(0, 99);
             let digits = [sec / 10, sec % 10];
+            // 十位在上、个位在下：初始化里第二个数字控件的矩形是拿第一个的
+            // 「下」当「上」再加 0x18 算出来的（0x525a7f 一带）。
             for (k, d) in digits.iter().enumerate() {
                 let r = layout::SECONDS;
-                let dx = layout::SECONDS_STEP * k as i32;
-                let r = (r.0 + dx, r.1, r.0 + dx + layout::SECONDS_STEP, r.3);
+                let dy = layout::SECONDS_STEP * k as i32;
+                let r = (r.0, r.1 + dy, r.2, r.3 + dy);
                 image(&numbers[*d as usize], r, HIGHLIGHT);
             }
             let bar = layout::TIME_BAR;

@@ -258,8 +258,43 @@ pub mod layout {
     pub const SCREEN_W: i32 = 800;
     pub const SCREEN_H: i32 = 600;
 
-    /// Exhibit 页背景 `ExhibitBk.tga`。
-    pub const EXHIBIT_BK: Rect = (0x88, 0x56, 0x2ca, 0x25d);
+    // 下面这些矩形全部直接从两段初始化代码的指令里读出来：展示页
+    // `FUN_00528650`、Do 页 `FUN_005257b0`。原版建控件的调用长这样
+    //
+    // ```text
+    // lea  ecx, [esp+R]            ; R 是矩形在栈上的基址
+    // push owner / push &rect / push 名字
+    // mov  dword ptr [esp+R'+0], 左
+    // mov  dword ptr [esp+R'+4], 上
+    // mov  dword ptr [esp+R'+8], 右
+    // mov  dword ptr [esp+R'+c], 下
+    // call dword ptr [vtbl+0x10]   ; SetRect（按钮走 +0x1c，多带贴图名）
+    // ```
+    //
+    // 四个 dword 依次是左、上、右、下。（`switch/re/notes/appraise_minigame.md`
+    // 里早先记的几个矩形把左和上写反了，已经改过来。）
+    //
+    // **矩形的宽高就是图本身的大小**：包里这些 `.tga` 都是左下角为原点
+    // （image descriptor 的第 5 位是 0），画面内容贴在画布的**左下角**，右边
+    // 和上边用透明像素补到 2 的幂。逐张量出来的内容范围和控件矩形能对上，
+    // 多处分毫不差：`TimeBarbk` 1024×128 里是 772×92，控件就是 772×92；
+    // `word_type` 128×128 里满幅 128×128，控件 128×128；`Result0` 128×32 里
+    // 是 94×20，控件 94×20；`ExhibitRemark` 512×128 里是 467×105，两页的控件
+    // 都是 468×104。所以画的时候要取贴图**左下角**那一块，u 取
+    // `0..宽/贴图宽`、v（自上而下）取 `1−高/贴图高..1`。
+
+    // ---- 展示页（`FUN_00528650`）----
+
+    /// 背景 `ExhibitBk.tga`（控件 `+0x2b8`，0x5287f1 一带）。
+    pub const EXHIBIT_BK: Rect = (0x56, 0x8a, 0x2c8, 0x25e);
+    /// 放大视图背景 `ExhibitZoom.tga`（控件 `+0x648`，0x5289c9 一带）。
+    pub const EXHIBIT_ZOOM_BK: Rect = (0x56, 0x88, 0x2ca, 0x25d);
+    /// 标题图 `word_type.tga`（控件 `+0x480`，0x52879e 一带）。
+    pub const WORD_TYPE: Rect = (0x20, 0x0a, 0xa0, 0x8a);
+    /// 屏幕两侧的竖线 `UI\GameMainUI\Communal\smt_Line.tga`，两页都有
+    /// （展示页 `+0xa1c` / `+0xab4`，Do 页 `+0x16e8` / `+0x1780`）。
+    pub const SIDE_LINE_L: Rect = (0, 0, 0xe, 600);
+    pub const SIDE_LINE_R: Rect = (0x312, 0, 0x320, 600);
     /// 五件真品的点击格。
     pub const EXHIBIT_SLOTS: [Rect; 5] = [
         (199, 179, 337, 348),
@@ -268,24 +303,136 @@ pub mod layout {
         (334, 406, 472, 575),
         (540, 406, 678, 575),
     ];
-    /// 三张 1024×512 背景（`ExhibitBk` / `doingBk` / `ExhibitZoom`）按 1:1 贴到
-    /// 屏幕时的原点：把五个点击格和 `ExhibitBk` 里五块暗格的纹素范围对上，
-    /// 左边缘全部吻合、右边缘差 ≤4 px，得出 (90, 98)。三张图的有内容范围
-    /// 都是 x 0..626、y 45..511，Do 页沿用同一原点是 `[推断]`（Result0 正好
-    /// 落在左格下方、Normal_Y 正好在两格中线上，和这个原点自洽）。
-    pub const BK_ORIGIN: (i32, i32) = (90, 98);
-    /// 「鉴定」按钮 0xaa0b01（`Do0.tga` 128×32）`[推断]` 位置——原版由布局
-    /// 脚本给，这里放在背景右下角外侧。
-    pub const EXHIBIT_DO_BUTTON: Rect = (600, 560, 728, 592);
-    /// 说明牌 `ExhibitRemark.tga`（512×128）在 Do 页的控件矩形
-    /// (0xa8,0x20)-(0x27c,0x88)；Exhibit 页沿用 `[推断]`。
-    pub const REMARK: Rect = (0xa8, 0x20, 0x27c, 0x88);
-    /// 说明牌上的文字区（控件 0xaa0c21 (0x146,0xaa)-(0x1e2,0xca) 是名字，
-    /// 0xaa0c19 (0xa4,0xc4)-(0x1e2,0x146) 是说明）`[推断]` 归到牌子里。
-    pub const REMARK_NAME: Rect = (0xa8 + 16, 0x20 + 12, 0x27c - 16, 0x20 + 36);
-    pub const REMARK_TEXT: Rect = (0xa8 + 16, 0x20 + 40, 0x27c - 16, 0x88 - 8);
-    /// 放大视图里的暗格（`ExhibitZoom` 纹素 56..567 × 89..441 加原点）。
-    pub const ZOOM_PANE: Rect = (146, 187, 657, 539);
+    /// 「鉴定」按钮 0xaa0b01（`Exhibit\Do{0,1,2}.tga`）。0x528c40 的四个
+    /// 立即数，走按钮的 `vtbl+0x1c`。`Do0.tga` 是 128×32 的画布，里头的图
+    /// 正好 117×26，和这个矩形的 116×26 对得上。
+    pub const EXHIBIT_DO_BUTTON: Rect = (0x152, 0x22c, 0x1c6, 0x246);
+    /// 展示页的说明牌 `ExhibitRemark.tga`（控件 `+0x518`，0x5286bf 一带）。
+    pub const REMARK: Rect = (0xa5, 0x22, 0x279, 0x8a);
+    /// Do 页的说明牌（控件 `+0x1358`，0x525808 一带），比展示页的挪了 3 px。
+    pub const DO_REMARK: Rect = (0xa8, 0x20, 0x27c, 0x88);
+    /// 牌子上那块文字区：两页都是从牌子的矩形算出来的，
+    /// 展示页 `左+0x16, 上+6` 起 428×158（0x52870b 一带），
+    /// Do 页 `左+0x18, 上+6` 起同样大小（0x52585c 一带）。
+    /// **比牌子本身高**——牌子只有 104 px，原版就这么写的，文字多了会漏到
+    /// 牌子外面去。
+    pub const REMARK_TEXT: Rect = (
+        REMARK.0 + 0x16,
+        REMARK.1 + 6,
+        REMARK.0 + 0x16 + 0x1ac,
+        REMARK.1 + 6 + 0x9e,
+    );
+    pub const DO_REMARK_TEXT: Rect = (
+        DO_REMARK.0 + 0x18,
+        DO_REMARK.1 + 6,
+        DO_REMARK.0 + 0x18 + 0x1ac,
+        DO_REMARK.1 + 6 + 0x9e,
+    );
+    /// 文物名字 0xaa0c21（Do 页控件 `+0x1488`，0x525ba1 一带）。
+    pub const REMARK_NAME: Rect = (0x146, 0xaa, 0x1e2, 0xca);
+    /// 鉴别要点 0xaa0c19（Do 页控件 `+0x788`，0x525fd8 一带；展示页的同名
+    /// 控件 `+0x6e0` 在 0x528a74 一带，位置只差 1 px）。两个控件在屏幕上
+    /// 几乎叠着，名字那条压在要点上面 6 px。
+    pub const REMARK_DIFFENT: Rect = (0x146, 0xa4, 0x1e2, 0xc4);
+
+    // ---- Do 页（`FUN_005257b0`）----
+
+    /// Do 页背景 `doingBk.tga`（控件 `+0x658`，0x525ab4 一带）。
+    pub const DO_BK: Rect = (0x5a, 0x88, 0x2ca, 0x256);
+    /// Do 页放大视图背景 `Do\ExhibitZoom.tga`（控件 `+0x6f0`，0x525f09 一带）。
+    pub const DO_ZOOM_BK: Rect = (0x5a, 0x88, 0x2cc, 0x25b);
+    /// 时间条 `TimeBarbk.tga` / `TimeBarFo.tga`（控件 `+0x1840`，0x525984
+    /// 一带）。控件字段 `+0x1914=1`、`+0x1930=300`、`+0x1928=10.0`、
+    /// `+0x191c=0xff`、`+0x18b0=620.0`，前景宽度上限按
+    /// [`super::Timer::bar_width`]。
+    pub const TIME_BAR: Rect = (0x10, 0, 0x314, 0x5c);
+    /// 剩余秒数的两位数字（控件 `+0x1520` 十位 / `+0x15b8` 个位，0x525a51
+    /// 一带）。初始化先给十位 (0x40,0x12)-(0x60,0x2a)，再
+    /// `下 → 上、下 += 0x18` 得个位——**两位数字是上下叠着的**，不是并排，
+    /// 各 32×24，整块落在时间条左端。画数字的是
+    /// `FUN_005269b0(秒, 十位控件, 个位控件, 目录, flag)`（0x5268a5 的入栈
+    /// 顺序）。
+    pub const SECONDS: Rect = (0x40, 0x12, 0x60, 0x2a);
+    /// 个位相对十位往**下**挪这么多。
+    pub const SECONDS_STEP: i32 = 0x18;
+    /// 队列按钮 0xaa0c01..05：第一只 (0x78,0xa2)-(0xa0,0xd0)，往后
+    /// 「左 = 上一只的右、右 = 左 + 0x28」。
+    pub const fn queue_button(i: i32) -> Rect {
+        (0x78 + 0x28 * i, 0xa2, 0x78 + 0x28 * i + 0x28, 0xd0)
+    }
+    /// 放大镜 0xaa0c28..30：第一只 (0x228,0x92)-(0x255,0xd2)，往后
+    /// 「左 = 上一只的右 + 2、右 = 左 + 0x2d」。
+    pub const fn magnifier(i: i32) -> Rect {
+        (0x228 + 0x2f * i, 0x92, 0x255 + 0x2f * i, 0xd2)
+    }
+    /// 拖起来跟着鼠标走的那只放大镜（控件 `+0x1650`，0x52605e 一带，
+    /// 贴 `Magnifier0.tga`）。原版放在这个固定位置，移植让它跟手。
+    pub const MAGNIFIER_HELD: Rect = (0x218, 0x9e, 0x245, 0xd0);
+    /// 左物 0xaa0c25 / 右物 0xaa0c26：`doingBk` 两块暗格（纹素 33..295 /
+    /// 327..589 × 124..448）加背景原点。
+    pub const DO_LEFT: Rect = (123, 222, 385, 546);
+    pub const DO_RIGHT: Rect = (417, 222, 679, 546);
+    /// Result0 / Result1 勾选框（`Result0.tga` 未选 / `Result1.tga` 已选）。
+    /// 0x525ce3 给第一只，第二只是「左 = 第一只的右 + 0xc8、右 = 左 + 0x5e」
+    /// （0x525d4b 一带），不是整体平移。
+    pub const RESULT0: Rect = (0xd5, 0x224, 0x133, 0x238);
+    pub const RESULT1: Rect = (
+        RESULT0.2 + 0xc8,
+        RESULT0.1,
+        RESULT0.2 + 0xc8 + 0x5e,
+        RESULT0.3,
+    );
+    /// 确定 0xaa0c18（`MUIDialog\Normal\Yes`，0x525d9a 一带）。
+    pub const CONFIRM: Rect = (0x166, 0x23d, 0x1c0, 0x256);
+    /// 结算 / 提示框 0xaa0c22、0xaa0c23（`UI\Flex\Note`，0x5261de 一带）。
+    pub const NOTE: Rect = (0x116, 0x78, 0x216, 0x1a4);
+    /// 答对 / 答错那两行字（0xabe00b、0xabc00c，0x5260c5 一带，通用控件
+    /// 的 mode 3，也就是 `UI\Flex\Note` 底加 6 px 内缩的文字）。
+    pub const DO_TOAST: Rect = (0x12c, 0xc8, 0x1f4, 0x12c);
+
+    // ---- 开头的询问框 ----
+
+    /// 阶段 0 的「要玩鉴定游戏吗？」。`FUN_00527a80` 用
+    /// `FUN_004a16c0(名字, (250,200,550,300), this, 2, flag)` 建通用对话框，
+    /// **mode 2 会把传进去的右下角丢掉**，改成 `右 = 左 + 0x134`、
+    /// `下 = 上 + 0x6d`（0x4a1740 一带），所以真正的框是这个。
+    pub const ASK_BOX: Rect = (250, 200, 250 + 0x134, 200 + 0x6d);
+    /// 框里的文字区：`左+6, 上+6, 右−6, 下−0x26`。
+    pub const ASK_TEXT: Rect = (
+        ASK_BOX.0 + 6,
+        ASK_BOX.1 + 6,
+        ASK_BOX.2 - 6,
+        ASK_BOX.3 - 0x26,
+    );
+    /// 「是」`MUIDialog\Normal\Yes` / 「否」`Normal\No`：0x4a1790 一带算的，
+    /// 「是」的左 = 框左 + 0x1a，「否」的右 = 框右 − 0x1a，两个的下都是
+    /// 框下 − 6，宽高取按钮贴图自己的（控件 `+0x260` / `+0x264`）。
+    ///
+    /// 贴图在包里取不到（`UI\GameMainUI` 不在 `basedata.cpk` 里），宽高借
+    /// [`CONFIRM`] 来定：那是同一张 `MUIDialog\Normal\Yes`，同一个屏，
+    /// 矩形写死 90×25；当铺的确定钮（`dealer_layout.md`）也是 90×25。
+    const ASK_BTN: (i32, i32) = (CONFIRM.2 - CONFIRM.0, CONFIRM.3 - CONFIRM.1);
+    pub const ASK_YES: Rect = (
+        ASK_BOX.0 + 0x1a,
+        ASK_BOX.3 - 6 - ASK_BTN.1,
+        ASK_BOX.0 + 0x1a + ASK_BTN.0,
+        ASK_BOX.3 - 6,
+    );
+    pub const ASK_NO: Rect = (
+        ASK_BOX.2 - 0x1a - ASK_BTN.0,
+        ASK_BOX.3 - 6 - ASK_BTN.1,
+        ASK_BOX.2 - 0x1a,
+        ASK_BOX.3 - 6,
+    );
+
+    /// 放大视图里那块暗格（`ExhibitZoom` 纹素 56..567 × 89..441 加背景
+    /// 原点）。只拿来判「点在格子外面就收起放大视图」。
+    pub const ZOOM_PANE: Rect = (
+        EXHIBIT_ZOOM_BK.0 + 56,
+        EXHIBIT_ZOOM_BK.1 + 89 - 45,
+        EXHIBIT_ZOOM_BK.0 + 567,
+        EXHIBIT_ZOOM_BK.1 + 441 - 45,
+    );
 
     /// 原版 3D 控件的一台正交相机（`FUN_00439740` 建、`FUN_0043a070` 给
     /// 尺度、`FUN_00439850` 给位置）。
@@ -366,48 +513,20 @@ pub mod layout {
     /// 两个放大视图没调过 `FUN_0043a090`，`+0xec` 是 0，不自转。
     pub const SPIN_DEG_PER_SEC: f32 = 58.;
 
-    /// Do 页背景 `doingBk.tga`。
-    pub const DO_BK: Rect = (0x88, 0x5a, 0x2ca, 0x256);
-    /// 3D 视图控件 0xaa0c27。
-    pub const DO_VIEW: Rect = (0x88, 0x5a, 0x2cc, 0x25b);
-    /// 队列按钮 0xaa0c01..05：x = 0x78 + 0x28·i，40×46。
-    pub const fn queue_button(i: i32) -> Rect {
-        (0x78 + 0x28 * i, 0xa2, 0x78 + 0x28 * i + 0x28, 0xd0)
-    }
-    /// 放大镜 0xaa0c28..30：第一只 (0x228,0x92)-(0x255,0xd2)，往后每只
-    /// x 加 0x2f、中间空 2 px。
-    pub const fn magnifier(i: i32) -> Rect {
-        (0x228 + 0x2f * i, 0x92, 0x255 + 0x2f * i, 0xd2)
-    }
-    /// 左物 0xaa0c25 / 右物 0xaa0c26：`doingBk` 两块暗格（纹素 33..295 /
-    /// 327..589 × 124..448）加原点。
-    pub const DO_LEFT: Rect = (123, 222, 385, 546);
-    pub const DO_RIGHT: Rect = (417, 222, 679, 546);
-    /// Result0 / Result1 勾选框（`Result0.tga` 未选 / `Result1.tga` 已选）。
-    pub const RESULT0: Rect = (0xd5, 0x224, 0x133, 0x238);
-    pub const RESULT1: Rect = (0xd5 + 200, 0x224, 0x133 + 200, 0x238);
-    /// 确定 Normal_Y。
-    pub const CONFIRM: Rect = (0x166, 0x23d, 0x1c0, 0x256);
-    /// 秒数两位数字：初始化里的矩形 (0x40,0x12)-(0x60,0x2a) 和之后的
-    /// `x += 0x18`，按「十位、个位各 24 px 宽」理解 `[推断]`。
-    pub const SECONDS: Rect = (0x40, 0x12, 0x60, 0x2a);
-    pub const SECONDS_STEP: i32 = 0x18;
-    /// 时间条 `[推断]`：接在数字右边，宽度按 [`super::Timer::bar_width`]。
-    pub const TIME_BAR: Rect = (0x78, 0x14, 0x78 + 620, 0x28);
-    /// 结算 / 提示框 `UI\Flex\Note`。
-    pub const NOTE: Rect = (0x116, 0x78, 0x216, 0x1a4);
-    /// 开头的询问框和「是 / 否」`[推断]`：原版是通用对话框控件，位置没查，
-    /// 这里居中。
-    pub const ASK_BOX: Rect = (200, 230, 600, 370);
-    pub const ASK_YES: Rect = (290, 310, 370, 350);
-    pub const ASK_NO: Rect = (430, 310, 510, 350);
-
     pub fn contains(r: Rect, x: f32, y: f32) -> bool {
         x >= r.0 as f32 && x < r.2 as f32 && y >= r.1 as f32 && y < r.3 as f32
     }
 
     pub fn center(r: Rect) -> (f32, f32) {
         ((r.0 + r.2) as f32 * 0.5, (r.1 + r.3) as f32 * 0.5)
+    }
+
+    /// 一张贴图里真正有画面的那块：左下角起 `宽 × 高`，返回自上而下的
+    /// 像素范围 `(x, y, 宽, 高)`，用来从 2 的幂画布里裁出来。
+    pub const fn art_in_canvas(canvas_h: u32, rect: Rect) -> (u32, u32, u32, u32) {
+        let w = (rect.2 - rect.0) as u32;
+        let h = (rect.3 - rect.1) as u32;
+        (0, canvas_h.saturating_sub(h), w, h)
     }
 }
 
