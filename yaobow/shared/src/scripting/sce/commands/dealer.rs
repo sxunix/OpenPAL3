@@ -79,8 +79,14 @@ mod lang {
 /// 场景还在画时，这样一张 24% 的叠图才有意义——效果是场景上一层淡淡的虚影，不是
 /// 压暗 [推断]。移植端直接让场景照常画，不另加这一层。
 
-/// 选中行的字色（见 `draw_page`）。
-const SELECTED_INK: [f32; 4] = [1.0, 0.98, 0.98, 1.0];
+/// 选中条的颜色（列表控件 `+0x498..0x49b`，0x43e045 一带写的
+/// (0xa8, 0xa8, 0xa8, α=0xc8)）。条是贴图乘这个色，半透，画在行文字**上面**。
+pub(super) const LIST_SEL_TINT: [f32; 4] = [
+    0xa8 as f32 / 255.,
+    0xa8 as f32 / 255.,
+    0xa8 as f32 / 255.,
+    0xc8 as f32 / 255.,
+];
 
 pub(super) type Tex = Option<Rc<Sprite>>;
 
@@ -1323,13 +1329,13 @@ pub(super) fn blit(
     }
 }
 
-/// 同 [`blit`]，带透明度。
-fn blit_alpha(
+/// 同 [`blit`]，贴图乘一个颜色。
+pub(super) fn blit_col(
     list: &imgui::DrawListMut<'_>,
     tex: &Tex,
     x: i32,
     y: i32,
-    alpha: f32,
+    col: [f32; 4],
     at: &dyn Fn(i32, i32) -> [f32; 2],
 ) {
     if let Some(s) = tex.as_deref() {
@@ -1338,7 +1344,7 @@ fn blit_alpha(
         list.add_image(s.imgui_texture_id(), at(r.0, r.1), at(r.2, r.3))
             .uv_min(uv0)
             .uv_max(uv1)
-            .col([1., 1., 1., alpha])
+            .col(col)
             .build();
     }
 }
@@ -1560,9 +1566,6 @@ impl SceCommandDealerMenu {
             blit(list, grid, g.0, g.1, at);
             let i = self.top + k;
             let Some(good) = rows.get(i) else { continue };
-            if i == self.cursor {
-                blit(list, &sk.selected, g.0, g.1, at);
-            }
             // 列表控件画行那段已经读通（`0x43e8e0` 起，不是 `0x43ff70`，那个画
             // 的是滚动条）。原版的做法是：
             //
@@ -1575,13 +1578,11 @@ impl SceCommandDealerMenu {
             //   矩形（`0x43eab4`）并画（`0x43eb66`），条 = 贴图 `[+0x480]`
             //   乘颜色 `[+0x498]` = (0xa8, 0xa8, 0xa8, α=0xc8)，靠半透让字透出来。
             //
-            // 移植端目前反着来——条画在字下面、再把字换成浅色。**这是有意保留
-            // 的偏差**：翻成原版画法得让半透的深绿条盖在字上，手头没有实机画面
-            // 能判断那样还读不读得清，先不动。
-            let ink = if i == self.cursor { SELECTED_INK } else { INK };
+            // 这里照这个来：字一律 [`INK`]，条在循环之后用
+            // [`LIST_SEL_TINT`] 叠上去。
             let cell = |c: usize, s: &str| {
                 let [x, y] = at(geom.column_x(c) + lay::TEXT_INSET, g.1);
-                list.add_text([x, y + row_dy], ink, s);
+                list.add_text([x, y + row_dy], INK, s);
             };
             cell(0, &good.name);
             let unit = if sell {
@@ -1596,6 +1597,13 @@ impl SceCommandDealerMenu {
             }
             if sell {
                 cell(3, &good.owned.to_string());
+            }
+        }
+        // 条压在字上面（`0x43eb66` 在行循环之后）。
+        if let Some(k) = self.cursor.checked_sub(self.top) {
+            if k < geom.grid_rows && self.cursor < rows.len() {
+                let g = geom.grid_rect(k);
+                blit_col(list, &sk.selected, g.0, g.1, LIST_SEL_TINT, at);
             }
         }
 
@@ -1633,12 +1641,11 @@ impl SceCommandDealerMenu {
         if let (Some(a), Some(good)) = (self.cursor_anchor(), self.current()) {
             if !sell {
                 let held = self.text(lang::HELD, "持有");
-                // 这行字压在选中条上，和选中行一样用浅色——同上，原版不换字色，
-                // 这是跟着上面那处一起保留的偏差。
+                // 这行字压在选中条上。原版不换字色，所以也用 [`INK`]。
                 let r = lay::owned_tip_rect(a);
                 list.add_text(
                     at(r.0 + lay::TEXT_INSET, r.1 + lay::TEXT_INSET),
-                    SELECTED_INK,
+                    INK,
                     format!("{held}:{}", good.owned),
                 );
             }
@@ -1796,7 +1803,7 @@ impl SceCommandDealerMenu {
                     .as_ref()
                     .is_some_and(|(who, slots)| who[c.role] && slots.contains(&SMALL_SLOTS[k]));
                 if flash {
-                    blit_alpha(list, &sk.small[k], x, y, alpha, at);
+                    blit_col(list, &sk.small[k], x, y, [1., 1., 1., alpha], at);
                 } else if *lit {
                     blit(list, &sk.small[k], x, y, at);
                 }

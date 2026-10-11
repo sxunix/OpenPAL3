@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use super::appraise::{overlay, virtual_mouse};
-use super::dealer::{Tex, bar, blit, button, label, paragraph};
+use super::dealer::{LIST_SEL_TINT, Tex, bar, blit, blit_col, button, label, paragraph};
 use super::dealer_layout::{
     self as lay, INK, ScrollPart, Scrollbar, flag_bottom_rect, flag_mid_rect, flag_top_rect,
     inside, menu_button_rect,
@@ -913,11 +913,6 @@ impl SceCommandSmeltingMenu {
             let Some(row) = self.rows.get(i) else {
                 continue;
             };
-            let chosen = self.cursor == Some(i);
-            if chosen {
-                blit(list, &sk.selected, g.0, g.1, at);
-            }
-            let ink = if chosen { [1.0, 0.98, 0.98, 1.0] } else { INK };
             let cells = [
                 row.corpse_name.clone(),
                 row.recipe.corpse_count.to_string(),
@@ -927,8 +922,18 @@ impl SceCommandSmeltingMenu {
             let mut x = rect::LIST.0;
             for (c, text) in cells.iter().enumerate() {
                 let [px, py] = at(x + lay::TEXT_INSET, g.1);
-                list.add_text([px, py + row_dy], ink, text);
+                list.add_text([px, py + row_dy], INK, text);
                 x += rect::COLUMNS[c];
+            }
+        }
+        // 和当铺、对话选择框一样：选中条是贴图乘 `[+0x498]` 画在文字**上面**
+        // 的（`0x43eb66` 在行循环之后），字色不随选中变。
+        if let Some(i) = self.cursor {
+            if let Some(k) = i.checked_sub(self.top) {
+                if k < rect::ROWS && i < self.rows.len() {
+                    let g = grid_rect(k);
+                    blit_col(list, &sk.selected, g.0, g.1, LIST_SEL_TINT, at);
+                }
             }
         }
 

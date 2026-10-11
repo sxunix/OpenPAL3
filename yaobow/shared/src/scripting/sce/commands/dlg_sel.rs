@@ -30,7 +30,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use crate::scripting::sce::commands::appraise::{overlay, virtual_mouse};
-use crate::scripting::sce::commands::encamp::draw_sprite;
+use crate::scripting::sce::commands::encamp::{draw_sprite, draw_sprite_col};
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use imgui::{MouseButton, Ui};
@@ -62,6 +62,14 @@ pub const FRAME_PIECE: i32 = 32;
 /// 高亮条贴图 `SelPic.tga` 的高（128×16）。**画出来不是这个高**——
 /// 原版把它拉到 `行高 − 2`，见 [`highlight_rect`]。
 pub const HIGHLIGHT_TEX_HEIGHT: i32 = 16;
+/// 条的颜色，列表控件 `+0x498..0x49b`（0x43e045 一带写的
+/// (0xa8, 0xa8, 0xa8, α=0xc8)）。
+const HIGHLIGHT_TINT: [f32; 4] = [
+    0xa8 as f32 / 255.,
+    0xa8 as f32 / 255.,
+    0xa8 as f32 / 255.,
+    0xc8 as f32 / 255.,
+];
 /// 0xfffafa。列表控件的**全局默认**字色不是这个，是
 /// `0xd91780` = (0x40, 0x40, 0x3c, α=0xc8) 的深灰半透（`FUN_00445a60` 按
 /// 表面格式写）；只有当 `[+0x4ac][行] != 0` 时才改用逐行的
@@ -109,10 +117,8 @@ pub fn row_rect(area: Rect, k: usize) -> Rect {
 /// `行高 − 2`，底再夹到列表下边。贴图会被拉到这个高度。原版还会给四角各加
 /// 一个偏移 `[+0x488]`/`[+0x48c]`/`[+0x490]`，这个框是 0。
 ///
-/// 两处和原版有意不同（没有实机画面可比对，先不动）：原版把条**画在文字
-/// 之上**（行循环 `0x43ea6d` 跑完才画 `0x43eb66`），并且条是贴图乘
-/// `[+0x498]` = (0xa8, 0xa8, 0xa8, α=0xc8) 的半透浅灰；这里是先条后字、
-/// 不染色。
+/// 条画在文字**之上**（行循环 `0x43ea6d` 跑完才画 `0x43eb66`），贴图乘
+/// [`HIGHLIGHT_TINT`]，靠半透让字透出来；字色不随选中变。
 pub fn highlight_rect(row: Rect, area: Rect) -> Rect {
     let y1 = (row.1 + ROW_HEIGHT - 2).min(area.3);
     (row.0 + 4, row.1, row.2 - 2, y1)
@@ -290,13 +296,25 @@ impl SceCommandDlgSel {
             let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
             for (k, text) in self.list.iter().enumerate() {
                 let row = row_rect(area, k);
-                if k == self.cursor {
-                    draw_sprite(&list, self.select.as_deref(), highlight_rect(row, area), at);
-                }
                 // 文字顶就在行顶（`FUN_00540fd0` 拿 y 当上边、y + 字号当下边），
                 // 不另做竖直居中。
                 let [sx, sy] = at(row.0 + TEXT_INSET, row.1);
                 list.add_text([sx, sy], TEXT_COLOR, text);
+            }
+            // 条压在字上面：行循环跑完（`0x43ea6d`）之后才算矩形
+            // （`0x43eab4`）并画（`0x43eb66`）。
+            if let Some(row) = self
+                .list
+                .get(self.cursor)
+                .map(|_| row_rect(area, self.cursor))
+            {
+                draw_sprite_col(
+                    &list,
+                    self.select.as_deref(),
+                    highlight_rect(row, area),
+                    HIGHLIGHT_TINT,
+                    at,
+                );
             }
         });
     }

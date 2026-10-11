@@ -735,11 +735,23 @@ pub(crate) fn draw_sprite(
     r: Rect,
     at: &dyn Fn(i32, i32) -> [f32; 2],
 ) {
+    draw_sprite_col(list, sprite, r, [1., 1., 1., 1.], at);
+}
+
+/// 同 [`draw_sprite`]，贴图乘一个颜色。
+pub(crate) fn draw_sprite_col(
+    list: &imgui::DrawListMut<'_>,
+    sprite: Option<&Sprite>,
+    r: Rect,
+    col: [f32; 4],
+    at: &dyn Fn(i32, i32) -> [f32; 2],
+) {
     let Some(s) = sprite else { return };
     let (uv0, uv1) = sprite_uv(s, r);
     list.add_image(s.imgui_texture_id(), at(r.0, r.1), at(r.2, r.3))
         .uv_min(uv0)
         .uv_max(uv1)
+        .col(col)
         .build();
 }
 
