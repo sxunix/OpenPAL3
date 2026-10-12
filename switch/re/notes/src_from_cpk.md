@@ -22,7 +22,24 @@ data/cpack
 
 ## 信到什么程度
 
-`data/pal3` 这一半和出货的 `PAL3_unpacked.exe` 基本对得上，逐条核过的例子：
+### 怎么核：exe 里还留着 `__FILE__` + `__LINE__`
+
+`EXCEPTION(msg)` 这个宏在调用点压 `__LINE__` 和 `__FILE__`，release 版没优化掉。
+`switch/re/srcmap.py` 把 `.text` 里每一处 `push <"D:\Project\PAL3\…cpp">` 和
+紧挨着的那条 `push imm` 配对打出来：**28 个文件、108 处**。把行号丢回
+`src_from_cpk` 对应文件的那一行，**几乎每一处都正好落在 `throw EXCEPTION(...)` 上**
+（少数几处是启发式抓错了相邻的 push，不是版本不同）。覆盖到的文件：
+`FileSys.cpp`、`PalScript.cpp`、`UIListBox.cpp`、`LoadData.cpp`、`RenderTarget.cpp`、
+`EffectSystem.cpp`、`EffCylinder/Explosive/Grid/Meteor/Model/Quad/Shock/Mgr.cpp`、
+`CB2DEffect.cpp`、`CB3DEffect.cpp`、**`CBRoleState.cpp`（1484 / 1494）**、
+`CBStage.cpp`、`CBStageCam.cpp`、`CBStageEffect.cpp`、`CBStageRole.cpp`、
+`CBStageScene.cpp`、`CBStageShadow.cpp`、`CBSystem.cpp`、`CBUI.cpp`、
+`Encampment_scene.cpp`、`UI_TextureInfo.cpp`。
+
+也就是说这些文件是**逐行相同**的源码，不只是「差不多」。
+
+另外几条手工核过的：
+
 
 | 源码 | exe |
 | --- | --- |
@@ -47,18 +64,25 @@ data/cpack
 出货的 exe 把这两个下标写反了。移植跟 exe，见 `bigmap.rs` 的
 `the_two_swapped_blocks_are_kept_as_the_exe_has_them`。
 
-**`data/engine` 这一半不一样。** 至少有一处出货的 `gbengine.dll` 和源码对不上：
+## `data/engine` 和 `gbengine.dll`
 
-* `gbGeomNode::GetTotalOBBox`（`geometry/gbgeomnode.cpp:103`）源码写
-  `tx/ty/tz = (min+max)*0.5` 三个轴各算各的；
-* DLL 里 `0x10010222` 起是
-  `[esi+0x30] = (max.x+min.x)*0.5`、`[esi+0x34] = (max.x+min.x)*0.5`、
-  `[esi+0x38] = (max.y+min.y)*0.5`——**x 中心写了两遍、z 中心丢了**。
+> **撤回（2026-10-12）**：先前这里写「`data/engine` 这一半不一样」，证据是
+> `gbGeomNode::GetTotalOBBox` 在 DLL 里「x 中心写了两遍、z 中心丢了」。
+> **那是读错了。** `0x10010222` 起的三段中间夹着一条 `pop edi`（`0x1001022c`），
+> esp 挪了 4，所以第二段的 `[esp+0x14]`、第三段的 `[esp+0x18]` 指的是第一段
+> `[esp+0x18]`、`[esp+0x1c]` 那两个格子——三个轴各算各的，和源码
+> `gbgeomnode.cpp:104` 一模一样。**读带 push/pop 的浮点序列时，每条访存都要
+> 按当时的 esp 重算。** 移植端照着错版抄的那一处（多网格 CVD 的 OBB 中心
+> `[cx, cx, cy]`）已经改回 `[cx, cy, cz]`。
 
-移植端 `ScnScene::object_model_box` 照 DLL 抄。所以：**引擎那一半的每一条
-都要和 `gbengine.dll` 对过再用**，源码只能当线索。
+引擎这一半也能拿 `__FILE__`/`__LINE__` 核。DLL 里只剩三个路径字符串
+（`D:\Project\gbengine9\support\cpack\…` 的 `CPKFast.cpp`、`DiscIOMgr.cpp`、
+`MemMgr.cpp`），25 处 xref，行号全部落在 `data/engine/support/cpack/` 对应文件的
+`ERR(...)` 上——**cpack 这一块是逐行相同的**。几何、gfx 那些模块没有留下锚点，
+目前**没有**任何一条已知的 `data/engine` ↔ DLL 分歧；但能核的只有 cpack，
+所以引擎侧改行为之前还是先去 DLL 里看一眼。
 
-对过之后发现**一致**的一处：`gbIpolMesh` 读 `.cvd` 时把所有帧扫一遍取包围盒
+对过的一处：**一致**的一处：`gbIpolMesh` 读 `.cvd` 时把所有帧扫一遍取包围盒
 （`geometry/gbipolmesh.cpp:234`），出货的 DLL 一样。`gbIpolMesh` 没有导出符号，
 是顺着导出的 `gbGfxManager::NewMesh`（0x1001e160，`type==1` 时 `new(0x8c)` +
 构造 0x10011b40、虚表 0x100f5614）和 `gbGeomNode::LoadCVDFromStream`

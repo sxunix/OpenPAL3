@@ -377,6 +377,10 @@ struct StageActor {
     hide_on_finish: bool,
     /// 打赢时在做胜利动作 z20，做完回歇着的动作（见 `begin_ending`）。
     win_pose: bool,
+    /// 合击把目标挪进盘心时，原先占着盘心的 10 号位被收起（`SetVisible(false)`，
+    /// `CCBStage::ProcAllRoleToCoAttackPos`，0x4ff4c5 处的 `FUN_0050a1f0(0)`）。
+    /// 收场时 `ProcAllRoleToInitPos` 再显出来。
+    stowed: bool,
     /// 选目标时在闪（`+0x112`），染过色。
     pulsing: bool,
     /// 站位（`[RolePos]`），走位去了还要回来。
@@ -944,6 +948,7 @@ impl SceCommandCombat {
                 last: Snapshot::of(c, None),
                 hide_on_finish: false,
                 win_pose: false,
+                stowed: false,
                 pulsing: false,
                 home,
                 walk: None,
@@ -1946,6 +1951,7 @@ impl SceCommandCombat {
         // 合击技摆位 / 复位要挪别人，等这一段借用结束后再做。第三项：朝向是否还原成站位的朝向。
         let mut moves: Vec<(usize, Vec3, bool)> = Vec::new();
         let mut restore_all = false;
+        let mut stow_centre = false;
         // 合击技的渐黑 / 渐亮（0x502000 / 0x5020d0）按任意键就走到底（`FUN_00402b00`）。
         let skip_fade = any_key_pressed(state);
         match run.step {
@@ -1995,7 +2001,12 @@ impl SceCommandCombat {
                                 (run.target, st::stage_position(&data.role_positions, 10))
                             {
                                 // 目标只挪位置，朝向不动（0x4ff51b 起只抄 `+0x19b8`）。
-                                if t >= PARTY_SLOTS {
+                                if t >= PARTY_SLOTS && t != 10 {
+                                    // 盘心原先有人（在场、没逃走、还站着）就先把它摆回原位
+                                    // 收起来，腾出 10 号位给目标。
+                                    if session.battle.get(10).is_some_and(|c| c.in_play()) {
+                                        stow_centre = true;
+                                    }
                                     moves.push((t, Vec3::new(p.x, 0., p.z), false));
                                 }
                             }
@@ -2186,6 +2197,15 @@ impl SceCommandCombat {
                 }
             }
         }
+        if stow_centre {
+            if let Some(a) = self.actors.get_mut(10).and_then(|a| a.as_mut()) {
+                a.walk = None;
+                a.stowed = true;
+                let home = a.home;
+                a.entity.transform().borrow_mut().set_position(&home);
+                a.entity.set_visible(false);
+            }
+        }
         // 0x4ff740：在场的都摆回站位，朝向也还原（`+0x19e8 = +0x19ec`）。
         if restore_all {
             for a in self.actors.iter_mut().flatten() {
@@ -2196,6 +2216,15 @@ impl SceCommandCombat {
                     .borrow_mut()
                     .set_position(&home)
                     .look_at(&face_point(home, motion::rest_facing(a.set)));
+            }
+            // 收起来的那位显出来（`ProcAllRoleToInitPos` 末尾）。
+            if let Some(a) = self.actors.get_mut(10).and_then(|a| a.as_mut()) {
+                if a.stowed {
+                    a.stowed = false;
+                    if session.battle.get(10).is_some_and(|c| c.in_play()) {
+                        a.entity.set_visible(true);
+                    }
+                }
             }
         }
     }
@@ -2491,7 +2520,7 @@ impl SceCommandCombat {
                 }
                 Some(Play::Rest) => {
                     rc.set_auto_play_idle(true);
-                    actor.entity.set_visible(true);
+                    actor.entity.set_visible(!actor.stowed);
                     actor.hide_on_finish = false;
                     let rest = motion::rest_motion(&now);
                     if rest == motion::Motion::Idle || !play(rest, RoleAnimationRepeatMode::Loop) {

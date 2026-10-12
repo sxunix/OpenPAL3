@@ -1446,12 +1446,11 @@ impl ScnScene {
     ///   `max − min`，再把 AABB 的中心 `LeftTranslate` 上去；
     /// * ≥ 2 个 → 每个网格 AABB 过自己节点的 to-world，取并集，矩阵是单位阵只放中心。
     ///
-    /// **最后那一步出货的 `gbengine.dll` 和这份源码不一样**：源码写的是
-    /// `tx/ty/tz = (min+max)*0.5` 三个轴各算各的，DLL 里 `0x10010222` 起却是
-    /// `[esi+0x30]` 和 `[esi+0x34]` 都写 `(max.x+min.x)*0.5`、`[esi+0x38]` 写
-    /// `(max.y+min.y)*0.5`——**x 中心写了两遍、z 中心丢了**。这里照 DLL 抄，
-    /// 因为跑起来的是 DLL。（也就是说 cpk 里那份 `data/engine` 和出货的
-    /// gbengine.dll 不是同一次编译，用它当参考时每条都得对一遍。）
+    /// **更正（2026-10-12）**：先前这里按「DLL 把 x 中心写了两遍、z 中心丢了」
+    /// 抄过一版，是读错了。`0x10010222` 起那三段中间夹着一条 `pop edi`
+    /// （`0x1001022c`），esp 挪了 4，所以后两段的 `[esp+0x14]` / `[esp+0x18]`
+    /// 指的是前一段 `[esp+0x18]` / `[esp+0x1c]` 那两个格子——三个轴各算各的，
+    /// 和源码 `geometry/gbgeomnode.cpp:104` 一模一样。
     ///
     /// POL 取文件里各网格包围盒的并——`gbStaticMesh` 的 AABB 是**从文件里直接读的**
     /// （`engine/geometry/gbstaticmesh.cpp:305`），不是算出来的。
@@ -1617,10 +1616,8 @@ impl ScnScene {
                         }
                     }
                 }
-                let cx = (hi[0] + lo[0]) * 0.5;
-                let cy = (hi[1] + lo[1]) * 0.5;
                 Model::Box(Obb {
-                    m: translate([cx, cx, cy]),
+                    m: translate([0, 1, 2].map(|k| (lo[k] + hi[k]) * 0.5)),
                     ext: [0, 1, 2].map(|k| hi[k] - lo[k]),
                 })
             }

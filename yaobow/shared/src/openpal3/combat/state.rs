@@ -1303,26 +1303,43 @@ impl Battle {
         }
     }
 
-    /// `FUN_004f0210` 前一半：怪物（位 5..10）没有竖列打法时，打不到站在后位
-    /// （[`Self::back_vertex`]）的我方——只要盘心（阵位 6）有人还站着（精 > 0）。
-    /// 后一半（我方打 6 号位，看战斗 `+0x2519` 等几个标志）移植端没有对应的阵形，没搬。
+    /// `CCBRoleState::CanAttackBackRole`（`FUN_004f0210`）：**普攻**打不到站在后位的人。
+    /// 只对普攻生效（调用它的 `CanBeSelect` 先查 `dwCmdKind == CB_ID_ATT_BUTTON`），
+    /// 仙术、特技、道具都不受这条限制。
+    ///
+    /// * 怪物（位 5..=10）打我方：挡在前面的是阵位 6（盘心）；被挡的是站在
+    ///   [`Self::back_vertex`] 那一位。
+    /// * 我方（位 0..5）打怪物：敌方没有阵型，原版把位置**写死**成「6 号位被
+    ///   10 号位挡着」（`cbrolestate.cpp:3233`）。挡位的三个条件读的就是
+    ///   `m_Role[10]` 的 `bValid` / `bFleed` / `bFleeing`——`+0x2519` 就是
+    ///   `m_Role[10].bValid`，`IsValid()` 是 `__forceinline` 才在这里展开成裸偏移。
+    ///
+    /// 两边都是武器打一竖列（`+0x28a`）或打全场（`+0x28b`）就不受限；全场那一位
+    /// 零售版里没有任何途径置上（`FUN_004ed8c0` 的 switch 不写它，`FUN_004f8bb0`
+    /// 只写横排），所以这里只看竖列。
     pub fn attackable(&self, attacker: usize, target: usize) -> bool {
-        if !(PARTY_SLOTS..=10).contains(&attacker) || target >= PARTY_SLOTS {
-            return true;
-        }
-        if self
+        let sweeping = self
             .get(attacker)
-            .is_some_and(|a| a.pattern == HitPattern::Column)
-        {
-            return true;
+            .is_some_and(|a| a.pattern == HitPattern::Column);
+        if (PARTY_SLOTS..=10).contains(&attacker) && target < PARTY_SLOTS {
+            if sweeping || self.position_of(target) != self.back_vertex() {
+                return true;
+            }
+            return !(0..PARTY_SLOTS).any(|s| {
+                self.get(s).is_some_and(|c| {
+                    !c.retired && !c.fleeing && c.element_position == 6 && c.hp > 0
+                })
+            });
         }
-        if self.position_of(target) != self.back_vertex() {
-            return true;
+        if attacker < PARTY_SLOTS && (PARTY_SLOTS..=10).contains(&target) {
+            if sweeping || target != 6 {
+                return true;
+            }
+            return !self
+                .get(10)
+                .is_some_and(|c| !c.retired && !c.fleeing && c.hp > 0);
         }
-        !(0..PARTY_SLOTS).any(|s| {
-            self.get(s)
-                .is_some_and(|c| !c.retired && c.element_position == 6 && c.hp > 0)
-        })
+        true
     }
 
     fn same_side_placed(&self, a: usize, b: usize) -> bool {
@@ -2396,12 +2413,33 @@ mod tests {
         b.place(5, fighter(100, Side::Enemy, 50, 10, 5, 1));
         assert!(!b.attackable(5, 1), "盘心有人，后位打不到");
         assert!(b.attackable(5, 2));
-        assert!(b.attackable(1, 5), "我方打怪不受这条限制");
+        assert!(b.attackable(1, 5), "怪不站 6 号位，打得到");
         b.get_mut(5).unwrap().pattern = HitPattern::Column;
         assert!(b.attackable(5, 1), "竖列打得到");
         b.get_mut(5).unwrap().pattern = HitPattern::Single;
         b.get_mut(0).unwrap().hp = 0;
         assert!(b.attackable(5, 1), "盘心倒了就打得到");
+    }
+
+    /// 后一半（`cbrolestate.cpp:3233`）：我方普攻打不到敌方 6 号位，只要 10 号位
+    /// 还在（`+0x2519` = `m_Role[10].bValid`）、没逃走、精还大于 0。
+    #[test]
+    fn the_tenth_slot_shields_the_sixth_from_us() {
+        let mut b = Battle::new(7);
+        b.place(0, fighter(0, Side::Party, 50, 10, 5, 1));
+        b.place(6, fighter(100, Side::Enemy, 50, 10, 5, 1));
+        assert!(b.attackable(0, 6), "10 号位空着，打得到");
+        b.place(10, fighter(101, Side::Enemy, 50, 10, 5, 1));
+        assert!(!b.attackable(0, 6), "10 号位挡着");
+        assert!(b.attackable(0, 10), "挡路的那位自己打得到");
+        b.get_mut(0).unwrap().pattern = HitPattern::Column;
+        assert!(b.attackable(0, 6), "竖列打得到");
+        b.get_mut(0).unwrap().pattern = HitPattern::Single;
+        b.get_mut(10).unwrap().hp = 0;
+        assert!(b.attackable(0, 6), "10 号位倒了就打得到");
+        b.get_mut(10).unwrap().hp = 50;
+        b.get_mut(10).unwrap().fleeing = true;
+        assert!(b.attackable(0, 6), "10 号位正在逃走也不挡");
     }
 
     #[test]

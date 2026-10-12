@@ -529,7 +529,15 @@ impl CombatSession {
             };
         }
         let choice = match action {
-            Action::Attack => return self.standing(Side::Enemy),
+            // 普攻（也只有普攻）过 `CanBeSelect` 里那道「挡在前面的人」检查
+            // （`cbrolestate.cpp:1933`）：10 号位还在就选不到 6 号位。
+            Action::Attack => {
+                return self
+                    .standing(Side::Enemy)
+                    .into_iter()
+                    .filter(|t| self.battle.attackable(slot, *t))
+                    .collect();
+            }
             Action::Cast(i) => self.skills(slot).get(i),
             Action::Special(i) => self.specials(slot).get(i),
             Action::UseItem(_) => unreachable!("道具在上面单独处理"),
