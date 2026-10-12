@@ -7,7 +7,7 @@
 //! that surprised me — see [`element_modifier`].
 
 use super::formulas::{self, CombatRng};
-use super::state::{Battle, Combatant, K_POISON_IMMUNE, Phase, Side};
+use super::state::{Battle, K_POISON_IMMUNE, Phase, Side};
 
 /// The twelve `ActorAttributeType` slots a skill or item can address.
 /// Only the first three do anything in combat: `FUN_004eef20` sends
@@ -66,6 +66,10 @@ pub struct SkillEffect {
     pub target_range: u8,
     /// 状态码，按状态**枚举**下标（战斗位的 `k = 下标 + 1`）：1 加、2 解——和道具同一套。
     pub state_codes: [i16; ITEM_STATE_CODES],
+    /// 技能定义的 `special_skill_id`（源码里的 `pFS->special`）：仙术生效时拿它调
+    /// `CCBRoleState::SpecAffect`。发行数据里非 0 的只有九条，见
+    /// [`Battle::skill_spec_affect`]。
+    pub special: u8,
 }
 
 /// `special_consume_type` == 10：扣钱（全队共用）。
@@ -137,46 +141,66 @@ pub fn impact_magnitude(rng: &mut CombatRng, caster_level: i32, impact_value: i1
     if impact_value < 1 { -v } else { v }
 }
 
-/// Turn a computed value into an actual change on the target
-/// (`FUN_004eef20`, 0x4ef43a). Returns the delta that was applied.
-pub fn apply_impact(target: &mut Combatant, slot: usize, kind: ImpactKind, value: i32) -> i32 {
-    if slot >= FIRST_DEAD_ATTRIBUTE {
-        // The original asserts here rather than doing anything.
-        return 0;
-    }
-
-    let (current, max) = match slot {
-        ATTR_HP => (target.hp, target.max_hp),
-        ATTR_SP => (target.sp, target.max_sp),
-        _ => (target.mp, target.max_mp),
-    };
-
-    let delta = match kind {
-        ImpactKind::Absolute => value,
-        ImpactKind::Percentage => max * value / 100,
-        ImpactKind::RecoverToMax => max - current,
-        ImpactKind::IncreaseMax => {
-            // Raises the ceiling and leaves the current value alone.
-            match slot {
-                ATTR_HP => target.max_hp += value,
-                ATTR_SP => target.max_sp += value,
-                _ => target.max_mp += value,
-            }
+impl Battle {
+    /// Turn a computed value into an actual change on the target
+    /// (`FUN_004eef20`, 0x4ef43a). Returns the delta that was applied.
+    ///
+    /// 精那一格走 [`Battle::change_hp`]（原版也是 `ChangeHP`），所以防御减半、
+    /// 千金散去对仙术和道具一样管用。先前这里是个拿 `&mut Combatant` 的自由
+    /// 函数，看不到队伍的钱。
+    pub fn apply_impact(
+        &mut self,
+        target: usize,
+        slot: usize,
+        kind: ImpactKind,
+        value: i32,
+    ) -> i32 {
+        if slot >= FIRST_DEAD_ATTRIBUTE {
+            // The original asserts here rather than doing anything.
             return 0;
         }
-    };
+        let Some(t) = self.get(target) else { return 0 };
 
-    match slot {
-        ATTR_HP => target.change_hp(delta),
-        ATTR_SP => {
-            let before = target.sp;
-            target.sp = (target.sp + delta).clamp(0, target.max_sp);
-            target.sp - before
+        let (current, max) = match slot {
+            ATTR_HP => (t.hp, t.max_hp),
+            ATTR_SP => (t.sp, t.max_sp),
+            _ => (t.mp, t.max_mp),
+        };
+
+        let delta = match kind {
+            ImpactKind::Absolute => value,
+            ImpactKind::Percentage => max * value / 100,
+            ImpactKind::RecoverToMax => max - current,
+            ImpactKind::IncreaseMax => {
+                // Raises the ceiling and leaves the current value alone.
+                if let Some(t) = self.get_mut(target) {
+                    match slot {
+                        ATTR_HP => t.max_hp += value,
+                        ATTR_SP => t.max_sp += value,
+                        _ => t.max_mp += value,
+                    }
+                }
+                return 0;
+            }
+        };
+
+        if slot == ATTR_HP {
+            return self.change_hp(target, delta);
         }
-        _ => {
-            let before = target.mp;
-            target.mp = (target.mp + delta).clamp(0, target.max_mp);
-            target.mp - before
+        let Some(t) = self.get_mut(target) else {
+            return 0;
+        };
+        match slot {
+            ATTR_SP => {
+                let before = t.sp;
+                t.sp = (t.sp + delta).clamp(0, t.max_sp);
+                t.sp - before
+            }
+            _ => {
+                let before = t.mp;
+                t.mp = (t.mp + delta).clamp(0, t.max_mp);
+                t.mp - before
+            }
         }
     }
 }
@@ -333,9 +357,7 @@ impl Battle {
             SKILL_DRAIN_HP => {
                 let hp_after = self.get(target).map(|t| t.hp).unwrap_or(hp_before);
                 let amount = (hp_before - hp_after).abs() / 2;
-                if let Some(c) = self.get_mut(caster) {
-                    c.change_hp(amount);
-                }
+                self.change_hp(caster, amount);
             }
             SKILL_DRAIN_MP => {
                 let amount = result.deltas[0].abs();
@@ -428,6 +450,12 @@ impl Battle {
         }
         result.hit = true;
 
+        // 仙术的 `special`（`MagicAffect` 第一件事就是 `MagicSpecAffect`，排在状态和
+        // 数值之前）。特技走的是按 id 分的那一支（`FUN_004f2690`），不碰这里。
+        if !special {
+            self.skill_spec_affect(target, skill.special);
+        }
+
         for (i, code) in skill.state_codes.iter().copied().enumerate() {
             match code {
                 1 => self.set_state(target, i + 1, true),
@@ -451,9 +479,7 @@ impl Battle {
             }
             let v = impact_magnitude(&mut self.rng, caster_level, raw);
             let v = element_modifier(v, caster_is_player, skill.elements, compared);
-            if let Some(t) = self.get_mut(target) {
-                result.deltas[slot] = apply_impact(t, slot, ImpactKind::from_u8(kind), v);
-            }
+            result.deltas[slot] = self.apply_impact(target, slot, ImpactKind::from_u8(kind), v);
         }
 
         if special {
@@ -489,9 +515,7 @@ impl Battle {
         if item.id == POISON_DRAGON_GALL {
             let poisoned = (1..=5).any(|k| t.has_state(k));
             if !poisoned {
-                if let Some(t) = self.get_mut(target) {
-                    result.deltas[ATTR_HP] = t.change_hp(-99_999_999);
-                }
+                result.deltas[ATTR_HP] = self.change_hp(target, -99_999_999);
                 result.instant_kill = true;
                 return result;
             }
@@ -540,9 +564,7 @@ impl Battle {
                 let boost = self.get(user).map(|u| u.item_boost).unwrap_or(0);
                 v += (v as f64 * boost as f64 * 0.01f32 as f64).round_ties_even() as i32;
             }
-            if let Some(t) = self.get_mut(target) {
-                result.deltas[slot] = apply_impact(t, slot, ImpactKind::from_u8(kind), v);
-            }
+            result.deltas[slot] = self.apply_impact(target, slot, ImpactKind::from_u8(kind), v);
         }
 
         // 掉了血的活目标要被打断（`FUN_004f1a30` 收尾那一步）。
@@ -743,43 +765,41 @@ mod tests {
         assert_eq!(m.killed_by, Some(3));
     }
 
+    /// 一个人单独站 0 号位的场子，给 `apply_impact` 这类按位号走的测试用。
+    fn alone(c: Combatant) -> Battle {
+        let mut b = Battle::new(1);
+        b.place(0, c);
+        b
+    }
+
     #[test]
     fn only_the_first_three_attributes_do_anything() {
-        let mut t = caster();
+        let mut b = alone(caster());
         // 武 is slot 3 — the original asserts instead of applying.
-        assert_eq!(apply_impact(&mut t, 3, ImpactKind::Absolute, -50), 0);
-        assert_eq!(apply_impact(&mut t, 11, ImpactKind::Absolute, -50), 0);
-        assert_eq!(t.hp, 100);
+        assert_eq!(b.apply_impact(0, 3, ImpactKind::Absolute, -50), 0);
+        assert_eq!(b.apply_impact(0, 11, ImpactKind::Absolute, -50), 0);
+        assert_eq!(b.get(0).unwrap().hp, 100);
     }
 
     #[test]
     fn the_four_impact_kinds() {
-        let mut t = caster();
-        t.hp = 40;
+        let mut b = alone(caster());
+        b.get_mut(0).unwrap().hp = 40;
 
-        assert_eq!(apply_impact(&mut t, ATTR_HP, ImpactKind::Absolute, 15), 15);
-        assert_eq!(t.hp, 55);
+        assert_eq!(b.apply_impact(0, ATTR_HP, ImpactKind::Absolute, 15), 15);
+        assert_eq!(b.get(0).unwrap().hp, 55);
 
         // Percentage is of the maximum, not of what is left.
-        assert_eq!(
-            apply_impact(&mut t, ATTR_HP, ImpactKind::Percentage, 10),
-            10
-        );
-        assert_eq!(t.hp, 65);
+        assert_eq!(b.apply_impact(0, ATTR_HP, ImpactKind::Percentage, 10), 10);
+        assert_eq!(b.get(0).unwrap().hp, 65);
 
-        assert_eq!(
-            apply_impact(&mut t, ATTR_HP, ImpactKind::RecoverToMax, 0),
-            35
-        );
-        assert_eq!(t.hp, 100);
+        assert_eq!(b.apply_impact(0, ATTR_HP, ImpactKind::RecoverToMax, 0), 35);
+        assert_eq!(b.get(0).unwrap().hp, 100);
 
         // Raising the ceiling leaves the current value where it is.
-        assert_eq!(
-            apply_impact(&mut t, ATTR_HP, ImpactKind::IncreaseMax, 20),
-            0
-        );
-        assert_eq!(t.max_hp, 120);
-        assert_eq!(t.hp, 100);
+        assert_eq!(b.apply_impact(0, ATTR_HP, ImpactKind::IncreaseMax, 20), 0);
+        assert_eq!(b.get(0).unwrap().max_hp, 120);
+        assert_eq!(b.get(0).unwrap().hp, 100);
     }
 
     #[test]

@@ -57,7 +57,16 @@ pub const EXT_RESULT: &str = "pal3.combat.result";
 /// `FUN_00407320`'s fallback when the party stands outside the nav map.
 /// 青铜护镜（`FUN_004edf10` 查饰品两格是不是它）。
 const BRONZE_MIRROR: u32 = 0x1fae;
+/// 「千金散去」那一套五件（`cbrolestate.cpp:1358`）：绿幞头、通神、元宝鞋、
+/// 右利、左利。后两件戴在饰品两格，左右不论。
+const LOST_MONEY_HAT: u32 = 80015;
+const LOST_MONEY_CLOTH: u32 = 84018;
+const LOST_MONEY_SHOES: u32 = 83012;
+const LOST_MONEY_RIGHT: u32 = 8153;
+const LOST_MONEY_LEFT: u32 = 8154;
 const FLOOR_TYPE_OUT_OF_RANGE: i32 = 2;
+/// 新怪出场的特效组（`CreateMonster` 收尾处放的 0x141）。
+const SPAWN_EFFECT_GROUP: i32 = 0x141;
 
 fn pending_flags_mut(state: &mut SceState) -> &mut PendingFlags {
     state
@@ -792,6 +801,244 @@ impl SceCommandCombat {
     /// `[RolePos]`（我方 0..4、敌方 5..10），模型名见
     /// `combat::stage::model_name`。缺哪一件就少摆哪一个，不影响战斗本身
     /// ——规则层不碰这些实体。
+    /// 把一只怪摆进 `slot`，照 `CCBRoleState::CreateMonster`（`FUN_004f8bb0`）
+    /// 那一套从 gdb 搬属性，返回它的 [`Profile`]。开战时六个位各调一次，
+    /// 战斗中分身（`Battle::pending_spawns`）也走这里。
+    fn seat_monster(
+        db: &GameDb,
+        battle: &mut crate::openpal3::combat::state::Battle,
+        slot: usize,
+        id: u32,
+    ) -> Option<Profile> {
+        let Some(row) = db.combat_actor(id) else {
+            log::warn!("Combat: monster {id} is not in the database");
+            return None;
+        };
+        let mut c = Combatant::new(id, Side::Enemy);
+        c.level = row.level;
+        c.max_hp = row.attribute_values[0];
+        c.hp = c.max_hp;
+        c.max_sp = row.attribute_values[1];
+        c.sp = c.max_sp;
+        c.max_mp = row.attribute_values[2];
+        c.mp = c.max_mp;
+        c.attack = row.attribute_values[3];
+        c.defense = row.attribute_values[4];
+        c.speed = row.attribute_values[5];
+        c.luck = row.attribute_values[6];
+        // 普攻方式、挨它一下我方加的气（`FUN_004ed250`：gdb +0x2ec → 战斗位 +0x280，
+        // +0x30c → +0x284）。
+        c.attack_mode = row.normal_attack_mode_id;
+        c.sp_on_hit = row.sp_impact_value;
+        // boss：模型名以 b/B 开头（`FUN_004ed250` 查 gdb `+0x206` 头一个字符）。
+        c.boss = row
+            .model_id
+            .as_str()
+            .map(|m| m.starts_with(['b', 'B']))
+            .unwrap_or(false);
+        let boss = c.boss;
+        for (i, v) in row.element_attribute_values.iter().enumerate() {
+            c.elements[i + 1] = *v > 0;
+        }
+        c.steal_money = row.stealable_money_amount as i32;
+        // 逃走概率：`FUN_004ed250` 0x4ed595 把 gdb `+0x2d4` 取整写进 `+0x59c`。
+        c.escape_rate = row.escape_rate as i32;
+        c.steal_item = (row.stealable_item_id != 0 && row.stealable_item_count > 0)
+            .then_some((row.stealable_item_id, row.stealable_item_count as i32));
+        battle.place(slot, c);
+        battle.apply_opening_states(
+            slot,
+            &row.combat_state_impact_types,
+            boss || row.combat_state_impact_types[25] != 0,
+        );
+        battle.assign_enemy_pattern(slot);
+
+        Some(Profile {
+            name: row.name.as_str().unwrap_or_else(|_| format!("#{id}")),
+            // 四招都进列表（怪物的挑选器都扫 `skill_ids[0..4]`）。出手倍率（`FUN_004f76c0`）：
+            // 前三招是 gdb `skill_levels[i]`（不加 1），第四招（boss 那招）是 4，即瞬发。
+            skills: row
+                .skill_ids
+                .iter()
+                .enumerate()
+                .filter(|(_, s)| **s != 0)
+                .filter_map(|(i, s)| {
+                    let multiplier = if i < 3 { row.skill_levels[i] as i32 } else { 4 };
+                    Self::skill_choice(db, *s, multiplier)
+                })
+                .collect(),
+            specials: Vec::new(),
+            reward: Reward {
+                experience: row.experience,
+                money: row.money_when_killed as i32,
+                loot: (row.normal_loot != 0 && row.normal_loot_count > 0)
+                    .then_some((row.normal_loot, row.normal_loot_count as i32)),
+            },
+        })
+    }
+
+    /// 给一个战斗位造舞台角色：模型、站位、朝向、普攻的结算时刻。
+    /// 开战时 [`Self::build_stage`] 逐位调，战斗中分身出来的怪也调它。
+    /// 返回 `None` 就是这一位不上台（没人、倒着、站位表短了、模型缺了）。
+    fn make_actor(&self, state: &SceState, db: &GameDb, slot: usize) -> Option<StageActor> {
+        use crate::openpal3::combat::stage;
+        use mini_fs::StoreExt;
+
+        let asset_mgr = state.asset_mgr();
+        let vfs = asset_mgr.vfs();
+        let positions = &db.combat().role_positions;
+        let battle = self.session.as_ref().map(|s| &s.battle)?;
+        let c = battle.get(slot)?;
+        if !c.alive {
+            return None;
+        }
+        let enemy_model = db
+            .combat_actor(c.actor_id)
+            .and_then(|a| a.model_id.as_str().ok());
+        let Some(model) = stage::model_name(slot, enemy_model.as_deref()) else {
+            return None;
+        };
+        let Some(pos) = stage::stage_position(positions, slot) else {
+            return None;
+        };
+        // 我方那套还是怪物那套，见 `combat::motion`（+0x243）。
+        let set = if slot < PARTY_SLOTS {
+            MotionSet::Party
+        } else {
+            MotionSet::Monster
+        };
+        let idle = set.name(motion::Motion::Idle).unwrap_or("z1");
+        let Some(entity) = asset_mgr.load_role(&model, idle, format!("COMBAT_ROLE_{slot}"), true)
+        else {
+            log::warn!("Combat: 战斗模型 {model} 加载不了（位 {slot}）");
+            return None;
+        };
+        let home = Vec3::new(pos.x, 0., pos.z);
+        // 偷袭时被偷袭的一方背过身去（`FUN_005096d0`：敌方位看 `+0x218`、我方位看 `+0x219`，朝向 + 180°）。
+        let (fx, fz) = motion::rest_facing(set);
+        let turned = if slot < PARTY_SLOTS {
+            self.sneak.1
+        } else {
+            self.sneak.0
+        };
+        let facing = if turned { (-fx, -fz) } else { (fx, fz) };
+        entity
+            .transform()
+            .borrow_mut()
+            .set_position(&home)
+            .look_at(&face_point(home, facing));
+        if let Some(rc) = RoleController::get_role_controller(entity.clone()) {
+            let rc = rc.inner::<RoleController>();
+            rc.set_active(true);
+            // 选目标时要单独染色（见 `place_pointer`），同模型的怪不能共用材质。
+            rc.set_unique_materials();
+            rc.play_anim(idle, RoleAnimationRepeatMode::Loop);
+        }
+        // 普攻的结算时刻（`FUN_0050e550`）：攻击动作 MV3 里的 `work` / `work1` 标记。
+        let hit_events = {
+            let tags: Vec<(String, u32)> = set
+                .name(motion::Motion::Attack)
+                .map(|action| asset_mgr.mv3_path(&model, action))
+                .and_then(|path| vfs.open(&path).ok())
+                .and_then(|mut f| fileformats::mv3::read_mv3(&mut f).ok())
+                .map(|m| {
+                    m.action_desc
+                        .iter()
+                        .filter_map(|a| a.name.as_str().ok().map(|n| (n.to_string(), a.tick)))
+                        .collect()
+                })
+                .unwrap_or_default();
+            let at = |name: &str| {
+                tags.iter()
+                    .find(|(n, _)| n == name)
+                    .map(|(_, t)| *t as f32 / 4580.)
+            };
+            let monster_value = db
+                .combat_actor(c.actor_id)
+                .map(|a| a.properties[0] as i32)
+                .unwrap_or(0);
+            let mut events =
+                motion::attack_events(slot, at("work"), at("work1"), c.weapon_type, c.weapon_hits);
+            for e in &mut events {
+                if let Some(tag) = e.tag {
+                    e.sound =
+                        motion::hit_sound(slot, tag, c.weapon_type, c.magic_sword, monster_value);
+                    if slot >= PARTY_SLOTS {
+                        e.effect = motion::hit_effect(monster_value);
+                    }
+                }
+            }
+            events
+        };
+        log::info!("Combat: 位 {slot}（{model}）普攻标记 {hit_events:?}");
+        Some(StageActor {
+            entity,
+            set,
+            hit_events,
+            last: Snapshot::of(c, None),
+            hide_on_finish: false,
+            win_pose: false,
+            stowed: false,
+            pulsing: false,
+            home,
+            walk: None,
+            scripted: 0,
+            released: false,
+            alpha: 1.,
+        })
+    }
+
+    /// 战斗中分身 / 召唤出来的怪（`CCBRoleState::CreateMonster`，`FUN_004f8bb0`）：
+    /// `Battle` 查不到 gdb，只把「哪一位、哪只怪」排进 `pending_spawns`，这里
+    /// 每帧领走，照开战那一套填战斗位、补名片，再给它造个舞台角色。
+    ///
+    /// 原版造完还放 0x141 号特效当出场演出，移植端照放。
+    fn spawn_pending(&mut self, state: &mut SceState) {
+        let pending: Vec<(usize, u32)> = match self.session.as_mut() {
+            Some(s) if !s.battle.pending_spawns.is_empty() => {
+                std::mem::take(&mut s.battle.pending_spawns)
+            }
+            _ => return,
+        };
+        let Some(db) = state.global_state().game_db().cloned() else {
+            return;
+        };
+        for (slot, id) in pending {
+            let Some(session) = self.session.as_mut() else {
+                return;
+            };
+            let Some(profile) = Self::seat_monster(&db, &mut session.battle, slot, id) else {
+                continue;
+            };
+            session.set_profile(slot, profile);
+            state
+                .global_state_mut()
+                .persistent_state_mut()
+                .mark_monster_seen(id);
+            log::info!("Combat: 位 {slot} 新造了一只 {id}");
+
+            if self.stage.is_none() {
+                continue;
+            }
+            if self.actors.len() < SLOTS {
+                self.actors.resize(SLOTS, None);
+            }
+            if let Some(actor) = self.make_actor(state, &db, slot) {
+                let at = actor.entity.transform().borrow().position();
+                // 这一位先前那只（倒下的）只是被藏起来，`IScene` 没有删实体的口子；
+                // 留它在场景里当个看不见的空壳，散场整个舞台一起扔。
+                if let Some(old) = self.actors[slot].take() {
+                    old.entity.set_visible(false);
+                }
+                if let Some(scene) = self.stage.as_ref() {
+                    scene.add_entity(actor.entity.clone());
+                }
+                self.actors[slot] = Some(actor);
+                state.play_effect(SPAWN_EFFECT_GROUP, at);
+            }
+        }
+    }
+
     fn build_stage(&mut self, scene_manager: &ComRc<ISceneManager>, state: &mut SceState) {
         // 战斗外 143 播到 camera 类留下的请求，别让它顶掉开战镜头。
         let _ = state.take_combat_camera_requests();
@@ -837,125 +1084,15 @@ impl SceCommandCombat {
         ));
 
         // 参战的人。站位表短了或者模型缺了就跳过那一个。
-        let positions = &db.combat().role_positions;
-        let Some(battle) = self.session.as_ref().map(|s| &s.battle) else {
-            log::warn!("Combat: session 还没建，舞台上没人");
-            return;
-        };
         for slot in 0..stage::STAGE_SLOTS {
-            let Some(c) = battle.get(slot) else { continue };
-            if !c.alive {
-                continue;
-            }
-            let enemy_model = db
-                .combat_actor(c.actor_id)
-                .and_then(|a| a.model_id.as_str().ok());
-            let Some(model) = stage::model_name(slot, enemy_model.as_deref()) else {
-                continue;
-            };
-            let Some(pos) = stage::stage_position(positions, slot) else {
-                continue;
-            };
-            // 我方那套还是怪物那套，见 `combat::motion`（+0x243）。
-            let set = if slot < PARTY_SLOTS {
-                MotionSet::Party
-            } else {
-                MotionSet::Monster
-            };
-            let idle = set.name(motion::Motion::Idle).unwrap_or("z1");
-            let Some(entity) =
-                asset_mgr.load_role(&model, idle, format!("COMBAT_ROLE_{slot}"), true)
-            else {
-                log::warn!("Combat: 战斗模型 {model} 加载不了（位 {slot}）");
-                continue;
-            };
-            let home = Vec3::new(pos.x, 0., pos.z);
-            // 偷袭时被偷袭的一方背过身去（`FUN_005096d0`：敌方位看 `+0x218`、我方位看 `+0x219`，朝向 + 180°）。
-            let (fx, fz) = motion::rest_facing(set);
-            let turned = if slot < PARTY_SLOTS {
-                self.sneak.1
-            } else {
-                self.sneak.0
-            };
-            let facing = if turned { (-fx, -fz) } else { (fx, fz) };
-            entity
-                .transform()
-                .borrow_mut()
-                .set_position(&home)
-                .look_at(&face_point(home, facing));
-            if let Some(rc) = RoleController::get_role_controller(entity.clone()) {
-                let rc = rc.inner::<RoleController>();
-                rc.set_active(true);
-                // 选目标时要单独染色（见 `place_pointer`），同模型的怪不能共用材质。
-                rc.set_unique_materials();
-                rc.play_anim(idle, RoleAnimationRepeatMode::Loop);
-            }
-            scene.add_entity(entity.clone());
             if self.actors.len() < SLOTS {
                 self.actors.resize(SLOTS, None);
             }
-            // 普攻的结算时刻（`FUN_0050e550`）：攻击动作 MV3 里的 `work` / `work1` 标记。
-            let hit_events = {
-                let tags: Vec<(String, u32)> = set
-                    .name(motion::Motion::Attack)
-                    .map(|action| asset_mgr.mv3_path(&model, action))
-                    .and_then(|path| vfs.open(&path).ok())
-                    .and_then(|mut f| fileformats::mv3::read_mv3(&mut f).ok())
-                    .map(|m| {
-                        m.action_desc
-                            .iter()
-                            .filter_map(|a| a.name.as_str().ok().map(|n| (n.to_string(), a.tick)))
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let at = |name: &str| {
-                    tags.iter()
-                        .find(|(n, _)| n == name)
-                        .map(|(_, t)| *t as f32 / 4580.)
-                };
-                let monster_value = db
-                    .combat_actor(c.actor_id)
-                    .map(|a| a.properties[0] as i32)
-                    .unwrap_or(0);
-                let mut events = motion::attack_events(
-                    slot,
-                    at("work"),
-                    at("work1"),
-                    c.weapon_type,
-                    c.weapon_hits,
-                );
-                for e in &mut events {
-                    if let Some(tag) = e.tag {
-                        e.sound = motion::hit_sound(
-                            slot,
-                            tag,
-                            c.weapon_type,
-                            c.magic_sword,
-                            monster_value,
-                        );
-                        if slot >= PARTY_SLOTS {
-                            e.effect = motion::hit_effect(monster_value);
-                        }
-                    }
-                }
-                events
+            let Some(actor) = self.make_actor(state, &db, slot) else {
+                continue;
             };
-            log::info!("Combat: 位 {slot}（{model}）普攻标记 {hit_events:?}");
-            self.actors[slot] = Some(StageActor {
-                entity,
-                set,
-                hit_events,
-                last: Snapshot::of(c, None),
-                hide_on_finish: false,
-                win_pose: false,
-                stowed: false,
-                pulsing: false,
-                home,
-                walk: None,
-                scripted: 0,
-                released: false,
-                alpha: 1.,
-            });
+            scene.add_entity(actor.entity.clone());
+            self.actors[slot] = Some(actor);
         }
 
         // 选目标时的 3D 指针（`FUN_00510540`），自己的 CVD 动画一直循环；位置每帧在
@@ -1024,6 +1161,7 @@ impl SceCommandCombat {
             // 两方的定点（`FUN_00508930`）：敌方是 10 号位（读 +0x40 那个舞台角色）；我方读
             // 舞台场景 `+0x384..+0x38c`——构造 `FUN_0050fd00`（0x50fdc7）清零后全程序没人再写，
             // 就是原点。
+            let positions = &db.combat().role_positions;
             let pos =
                 |k: usize| stage::stage_position(positions, k).map(|p| Vec3::new(p.x, 0., p.z));
             self.side_anchors[0] = Vec3::new(0., 0., 0.);
@@ -1309,7 +1447,7 @@ impl SceCommandCombat {
                 // 其余几种写的字段普攻不读）；饰品栏戴着青铜护镜的挨普攻会反弹（`+0x2bd`）。
                 {
                     use crate::openpal3::states::persistent_state::{
-                        SLOT_ADORN1, SLOT_ADORN2, SLOT_WEAPON,
+                        SLOT_ADORN1, SLOT_ADORN2, SLOT_CLOTH, SLOT_HAT, SLOT_SHOES, SLOT_WEAPON,
                     };
                     for s in 0..SLOT_WEAPON {
                         let Some(item) =
@@ -1343,6 +1481,20 @@ impl SceCommandCombat {
                         }
                         if item.id == BRONZE_MIRROR && (s == SLOT_ADORN1 || s == SLOT_ADORN2) {
                             c.reflect = true;
+                        }
+                    }
+                    // 「千金散去」（`cbrolestate.cpp:1358`，战斗位 `+0x2bc`）：绿幞头 + 通神 +
+                    // 元宝鞋 + 右利 + 左利，五件齐了才算；源码写了两支，左利右利戴反也认。
+                    {
+                        let at = |slot: usize| persistent.equipped(actor_id, slot);
+                        let wear = [at(SLOT_ADORN1), at(SLOT_ADORN2)];
+                        c.lost_money_get_life = at(SLOT_HAT) == Some(LOST_MONEY_HAT)
+                            && at(SLOT_CLOTH) == Some(LOST_MONEY_CLOTH)
+                            && at(SLOT_SHOES) == Some(LOST_MONEY_SHOES)
+                            && (wear == [Some(LOST_MONEY_RIGHT), Some(LOST_MONEY_LEFT)]
+                                || wear == [Some(LOST_MONEY_LEFT), Some(LOST_MONEY_RIGHT)]);
+                        if c.lost_money_get_life {
+                            log::info!("Combat: 位 {slot} 装齐了千金散去");
                         }
                     }
                     // 景天身上有精进（冒险侧状态 30；`DAT_00c0466a` 就是 0 号角色的那一格），
@@ -1419,72 +1571,11 @@ impl SceCommandCombat {
                 if id == 0 {
                     continue;
                 }
-                let Some(row) = db.combat_actor(id) else {
-                    log::warn!("Combat: monster {id} is not in the database");
-                    continue;
-                };
                 let slot = PARTY_SLOTS + i;
-                let mut c = Combatant::new(id, Side::Enemy);
-                c.level = row.level;
-                c.max_hp = row.attribute_values[0];
-                c.hp = c.max_hp;
-                c.max_sp = row.attribute_values[1];
-                c.sp = c.max_sp;
-                c.max_mp = row.attribute_values[2];
-                c.mp = c.max_mp;
-                c.attack = row.attribute_values[3];
-                c.defense = row.attribute_values[4];
-                c.speed = row.attribute_values[5];
-                c.luck = row.attribute_values[6];
-                // 普攻方式、挨它一下我方加的气（`FUN_004ed250`：gdb +0x2ec → 战斗位 +0x280，
-                // +0x30c → +0x284）。
-                c.attack_mode = row.normal_attack_mode_id;
-                c.sp_on_hit = row.sp_impact_value;
-                // boss：模型名以 b/B 开头（`FUN_004ed250` 查 gdb `+0x206` 头一个字符）。
-                c.boss = row
-                    .model_id
-                    .as_str()
-                    .map(|m| m.starts_with(['b', 'B']))
-                    .unwrap_or(false);
-                let boss = c.boss;
-                for (i, v) in row.element_attribute_values.iter().enumerate() {
-                    c.elements[i + 1] = *v > 0;
+                if let Some(p) = Self::seat_monster(&db, &mut battle, slot, id) {
+                    profiles[slot] = p;
+                    persistent.mark_monster_seen(id);
                 }
-                c.steal_money = row.stealable_money_amount as i32;
-                // 逃走概率：`FUN_004ed250` 0x4ed595 把 gdb `+0x2d4` 取整写进 `+0x59c`。
-                c.escape_rate = row.escape_rate as i32;
-                c.steal_item = (row.stealable_item_id != 0 && row.stealable_item_count > 0)
-                    .then_some((row.stealable_item_id, row.stealable_item_count as i32));
-                battle.place(slot, c);
-                battle.apply_opening_states(
-                    slot,
-                    &row.combat_state_impact_types,
-                    boss || row.combat_state_impact_types[25] != 0,
-                );
-
-                profiles[slot] = Profile {
-                    name: row.name.as_str().unwrap_or_else(|_| format!("#{id}")),
-                    // 四招都进列表（怪物的挑选器都扫 `skill_ids[0..4]`）。出手倍率（`FUN_004f76c0`）：
-                    // 前三招是 gdb `skill_levels[i]`（不加 1），第四招（boss 那招）是 4，即瞬发。
-                    skills: row
-                        .skill_ids
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, s)| **s != 0)
-                        .filter_map(|(i, s)| {
-                            let multiplier = if i < 3 { row.skill_levels[i] as i32 } else { 4 };
-                            Self::skill_choice(&db, *s, multiplier)
-                        })
-                        .collect(),
-                    specials: Vec::new(),
-                    reward: Reward {
-                        experience: row.experience,
-                        money: row.money_when_killed as i32,
-                        loot: (row.normal_loot != 0 && row.normal_loot_count > 0)
-                            .then_some((row.normal_loot, row.normal_loot_count as i32)),
-                    },
-                };
-                persistent.mark_monster_seen(id);
             }
 
             // ---- 道具 ----
@@ -3184,10 +3275,18 @@ impl SceCommand for SceCommandCombat {
         let outcome = if state.fast_forward() {
             let mut outcome = None;
             for _ in 0..100_000 {
-                session.auto_play();
-                outcome = session.tick(0.1);
+                let Some(s) = self.session.as_mut() else {
+                    break;
+                };
+                s.auto_play();
+                outcome = s.tick(0.1);
                 if outcome.is_some() {
                     break;
+                }
+                // 快进时也得把分身出来的怪接出来，不然 `pending_spawns` 一直攒着、
+                // 新的那只永远不上场。
+                if !s.battle.pending_spawns.is_empty() {
+                    self.spawn_pending(state);
                 }
             }
             outcome.or(Some(Outcome::Win))
@@ -3201,6 +3300,7 @@ impl SceCommand for SceCommandCombat {
             session.tick(delta_sec)
         };
 
+        self.spawn_pending(state);
         self.drive_staging(state, delta_sec);
         // 普攻暴击的特效（`FUN_004ce340(0x1d6, 挨打的人的当前位置)`）。
         let effects = self

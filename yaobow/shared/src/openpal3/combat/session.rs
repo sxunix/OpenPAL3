@@ -372,6 +372,13 @@ pub struct CombatSession {
 }
 
 impl CombatSession {
+    /// 战斗中新造出来的怪要补一份名片（分身、召唤）。
+    pub fn set_profile(&mut self, slot: usize, profile: Profile) {
+        if slot < SLOTS {
+            self.profiles[slot] = profile;
+        }
+    }
+
     /// `profiles` is indexed by battle slot; an unused slot's profile is
     /// ignored.
     pub fn new(battle: Battle, profiles: Vec<Profile>, ai_seed: u32) -> Self {
@@ -1665,11 +1672,7 @@ impl CombatSession {
         };
         for t in combo::targets(&def, target, &self.battle) {
             let delta = combo::hp_delta(&def, t, &mut self.battle);
-            let moved = self
-                .battle
-                .get_mut(t)
-                .map(|c| c.change_hp(delta))
-                .unwrap_or(0);
+            let moved = self.battle.change_hp(t, delta);
             if moved < 0 {
                 self.battle.restart_cast(t);
             }
@@ -2262,16 +2265,16 @@ mod tests {
 
     #[test]
     fn a_blow_that_lands_nothing_makes_the_target_dodge() {
-        use crate::openpal3::combat::state::{K_EVADE, K_INVISIBLE};
+        use crate::openpal3::combat::state::{K_INVISIBLE, K_WALL};
         let mut s = session();
-        s.battle.get_mut(5).unwrap().states[K_EVADE].active = true;
+        s.battle.get_mut(5).unwrap().states[K_WALL].active = true;
         s.attack(0, 5);
         assert_eq!(s.battle.get(5).unwrap().hp, 60, "避住了");
         assert!(
             s.dodged.is_empty(),
             "避是整下不结算、只弹数字（FUN_004fdb10），不播回避"
         );
-        s.battle.get_mut(5).unwrap().states[K_EVADE].active = false;
+        s.battle.get_mut(5).unwrap().states[K_WALL].active = false;
         s.battle.get_mut(5).unwrap().states[K_INVISIBLE].active = true;
         s.attack(0, 5);
         assert_eq!(s.battle.get(5).unwrap().hp, 60);

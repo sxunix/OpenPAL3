@@ -30,7 +30,7 @@
 | `0x220` | `int m_nBossRound` | **BOSS（10 号位）走过的回合数** |
 | `0x224` | `bool m_bMustFail` | 必定失败 |
 | `0x225` | `bool m_bFleeAlwaysSuccess` | 逃跑总是成功 |
-| `0x226` | `bool m_bCreatedNewRole` | 本场有新人产生（分裂 / 召唤） |
+| `0x226` | `bool m_bCreatedNewRole` | 本场有新人产生（分裂 / 召唤）。**死字段**：只有声明和一个 `HasNewRoleCreated()`，没人写也没人读 |
 | `0x228` | `tagRoleState m_Role[11]` | 11 个战斗位，步长 `0x37c` |
 | `0x287c` | `tagRoleState m_RoleXor[11]` | 同样 11 条的异或影子（防改数值） |
 | `0x4ed0` | `DWORD m_dwEXPTable[100]` | 各级所需经验 |
@@ -124,7 +124,7 @@
 | `0x574` | `float fDeadTime` | 最后被杀的时间 |
 | `0x578` | `gbGeomNode* pLeftWeapon[3]` | 左手武器模型 |
 | `0x584` | `gbGeomNode* pRightWeapon[3]` | 右手武器模型 |
-| `0x590` | `int nRound` | 这一位自己的回合计数 |
+| `0x590` | `int nRound` | 这一位自己的回合计数（`Combatant::rounds`）。`CheckPerRound` 一上来就 +1，三段写死 id 的特例都拿它比 |
 | `0x594` | `bool bRepeatLastOperation` | 按了 R 重复上次 |
 | `0x595` | `bool bDoNormalAttack` | 按了 F 普攻 |
 | `0x596` | `bool bTransMtl` | 支持透明材质 |
@@ -222,10 +222,13 @@ HandleSpecStateBout(n);               // 状态结算在回合数之后
   **狂**。写它的是通用的 `SetSpecState`（落在 `+0x475 + k`），所以按字面
   `0x488` 扫当然扫不到。移植端的 `K_BERSERK = 19` 本来就是它。
 * **`+0x2bc` 不是护盾**，是 `bLostMoneyGetLife`——装齐「千金散去」五件套
-  （绿幞头 80015 + 通神 84018 + 元宝鞋 83012 + 右利 8153 + 左利 8154，
-  后两件左右不论）。效果在 `ChangeHP`（`cbrolestate.cpp:5181`）：掉血时先拿钱抵，
-  钱够就一点血不掉，不够就把钱花光、剩下的照掉。**移植端没做**，要做得先把
-  `Combatant::change_hp` 收到 `Battle` 一级（钱在 `Battle::money`）。
+  （绿幞头 80015 + 通神 84018 + 元宝靴 83012 + 右利 8153 + 左利 8154，
+  后两件左右不论；源码注释写「元宝鞋」，发行数据里是**元宝靴**）。效果在
+  `ChangeHP`（`cbrolestate.cpp:5181`）：掉血时先拿钱抵，钱够就一点血不掉，
+  不够就把钱花光、剩下的照掉。**2026-10-12 做了**：`Combatant::change_hp`
+  拆成外层 `Battle::change_hp(位, delta)` + 内层 `Combatant::apply_hp`，
+  仙术 / 道具的 `apply_impact`、每回合的 `tick_states` 一并搬上 `Battle`，
+  所以毒的掉血也拿钱抵。详见 [`combat_formulas.md`](combat_formulas.md)。
 
 ## 状态枚举（`ECBRoleSpecState`，`CBDefine.h:130`）
 
@@ -233,4 +236,5 @@ HandleSpecStateBout(n);               // 状态结算在回合数之后
 11 运减 12 速增 13 速减 14 定 15 封 16 禁 17 眠 18 乱 19 **狂** 20 镜
 21 **壁** 22 界 23 隐 24 濒死 25 死亡 26 避毒（`CBRSS_End` = 27）。
 
-移植端 `K_EVADE = 21` 对应的是 **壁**（挡仙术），名字起偏了，行为没错。
+移植端那个 `K_EVADE = 21` 对应的是 **壁**，名字起偏了（行为一直没错），
+2026-10-12 改名 `K_WALL`，顺手补了没人读的 `K_BOUND = 22`。

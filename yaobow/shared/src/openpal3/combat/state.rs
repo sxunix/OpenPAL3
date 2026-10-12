@@ -62,7 +62,13 @@ pub const K_SLEEP: usize = 17;
 pub const K_CONFUSED: usize = 18;
 /// 狂：回合交给托管那一支（0x513975），普攻不看开关。
 pub const K_BERSERK: usize = 19;
-pub const K_EVADE: usize = 21;
+/// 壁（`CBRSS_Wall`，状态枚举 21）：挂着就不能当普攻的目标
+/// （`FUN_004f0a10` 挑目标时查它），控制盘上画的是「壁」。
+/// 先前这里叫 `K_EVADE`（回避），是望文生义；`CBDefine.h:153` 写的是 `CBRSS_Wall`。
+pub const K_WALL: usize = 21;
+/// 界（`CBRSS_Bound`，状态枚举 22）：战斗代码里只被 14..=23 那一批整体清掉，
+/// 没有单独的读点。
+pub const K_BOUND: usize = 22;
 /// 镜（状态枚举 19）：普攻整下弹回（`FUN_004f0a10`）。
 pub const K_MIRROR: usize = 20;
 /// 濒死（`FUN_004f3e20` 的 `case 0x18`）：不是标记，而是**当场把精压到上限的
@@ -77,6 +83,20 @@ pub const K_POISON_IMMUNE: usize = 26;
 
 /// A permanent duration (`0x7fff`).
 pub const FOREVER: i16 = 0x7fff;
+
+/// 五帝之首剑（`0x1ccc`）：自己的第 3 个回合自动上武增。
+pub const MONSTER_SWORD_OF_EMPERORS: u32 = 7372;
+/// 沼泽怪（`0x1cd2`）：第 3 个回合起每回合 5% 分身成两只。
+pub const MONSTER_SWAMP: u32 = 7378;
+/// 血云雾（`0x1ce3`）：正好第 2 个回合 20% 分身成两只。
+pub const MONSTER_BLOOD_MIST: u32 = 7395;
+/// 重楼（`0x2e2`）：精见底不是死，是变身成 739（`cbrolestate.cpp:5230`）。
+pub const MONSTER_CHONGLOU: u32 = 738;
+/// 重楼变身（`0x2e3`）。
+pub const MONSTER_CHONGLOU_AWAKENED: u32 = 739;
+/// 唤妖术（技能 7710，`special == 29`）召的三只妖，洗牌后取前两只
+/// （`CCBRoleState::HandleNewMonster`）。
+pub const SUMMONED_DEMONS: [u32; 3] = [7369, 7368, 7370];
 
 /// Onset delay and duration per poison, straight out of `FUN_004f3e20`
 /// (0x4f3fdc onwards). Indexed by `k - 1`, i.e. 风雷水火土.
@@ -148,7 +168,10 @@ pub struct Combatant {
 
     /// `+0x242` in the original: cleared on death.
     pub alive: bool,
-    /// `+0x228 == 0x2e2`: left the field instead of dying.
+    /// 离场：跑掉了（`bFleed`），或者我方整队撤了（鬼遁水）。算不在场、不给经验。
+    ///
+    /// 先前这里写的是「`+0x228 == 0x2e2` 退场」——读偏了。738 重楼精见底不是
+    /// 退场，是当场变身成 739（`cbrolestate.cpp:5230`），见 [`Battle::change_hp`]。
     pub retired: bool,
 
     pub states: [StateTimer; STATE_SLOTS],
@@ -180,6 +203,14 @@ pub struct Combatant {
     /// 正在逃（`+0x597`）：掷中了、还没跑出去。不能当目标、不再出手，但判胜负时还算在场
     /// （`FUN_004ed100` 只看 `+0x598`）。跑完变成 [`Self::retired`]。
     pub fleeing: bool,
+    /// 装齐了「千金散去」（原版战斗位 `+0x2bc` 的 `bLostMoneyGetLife`）：绿幞头
+    /// 80015 + 通神 84018 + 元宝鞋 83012 + 右利 8153 + 左利 8154（后两件左右不论，
+    /// `cbrolestate.cpp:1358`）。掉血时先拿队伍的钱抵，见 [`Battle::change_hp`]。
+    pub lost_money_get_life: bool,
+    /// 这一位自己过了几个回合（原版战斗位 `+0x590` 的 `nRound`）：`CheckPerRound`
+    /// 一上来就 +1，之后那一串「第几回合干什么」都拿它比。全场回合数是
+    /// [`Battle::round`]，只跟着 10 号位走。
+    pub rounds: i32,
     /// 每回合恢复的百分比（`+0x2a0` / `+0x2a4` / `+0x2a8`）：五件装备 gdb `attribute_impact_value[0..2]`
     /// 逐件累加（`FUN_004edf10`），比如祝融玉佩「精恢复10%」、天冥宝戒「气恢复15%」。
     pub hp_regen: f32,
@@ -313,6 +344,8 @@ impl Combatant {
             steal_item: None,
             escape_rate: 0,
             fleeing: false,
+            lost_money_get_life: false,
+            rounds: 0,
             hp_regen: 0.,
             sp_regen: 0.,
             mp_regen: 0.,
@@ -426,25 +459,13 @@ impl Combatant {
         ((self.speed_eff() * 8 + 20) & 0xff) as u8
     }
 
-    /// Apply an HP delta the way `FUN_004f2c70` does: clamp into
-    /// `0..=max_hp`, wake a sleeper who is hit, and record death.
-    /// Returns how much HP actually moved.
-    pub fn change_hp(&mut self, delta: i32) -> i32 {
-        if !self.alive {
-            self.hp = 0;
-            return 0;
-        }
-        if self.has_state(K_INVISIBLE) {
-            return 0;
-        }
-
-        // 防御减半：原版 `delta < -1` 才折半（刚好 −1 的不折）。
-        let delta = if delta < -1 && self.defending {
-            delta / 2
-        } else {
-            delta
-        };
-
+    /// `FUN_004f2c70`（`CCBRoleState::ChangeHP`）**落到这一位身上的那半截**：
+    /// 钳进 `0..=max_hp`、挨打叫醒、精归零就倒下，返回精真正动了多少。
+    ///
+    /// 前面那半截（已死 / 隐 / 防御减半 / 千金散去拿钱抵）在
+    /// [`Battle::change_hp`] 上，因为它要读队伍的钱。**所有改精都该走
+    /// `Battle::change_hp`**，这里是它的内层。
+    pub(crate) fn apply_hp(&mut self, delta: i32) -> i32 {
         let before = self.hp;
         let mut hp = before + delta;
         if hp > self.max_hp {
@@ -531,52 +552,6 @@ impl Combatant {
             *slot = StateTimer::default();
         }
     }
-
-    /// One round of state bookkeeping — `FUN_004f48c0`. Only k = 1..=23
-    /// participate; the onset delay runs down first and costs the round.
-    pub fn tick_states(&mut self) {
-        for k in TICKING_STATES {
-            if !self.states[k].active {
-                continue;
-            }
-            if self.states[k].onset > 0 {
-                self.states[k].onset -= 1;
-                continue;
-            }
-            if self.states[k].remaining < 1 {
-                continue;
-            }
-
-            let delta = match k {
-                K_POISON_WIND..=K_POISON_EARTH => {
-                    let poison = match k {
-                        1 => formulas::Poison::Wind,
-                        2 => formulas::Poison::Thunder,
-                        3 => formulas::Poison::Water,
-                        4 => formulas::Poison::Fire,
-                        _ => formulas::Poison::Earth,
-                    };
-                    Some(formulas::poison_tick(
-                        poison,
-                        self.max_hp,
-                        self.hp,
-                        &mut self.earth_poison_acc,
-                    ))
-                }
-                _ => None,
-            };
-            if let Some(delta) = delta {
-                self.change_hp(delta);
-            }
-
-            // A permanent state still decrements — 0x7fff simply outlasts
-            // any battle.
-            self.states[k].remaining -= 1;
-            if self.states[k].remaining < 1 {
-                self.clear_state(k);
-            }
-        }
-    }
 }
 
 /// How a battle ended. The original's `CBSystem + 0x7c` result codes are
@@ -630,6 +605,12 @@ pub struct Battle {
     pub stolen_items: Vec<(u32, i32)>,
     /// 这一场里用掉的蛊。
     pub spent_gu: u32,
+    /// 等着被造出来的怪（位号、怪物 id），来自 [`Battle::monster_round_hook`]。
+    /// `Battle` 查不到 gdb，所以只排队，由 `commands::combat` 每帧领走、照
+    /// `CCBRoleState::CreateMonster` 填一位新的出来。（原版 `+0x226` 那个
+    /// 「本场有新人产生」的 `m_bCreatedNewRole` 是条死字段：全树只有声明和一个
+    /// `HasNewRoleCreated()`，没人写也没人读。）
+    pub pending_spawns: Vec<(usize, u32)>,
     pub rng: CombatRng,
 }
 
@@ -648,6 +629,7 @@ impl Battle {
             spent_money: 0,
             stolen_items: Vec::new(),
             spent_gu: 0,
+            pending_spawns: Vec::new(),
             rng: CombatRng::new(seed),
         }
     }
@@ -695,7 +677,13 @@ impl Battle {
             return Outcome::Lose;
         }
         if !self.side_in_play(Side::Enemy) {
-            return Outcome::Win;
+            // 还有怪排着队要出来（重楼变身、分身、唤妖术）——原版造人是在
+            // `ChangeHP` / `CheckPerRound` 里当场完成的，敌方一刻也没空过；
+            // 移植端隔了一帧（要查 gdb），这一帧不能算赢。
+            if self.pending_spawns.is_empty() {
+                return Outcome::Win;
+            }
+            return Outcome::Ongoing;
         }
         // `+0x21c <= +0x220 && +0x224 == 0`: the cap is a win — the
         // settlement runs exactly as if the enemies had fallen — unless
@@ -761,6 +749,186 @@ impl Battle {
         }
     }
 
+    /// `CCBRoleState::ChangeHP(位, delta)` = `FUN_004f2c70` 的**外层**：
+    /// 几道前置挡掉之后才把 delta 交给 [`Combatant::apply_hp`]。
+    ///
+    /// 按源码 `cbrolestate.cpp:5142` 的次序：
+    ///
+    /// 1. 已经倒下（`bAlive == 0`）→ 精归零、返回 0；
+    /// 2. 隐（`CBRSS_Hermit`）→ 什么都不做；
+    /// 3. 防御中（`bDefence`）且 `delta < -1` → 伤害折半（刚好 −1 的不折）；
+    /// 4. **千金散去**（`bLostMoneyGetLife`，`:5181`）：掉血时先拿队伍的钱抵。
+    ///    钱够就一点血不掉、照数扣钱；不够就把钱花光，剩下的照掉。
+    ///
+    /// 钱是全队一份（`GetMoney()` 读的是 `m_Role[0].nMoney`），移植端记在
+    /// [`Self::spent_money`] 上，散场时一次写回冒险侧。
+    ///
+    /// 原版这里还有一条 `bFleed` 的早退（跑掉的人不再掉血），移植端的
+    /// [`Combatant::retired`] 把「跑掉」和「整队撤了」合在一起，没照抄这条。
+    pub fn change_hp(&mut self, slot: usize, delta: i32) -> i32 {
+        let Some(c) = self.get(slot) else { return 0 };
+        if !c.alive {
+            if let Some(c) = self.get_mut(slot) {
+                c.hp = 0;
+            }
+            return 0;
+        }
+        if c.has_state(K_INVISIBLE) {
+            return 0;
+        }
+
+        let mut delta = if delta < -1 && c.defending {
+            delta / 2
+        } else {
+            delta
+        };
+
+        if delta < 0 && c.lost_money_get_life {
+            let money = self.money_left();
+            if money >= -delta {
+                self.spent_money += -delta;
+                log::debug!("Combat: 位 {slot} 千金散去，{} 点伤害用钱抵掉", -delta);
+                return 0;
+            }
+            delta += money;
+            self.spent_money += money;
+            log::debug!("Combat: 位 {slot} 千金散去，钱只够抵 {money} 点");
+        }
+
+        let moved = self.get_mut(slot).map(|c| c.apply_hp(delta)).unwrap_or(0);
+
+        // 重楼（738）精见底不是死，是当场换成「重楼变身」739
+        // （`cbrolestate.cpp:5230` → `HandleChongLouAnamo`）。原版还会把战场换成
+        // `z39`（红场），移植端没做——舞台是整场建一次的，中途换场得整个重搭。
+        if self
+            .get(slot)
+            .is_some_and(|c| c.actor_id == MONSTER_CHONGLOU && !c.alive)
+        {
+            log::info!("Combat: 位 {slot} 重楼倒下，变身成 739");
+            self.pending_spawns.push((slot, MONSTER_CHONGLOU_AWAKENED));
+        }
+        moved
+    }
+
+    /// `CCBRoleState::SpecAffect`（`cbrolestate.cpp:4521`）里**仙术**那一路用得到的几支。
+    ///
+    /// 发行数据里 `special_skill_id` 非 0 的只有九条：1（254 五彩光波、915）、
+    /// 16/17/18/19（飞龙探云手、绿波红露斩、鬼狱还神、吸精蛊——移植端按技能 id
+    /// 在 [`Self::special_on`] 里做了）、25（263 大挪移）、26/27/28/30（912/913/914/929
+    /// 这几条「物理攻击」，走的是普攻方式那一路 `attack_mode_effect`）、
+    /// 29（7710 唤妖术）、31（7711 仙术2，`SpecAffect` 里**没有** case 31，什么也不做）。
+    /// 道具那一路（蛊、鬼遁水）在 [`Self::use_item`] 里。
+    pub(super) fn skill_spec_affect(&mut self, target: usize, index: u8) {
+        match index {
+            // 1：随机一种毒（`SetRoleRandPoison`）。
+            1 => self.random_poison(target),
+            // 25：把我方五个人的五灵阵位整个打乱（`RandSetPlayerLineup`）。
+            25 => self.shuffle_party_lineup(),
+            // 29：唤妖术（`HandleNewMonster`）。
+            29 => self.summon_demons(),
+            _ => {}
+        }
+    }
+
+    /// `RandSetPlayerLineup`：把水火风雷土 + 盘心六个阵位洗 32 次，前五个发给我方
+    /// 0..4 号位。原版还要求所有人都站在自己的原位、身上没有任务，移植端没有
+    /// 「角色在不在原位」这个量，省掉那道闸。
+    ///
+    /// 阵位只改规则侧的 [`Combatant::element_position`]（合击技的站位要求、盘心援护
+    /// 按它算）；舞台上我方的站位是按**位号**摆的，本来就不跟着阵位走，所以画面不动。
+    fn shuffle_party_lineup(&mut self) {
+        let mut table: [u8; 6] = [1, 2, 3, 4, 5, 6];
+        for _ in 0..32 {
+            let a = (self.rng.rand15() % 6) as usize;
+            let b = (self.rng.rand15() % 6) as usize;
+            if a != b {
+                table.swap(a, b);
+            }
+        }
+        for slot in 0..PARTY_SLOTS {
+            if let Some(c) = self.get_mut(slot) {
+                c.element_position = table[slot];
+            }
+        }
+        log::info!("Combat: 大挪移，我方阵位打乱成 {table:?}");
+    }
+
+    /// `HandleNewMonster`：唤妖术。只在**敌方只剩一只**、而且 5 号位和 7 号位都空着
+    /// （倒下或逃掉也算空）时放；把 7369 / 7368 / 7370 洗 16 次，前两只放进 5 号位
+    /// 和 7 号位。
+    fn summon_demons(&mut self) {
+        let alive = (PARTY_SLOTS..SLOTS)
+            .filter(|s| self.get(*s).is_some_and(|c| c.alive && !c.retired))
+            .count();
+        if alive != 1 {
+            return;
+        }
+        for slot in [5, 7] {
+            if self
+                .get(slot)
+                .is_some_and(|c| c.alive && !c.retired && !c.fleeing)
+            {
+                return;
+            }
+        }
+        let mut ids = SUMMONED_DEMONS;
+        for _ in 0..16 {
+            let a = (self.rng.rand15() % 3) as usize;
+            let b = (self.rng.rand15() % 3) as usize;
+            if a != b {
+                ids.swap(a, b);
+            }
+        }
+        log::info!("Combat: 唤妖术，5 号位 {} / 7 号位 {}", ids[0], ids[1]);
+        self.pending_spawns.push((5, ids[0]));
+        self.pending_spawns.push((7, ids[1]));
+    }
+
+    /// 每回合的状态结算（`HandleSpecStateBout` → `FUN_004f48c0`）。只有 k = 1..=23
+    /// 参与；潜伏期先走完，而且占掉这一回合。
+    ///
+    /// 五毒那一跳的掉血走 [`Self::change_hp`]（原版同样是 `ChangeHP`），所以
+    /// 千金散去连毒也一并抵掉。
+    pub fn tick_states(&mut self, slot: usize) {
+        for k in TICKING_STATES {
+            let Some(c) = self.get_mut(slot) else { return };
+            if !c.states[k].active {
+                continue;
+            }
+            if c.states[k].onset > 0 {
+                c.states[k].onset -= 1;
+                continue;
+            }
+            if c.states[k].remaining < 1 {
+                continue;
+            }
+
+            if (K_POISON_WIND..=K_POISON_EARTH).contains(&k) {
+                let poison = match k {
+                    1 => formulas::Poison::Wind,
+                    2 => formulas::Poison::Thunder,
+                    3 => formulas::Poison::Water,
+                    4 => formulas::Poison::Fire,
+                    _ => formulas::Poison::Earth,
+                };
+                let delta = formulas::poison_tick(poison, c.max_hp, c.hp, &mut c.earth_poison_acc);
+                self.change_hp(slot, delta);
+            }
+
+            // A permanent state still decrements — 0x7fff simply outlasts
+            // any battle.
+            let Some(c) = self.get_mut(slot) else { return };
+            if !c.states[k].active {
+                // 毒把人毒死了，`die()` 已经把状态全清掉。
+                continue;
+            }
+            c.states[k].remaining -= 1;
+            if c.states[k].remaining < 1 {
+                c.clear_state(k);
+            }
+        }
+    }
+
     /// 这一位又过了一个回合（`FUN_004ecb20`：`+0x590` 追上 ATB `+0x28` 就 +1 并结算）：先状态
     /// （`FUN_004f48c0`），再吸精蛊。原版主调度每帧对每个位先调它、再看行动条满没满，ATB 的
     /// `+0x28` 只在这一位自己的蓄力条从没满到满时加（`FUN_004dba60`）——所以毒、吸精蛊是**各人
@@ -771,9 +939,11 @@ impl Battle {
         if slot == SLOTS - 1 {
             self.round += 1;
         }
+        // 这一位自己的回合数（`m_Role[n].nRound++`，`CheckPerRound` 第一件事）。
         if let Some(c) = self.get_mut(slot) {
-            c.tick_states();
+            c.rounds += 1;
         }
+        self.tick_states(slot);
         self.gu_drain_tick(slot);
         // 装备的每回合恢复（0x4ecc3f–0x4ecd0b）：值大于 0 且没满，回 `__ftol(上限 × 值 × 0.01)`——精走
         // `FUN_004f2c70(位, 量, 1, −1)`，气 `FUN_004f3020(位, 量, 0)`，神 `FUN_004f31c0(位, 量, 0)`。
@@ -788,9 +958,7 @@ impl Battle {
             None => (None, None, None),
         };
         if let Some(v) = hp {
-            if let Some(c) = self.get_mut(slot) {
-                c.change_hp(v);
-            }
+            self.change_hp(slot, v);
         }
         if let Some(v) = sp {
             self.hit_sp(slot, v);
@@ -812,6 +980,53 @@ impl Battle {
                 }
             }
         }
+        self.monster_round_hook(slot);
+    }
+
+    /// `CheckPerRound` 收尾那三段写死 id 的特例（`cbrolestate.cpp:367..405`）。
+    /// 全是按**这一位自己的回合数**（`nRound`）判的，不是全场回合数。
+    ///
+    /// * **7372 五帝之首剑**，第 3 个回合：`SetSpecState(n, CBRSS_AttackInc, true)`
+    ///   —— 挂武增（k6，五个回合）。源码注释写的是「邪眼放光，剑身剑气变亮，
+    ///   攻击力也增加」，变亮那一半是美术在模型里做的，移植端只管武增。
+    /// * **7378 沼泽怪**，第 3 个回合起，每回合 5% 分身：找**空着或已经倒下**的
+    ///   敌方位造一只同类。
+    /// * **7395 血云雾**，正好第 2 个回合，20%：只找**完全空着**的敌方位。
+    ///
+    /// 造人这件事要查 gdb，不在 `Battle` 手上，所以这里只把请求排进
+    /// [`Self::pending_spawns`]，由会话那一层（`commands::combat`）领走。
+    fn monster_round_hook(&mut self, slot: usize) {
+        let Some(c) = self.get(slot) else { return };
+        let (id, rounds) = (c.actor_id, c.rounds);
+
+        if id == MONSTER_SWORD_OF_EMPERORS && rounds == 3 {
+            log::info!("Combat: 位 {slot}（7372 五帝之首剑）第 3 回合，上武增");
+            self.set_state(slot, K_ATTACK_UP, true);
+        }
+
+        let split = match id {
+            // 沼泽怪：`nRound >= 3`，空位或倒下的位都能用。
+            MONSTER_SWAMP => (rounds >= 3).then_some((5, false)),
+            // 血云雾：正好第 2 个回合，只认完全空的位。
+            MONSTER_BLOOD_MIST => (rounds == 2).then_some((20, true)),
+            _ => None,
+        };
+        let Some((percent, empty_only)) = split else {
+            return;
+        };
+        if !formulas::chance_roll(&mut self.rng, percent) {
+            return;
+        }
+        let free = (PARTY_SLOTS..SLOTS).find(|n| match self.get(*n) {
+            None => true,
+            Some(c) => !empty_only && !c.alive,
+        });
+        let Some(n) = free else {
+            log::debug!("Combat: {id} 想分身，没有空位");
+            return;
+        };
+        log::info!("Combat: 位 {slot}（{id}）分身，新的一只去位 {n}");
+        self.pending_spawns.push((n, id));
     }
 
     /// 逃走的敌人跑出去了（`FUN_0050f590` 0x50f946 起）：`+0x598 = 1`、行动条清零（`FUN_004db710`）、
@@ -939,16 +1154,16 @@ impl Battle {
             _ => 0.,
         };
         let amount = (f64::from(max_hp) * f64::from(rate)) as i32;
-        if let Some(t) = self.get_mut(slot) {
-            let was_alive = t.alive;
-            t.change_hp(-amount);
-            if was_alive && !t.alive {
-                t.killed_by = Some(3);
+        let was_alive = self.get(slot).is_some_and(|t| t.alive);
+        self.change_hp(slot, -amount);
+        if was_alive {
+            if let Some(t) = self.get_mut(slot) {
+                if !t.alive {
+                    t.killed_by = Some(3);
+                }
             }
         }
-        if let Some(c) = self.get_mut(3) {
-            c.change_hp(amount);
-        }
+        self.change_hp(3, amount);
     }
 
     /// `FUN_004f3e20(角色, k, 值, 播音效)`：给 `slot` 挂上或解掉状态 `k`
@@ -1186,15 +1401,22 @@ impl Battle {
         }
     }
 
+    /// 一个敌方位按它的普攻方式定打几个人（`CreateMonster` 里那两段 `dwAttackMode`
+    /// 比对）。开战时 [`Self::assign_patterns`] 逐位调，战斗中分身出来的也要调，
+    /// 不能整个重跑——我方那一半要掷骰子。
+    pub fn assign_enemy_pattern(&mut self, slot: usize) {
+        if let Some(c) = self.get_mut(slot) {
+            c.pattern = match c.attack_mode {
+                0x394 | 0x395 | 0x399 | 0x39a | 0x39e | 0x39f => HitPattern::Row,
+                0x396 | 0x397 | 0x398 | 0x39b | 0x3a0 => HitPattern::Column,
+                _ => HitPattern::Single,
+            };
+        }
+    }
+
     pub fn assign_patterns(&mut self) {
         for slot in PARTY_SLOTS..SLOTS {
-            if let Some(c) = self.get_mut(slot) {
-                c.pattern = match c.attack_mode {
-                    0x394 | 0x395 | 0x399 | 0x39a | 0x39e | 0x39f => HitPattern::Row,
-                    0x396 | 0x397 | 0x398 | 0x39b | 0x3a0 => HitPattern::Column,
-                    _ => HitPattern::Single,
-                };
-            }
+            self.assign_enemy_pattern(slot);
         }
         for slot in 0..PARTY_SLOTS {
             let Some(weapon) = self.get(slot).map(|c| c.weapon_type) else {
@@ -1396,7 +1618,7 @@ impl Battle {
         };
         if !self
             .get(target)
-            .is_some_and(|t| t.in_play() && !t.has_state(K_EVADE))
+            .is_some_and(|t| t.in_play() && !t.has_state(K_WALL))
         {
             blow.missed = true;
             return blow;
@@ -1435,10 +1657,7 @@ impl Battle {
         if reflect {
             blow.victim = attacker;
             blow.reflected = true;
-            blow.delta = self
-                .get_mut(attacker)
-                .map(|a| a.change_hp(delta))
-                .unwrap_or(0);
+            blow.delta = self.change_hp(attacker, delta);
             return blow;
         }
 
@@ -1449,10 +1668,7 @@ impl Battle {
         }
         blow.victim = victim;
         blow.protector = protector;
-        blow.delta = self
-            .get_mut(victim)
-            .map(|t| t.change_hp(delta))
-            .unwrap_or(0);
+        blow.delta = self.change_hp(victim, delta);
         if protector.is_some() {
             if let Some(t) = self.get_mut(target) {
                 t.affection = (t.affection + 1).clamp(0, 999);
@@ -1654,7 +1870,7 @@ impl Battle {
             (
                 t.defense_eff(),
                 t.elements,
-                t.has_state(K_EVADE) || t.has_state(K_INVISIBLE),
+                t.has_state(K_WALL) || t.has_state(K_INVISIBLE),
             )
         };
         // 避 and 隐形 shrug the hit off entirely (0x4ef7f0).
@@ -1680,6 +1896,13 @@ mod tests {
         c.speed = speed;
         c.level = 1;
         c
+    }
+
+    /// 一个人单独站 0 号位的场子：改精、状态结算这些现在都挂在 `Battle` 上。
+    fn alone(c: Combatant) -> Battle {
+        let mut b = Battle::new(1);
+        b.place(0, c);
+        b
     }
 
     fn two_sided_battle() -> Battle {
@@ -1757,15 +1980,199 @@ mod tests {
     }
 
     #[test]
+    fn the_money_set_pays_the_damage_instead_of_the_hp() {
+        // 千金散去（`cbrolestate.cpp:5181`）：钱够就一点血不掉，照数扣钱。
+        let mut b = alone(fighter(0, Side::Party, 100, 10, 0, 3));
+        b.money = 1000;
+        b.get_mut(0).unwrap().lost_money_get_life = true;
+
+        assert_eq!(b.change_hp(0, -40), 0, "一点血不掉");
+        assert_eq!(b.get(0).unwrap().hp, 100);
+        assert_eq!(b.spent_money, 40, "照伤害扣钱");
+
+        // 钱不够：先把钱花光，剩下的照掉。
+        b.spent_money = 0;
+        b.money = 25;
+        assert_eq!(b.change_hp(0, -40), -15);
+        assert_eq!(b.get(0).unwrap().hp, 85);
+        assert_eq!(b.money_left(), 0);
+
+        // 回血不走这条路。
+        b.change_hp(0, 10);
+        assert_eq!(b.get(0).unwrap().hp, 95);
+        assert_eq!(b.money_left(), 0, "回血不退钱");
+    }
+
+    #[test]
+    fn the_money_set_sits_behind_the_defence_halving() {
+        // 原版的次序是「先防御折半、再拿钱抵」，所以防御中只花一半的钱。
+        let mut b = alone(fighter(0, Side::Party, 100, 10, 0, 3));
+        b.money = 1000;
+        b.get_mut(0).unwrap().lost_money_get_life = true;
+        b.get_mut(0).unwrap().defending = true;
+        assert_eq!(b.change_hp(0, -40), 0);
+        assert_eq!(b.spent_money, 20);
+    }
+
+    #[test]
+    fn the_money_set_also_pays_for_the_poison() {
+        // 毒的每回合掉血也是走 `ChangeHP` 的，所以一样拿钱抵。
+        let mut b = alone(fighter(0, Side::Party, 100, 10, 0, 3));
+        b.money = 10_000;
+        b.get_mut(0).unwrap().lost_money_get_life = true;
+        b.get_mut(0).unwrap().apply_state(K_POISON_WIND, 0, 5);
+        b.tick_states(0);
+        assert_eq!(b.get(0).unwrap().hp, 100, "一点不掉");
+        assert_eq!(b.spent_money, 75, "风毒一跳是上限的 75%");
+    }
+
+    #[test]
+    fn the_sword_of_emperors_powers_up_on_its_third_round() {
+        // 7372，`cbrolestate.cpp:367`：`nRound == 3` 时上武增。
+        let mut b = Battle::new(1);
+        b.place(
+            5,
+            fighter(MONSTER_SWORD_OF_EMPERORS, Side::Enemy, 100, 10, 0, 3),
+        );
+        for round in 1..=2 {
+            b.own_turn(5);
+            assert!(
+                !b.get(5).unwrap().has_state(K_ATTACK_UP),
+                "第 {round} 个回合还不该有"
+            );
+        }
+        b.own_turn(5);
+        assert_eq!(b.get(5).unwrap().rounds, 3);
+        assert!(
+            b.get(5).unwrap().has_state(K_ATTACK_UP),
+            "第 3 个回合上武增"
+        );
+    }
+
+    /// 分身的两只：掷中了把请求排进 `pending_spawns`，位号按 5..10 头一个能用的。
+    fn split_target(id: u32, rounds_before: i32, seeds: u32) -> Vec<(usize, u32)> {
+        let mut seen = Vec::new();
+        for seed in 1..=seeds {
+            let mut b = Battle::new(seed);
+            let mut c = fighter(id, Side::Enemy, 100, 10, 0, 3);
+            c.rounds = rounds_before;
+            b.place(5, c);
+            // 6 号位躺着一只，7 号位空着。
+            let mut fallen = fighter(1, Side::Enemy, 100, 10, 0, 3);
+            fallen.alive = false;
+            b.place(6, fallen);
+            b.own_turn(5);
+            seen.extend(b.pending_spawns.iter().copied());
+        }
+        seen
+    }
+
+    #[test]
+    fn the_swamp_monster_reuses_a_fallen_slot() {
+        // 7378：第 3 个回合起每回合 5%，空位和倒下的位都能用。
+        let seen = split_target(MONSTER_SWAMP, 2, 400);
+        assert!(!seen.is_empty(), "5% 掷 400 次一次没中，概率那条没接上");
+        for (slot, id) in seen {
+            assert_eq!(id, MONSTER_SWAMP);
+            assert_eq!(slot, 6, "倒下的 6 号位排在空的 7 号位前面");
+        }
+        assert!(
+            split_target(MONSTER_SWAMP, 1, 400).is_empty(),
+            "第 2 个回合还不分身"
+        );
+    }
+
+    #[test]
+    fn the_blood_mist_only_takes_a_completely_empty_slot() {
+        // 7395：正好第 2 个回合，20%，而且只认完全空着的位。
+        let seen = split_target(MONSTER_BLOOD_MIST, 1, 100);
+        assert!(!seen.is_empty(), "20% 掷 100 次一次没中");
+        for (slot, id) in seen {
+            assert_eq!(id, MONSTER_BLOOD_MIST);
+            assert_eq!(slot, 7, "倒下的 6 号位不算空位");
+        }
+        assert!(
+            split_target(MONSTER_BLOOD_MIST, 2, 400).is_empty(),
+            "只在第 2 个回合那一次掷"
+        );
+    }
+
+    #[test]
+    fn chonglou_turns_instead_of_dying() {
+        // 738 精见底 → 排一只 739 进同一位；这一帧还不能算赢。
+        let mut b = two_sided_battle();
+        b.get_mut(5).unwrap().actor_id = MONSTER_CHONGLOU;
+        b.change_hp(5, -9999);
+        assert!(!b.get(5).unwrap().alive);
+        assert_eq!(b.pending_spawns, vec![(5, MONSTER_CHONGLOU_AWAKENED)]);
+        assert_eq!(b.outcome(), Outcome::Ongoing, "还有怪排着队要出来");
+        b.pending_spawns.clear();
+        assert_eq!(b.outcome(), Outcome::Win);
+    }
+
+    #[test]
+    fn the_demon_call_needs_the_last_monster_standing_and_two_free_slots() {
+        // 唤妖术（技能 7710，`special == 29`）：敌方只剩一只、5 号位和 7 号位都空着。
+        let mut b = Battle::new(7);
+        b.place(0, fighter(0, Side::Party, 100, 10, 0, 3));
+        b.place(6, fighter(7000, Side::Enemy, 100, 10, 0, 3));
+        b.skill_spec_affect(0, 29);
+        let got: Vec<u32> = b.pending_spawns.iter().map(|(_, id)| *id).collect();
+        let slots: Vec<usize> = b.pending_spawns.iter().map(|(s, _)| *s).collect();
+        assert_eq!(slots, vec![5, 7]);
+        assert_eq!(got.len(), 2);
+        for id in &got {
+            assert!(SUMMONED_DEMONS.contains(id), "召出来的不在那三只里: {id}");
+        }
+        assert_ne!(got[0], got[1], "两只不一样");
+
+        // 5 号位站着人就不放。
+        let mut b = Battle::new(7);
+        b.place(0, fighter(0, Side::Party, 100, 10, 0, 3));
+        b.place(5, fighter(7000, Side::Enemy, 100, 10, 0, 3));
+        b.skill_spec_affect(0, 29);
+        assert!(b.pending_spawns.is_empty());
+
+        // 敌方剩两只也不放。
+        let mut b = Battle::new(7);
+        b.place(0, fighter(0, Side::Party, 100, 10, 0, 3));
+        b.place(6, fighter(7000, Side::Enemy, 100, 10, 0, 3));
+        b.place(8, fighter(7001, Side::Enemy, 100, 10, 0, 3));
+        b.skill_spec_affect(0, 29);
+        assert!(b.pending_spawns.is_empty());
+    }
+
+    #[test]
+    fn the_great_shift_deals_the_six_spots_out_again() {
+        // 大挪移（技能 263，`special == 25`）：六个阵位洗 32 次，前五个发给我方。
+        let mut b = Battle::new(3);
+        for slot in 0..PARTY_SLOTS {
+            let mut c = fighter(slot as u32, Side::Party, 100, 10, 0, 3);
+            c.element_position = slot as u8 + 1;
+            b.place(slot, c);
+        }
+        b.skill_spec_affect(0, 25);
+        let got: Vec<u8> = (0..PARTY_SLOTS)
+            .map(|s| b.get(s).unwrap().element_position)
+            .collect();
+        let mut sorted = got.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        assert_eq!(sorted.len(), PARTY_SLOTS, "五个人不能站同一格: {got:?}");
+        assert!(got.iter().all(|p| (1..=6).contains(p)), "{got:?}");
+    }
+
+    #[test]
     fn hp_clamps_and_death_wipes_states() {
-        let mut c = fighter(0, Side::Party, 50, 10, 0, 3);
-        c.apply_state(K_ATTACK_UP, 0, 5);
-        assert_eq!(c.attack_eff(), 13, "10 + round(2.5)");
+        let mut b = alone(fighter(0, Side::Party, 50, 10, 0, 3));
+        b.get_mut(0).unwrap().apply_state(K_ATTACK_UP, 0, 5);
+        assert_eq!(b.get(0).unwrap().attack_eff(), 13, "10 + round(2.5)");
 
-        c.change_hp(999);
-        assert_eq!(c.hp, 50, "不超过上限");
+        b.change_hp(0, 999);
+        assert_eq!(b.get(0).unwrap().hp, 50, "不超过上限");
 
-        c.change_hp(-999);
+        b.change_hp(0, -999);
+        let c = b.get(0).unwrap();
         assert_eq!(c.hp, 0);
         assert!(!c.alive);
         assert!(!c.has_state(K_ATTACK_UP), "死亡清空全部状态");
@@ -1773,36 +2180,36 @@ mod tests {
 
     #[test]
     fn being_hit_wakes_a_sleeper() {
-        let mut c = fighter(0, Side::Party, 50, 10, 0, 3);
-        c.apply_state(K_SLEEP, 0, 5);
-        c.change_hp(-1);
-        assert!(!c.has_state(K_SLEEP));
+        let mut b = alone(fighter(0, Side::Party, 50, 10, 0, 3));
+        b.get_mut(0).unwrap().apply_state(K_SLEEP, 0, 5);
+        b.change_hp(0, -1);
+        assert!(!b.get(0).unwrap().has_state(K_SLEEP));
 
         // Healing does not.
-        c.apply_state(K_SLEEP, 0, 5);
-        c.change_hp(5);
-        assert!(c.has_state(K_SLEEP));
+        b.get_mut(0).unwrap().apply_state(K_SLEEP, 0, 5);
+        b.change_hp(0, 5);
+        assert!(b.get(0).unwrap().has_state(K_SLEEP));
     }
 
     #[test]
     fn evade_makes_a_basic_attack_whiff() {
         let mut b = two_sided_battle();
-        b.get_mut(5).unwrap().apply_state(K_EVADE, 0, 5);
+        b.get_mut(5).unwrap().apply_state(K_WALL, 0, 5);
         assert_eq!(b.basic_attack(0, 5), 0);
         assert_eq!(b.get(5).unwrap().hp, 60, "一点没掉");
     }
 
     #[test]
     fn onset_delay_costs_a_round_before_the_poison_bites() {
-        let mut c = fighter(0, Side::Party, 100, 10, 0, 3);
+        let mut b = alone(fighter(0, Side::Party, 100, 10, 0, 3));
         // 风毒 with the database's 3-round onset.
-        c.apply_state(K_POISON_WIND, 3, 5);
+        b.get_mut(0).unwrap().apply_state(K_POISON_WIND, 3, 5);
         for _ in 0..3 {
-            c.tick_states();
-            assert_eq!(c.hp, 100, "潜伏期内不掉血");
+            b.tick_states(0);
+            assert_eq!(b.get(0).unwrap().hp, 100, "潜伏期内不掉血");
         }
-        c.tick_states();
-        assert_eq!(c.hp, 25, "然后每回合 75% 上限");
+        b.tick_states(0);
+        assert_eq!(b.get(0).unwrap().hp, 25, "然后每回合 75% 上限");
     }
 
     #[test]
@@ -1978,29 +2385,33 @@ mod tests {
     fn poison_timers_are_a_coherent_set() {
         // 风毒: three rounds of grace, then five rounds at 75% of the
         // maximum — a death sentence unless it is cured in time.
-        let mut c = fighter(0, Side::Party, 100, 10, 0, 3);
+        let mut b = alone(fighter(0, Side::Party, 100, 10, 0, 3));
         let (onset, duration) = POISON_TIMERS[0];
-        c.apply_state(K_POISON_WIND, onset, duration);
+        b.get_mut(0)
+            .unwrap()
+            .apply_state(K_POISON_WIND, onset, duration);
         for _ in 0..3 {
-            c.tick_states();
+            b.tick_states(0);
         }
-        assert_eq!(c.hp, 100, "潜伏期内一点不掉");
-        c.tick_states();
-        c.tick_states();
-        assert!(!c.alive, "两跳之内必死");
+        assert_eq!(b.get(0).unwrap().hp, 100, "潜伏期内一点不掉");
+        b.tick_states(0);
+        b.tick_states(0);
+        assert!(!b.get(0).unwrap().alive, "两跳之内必死");
 
         // 水毒 halves what is left, so it never finishes anyone off.
-        let mut c = fighter(0, Side::Party, 100, 10, 0, 3);
+        let mut b = alone(fighter(0, Side::Party, 100, 10, 0, 3));
         let (onset, duration) = POISON_TIMERS[2];
-        c.apply_state(K_POISON_WATER, onset, duration);
+        b.get_mut(0)
+            .unwrap()
+            .apply_state(K_POISON_WATER, onset, duration);
         for _ in 0..duration {
-            c.tick_states();
+            b.tick_states(0);
         }
-        assert!(c.alive, "水毒杀不死人");
+        assert!(b.get(0).unwrap().alive, "水毒杀不死人");
         // 100 → 50 → 25 → 13 → 7 → 4: each tick subtracts `current / 2`
         // with C's truncation, so the survivor keeps slightly more than a
         // clean halving would leave.
-        assert_eq!(c.hp, 4);
+        assert_eq!(b.get(0).unwrap().hp, 4);
     }
 
     #[test]
@@ -2159,14 +2570,14 @@ mod tests {
         b.place(0, c);
 
         // 没防御：全额。
-        assert_eq!(b.get_mut(0).unwrap().change_hp(-40), -40);
+        assert_eq!(b.change_hp(0, -40), -40);
         assert_eq!(b.get(0).unwrap().hp, 60);
 
         // 防御中：折半（原版 `delta < -1` 才折）。
         b.defend(0);
         assert!(b.get(0).unwrap().defending);
-        assert_eq!(b.get_mut(0).unwrap().change_hp(-40), -20);
-        assert_eq!(b.get_mut(0).unwrap().change_hp(-1), -1, "刚好 −1 的不折");
+        assert_eq!(b.change_hp(0, -40), -20);
+        assert_eq!(b.change_hp(0, -1), -1, "刚好 −1 的不折");
 
         // 行动条一满就解除，和 0x515893 的判据一致。
         for _ in 0..400 {

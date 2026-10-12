@@ -21,7 +21,7 @@
 use super::formulas::CombatRng;
 use serde::{Deserialize, Serialize};
 
-use super::state::{Battle, Combatant, K_CONFUSED, K_EVADE, K_INVISIBLE, PARTY_SLOTS, SLOTS, Side};
+use super::state::{Battle, Combatant, K_CONFUSED, K_INVISIBLE, K_WALL, PARTY_SLOTS, SLOTS, Side};
 
 /// Which behaviour a combatant uses, from `FUN_004f3a50` +
 /// `FUN_004d7120`.
@@ -534,7 +534,7 @@ impl Delegate<'_> {
             rng,
             self.me.side == Side::Party,
             c.has_state(K_INVISIBLE),
-            c.has_state(K_EVADE) && c.has_state(K_0X14),
+            c.has_state(K_WALL) && c.has_state(K_0X14),
         );
         // `FUN_004f0210`：盘心挡着后位（见 [`Battle::attackable`]）。
         (ok && self.battle.attackable(self.actor, t)).then_some(Plan::Attack { target: t })

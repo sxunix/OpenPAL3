@@ -88,6 +88,7 @@ pub fn effect_of(s: &SkillInfo) -> SkillEffect {
         special_cost_value: s.special_consume_value,
         target_range: s.target_range_type,
         state_codes: s.combat_state_impact_types,
+        special: s.special_skill_id,
     }
 }
 
