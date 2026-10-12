@@ -52,10 +52,17 @@ pub const ELEMENT_DIR: &str = "/basedata/basedata/ui/BigMap/Element";
 
 /// 38 个目的地，下标就是 `FUN_0044a4f0` 收到的那个号。
 ///
-/// 有两条是照抄 exe、**不要按名字"修正"**的：下标 15（过程 115
-/// 「从大地图进入黄泉路」）配的图标是 `rongyandiyu`，下标 25（过程 125
-/// 「从大地图进入熔岩地狱」）配的是 `huangquanlu`——0x446a4e 和 0x446bb3
-/// 处 exe 就是这么推的，两张图相对过程名是对调的。
+/// 有两条是照抄 exe、**不要按名字「修正」**的：下标 15（过程 115
+/// 「从大地图进入黄泉路」）配的是 `rongyandiyu` + (903, 0, 120×110)，下标 25
+/// （过程 125「从大地图进入熔岩地狱」）配的是 `huangquanlu` + (1007, 100,
+/// 209×61)。源码 `gameui/UIBigMap.cpp:106`/`:122` 把这两整块（矩形、贴图、
+/// 按钮色）对调着写，别的 36 条和 exe 逐字段一致；exe 这边由
+/// `[0x56af24] = IDB_BIGMAP_ELEMENT[15]`（0x446b04）和
+/// `[0x56af4c] = IDB_BIGMAP_ELEMENT[25]`（0x446c69）钉死下标。
+/// 两块各自自洽，所以画出来的地图两种写法一模一样，差别只在点哪一块去哪儿：
+/// exe 里那条细长的路（`huangquanlu.tga`，209×61）通向熔岩地狱，火鬼那一块
+/// （`rongyandiyu.tga`，120×110）通向黄泉路。按贴图内容和地理位置看源码才是
+/// 对的（细长的路紧挨着酆都），出货的 exe 是错的——但移植要跟 exe。
 pub const DESTINATIONS: [Destination; 38] = [
     Destination {
         name: "安宁村",
@@ -181,7 +188,7 @@ pub const DESTINATIONS: [Destination; 38] = [
         name: "黄泉路",
         texture: "rongyandiyu",
         x: 903,
-        y: 46,
+        y: 0,
         width: 120,
         height: 110,
     }, // 15 -> 过程 115
@@ -533,12 +540,22 @@ mod tests {
         assert_eq!(tile_origin(23), (1280, 768));
     }
 
+    /// 15 和 25 两整块（矩形 + 贴图）在 exe 里是对调着写的，整块跟着走，
+    /// 所以连矩形一起钉住——只钉贴图的话，下回照源码「修正」矩形就看不出来了。
     #[test]
-    fn the_two_swapped_icons_are_kept_as_the_exe_has_them() {
-        assert_eq!(DESTINATIONS[15].name, "黄泉路");
-        assert_eq!(DESTINATIONS[15].texture, "rongyandiyu");
-        assert_eq!(DESTINATIONS[25].name, "熔岩地狱");
-        assert_eq!(DESTINATIONS[25].texture, "huangquanlu");
+    fn the_two_swapped_blocks_are_kept_as_the_exe_has_them() {
+        let d = &DESTINATIONS[15];
+        assert_eq!(d.name, "黄泉路");
+        assert_eq!(
+            (d.texture, d.x, d.y, d.width, d.height),
+            ("rongyandiyu", 903, 0, 120, 110)
+        );
+        let d = &DESTINATIONS[25];
+        assert_eq!(d.name, "熔岩地狱");
+        assert_eq!(
+            (d.texture, d.x, d.y, d.width, d.height),
+            ("huangquanlu", 1007, 100, 209, 61)
+        );
     }
 
     #[test]

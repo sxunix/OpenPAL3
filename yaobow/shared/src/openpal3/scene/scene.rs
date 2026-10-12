@@ -1456,10 +1456,14 @@ impl ScnScene {
     /// POL 取文件里各网格包围盒的并——`gbStaticMesh` 的 AABB 是**从文件里直接读的**
     /// （`engine/geometry/gbstaticmesh.cpp:305`），不是算出来的。
     ///
-    /// CVD 这里用的是第 0 帧顶点的最小 / 最大值；源码里 `gbIpolMesh` 读文件时
-    /// 是**把所有帧都扫一遍**取并集（`engine/geometry/gbipolmesh.cpp:234`），
-    /// 但上面那条说明这份源码不能直接当 DLL 的行为用，DLL 里这一段还没对过，
-    /// 所以先按现状留着。
+    /// CVD 取的是**所有帧顶点的并集**。源码 `engine/geometry/gbipolmesh.cpp:234`
+    /// 把 `BoundBox` 的累加放在逐帧循环里面，出货的 DLL 这一段**和源码一致**：
+    /// `gbIpolMesh::LoadFromStream`（0x10011c60，由
+    /// `gbGeomNode::LoadCVDFromStream` 在 0x10010e00 调）在 0x10011ea1 把
+    /// min/max 置成 ±FLT_MAX，外层帧循环 0x10011ed7…0x10012022、内层顶点循环
+    /// 0x10011f35…0x10012000，六个 min/max 比较（0x10011f79 起）在两层里面。
+    /// 这个类没导出符号，所以是顺着 `gbGfxManager::NewMesh`（0x1001e160，
+    /// `type==1` 时 `new(0x8c)` + 构造 0x10011b40、虚表 0x100f5614）找过去的。
     fn object_model_box(&self, name: &str) -> super::object_block::Model {
         use super::object_block::{Model, Obb};
         use common::store_ext::StoreExt2;
@@ -1525,7 +1529,9 @@ impl ScnScene {
             return Model::None;
         };
         // 各带网格节点：第 0 帧的节点矩阵（和 `CvdModelComponent::setup_transform` 同样的拼法，父子逐级相乘）
-        // 和网格第 0 帧的最小 / 最大点。
+        // 和网格**所有帧**合起来的最小 / 最大点——`gbIpolMesh::LoadFromStream`
+        // 在 dll 里（0x10011ea1 置 ±FLT_MAX，0x10011f79 起六个比较）把
+        // `BoundBox` 的累加放在逐帧循环里面，`gbipolmesh.cpp:234` 的源码也一样。
         fn walk(
             nodes: &[crate::openpal3::loaders::cvd_loader::CvdModelNode],
             parent: &Mat44,
@@ -1564,8 +1570,8 @@ impl ScnScene {
                             .rotate_quaternion_local(&q3);
                     }
                     world = Mat44::multiplied(parent, t.matrix());
-                    if let Some(frame) = model.mesh.frames.first().filter(|f| !f.is_empty()) {
-                        let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                    for frame in &model.mesh.frames {
                         for v in frame {
                             for (k, c) in [v.position.x, v.position.y, v.position.z]
                                 .into_iter()
@@ -1575,6 +1581,8 @@ impl ScnScene {
                                 hi[k] = hi[k].max(c);
                             }
                         }
+                    }
+                    if lo[0] <= hi[0] {
                         out.push((world, lo, hi));
                     }
                 }

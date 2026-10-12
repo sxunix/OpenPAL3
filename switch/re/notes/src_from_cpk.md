@@ -22,7 +22,7 @@ data/cpack
 
 ## 信到什么程度
 
-`data/pal3` 这一半和出货的 `PAL3_unpacked.exe` 对得上，逐条核过的例子：
+`data/pal3` 这一半和出货的 `PAL3_unpacked.exe` 基本对得上，逐条核过的例子：
 
 | 源码 | exe |
 | --- | --- |
@@ -31,6 +31,21 @@ data/cpack
 | `scene.cpp:1036` `GetObjByID` 拿 `BYTE id` 和 WORD 参数整个比 | `0x42157a` `movzx bx, byte [edx]` / `cmp bx, di` |
 | `role.cpp:2982` `min(100, box.ylen*0.6f)` | `0x418e94` 起 `fmul [0x56aa4c]` / `fcomp` 取小 |
 | `rolecamera.cpp:487` `r=(1-cos(r*PI))*0.5f` | 镜头任务的插值类型 1 |
+
+**但也不是同一次编译。** `gameui/UIBigMap.cpp` 的 38 个目的地里，36 个和 exe
+逐字段一致，下标 15（黄泉路 M21）和 25（熔岩地狱 M20）这两**整块**
+（矩形、贴图、按钮色）在 exe 里是对调着写的：
+
+| | 下标 15 = 黄泉路 | 下标 25 = 熔岩地狱 |
+| --- | --- | --- |
+| 源码 `UIBigMap.cpp:106`/`:122` | `huangquanlu.tga`，(1007,100) 209×61 | `rongyandiyu.tga`，(903,0) 120×110 |
+| exe（`[0x56af24]=IDB[15]` @0x446b04、`[0x56af4c]=IDB[25]` @0x446c69） | `rongyandiyu.tga`，(903,0) 120×110 | `huangquanlu.tga`，(1007,100) 209×61 |
+
+两块各自自洽，所以画出来的地图两种写法一模一样，差别只在点哪一块去哪儿。
+按贴图内容（`huangquanlu.tga` 是一条细长的发光的路，`rongyandiyu.tga` 是
+火鬼那一团）和地理位置（细长那条紧挨着酆都 (1006,155)）看，源码是对的，
+出货的 exe 把这两个下标写反了。移植跟 exe，见 `bigmap.rs` 的
+`the_two_swapped_blocks_are_kept_as_the_exe_has_them`。
 
 **`data/engine` 这一半不一样。** 至少有一处出货的 `gbengine.dll` 和源码对不上：
 
@@ -43,9 +58,17 @@ data/cpack
 移植端 `ScnScene::object_model_box` 照 DLL 抄。所以：**引擎那一半的每一条
 都要和 `gbengine.dll` 对过再用**，源码只能当线索。
 
-还没对过的一处：`gbIpolMesh` 读 `.cvd` 时源码是把所有帧扫一遍取包围盒
-（`geometry/gbipolmesh.cpp:234`），移植端现在只用第 0 帧；`gbIpolMesh`
-不是导出符号，DLL 里那段还没找。
+对过之后发现**一致**的一处：`gbIpolMesh` 读 `.cvd` 时把所有帧扫一遍取包围盒
+（`geometry/gbipolmesh.cpp:234`），出货的 DLL 一样。`gbIpolMesh` 没有导出符号，
+是顺着导出的 `gbGfxManager::NewMesh`（0x1001e160，`type==1` 时 `new(0x8c)` +
+构造 0x10011b40、虚表 0x100f5614）和 `gbGeomNode::LoadCVDFromStream`
+（0x10010cd0，在 0x10010e00 调 mesh 的 `LoadFromStream`）找到
+`gbIpolMesh::LoadFromStream = 0x10011c60` 的：0x10011ea1 把 min/max 置成
+±FLT_MAX，外层帧循环 0x10011ed7…0x10012022、内层顶点循环
+0x10011f35…0x10012000（每顶点 `esi += 0x20`），六个 min/max 比较
+（0x10011f79 起）在两层循环里面。移植端 `object_model_box` 已改成取并集：
+503 个 `.cvd` 的 1267 个网格节点里，179 个的并集比第 0 帧大，最大一处
+（`/scene/Q09/C/_cn12a.CVD`）差 34262 单位。
 
 ## 几份特别有用的文件
 
