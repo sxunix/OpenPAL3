@@ -271,6 +271,11 @@ def main() -> int:
         try:
             c.fire(name)
         except AgentError as e:
+            if e.status == 409 and "script is running" in e.message:
+                # 上一步的过场还没完（卡住判定先到了），接着推完再挑。
+                done.discard(name)
+                settle(c, issues, f"{key[0]}/{key[1]} (等过场)")
+                continue
             issues.append({"kind": "fire_error", "trigger": name, "detail": str(e)})
             continue
         time.sleep(0.6)

@@ -2792,6 +2792,15 @@ impl AdventureDirectorProps {
         if self.agent_walk.is_some() && (locked || frozen) {
             self.agent_walk = None;
         }
+        // 换了场景，旧场景的路点和目标都作废（过场里冒险循环不跑，走到这儿时可能已经换过场景了）。
+        if self
+            .agent_walk_goal
+            .as_ref()
+            .is_some_and(|g| g.scene != self.scene_key())
+        {
+            self.agent_walk = None;
+            self.agent_walk_goal = None;
+        }
         // 半路停下的，过程跑完了：还在同一个场景就重新找路接着走，换了场景或者走不到了就作罢。
         if self.agent_walk.is_none() && !locked && !frozen {
             if let Some(mut goal) = self.agent_walk_goal.take() {

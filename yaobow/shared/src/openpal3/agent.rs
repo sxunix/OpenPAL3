@@ -501,6 +501,18 @@ fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str, teleport: bool) -> Age
     let Some(scn) = ctx.scene_manager.scn_scene() else {
         return AgentResponse::err(AgentError::conflict("no adventure scene on top"));
     };
+    // 接口约定：脚本在跑时 409（docs/agent_interface.md）。不然过场里排下的走路要等过场
+    // 结束才动，那时可能已经换了场景。
+    {
+        let vm = director.sce_vm();
+        if vm.state().context().is_running()
+            || vm.has_active_commands()
+            || !vm.global_state().adv_input_enabled()
+            || director.agent_walking()
+        {
+            return AgentResponse::err(AgentError::conflict("a script is running"));
+        }
+    }
     let scn = scn.inner::<crate::openpal3::scene::ScnScene>();
     let mut parts = name.splitn(3, ':');
     let kind = parts.next().unwrap_or_default();
