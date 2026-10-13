@@ -70,6 +70,21 @@ pub fn push_background_blend_normal() {
     push_background_blend_marker(CALLBACK_BLEND_NORMAL);
 }
 
+thread_local! {
+    /// imgui 键盘事件的待灌队列，[`ImguiContext::draw_ui`] 每帧开头灌进
+    /// `io.add_key_event`。给合成输入用（agent 注入的按键）：平台层只把真键盘
+    /// 喂给 imgui，合成按键原先只叠在引擎的 `InputEngine` 上，读 imgui 输入的
+    /// 界面（宿营、鉴定、对话选项……）收不到。
+    static SYNTHETIC_KEYS: RefCell<Vec<(imgui::Key, bool)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 记一条要灌给 imgui 的键盘事件（下一帧生效）。同一帧里「按下 + 松开」也行：
+/// imgui 的输入队列默认会把它们拆到相邻两帧（`ConfigInputTrickleEventQueue`），
+/// `is_key_pressed` 照样认得出这一下。
+pub fn queue_synthetic_key(key: imgui::Key, down: bool) {
+    SYNTHETIC_KEYS.with(|q| q.borrow_mut().push((key, down)));
+}
+
 pub struct FontIndex;
 impl FontIndex {
     pub const LARGE_FONT: usize = 0;
@@ -284,6 +299,13 @@ impl ImguiContext {
         // Apply any theme switch requested from the previous frame
         // before `frame()` snapshots the style for the new draw pass.
         self.drain_pending_theme(&mut context);
+        let synthetic = SYNTHETIC_KEYS.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        if !synthetic.is_empty() {
+            let io = context.io_mut();
+            for (key, down) in synthetic {
+                io.add_key_event(key, down);
+            }
+        }
         let ui = context.frame();
         self.platform.borrow_mut().prepare_render(ui);
 

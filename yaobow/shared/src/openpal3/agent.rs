@@ -192,7 +192,11 @@ pub fn build_snapshot(ctx: &Pal3DispatchCtx) -> StateSnapshot {
     // as "script is running" for the agent contract — combined with
     // `is_running()` for the case where a proc is pending but input
     // is still nominally enabled (script kick-off frame).
-    let script_running = !global.adv_input_enabled() || sce_vm.state().context().is_running();
+    // 调试入口推进来的指令（商店、宿营……）不经过 proc，`is_running()` 看不到，
+    // 但它跑着的时候玩家同样在一个界面里，驱动脚本要靠这一位等它结束。
+    let script_running = !global.adv_input_enabled()
+        || sce_vm.state().context().is_running()
+        || sce_vm.has_active_commands();
     snap.script_running = script_running;
     snap.current_script_fn = sce_vm.state().context().current_proc_name();
 
@@ -280,6 +284,20 @@ pub fn build_snapshot(ctx: &Pal3DispatchCtx) -> StateSnapshot {
 }
 
 fn handle_key_input(bridge: &Rc<AgentBridge>, params: KeyInputParams) -> AgentResponse {
+    // 引擎键表里没有、只有 imgui 认的键：回车。读 imgui 输入的那几个界面
+    // （宿营的结果框、闲聊休息……）拿它当确定。只灌给 imgui。
+    if matches!(params.key.to_ascii_lowercase().as_str(), "enter" | "return") {
+        let k = imgui::Key::Enter;
+        match params.action {
+            KeyAction::Down => radiance::imgui::queue_synthetic_key(k, true),
+            KeyAction::Up => radiance::imgui::queue_synthetic_key(k, false),
+            KeyAction::Tap => {
+                radiance::imgui::queue_synthetic_key(k, true);
+                radiance::imgui::queue_synthetic_key(k, false);
+            }
+        }
+        return AgentResponse::Ok;
+    }
     let Some(key) = Key::from_name(&params.key) else {
         return AgentResponse::err(AgentError::bad_request(format!(
             "unknown key name: {}",
@@ -699,6 +717,17 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
             // [] —— 只弹战败画面，按一下回标题。
             director.start_debug_command(Box::new(
                 crate::scripting::sce::commands::SceCommandGameOverScreen::default(),
+            ));
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "encamp" => {
+            // [方位号 0..3] —— 直接开宿营（106），旗子按方位号换。
+            let site = int_arg(0).unwrap_or(0) as i32;
+            director.start_debug_command(Box::new(
+                crate::scripting::sce::commands::SceCommandEncamp::new(site),
             ));
             AgentResponse::Script(ScriptEvalResponse {
                 function: params.function,

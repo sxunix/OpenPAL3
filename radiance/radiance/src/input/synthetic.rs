@@ -62,7 +62,70 @@ impl SyntheticInputBridge {
 
     /// Begin a held key. Subsequent `get_key_state` calls report
     /// `is_down = true` and `pressed = true` for this frame.
+    /// 引擎键 → imgui 键。合成按键也要让读 imgui 输入的界面收到，见
+    /// [`crate::imgui::queue_synthetic_key`]。
+    fn imgui_key(key: Key) -> Option<imgui::Key> {
+        use imgui::Key as I;
+        Some(match key {
+            Key::Space => I::Space,
+            Key::Escape => I::Escape,
+            Key::Left => I::LeftArrow,
+            Key::Up => I::UpArrow,
+            Key::Right => I::RightArrow,
+            Key::Down => I::DownArrow,
+            Key::Tilde => I::GraveAccent,
+            Key::A => I::A,
+            Key::B => I::B,
+            Key::C => I::C,
+            Key::D => I::D,
+            Key::E => I::E,
+            Key::F => I::F,
+            Key::G => I::G,
+            Key::H => I::H,
+            Key::I => I::I,
+            Key::J => I::J,
+            Key::K => I::K,
+            Key::L => I::L,
+            Key::M => I::M,
+            Key::N => I::N,
+            Key::O => I::O,
+            Key::P => I::P,
+            Key::Q => I::Q,
+            Key::R => I::R,
+            Key::S => I::S,
+            Key::T => I::T,
+            Key::U => I::U,
+            Key::V => I::V,
+            Key::W => I::W,
+            Key::X => I::X,
+            Key::Y => I::Y,
+            Key::Z => I::Z,
+            Key::Num0 => I::Alpha0,
+            Key::Num1 => I::Alpha1,
+            Key::Num2 => I::Alpha2,
+            Key::Num3 => I::Alpha3,
+            Key::Num4 => I::Alpha4,
+            Key::Num5 => I::Alpha5,
+            Key::Num6 => I::Alpha6,
+            Key::Num7 => I::Alpha7,
+            Key::Num8 => I::Alpha8,
+            Key::Num9 => I::Alpha9,
+            Key::GamePadEast => I::GamepadFaceRight,
+            Key::GamePadSouth => I::GamepadFaceDown,
+            Key::GamePadWest => I::GamepadFaceLeft,
+            Key::GamePadNorth => I::GamepadFaceUp,
+            Key::GamePadDPadUp => I::GamepadDpadUp,
+            Key::GamePadDPadDown => I::GamepadDpadDown,
+            Key::GamePadDPadLeft => I::GamepadDpadLeft,
+            Key::GamePadDPadRight => I::GamepadDpadRight,
+            Key::Unknown => return None,
+        })
+    }
+
     pub fn press_down(&self, key: Key) {
+        if let Some(k) = Self::imgui_key(key) {
+            crate::imgui::queue_synthetic_key(k, true);
+        }
         let mut keys = self.keys.borrow_mut();
         let slot = &mut keys[key as usize];
         if !slot.held {
@@ -75,6 +138,9 @@ impl SyntheticInputBridge {
     /// End a held key. Reports `released = true` for the next
     /// `end_frame`-bounded frame.
     pub fn release(&self, key: Key) {
+        if let Some(k) = Self::imgui_key(key) {
+            crate::imgui::queue_synthetic_key(k, false);
+        }
         let mut keys = self.keys.borrow_mut();
         let slot = &mut keys[key as usize];
         if slot.held {
@@ -87,6 +153,10 @@ impl SyntheticInputBridge {
     /// One-frame tap: appears `pressed + released + is_down` for the
     /// current frame, naturally back to `up` next frame.
     pub fn tap(&self, key: Key) {
+        if let Some(k) = Self::imgui_key(key) {
+            crate::imgui::queue_synthetic_key(k, true);
+            crate::imgui::queue_synthetic_key(k, false);
+        }
         let mut keys = self.keys.borrow_mut();
         let slot = &mut keys[key as usize];
         slot.held = true; // appears down for this frame

@@ -213,6 +213,12 @@ impl SceVm {
         &self.state
     }
 
+    /// 有没有阻塞指令在跑——包括调试入口直接推进来的（商店、宿营、战斗……），
+    /// 那些不经过 proc，`context().is_running()` 看不到。
+    pub fn has_active_commands(&self) -> bool {
+        !self.active_commands.is_empty()
+    }
+
     pub fn state_mut(&mut self) -> &mut SceState {
         &mut self.state
     }
