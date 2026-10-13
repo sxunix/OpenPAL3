@@ -75,6 +75,26 @@ class Client:
         env = self._json("GET", f"/v1/log/tail?after_seq={after_seq}&n={n}")
         return (env or {}).get("data", {})
 
+    def globals(self, start: int = 0, limit: int = 4096) -> list[int]:
+        """SCE 全局变量（剧情旗标）的一段。PAL3 的全局变量是稀疏的，服务端按
+        「最高写过的号 + 1」算长度。"""
+        env = self._json("GET", f"/v1/script/globals?start={start}&limit={limit}")
+        return (env or {}).get("data", {}).get("globals", [])
+
+    def triggers(self) -> list[dict]:
+        """当前场景的触发点：`nav:<号>` 走进去就触发，`aabb:` / `item:` 要按调查键。"""
+        env = self._json("GET", "/v1/scene/triggers")
+        return (env or {}).get("data", {}).get("triggers", [])
+
+    def roles(self) -> list[dict]:
+        """当前场景的人物：`role:<号>:<名字>`，野怪是 `monster:`。"""
+        env = self._json("GET", "/v1/scene/objects")
+        return (env or {}).get("data", {}).get("npcs", [])
+
+    def fire(self, name: str) -> None:
+        """走引擎自己的触发路径：传送过去，该按调查键的按一下。"""
+        self._json("POST", "/v1/scene/fire_trigger", {"name": name})
+
     def screenshot(self, path: Optional[str] = None) -> bytes:
         """`/v1/screenshot` 回裸 PNG（`Content-Type: image/png`）。"""
         ctype, blob = self._raw("GET", "/v1/screenshot", timeout=90.0)

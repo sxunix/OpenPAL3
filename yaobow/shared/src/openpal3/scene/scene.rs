@@ -226,6 +226,82 @@ impl ScnScene {
         false
     }
 
+    /// 给 agent 看的触发点：导航格（走进去就触发）、物件 AABB 和拾取点（站进去按
+    /// 调查键才触发）。平铺数据，坐标是世界坐标。
+    pub fn agent_triggers(&self) -> Vec<AgentTrigger> {
+        let mut out = Vec::new();
+        for (index, t) in self.nav_triggers.borrow().iter().enumerate() {
+            // 类型 14 不分层，类型 0 只认自己那一层（`test_nav_trigger`）。
+            let layer = if t.node_type == 14 {
+                0
+            } else {
+                t.layer as usize
+            };
+            let (bx, bz) = self.nav_block_size(layer);
+            let cx = (t.nav_coord_min.0 + t.nav_coord_max.0) as f32 * 0.5 + 0.5;
+            let cz = (t.nav_coord_min.1 + t.nav_coord_max.1) as f32 * 0.5 + 0.5;
+            let w = (t.nav_coord_max.0 - t.nav_coord_min.0 + 1) as f32;
+            let d = (t.nav_coord_max.1 - t.nav_coord_min.1 + 1) as f32;
+            out.push(AgentTrigger {
+                kind: "nav",
+                index,
+                proc_id: t.sce_proc_id,
+                center: self.nav_coord_to_scene_coord(layer, cx, cz),
+                half: Vec3::new(w * bx * 0.5, 0., d * bz * 0.5),
+                layer: layer as i32,
+            });
+        }
+        for (index, t) in self.aabb_triggers.borrow().iter().enumerate() {
+            let (a, b) = (&t.aabb_coord1, &t.aabb_coord2);
+            out.push(AgentTrigger {
+                kind: "aabb",
+                index,
+                proc_id: t.sce_proc_id,
+                center: Vec3::new((a.x + b.x) * 0.5, (a.y + b.y) * 0.5, (a.z + b.z) * 0.5),
+                half: Vec3::new(
+                    (a.x - b.x).abs() * 0.5,
+                    (a.y - b.y).abs() * 0.5,
+                    (a.z - b.z).abs() * 0.5,
+                ),
+                layer: -1,
+            });
+        }
+        for (index, t) in self.item_triggers.borrow().iter().enumerate() {
+            out.push(AgentTrigger {
+                kind: "item",
+                index,
+                proc_id: t.sce_proc_id,
+                center: t.coord,
+                half: Vec3::new(0., 0., 0.),
+                layer: -1,
+            });
+        }
+        out
+    }
+
+    /// 给 agent 看的人物：编号、名字、当前位置、显没显示、对话 proc（取角色控制器上
+    /// **当前**的那个，脚本会改，和 `test_role_trigger` 同一个来源）。
+    pub fn agent_roles(&self) -> Vec<AgentRole> {
+        let mut out = Vec::new();
+        for role in &self.scn_file.roles {
+            let Some(e) = self.get_role_entity(role.index as i32) else {
+                continue;
+            };
+            let proc_id = RoleController::get_role_controller(e.clone())
+                .map(|rc| rc.inner::<RoleController>().proc_id() as u32)
+                .unwrap_or(0);
+            out.push(AgentRole {
+                index: role.index as i32,
+                name: role.name.clone(),
+                position: e.transform().borrow().position(),
+                visible: e.visible(),
+                proc_id,
+                combat: role.is_combat_npc(),
+            });
+        }
+        out
+    }
+
     pub fn test_aabb_trigger(&self, coord: &Vec3) -> Option<u32> {
         const R: f32 = 50.;
         for trigger in &*self.aabb_triggers.borrow() {
@@ -1921,6 +1997,30 @@ impl Nav {
         visited.remove(&nav_coord_src);
         false
     }
+}
+
+/// 见 [`ScnScene::agent_triggers`]。
+#[derive(Debug, Clone)]
+pub struct AgentTrigger {
+    /// `nav` / `aabb` / `item`。
+    pub kind: &'static str,
+    pub index: usize,
+    pub proc_id: u32,
+    pub center: Vec3,
+    pub half: Vec3,
+    /// 导航格触发器所在的层；其余是 −1。
+    pub layer: i32,
+}
+
+/// 见 [`ScnScene::agent_roles`]。
+#[derive(Debug, Clone)]
+pub struct AgentRole {
+    pub index: i32,
+    pub name: String,
+    pub position: Vec3,
+    pub visible: bool,
+    pub proc_id: u32,
+    pub combat: bool,
 }
 
 pub struct SceNavTrigger {

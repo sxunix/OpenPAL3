@@ -129,15 +129,9 @@ pub fn dispatch_pal3_command(ctx: &Pal3DispatchCtx, command: AgentCommand) -> Ag
         C::ChooseWorldMap(_) => AgentResponse::err(AgentError::not_implemented(
             "PAL3 has no world-map prompt analog to PAL4's giShowWorldMap",
         )),
-        C::GetSceneTriggers => AgentResponse::err(AgentError::not_implemented(
-            "PAL3 scene triggers are SCE proc entry points; enumeration deferred",
-        )),
-        C::GetSceneObjects => AgentResponse::err(AgentError::not_implemented(
-            "PAL3 scene object enumeration deferred (no GOB research_function analog)",
-        )),
-        C::FireSceneTrigger(_) => AgentResponse::err(AgentError::not_implemented(
-            "PAL3 fire_trigger deferred; will call SceVm::call_proc by name once mapping lands",
-        )),
+        C::GetSceneTriggers => handle_scene_triggers(ctx),
+        C::GetSceneObjects => handle_scene_objects(ctx),
+        C::FireSceneTrigger(p) => handle_fire_trigger(ctx, &p.name),
         C::InteractObject(_) => AgentResponse::err(AgentError::not_implemented(
             "PAL3 has no GOB Examine handler analog",
         )),
@@ -407,6 +401,144 @@ fn handle_get_perf_metrics() -> AgentResponse {
         enabled: radiance::perf::enabled(),
         metrics,
     })
+}
+
+fn scene_block(ctx: &Pal3DispatchCtx) -> (String, String) {
+    let Some(director) = ctx.director else {
+        return (String::new(), String::new());
+    };
+    let vm = director.sce_vm();
+    let p = vm.global_state().persistent_state();
+    (
+        p.scene_name().unwrap_or_default(),
+        p.sub_scene_name().unwrap_or_default(),
+    )
+}
+
+/// 当前场景的触发点（`ScnScene::agent_triggers`）。`name` 是 `nav:<号>` /
+/// `aabb:<号>` / `item:<号>`，`function` 是 SCE proc 号，`shape` 同 `kind`。
+/// 导航格的走进去就触发；物件和拾取点要站进去按调查键。
+fn handle_scene_triggers(ctx: &Pal3DispatchCtx) -> AgentResponse {
+    use crate::openpal3::directors::SceneManagerExtensions;
+    let (scene, block) = scene_block(ctx);
+    let Some(scn) = ctx.scene_manager.scn_scene() else {
+        return AgentResponse::err(AgentError::conflict("no adventure scene on top"));
+    };
+    let triggers = scn
+        .inner::<crate::openpal3::scene::ScnScene>()
+        .agent_triggers()
+        .into_iter()
+        .map(|t| agent_server::protocol::TriggerEntry {
+            name: format!("{}:{}", t.kind, t.index),
+            function: t.proc_id.to_string(),
+            center: [t.center.x, t.center.y, t.center.z],
+            half_size: [t.half.x, t.half.y, t.half.z],
+            shape: t.kind.to_string(),
+        })
+        .collect();
+    AgentResponse::SceneTriggers(agent_server::protocol::SceneTriggersResponse {
+        scene,
+        block,
+        triggers,
+    })
+}
+
+/// 当前场景的人物（`ScnScene::agent_roles`）。`name` 是 `role:<号>:<名字>`，
+/// 战斗 NPC（野怪）名字前缀 `monster:`；`talk_function` 是对话 proc，没有就空。
+fn handle_scene_objects(ctx: &Pal3DispatchCtx) -> AgentResponse {
+    use crate::openpal3::directors::SceneManagerExtensions;
+    let (scene, block) = scene_block(ctx);
+    let Some(scn) = ctx.scene_manager.scn_scene() else {
+        return AgentResponse::err(AgentError::conflict("no adventure scene on top"));
+    };
+    let npcs = scn
+        .inner::<crate::openpal3::scene::ScnScene>()
+        .agent_roles()
+        .into_iter()
+        .map(|r| agent_server::protocol::NpcEntry {
+            name: format!(
+                "{}:{}:{}",
+                if r.combat { "monster" } else { "role" },
+                r.index,
+                r.name
+            ),
+            position: [r.position.x, r.position.y, r.position.z],
+            visible: r.visible,
+            talk_function: if r.proc_id > 0 {
+                r.proc_id.to_string()
+            } else {
+                String::new()
+            },
+        })
+        .collect();
+    AgentResponse::SceneObjects(agent_server::protocol::SceneObjectsResponse {
+        scene,
+        block,
+        npcs,
+        objects: Vec::new(),
+    })
+}
+
+/// 走引擎自己的触发路径，不直接 `call_proc`：导航格传送进区域（下一帧引擎判
+/// 「新进入」就调 proc），物件 / 拾取点 / 人物传送过去再按一下调查键——触发
+/// 条件、去重、冻结判断全照原来的走。`name` 用 [`handle_scene_triggers`] /
+/// [`handle_scene_objects`] 给的那个。
+fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str) -> AgentResponse {
+    use crate::openpal3::directors::SceneManagerExtensions;
+    let Some(director) = ctx.director else {
+        return AgentResponse::err(AgentError::conflict("no active adventure director"));
+    };
+    let Some(scn) = ctx.scene_manager.scn_scene() else {
+        return AgentResponse::err(AgentError::conflict("no adventure scene on top"));
+    };
+    let scn = scn.inner::<crate::openpal3::scene::ScnScene>();
+    let mut parts = name.splitn(3, ':');
+    let kind = parts.next().unwrap_or_default();
+    let Some(index) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
+        return AgentResponse::err(AgentError::bad_request(format!("bad trigger name: {name}")));
+    };
+    let (target, interact) = match kind {
+        "nav" | "aabb" | "item" => {
+            let Some(t) = scn
+                .agent_triggers()
+                .into_iter()
+                .find(|t| t.kind == kind && t.index as i64 == index)
+            else {
+                return AgentResponse::err(AgentError::bad_request(format!(
+                    "no such trigger: {name}"
+                )));
+            };
+            (t.center, kind != "nav")
+        }
+        "role" | "monster" => {
+            let Some(r) = scn
+                .agent_roles()
+                .into_iter()
+                .find(|r| r.index as i64 == index)
+            else {
+                return AgentResponse::err(AgentError::bad_request(format!(
+                    "no such role: {name}"
+                )));
+            };
+            // 站到人旁边一点（判定是 100 以内，不看朝向）。
+            (
+                Vec3::new(r.position.x + 40., r.position.y, r.position.z),
+                true,
+            )
+        }
+        _ => {
+            return AgentResponse::err(AgentError::bad_request(format!(
+                "bad trigger kind: {kind}"
+            )));
+        }
+    };
+    if !director.teleport_controlled_role(target) {
+        return AgentResponse::err(AgentError::conflict("controlled role cannot be resolved"));
+    }
+    if interact {
+        ctx.bridge.input_bridge.borrow().tap(Key::Space);
+    }
+    AgentResponse::Ok
 }
 
 fn handle_teleport(ctx: &Pal3DispatchCtx, params: TeleportParams) -> AgentResponse {
