@@ -54,7 +54,7 @@
 | `0x243` | `bool bFriend` | 我方 |
 | `0x244` | `bool bBoss` | BOSS |
 | `0x245` | `bool bCanAction` | 能行动 |
-| `0x246` | `bool bWaitForFlee` | 等待逃跑 |
+| `0x246` | `bool bWaitForFlee` | 等待逃跑 → `Combatant::waiting_to_flee`（2026-10-13） |
 | `0x247` | `bool bEnemyFriend` | 敌人的朋友（不挨敌人打） |
 | `0x248` | `int nLevel` | 等级 |
 | `0x24c` | `int nHP` | 精 |
@@ -129,7 +129,7 @@
 | `0x595` | `bool bDoNormalAttack` | 按了 F 普攻 |
 | `0x596` | `bool bTransMtl` | 支持透明材质 |
 | `0x597` | `bool bFleeing` | 正在逃跑 |
-| `0x598` | `bool bFleed` | 已经逃掉 |
+| `0x598` | `bool bFleed` | 已经逃掉 → `Combatant::retired`；`ChangeHP` 的早退 2026-10-13 补上 |
 | `0x59c` | `int nFleeCent` | 每回合逃跑概率 |
 | `0x5a0` | `const char* pHPSign` | 血的位数标志（隐含显示 BOSS 血） |
 

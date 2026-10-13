@@ -356,8 +356,12 @@ pub struct CombatSession {
     /// 合击技表（gdb 里的顺序），开战时给。
     combos: Vec<ComboDef>,
     /// 选好了但还在出手段的那个行动，见 [`Pending`]。同一时刻只可能有一个
-    /// ——调度器一次只排一个行动任务。
+    /// ——调度器一次只排一个行动任务。逃跑不占这一格，见 [`Self::escape`]。
     pub pending: Option<Pending>,
+    /// 按了「逃」、正在等逃跑蓄力满的那一位（原版 `CCBSystem::ProcFleeWait`
+    /// 是条**单开的虚拟线程**，不占行动任务那一格：等待期间别人照样出手，
+    /// 所以这里也单开一格，逃跑的人不会把全场挂住）。
+    pub escape: Option<usize>,
     /// 交给舞台演出的那一次行动（见 [`CombatSession::stage_driven`]）。
     pub staging: Option<Staging>,
     /// 出手条满时先别结算，等舞台演到出手那一刻再调 [`CombatSession::strike`]。
@@ -398,6 +402,7 @@ impl CombatSession {
             turn: None,
             notice: None,
             pending: None,
+            escape: None,
             staging: None,
             stage_driven: false,
             defeated: Vec::new(),
@@ -639,6 +644,16 @@ impl CombatSession {
                 self.notice = None;
             }
         }
+        // 逃跑等待期间中了「禁」，和挨打一样把这一次逃跑打掉
+        // （`CCBSystem::ProcFleeWait`，`cbsystem.cpp:1960`；用道具逃的打不掉，
+        // 移植端的道具逃走 [`crate::openpal3::combat::actions`] 那一路不经过这里）。
+        if let Some(slot) = self.escape {
+            if self.battle.get(slot).is_some_and(|c| c.has_state(K_FORBID)) {
+                self.battle.finish_turn(slot);
+                self.battle.flee_broken = Some(slot);
+            }
+        }
+        self.drop_broken_escape();
         if self.turn.is_some() || self.staging.is_some() {
             return None;
         }
@@ -668,9 +683,8 @@ impl CombatSession {
             match due {
                 // 出手条满了：把先前选定的行动结算掉。
                 Due::Executed(slot) => {
-                    let staged = self.stage_driven
-                        && matches!(self.pending, Some(p) if p.slot() == slot)
-                        && !matches!(self.pending, Some(Pending::Escape { .. }));
+                    let staged =
+                        self.stage_driven && matches!(self.pending, Some(p) if p.slot() == slot);
                     if staged {
                         self.staging = Some(Staging {
                             slot,
@@ -679,6 +693,7 @@ impl CombatSession {
                         return None;
                     }
                     self.resolve_pending(slot);
+                    self.drop_broken_escape();
                     self.settle_outcome();
                     return self.finished;
                 }
@@ -766,6 +781,28 @@ impl CombatSession {
         }
     }
 
+    /// 这一位此刻在演的行动：登记的那个行动，或者正在等的那次逃跑。
+    pub fn acting(&self, slot: usize) -> Option<Pending> {
+        if self.escape == Some(slot) {
+            return Some(Pending::Escape { slot });
+        }
+        self.pending.filter(|p| p.slot() == slot)
+    }
+
+    /// 逃跑等待被打掉：把这一次逃跑作废，人回蓄力段重新选。原版在
+    /// `ProcFleeWait`（`cbsystem.cpp:1972`）发现序列器回到第一槽时弹「逃跑失败」。
+    fn drop_broken_escape(&mut self) {
+        let Some(slot) = self.battle.flee_broken.take() else {
+            return;
+        };
+        if self.escape != Some(slot) {
+            return;
+        }
+        self.escape = None;
+        self.push_log(format!("{} 逃跑被打断", self.name(slot)));
+        self.notice("逃跑失败");
+    }
+
     /// 舞台演完（人走回去了）：放开时钟。没结算过的先结算。
     pub fn release(&mut self) {
         self.strike();
@@ -775,6 +812,20 @@ impl CombatSession {
     /// 出手段结束，行动生效。原版在这一步之后一律走 `FUN_004f4820` →
     /// `FUN_004db710`（两条清零、回蓄力段）。
     fn resolve_pending(&mut self, slot: usize) {
+        if self.escape == Some(slot) {
+            self.escape = None;
+            let ok = self.battle.try_escape(slot);
+            self.push_log(format!(
+                "{} 逃跑{}",
+                self.name(slot),
+                if ok { "成功" } else { "失败" }
+            ));
+            if !ok {
+                self.notice("逃跑失败");
+            }
+            self.battle.finish_turn(slot);
+            return;
+        }
         let Some(p) = self.pending.take() else {
             // 没有登记的行动（例如被打断后又自己走完了出手段），当作空过。
             self.battle.finish_turn(slot);
@@ -800,17 +851,8 @@ impl CombatSession {
                 target,
                 combo,
             } => self.combo(slot, target, combo),
-            Pending::Escape { slot } => {
-                let ok = self.battle.try_escape(slot);
-                self.push_log(format!(
-                    "{} 逃跑{}",
-                    self.name(slot),
-                    if ok { "成功" } else { "失败" }
-                ));
-                if !ok {
-                    self.notice("逃跑失败");
-                }
-            }
+            // 逃跑不走这一格，上面已经接走。
+            Pending::Escape { .. } => {}
         }
         self.battle.finish_turn(slot);
     }
@@ -837,10 +879,15 @@ impl CombatSession {
             None => (action, multiplier),
         };
         let slot = action.slot();
-        self.pending = Some(action);
         match action {
-            Pending::Escape { .. } => self.battle.begin_escape(slot),
-            _ => self.battle.begin_execute(slot, multiplier),
+            Pending::Escape { .. } => {
+                self.escape = Some(slot);
+                self.battle.begin_escape(slot);
+            }
+            _ => {
+                self.pending = Some(action);
+                self.battle.begin_execute(slot, multiplier);
+            }
         }
     }
 
@@ -1378,7 +1425,10 @@ impl CombatSession {
         match entry {
             MenuEntry::Skill => !has(K_SEAL),
             MenuEntry::Item | MenuEntry::Escape => !has(K_FORBID),
-            MenuEntry::Lineup => !self.pending.is_some_and(|p| p.slot() < PARTY_SLOTS),
+            MenuEntry::Lineup => {
+                !self.pending.is_some_and(|p| p.slot() < PARTY_SLOTS)
+                    && !self.escape.is_some_and(|s| s < PARTY_SLOTS)
+            }
             MenuEntry::Protect => {
                 slot == 0
                     && self.battle.get(0).is_some_and(|c| c.element_position == 6)
@@ -2518,7 +2568,8 @@ mod tests {
         s.input(Input::Right); // 逃跑
         s.input(Input::Confirm);
         assert!(s.turn.is_none());
-        assert!(matches!(s.pending, Some(Pending::Escape { slot: 0 })));
+        assert_eq!(s.escape, Some(0));
+        assert!(s.pending.is_none(), "逃跑不占行动那一格");
         // 逃跑一样要走一段出手（`LAB_00515200` 的 0x51527a）。
         for _ in 0..400 {
             if s.log.back().map(|l| l.contains("逃跑")).unwrap_or(false) {
@@ -2528,6 +2579,66 @@ mod tests {
         }
         assert_eq!(s.finished(), None);
         assert_eq!(s.log.back().unwrap(), "景天 逃跑失败");
+    }
+
+    /// 原版 `ProcFleeWait` 是单开的虚拟线程，不占「一次只排一个行动任务」那一格：
+    /// 逃跑蓄力期间怪照样出手，打中了这一次逃跑就作废
+    /// （`cbrolestate.cpp:5209` → `cbsystem.cpp:1972` 的「逃跑失败」）。
+    #[test]
+    fn an_enemy_can_break_the_escape_while_it_winds_up() {
+        let mut s = session();
+        // 逃的人慢、怪快，蓄力期间轮得到怪；怪打得轻、人厚血，打不死。
+        // 蓄力速度是 `(速_eff + 4) × 5` 截成 u8，速 47 正好顶到 255。
+        {
+            let p = s.battle.get_mut(0).unwrap();
+            p.speed = 1;
+            p.max_hp = 5000;
+            p.hp = 5000;
+        }
+        {
+            let e = s.battle.get_mut(5).unwrap();
+            e.speed = 47;
+            e.attack = 12;
+        }
+        let slot = run_until_turn(&mut s);
+        assert_eq!(slot, 0);
+        s.input(Input::Down);
+        s.input(Input::Right); // 逃跑
+        s.input(Input::Confirm);
+        assert_eq!(s.escape, Some(0));
+        assert!(s.pending.is_none());
+
+        let hp = s.battle.get(0).unwrap().hp;
+        for _ in 0..2000 {
+            if s.escape.is_none() {
+                break;
+            }
+            assert!(s.tick(0.05).is_none(), "战斗不该在这里结束");
+        }
+        assert_eq!(s.escape, None, "逃跑被打掉了");
+        assert!(s.battle.get(0).unwrap().hp < hp, "是挨打打掉的");
+        assert!(
+            s.log.iter().any(|l| l.contains("逃跑被打断")),
+            "{:?}",
+            s.log
+        );
+        assert!(!s.battle.get(0).unwrap().retired, "没跑成");
+        assert_eq!(s.battle.get(0).unwrap().phase, Phase::Charging);
+    }
+
+    /// 逃跑等待期间中了「禁」，一样打掉（`cbsystem.cpp:1960`）。
+    #[test]
+    fn a_seal_knocks_the_escape_down_too() {
+        let mut s = session();
+        run_until_turn(&mut s);
+        s.input(Input::Down);
+        s.input(Input::Right);
+        s.input(Input::Confirm);
+        assert_eq!(s.escape, Some(0));
+        s.battle.get_mut(0).unwrap().states[K_FORBID].active = true;
+        s.tick(0.05);
+        assert_eq!(s.escape, None);
+        assert_eq!(s.battle.get(0).unwrap().phase, Phase::Charging);
     }
 
     #[test]

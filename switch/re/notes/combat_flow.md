@@ -1213,6 +1213,34 @@ if (desc->+0x50 != 0) ok = 0;                    // 禁止逃跑：掷完再否�
 `item_use.md` §2.3）。原先这里写"怪物或剧情驱动的逃跑，不是玩家菜单"是错的：
 它确实由玩家菜单触发，只是入口是道具而不是逃跑项。
 
+#### 逃跑是一段**可以被打掉的等待**（2026-10-13 补）
+
+源码把这段讲清楚了：`CCBSystem::ProcFleeWait`（`cbsystem.cpp:1874`）。按下
+「逃」之后并不是立刻掷骰子，而是：
+
+1. 把这一位切到**第二槽**（出手条），速度设成默认速度的 4 倍，置
+   `bWaitForFlee = true`（战斗位 `+0x246`）；
+2. 第二槽蓄满 → 真的发动（`ProcFlee`）；
+3. **蓄力期间挨上一下就作废**：`CCBRoleState::ChangeHP`（`cbrolestate.cpp:5209`）
+   在扣完血之后查 `IsRoleWaitForFlee(位)`，中了就
+   `GetAttackSequen()->Set(位, 0, 0, false)` —— 两个槽一起清零、回第一槽；
+4. 中了**禁**一样作废（`cbsystem.cpp:1960`，同一句 `Set(…, 0, 0, false)`）；
+   用道具逃（`m_bFleeAlwaysSuccess`）打不掉；
+5. `ProcFleeWait` 下一帧发现序列器回到了第一槽，弹「逃跑失败」
+   （`CBST_ShowFleeResult`）。
+
+关键是 **`ProcFleeWait` 是条单开的虚拟线程，不占「行动任务」那一格**：
+`ProcControl`（`cbsystem.cpp:910`）每帧把 11 个位整个过一遍，谁到了 com1 谁
+出手，只有控制面板（玩家菜单）打开时才 `SetPause(true)` 把整条序列停住。
+所以逃跑等待期间怪照样打人，这条「打掉」才有意义。
+
+移植端原先把逃跑和别的行动一样挂在 `CombatSession::pending` 上，而
+`pending` 同一时刻只容得下一个 —— 结果是按下逃跑之后全场都不出手，逃跑必成。
+2026-10-13 把逃跑单独挪到 `CombatSession::escape`，别人照常出手；
+`Combatant::waiting_to_flee` 对应 `bWaitForFlee`，`Battle::change_hp` 打掉它时
+把位号记在 `Battle::flee_broken` 上，由会话领走、弹「逃跑失败」。
+**别的行动仍然是一次只挂一个**，那一层的简化没动。
+
 > 数据库里 `CombatActorInfo.escape_rate`（+0x2d4）在 0x4d0000–0x520000
 > 全段**没有任何读取者**（唯一命中是 `FUN_004fa930` 里对**仙术**记录
 > +0x2d4 = `composite_skill_ids[0]` 的访问，属同偏移误撞）。

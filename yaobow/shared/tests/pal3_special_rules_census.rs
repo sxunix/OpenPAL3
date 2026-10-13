@@ -127,3 +127,44 @@ fn the_skill_special_column_holds_only_nine_values() {
         ]
     );
 }
+/// `FightItem::special`（移植端的 `item_special_type`）和仙术共用同一张
+/// `SpecAffect` 表，但道具只用得到前四个号：1 随机一种毒、2 100% 脱离战斗、
+/// 3 引路、4 等级提升一（`fightdata.h:131`）。战斗里真正会走 `SpecAffect` 的
+/// 只有 1 和 2 两组，这张表钉住它们，别的号全是装备侧的（20..24 由
+/// `InitRoleSpecEquipAttrib` 读，而且**只读帽衣鞋和两个饰品，不读武器**，
+/// 所以刀剑弓杖身上的 22/23/24 不起作用）。
+#[test]
+fn only_four_items_reach_spec_affect_in_combat() {
+    let Some(gdb) = gdb() else {
+        eprintln!("skipping: set YAOBOW_PAL3_ASSETS to an installed PAL3 directory");
+        return;
+    };
+
+    let mut rows: Vec<(u8, u32, String)> = gdb
+        .items
+        .iter()
+        .filter(|i| (1..=4).contains(&i.item_special_type))
+        .map(|i| {
+            (
+                i.item_special_type,
+                i.id,
+                i.name.as_str().unwrap().to_string(),
+            )
+        })
+        .collect();
+    rows.sort();
+    assert_eq!(
+        rows,
+        vec![
+            // 1 随机一种毒：`use_item` 的 `ITEM_SPECIAL_GU`。
+            (1, 6113, "蛊".to_string()),
+            (1, 6125, "五毒珠".to_string()),
+            // 2 脱离战斗：`use_item` 的 `ITEM_SPECIAL_FLEE`。
+            (2, 6114, "鬼遁水".to_string()),
+            // 3 引路、4 升一级：都是战斗外的，在 `states::item_use` 里。
+            (3, 6401, "引路蜂".to_string()),
+            (3, 6427, "土灵珠".to_string()),
+            (4, 6405, "紫幽粉".to_string()),
+        ]
+    );
+}

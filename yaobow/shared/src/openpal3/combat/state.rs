@@ -203,6 +203,10 @@ pub struct Combatant {
     /// 正在逃（`+0x597`）：掷中了、还没跑出去。不能当目标、不再出手，但判胜负时还算在场
     /// （`FUN_004ed100` 只看 `+0x598`）。跑完变成 [`Self::retired`]。
     pub fleeing: bool,
+    /// 按了「逃」、正在等逃跑蓄力满（原版战斗位的 `bWaitForFlee`，由
+    /// `CCBSystem::ProcFleeWait` 置位 / 清位，`cbsystem.cpp:1874`）。等待期间挨
+    /// 上一下就会被打掉，见 [`Battle::change_hp`]。
+    pub waiting_to_flee: bool,
     /// 装齐了「千金散去」（原版战斗位 `+0x2bc` 的 `bLostMoneyGetLife`）：绿幞头
     /// 80015 + 通神 84018 + 元宝鞋 83012 + 右利 8153 + 左利 8154（后两件左右不论，
     /// `cbrolestate.cpp:1358`）。掉血时先拿队伍的钱抵，见 [`Battle::change_hp`]。
@@ -344,6 +348,7 @@ impl Combatant {
             steal_item: None,
             escape_rate: 0,
             fleeing: false,
+            waiting_to_flee: false,
             lost_money_get_life: false,
             rounds: 0,
             hp_regen: 0.,
@@ -611,6 +616,10 @@ pub struct Battle {
     /// 「本场有新人产生」的 `m_bCreatedNewRole` 是条死字段：全树只有声明和一个
     /// `HasNewRoleCreated()`，没人写也没人读。）
     pub pending_spawns: Vec<(usize, u32)>,
+    /// 逃跑等待被打掉的那一位（`cbrolestate.cpp:5209`）。`Battle` 不知道谁登记了
+    /// 什么行动，所以只记下位号，由 [`CombatSession`](super::session::CombatSession)
+    /// 领走、把那一次逃跑作废。
+    pub flee_broken: Option<usize>,
     pub rng: CombatRng,
 }
 
@@ -630,6 +639,7 @@ impl Battle {
             stolen_items: Vec::new(),
             spent_gu: 0,
             pending_spawns: Vec::new(),
+            flee_broken: None,
             rng: CombatRng::new(seed),
         }
     }
@@ -755,22 +765,29 @@ impl Battle {
     /// 按源码 `cbrolestate.cpp:5142` 的次序：
     ///
     /// 1. 已经倒下（`bAlive == 0`）→ 精归零、返回 0；
-    /// 2. 隐（`CBRSS_Hermit`）→ 什么都不做；
-    /// 3. 防御中（`bDefence`）且 `delta < -1` → 伤害折半（刚好 −1 的不折）；
-    /// 4. **千金散去**（`bLostMoneyGetLife`，`:5181`）：掉血时先拿队伍的钱抵。
+    /// 2. 已经跑掉（`bFleed`，移植端的 [`Combatant::retired`]）→ 什么都不做；
+    /// 3. 隐（`CBRSS_Hermit`）→ 什么都不做；
+    /// 4. 防御中（`bDefence`）且 `delta < -1` → 伤害折半（刚好 −1 的不折）；
+    /// 5. **千金散去**（`bLostMoneyGetLife`，`:5181`）：掉血时先拿队伍的钱抵。
     ///    钱够就一点血不掉、照数扣钱；不够就把钱花光，剩下的照掉。
     ///
     /// 钱是全队一份（`GetMoney()` 读的是 `m_Role[0].nMoney`），移植端记在
     /// [`Self::spent_money`] 上，散场时一次写回冒险侧。
     ///
-    /// 原版这里还有一条 `bFleed` 的早退（跑掉的人不再掉血），移植端的
-    /// [`Combatant::retired`] 把「跑掉」和「整队撤了」合在一起，没照抄这条。
+    /// 扣完血还有一条：挨打的人正按着「逃」等蓄力（[`Combatant::waiting_to_flee`]），
+    /// 这一次逃跑就被打掉（`:5209` 的 `GetAttackSequen()->Set(位, 0, 0, false)`
+    /// ——两个槽一起清零、回蓄力段），位号记在 [`Self::flee_broken`] 里。
     pub fn change_hp(&mut self, slot: usize, delta: i32) -> i32 {
         let Some(c) = self.get(slot) else { return 0 };
         if !c.alive {
             if let Some(c) = self.get_mut(slot) {
                 c.hp = 0;
             }
+            return 0;
+        }
+        // 跑掉的人（`bFleed`）不再掉血。移植端的 `retired` 还兼着「鬼遁水整队撤了」，
+        // 那一刻战斗也已经结束，一并挡掉是对的。
+        if c.retired {
             return 0;
         }
         if c.has_state(K_INVISIBLE) {
@@ -797,6 +814,13 @@ impl Battle {
 
         let moved = self.get_mut(slot).map(|c| c.apply_hp(delta)).unwrap_or(0);
 
+        // 逃跑等待被打掉（`cbrolestate.cpp:5209`）。
+        if delta < 0 && self.get(slot).is_some_and(|c| c.waiting_to_flee) {
+            self.finish_turn(slot);
+            self.flee_broken = Some(slot);
+            log::info!("Combat: 位 {slot} 的逃跑被打掉了");
+        }
+
         // 重楼（738）精见底不是死，是当场换成「重楼变身」739
         // （`cbrolestate.cpp:5230` → `HandleChongLouAnamo`）。原版还会把战场换成
         // `z39`（红场），移植端没做——舞台是整场建一次的，中途换场得整个重搭。
@@ -817,7 +841,10 @@ impl Battle {
     /// 在 [`Self::special_on`] 里做了）、25（263 大挪移）、26/27/28/30（912/913/914/929
     /// 这几条「物理攻击」，走的是普攻方式那一路 `attack_mode_effect`）、
     /// 29（7710 唤妖术）、31（7711 仙术2，`SpecAffect` 里**没有** case 31，什么也不做）。
-    /// 道具那一路（蛊、鬼遁水）在 [`Self::use_item`] 里。
+    /// 道具那一路（蛊、鬼遁水）在 [`Self::use_item`] 里：`FightItem::special` 和
+    /// `FightSkill::special` 共用同一张 `SpecAffect` 表，但道具只用到 1 / 2 / 3 / 4
+    /// 四个号。case 2（100% 脱离战斗）因此只有道具会走，发行数据里没有 `special == 2`
+    /// 的仙术；case 24（精进，经验 +20%）在 `LoadRoleData` 里算，不在这里。
     pub(super) fn skill_spec_affect(&mut self, target: usize, index: u8) {
         match index {
             // 1：随机一种毒（`SetRoleRandPoison`）。
@@ -1110,6 +1137,7 @@ impl Battle {
         c.phase = Phase::Executing;
         c.cast_gauge = 0.;
         c.cast_rate = c.escape_cast_rate();
+        c.waiting_to_flee = true;
     }
 
     /// `FUN_004db750(k, 0, 0, 1)` —— 留在出手段但把出手条清零，等于重新
@@ -1131,6 +1159,7 @@ impl Battle {
             c.gauge = 0.;
             c.cast_gauge = 0.;
             c.phase = Phase::Charging;
+            c.waiting_to_flee = false;
         }
     }
 
@@ -1910,6 +1939,44 @@ mod tests {
         b.place(0, fighter(0, Side::Party, 80, 26, 14, 3));
         b.place(5, fighter(100, Side::Enemy, 60, 20, 8, 2));
         b
+    }
+
+    /// `ChangeHP` 的第二道早退：跑掉的人（`bFleed`）不再掉血。
+    #[test]
+    fn someone_who_has_already_fled_stops_taking_damage() {
+        let mut b = alone(fighter(0, Side::Party, 100, 10, 0, 3));
+        b.get_mut(0).unwrap().retired = true;
+        assert_eq!(b.change_hp(0, -30), 0);
+        assert_eq!(b.get(0).unwrap().hp, 100);
+        // 回血也一样挡掉。
+        assert_eq!(b.change_hp(0, 20), 0);
+        assert_eq!(b.get(0).unwrap().hp, 100);
+    }
+
+    /// `cbrolestate.cpp:5209`：正按着「逃」等蓄力的人挨上一下，两个槽一起清零，
+    /// 这一次逃跑作废。
+    #[test]
+    fn a_hit_knocks_the_escape_down() {
+        let mut b = alone(fighter(0, Side::Party, 100, 10, 0, 3));
+        b.begin_escape(0);
+        assert!(b.get(0).unwrap().waiting_to_flee);
+        b.get_mut(0).unwrap().cast_gauge = 5000.;
+
+        assert_eq!(b.change_hp(0, -10), -10);
+        assert_eq!(b.flee_broken, Some(0));
+        let c = b.get(0).unwrap();
+        assert_eq!(c.phase, Phase::Charging, "回蓄力段");
+        assert_eq!(c.gauge, 0.);
+        assert_eq!(c.cast_gauge, 0.);
+        assert!(!c.waiting_to_flee);
+
+        // 回血打不掉。
+        let mut b = alone(fighter(0, Side::Party, 100, 10, 0, 3));
+        b.begin_escape(0);
+        b.get_mut(0).unwrap().hp = 50;
+        b.change_hp(0, 10);
+        assert_eq!(b.flee_broken, None);
+        assert_eq!(b.get(0).unwrap().phase, Phase::Executing);
     }
 
     #[test]

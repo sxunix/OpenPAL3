@@ -2472,7 +2472,6 @@ impl SceCommandCombat {
         let Some(session) = self.session.as_ref() else {
             return;
         };
-        let pending = session.pending;
         let mut fled: Vec<usize> = Vec::new();
         for slot in 0..self.actors.len() {
             let Some(actor) = self.actors[slot].as_mut() else {
@@ -2481,7 +2480,7 @@ impl SceCommandCombat {
             let Some(c) = session.battle.get(slot) else {
                 continue;
             };
-            let acting = pending.filter(|p| p.slot() == slot).map(|p| match p {
+            let acting = session.acting(slot).map(|p| match p {
                 Pending::Attack { .. } => ActKind::Attack,
                 Pending::Cast { special: true, .. } => ActKind::Special,
                 Pending::Cast { .. } | Pending::Combo { .. } => ActKind::Cast,
