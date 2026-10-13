@@ -837,3 +837,35 @@ pawnshop's 陈列 / 休息, and the remaining combat camera moves. Visual gaps
 that do not block play: the ski slope and swat-a-fly art, the inn's
 original layout, the screen trail effect. And the Switch build still needs
 someone to look at the off-screen render targets on real hardware.
+
+# Stage 20 — playing the main story forward (2026-10-13)
+
+`tools/pal3_drive/explore.py` now plays the game forward on its own: it
+walks the player (through the engine, one tile per frame, vines, layer
+portals and maze jumps included) to whichever trigger, NPC or exit it has
+not tried in the current plot state, pushes dialogs and choices, fights
+the battles, and saves when the plot variable (-32768) moves. With
+`--level 15` it went from 10200 (chapter 1, 永安当) to 30500 (chapter 3,
+back in 渝州). What it turned up, each fixed against the original:
+
+- walk-on triggers judged by layer / active / times (`scene.cpp:702`);
+- no `ObjLockInput` — re-interacting while a triggered script ran
+  restarted it (the kitchen-basement ladder);
+- script run mode was one global flag instead of per script instance
+  (`scasmdecoder.cpp:256`) — a dialog menu loop froze the game;
+- `Sprite` never returned its imgui texture — the Vulkan descriptor pool
+  ran dry on long sessions;
+- story battles drawn under the pre-battle `FadeOut` (the original never
+  draws screen effects in `GAME_COMBAT`);
+- layer changes now use the nav file's portal pairs (`Role::UpdateLayer`);
+- talking picks the target like `GetSelRole_RoleCtrl`, party members with
+  a script-assigned talk proc included (the boat on the way to 蓬莱);
+- the combat scheduler no longer makes a unit wait for someone else's
+  action to settle before choosing its own (`ProcControl`), which had let
+  a full party starve the enemies of turns.
+
+The large gap it exposed: most interactive scene objects (chests, item
+pickups, save points, push boxes, character-skill gates, switches, vines,
+lifts…) have no examine behaviour yet — the original's
+`SceneObj::InterActRole` / `Update` (~2500 lines) is ported only for four
+types. The main story has not been blocked by it so far.
