@@ -130,6 +130,12 @@ impl SceVm {
         if curtain == 0. {
             return;
         }
+        // 打仗时不盖：原版屏幕特效（淡入淡出）只在 `s_gamestate != GAME_COMBAT` 时画
+        // （`gamebase/pal3.cpp` 渲染 UI 那段的 `ScreenEffectMgr::Render`）。剧情战前常先
+        // FadeOut、战后再 FadeIn，先前整场战斗被这块黑幕盖着，只看得见 HUD。
+        if self.state.combat().is_some_and(|c| c.active) {
+            return;
+        }
 
         self.state_mut().render_curtain();
     }

@@ -87,16 +87,20 @@ def settle(c: Client, issues: list, label: str) -> dict:
         elif dlg.get("open"):
             choices = dlg.get("choices") or []
             if choices:
-                # 同一个选单每来一次换下一项：「是 / 否」先选「是」，「1. 关于… 2. … 3. 不想知道」
-                # 这种选了会绕回来的，轮到最后一项就出去了。选单每次打开光标都在第一项。
+                # 同一个选单头一次选第一项（「是 / 否」选「是」），以后选最后一项（多半是「离开 /
+                # 不想知道 / 问别的」，选了会绕回来的问答就出去了）。选单每次打开光标都在第一项。
                 key_ = tuple(choices)
-                k = CHOICE_TURNS.get(key_, 0) % len(choices)
+                k = 0 if CHOICE_TURNS.get(key_, 0) == 0 else len(choices) - 1
                 CHOICE_TURNS[key_] = CHOICE_TURNS.get(key_, 0) + 1
                 issues.append({"kind": "choice", "at": label, "choices": choices, "picked": k})
-                for _ in range(k):
-                    c.key("GamePadDPadDown")
-                    time.sleep(0.05)
-                c.key("GamePadEast")
+                if k < 9:
+                    # 选单认数字键直接选（`DlgSel` 的 KEY_NUM_MAP），不靠数十字键按了几下。
+                    c.key(f"Num{k + 1}")
+                else:
+                    for _ in range(k):
+                        c.key("GamePadDPadDown")
+                        time.sleep(0.05)
+                    c.key("GamePadEast")
             else:
                 c.dialog_advance()
             lines += 1
@@ -126,6 +130,16 @@ LAST_UNREACHABLE: dict = {}
 # 最近一次 candidates() 里各触发点的位置；进块时主角站的位置。挑出口时同样没走过的先挑离进来的
 # 地方远的——近的那个多半就是来时的门。
 CENTERS: dict = {}
+# 各触发点挂的过程号。PAL3 的过程号按用途分段：1000–1199 是剧情（「被捉去霹雳堂」1001、「霹雳武士出现」
+# 1004……），1200 起是路人对话，1500 起是进场，2000 起是出口，几百的是门。剧情段的先试。
+FUNCS: dict = {}
+
+
+def story(name: str) -> bool:
+    try:
+        return 1000 <= int(FUNCS.get(name, "0")) < 1200
+    except ValueError:
+        return False
 ARRIVAL: dict = {}
 
 
@@ -146,7 +160,8 @@ def candidates(c: Client) -> tuple[list[str], list[str]]:
              if r.get("visible") and r.get("talk_function") and r["name"].startswith("role:")]
     trig = c.triggers()
     touch = [t for t in trig if t["shape"] in ("aabb", "item")]
-    nav = [t["name"] for t in trig if t["shape"] == "nav"]
+    # 不挂过程的走格触发（跳跃区之类）走过去什么也不发生，不算。
+    nav = [t["name"] for t in trig if t["shape"] == "nav" and str(t.get("function")) not in ("", "0")]
     points = [r["position"] for r in roles] + [t["center"] for t in touch]
     names = [r["name"] for r in roles] + [t["name"] for t in touch]
     here = c.state().get("leader_pos") or [0, 0, 0]
@@ -158,6 +173,9 @@ def candidates(c: Client) -> tuple[list[str], list[str]]:
     acts = [n for n, good in zip(names, ok) if good]
     reach_nav = set(res.get("nav_triggers") or [])
     navs = [n for n in nav if n in reach_nav]
+    FUNCS.clear()
+    FUNCS.update({t["name"]: str(t.get("function")) for t in trig})
+    FUNCS.update({r["name"]: str(r.get("talk_function")) for r in roles})
     CENTERS.clear()
     CENTERS.update({t["name"]: t["center"] for t in trig})
     CENTERS.update({r["name"]: r["position"] for r in roles})
@@ -212,7 +230,7 @@ def main() -> int:
         if ARRIVAL.get("block") != (key[0], key[1]):
             ARRIVAL.update({"block": (key[0], key[1]), "pos": c.state().get("leader_pos")})
         todo = sorted([n for n in acts + navs if n not in done],
-                      key=lambda n: (n_of(n), n in navs, -far(n)))
+                      key=lambda n: (not story(n), n_of(n), n in navs, -far(n)))
         if todo:
             name = todo[0]
             done.add(name)
