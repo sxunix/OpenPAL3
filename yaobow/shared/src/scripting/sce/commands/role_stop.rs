@@ -20,9 +20,13 @@ impl SceCommand for SceCommandRoleStop {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
-        scene_manager
+        // 找不到人（栈顶是小游戏 / 战斗的场景，或者场景里没这个人）就什么都不做。
+        if scene_manager
             .resolve_role_mut_do(state, self.role_id, |_, r| r.idle())
-            .unwrap();
+            .is_none()
+        {
+            log::warn!("RoleStop: 找不到角色 {}，跳过", self.role_id);
+        }
 
         true
     }

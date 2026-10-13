@@ -138,9 +138,17 @@ impl SceCommandLoadScene {
         log::info!("sce: LoadScene {}/{}", self.name, self.sub_name);
         scene_manager.pop_scene();
         scene_manager.push_scene(state.asset_mgr().load_scn(&self.name, &self.sub_name));
-        let e = scene_manager.get_resolved_role(state, -1).unwrap();
-        let r = RoleController::get_role_controller(e.clone()).unwrap();
-        r.inner::<RoleController>().set_active(true);
+        // 新场景里找不到主角（数据问题）就别崩，留一条错误日志。
+        if let Some(e) = scene_manager.get_resolved_role(state, -1) {
+            let r = RoleController::get_role_controller(e.clone()).unwrap();
+            r.inner::<RoleController>().set_active(true);
+        } else {
+            log::error!(
+                "LoadScene {}/{}: 新场景里找不到主角",
+                self.name,
+                self.sub_name
+            );
+        }
 
         state
             .global_state_mut()

@@ -23,6 +23,15 @@ impl SceCommand for SceCommandRoleSetPos {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
+        // 找不到人（栈顶不是冒险场景，或者场景里没这个人）就跳过。下面同一帧里
+        // 再取一次一定取得到。
+        if scene_manager
+            .get_resolved_role(state, self.role_id)
+            .is_none()
+        {
+            log::warn!("RoleSetPos: 找不到角色 {}，跳过", self.role_id);
+            return true;
+        }
         let position = {
             let role = scene_manager
                 .get_resolved_role(state, self.role_id)

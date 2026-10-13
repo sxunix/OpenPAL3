@@ -62,9 +62,10 @@ impl SceCommand for SceCommandRoleMoveTo {
     ) -> bool {
         let speed = move_speed(state, self.role_id, self.mode);
 
-        let role = scene_manager
-            .get_resolved_role(state, self.role_id)
-            .unwrap();
+        let Some(role) = scene_manager.get_resolved_role(state, self.role_id) else {
+            log::warn!("RoleMoveTo: 找不到角色 {}，跳过", self.role_id);
+            return true;
+        };
 
         let role_controller = RoleController::get_role_controller(role).unwrap();
         let to = {

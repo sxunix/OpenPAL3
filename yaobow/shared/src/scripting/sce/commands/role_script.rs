@@ -21,9 +21,10 @@ impl SceCommand for SceCommandRoleScript {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
-        let role = scene_manager
-            .get_resolved_role(state, self.role_id)
-            .unwrap();
+        let Some(role) = scene_manager.get_resolved_role(state, self.role_id) else {
+            log::warn!("RoleScript: 找不到角色 {}，跳过", self.role_id);
+            return true;
+        };
 
         let role_controller = RoleController::get_role_controller(role).unwrap();
         role_controller
