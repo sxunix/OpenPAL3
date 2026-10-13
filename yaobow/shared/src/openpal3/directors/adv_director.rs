@@ -2892,12 +2892,30 @@ impl AdventureDirectorProps {
                             self.scene_manager
                                 .get_resolved_role(self.sce_vm.state(), -1),
                         ) {
-                            let pos = role.transform().borrow().position();
-                            let (dx, dz) = (goal.point.x - pos.x, goal.point.z - pos.z);
-                            let base = dz.atan2(dx);
                             let layer = RoleController::get_role_controller(role.clone())
                                 .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
                             let scene = self.scene_manager.scn_scene();
+                            // 路点是格子中心；玩家能一直走到格子边上。朝目标再挪近（每步 1，落点
+                            // 得能走、离目标不到 12 就停），躺在床上的人这样才进得了 24 以内。
+                            let mut pos = role.transform().borrow().position();
+                            if let Some(s) = scene.as_ref() {
+                                let s = s.inner::<crate::openpal3::scene::ScnScene>();
+                                for _ in 0..24 {
+                                    let (dx, dz) = (goal.point.x - pos.x, goal.point.z - pos.z);
+                                    let d = (dx * dx + dz * dz).sqrt();
+                                    if d < 12. {
+                                        break;
+                                    }
+                                    let next = Vec3::new(pos.x + dx / d, pos.y, pos.z + dz / d);
+                                    if !s.walkable_at(layer, &next) {
+                                        break;
+                                    }
+                                    pos = next;
+                                }
+                                role.transform().borrow_mut().set_position(&pos);
+                            }
+                            let (dx, dz) = (goal.point.x - pos.x, goal.point.z - pos.z);
+                            let base = dz.atan2(dx);
                             let picks = |a: f32| {
                                 let fwd = Vec3::new(a.cos(), 0., a.sin());
                                 scene.as_ref().is_some_and(|s| {
