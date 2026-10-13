@@ -22,7 +22,7 @@ mod vitagl;
 mod switchgl;
 
 pub use engine::{CapturedFrame, RenderingEngine};
-pub use factory::ComponentFactory;
+pub use factory::{ComponentFactory, ImguiTextureReleaseQueue};
 pub use material::{
     BlendMode, CullMode, DepthMode, GradientYMaterialDef, GrassMaterialDef, LightMapMaterialDef,
     LitMaterialDef, MaterialDef, MaterialDefBuilder, MaterialKey, MaterialParams,

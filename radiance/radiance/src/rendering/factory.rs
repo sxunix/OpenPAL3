@@ -1,9 +1,17 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use imgui::TextureId;
 
 use super::{
     MaterialDef, RenderObjectHandle, RenderTarget, RenderingComponent, Texture, VertexBuffer,
     VideoPlayer, texture::TextureDef,
 };
+
+/// imgui textures handed back for release. The backend frees each one only after
+/// the GPU frames that might still sample it have finished: a texture can be
+/// dropped during update while this frame's draw list already references it.
+pub type ImguiTextureReleaseQueue = Rc<RefCell<Vec<(TextureId, Box<dyn Texture>)>>>;
 
 pub trait ComponentFactory {
     fn create_texture(&self, texture_def: &TextureDef) -> Box<dyn Texture>;
@@ -18,6 +26,13 @@ pub trait ComponentFactory {
     ) -> (Box<dyn Texture>, TextureId);
 
     fn remove_imgui_texture(&self, texture_id: Option<TextureId>);
+
+    /// Where a short-lived imgui texture (a [`super::Sprite`]) goes when its owner
+    /// drops it. `None` means the backend frees the texture itself when the
+    /// `Box<dyn Texture>` drops (the GL backends: the imgui id is the GL name).
+    fn imgui_texture_release_queue(&self) -> Option<ImguiTextureReleaseQueue> {
+        None
+    }
 
     fn create_render_object(
         &self,

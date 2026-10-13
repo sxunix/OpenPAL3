@@ -135,6 +135,12 @@ impl ComponentFactory for VulkanComponentFactory {
         self.imgui.borrow_mut().remove_texture(texture_id);
     }
 
+    fn imgui_texture_release_queue(
+        &self,
+    ) -> Option<crate::rendering::factory::ImguiTextureReleaseQueue> {
+        Some(self.imgui.borrow().release_queue())
+    }
+
     fn create_render_object(
         &self,
         vertices: VertexBuffer,

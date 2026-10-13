@@ -1,5 +1,6 @@
 use super::{descriptor_managers::DescriptorManager, device::Device, instance::Instance};
 use crate::imgui::{ImguiContext, ImguiFrame};
+use crate::rendering::{Texture, factory::ImguiTextureReleaseQueue};
 use ash::vk::{self, DescriptorSet};
 use imgui::*;
 use imgui_rs_vulkan_renderer::*;
@@ -10,10 +11,18 @@ use std::{
 };
 use vk_mem::{Allocator, AllocatorCreateInfo};
 
+/// Frames a released imgui texture waits before it is freed: one for the frame
+/// that may have drawn it after its owner dropped it, plus every frame in flight.
+const RELEASE_DELAY_FRAMES: u32 = super::vulkan_engine::MAX_FRAMES_IN_FLIGHT as u32 + 1;
+
 pub struct ImguiRenderer {
     renderer: Renderer,
     descriptor_manager: Rc<DescriptorManager>,
     texture_id_set: HashSet<TextureId>,
+    /// Textures owners have handed back ([`crate::rendering::Sprite`] on drop).
+    release_queue: ImguiTextureReleaseQueue,
+    /// Released textures counting down to being freed.
+    releasing: Vec<(TextureId, Box<dyn Texture>, u32)>,
     _device: Rc<Device>,
 }
 
@@ -84,8 +93,38 @@ impl ImguiRenderer {
             renderer,
             descriptor_manager,
             texture_id_set: HashSet::new(),
+            release_queue: Default::default(),
+            releasing: Vec::new(),
             _device: device.clone(),
         }
+    }
+
+    pub fn release_queue(&self) -> ImguiTextureReleaseQueue {
+        self.release_queue.clone()
+    }
+
+    /// Once per recorded frame: free the textures whose wait is over, then start
+    /// the wait for the ones handed back since the last frame.
+    fn collect_released_textures(&mut self) {
+        let mut done = Vec::new();
+        self.releasing.retain_mut(|(id, _, frames)| {
+            *frames -= 1;
+            if *frames == 0 {
+                done.push(*id);
+                false
+            } else {
+                true
+            }
+        });
+        for id in done {
+            self.remove_texture(Some(id));
+        }
+        let fresh: Vec<_> = self.release_queue.borrow_mut().drain(..).collect();
+        self.releasing.extend(
+            fresh
+                .into_iter()
+                .map(|(id, texture)| (id, texture, RELEASE_DELAY_FRAMES)),
+        );
     }
 
     pub fn upsert_texture(
@@ -149,6 +188,8 @@ impl ImguiRenderer {
         if draw_data.total_idx_count > 0 {
             self.renderer.cmd_draw(command_buffer, draw_data).unwrap();
         }
+
+        self.collect_released_textures();
     }
 }
 
