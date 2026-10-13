@@ -172,6 +172,9 @@ struct AppraiseGame {
     diffent: Vec<String>,
     /// 五对的 (真品名, 赝品名)。
     names: [(String, String); ITEM_COUNT],
+    /// 真品的说明（gdb 物品「文字说明」，原版 `FightItem::desc`）。展示页放大
+    /// 时和名字一起写进牌子的文字区。
+    descs: [String; ITEM_COUNT],
     /// 五对的 [真品, 赝品] 模型，读不出来的是 `None`。
     models: Vec<[Option<Model>; 2]>,
     exhibit_bk: Option<Backdrop>,
@@ -225,13 +228,14 @@ impl AppraiseGame {
         }
 
         let db = state.global_state().game_db()?.clone();
-        let item_text = |id: u32| -> (String, String) {
+        let item_text = |id: u32| -> (String, String, String) {
             let Some(item) = db.item(id) else {
-                return (String::new(), String::new());
+                return (String::new(), String::new(), String::new());
             };
             (
                 item.name.as_str().unwrap_or_default(),
                 item.model_name.as_str().unwrap_or_default(),
+                item.description.as_str().unwrap_or_default(),
             )
         };
 
@@ -239,11 +243,13 @@ impl AppraiseGame {
         scene.set_lighting(SceneLighting::new([1., 1., 1.], vec![]));
 
         let mut names: [(String, String); ITEM_COUNT] = Default::default();
+        let mut descs: [String; ITEM_COUNT] = Default::default();
         let mut models = Vec::with_capacity(ITEM_COUNT);
         for (i, (real, fake)) in PAIRS.iter().enumerate() {
-            let (real_name, real_model) = item_text(*real);
-            let (fake_name, fake_model) = item_text(*fake);
+            let (real_name, real_model, real_desc) = item_text(*real);
+            let (fake_name, fake_model, _) = item_text(*fake);
             names[i] = (real_name, fake_name);
+            descs[i] = real_desc;
             let mut pair = [None, None];
             for (k, model_name) in [real_model, fake_model].iter().enumerate() {
                 let path = Self::vfs_path(&format!("{MODEL_DIR}/{model_name}.pol"));
@@ -307,6 +313,7 @@ impl AppraiseGame {
             lang,
             diffent,
             names,
+            descs,
             models,
             exhibit_bk,
             exhibit_zoom,
@@ -441,9 +448,13 @@ impl AppraiseGame {
         .into_iter()
         .flatten()
         {
+            // 每帧从单位阵重摆：`scale_local` 是在现有矩阵上累乘的，不先
+            // `clear_rotation` 的话缩放每帧乘一次 k，几百帧后溢出成无穷大，
+            // 背景片就从画面上没了。
             bk.entity
                 .transform()
                 .borrow_mut()
+                .clear_rotation()
                 .set_position(&Vec3::new(0., 0., -BACKDROP_DEPTH))
                 .scale_local(&Vec3::new(k, k, 1.));
         }
@@ -489,9 +500,13 @@ impl AppraiseGame {
         let (wx, wy) = Self::to_world(sx, sy);
         let k = view.scale();
         m.entity.set_visible(true);
+        // 同上：每帧从单位阵重摆。`angle` 是绝对转角（`self.spin`），旋转和缩放
+        // 若在上一帧的矩阵上接着乘，转速越转越快、缩放几帧就溢出——十件文物
+        // 先前在画面上一件都看不见就是这个。
         m.entity
             .transform()
             .borrow_mut()
+            .clear_rotation()
             .set_position(&Vec3::new(wx, wy, 0.))
             .rotate_axis_angle_local(&Vec3::UP, angle)
             .scale_local(&Vec3::new(k, k, k));
@@ -585,15 +600,19 @@ impl AppraiseGame {
         });
 
         let clicked = ui.is_mouse_clicked(MouseButton::Left);
+        // [移植] 手柄 A = 是、B = 否。这个询问框在主线里（Q01 过程 1003「在客房与
+        // 赵文昌对话」），只认鼠标和键盘的话，Switch 插底座只用手柄就卡在第一章。
         let yes = (clicked && layout::contains(yes_rect, mouse.0, mouse.1))
             || ui.is_key_pressed(imgui::Key::Enter)
             || ui.is_key_pressed(imgui::Key::Y)
             || ui.is_key_pressed(imgui::Key::Keypad1)
-            || ui.is_key_pressed(imgui::Key::Alpha1);
+            || ui.is_key_pressed(imgui::Key::Alpha1)
+            || ui.is_key_pressed(PAD_OK);
         let no = (clicked && layout::contains(no_rect, mouse.0, mouse.1))
             || ui.is_key_pressed(imgui::Key::Escape)
             || ui.is_key_pressed(imgui::Key::N)
-            || ui.is_key_pressed(imgui::Key::Alpha2);
+            || ui.is_key_pressed(imgui::Key::Alpha2)
+            || ui.is_key_pressed(PAD_BACK);
         if yes {
             self.phase = Phase::Exhibit { zoom: None };
         } else if no {
@@ -665,8 +684,23 @@ impl AppraiseGame {
                         return;
                     }
                 }
-                if ui.is_key_pressed(imgui::Key::Enter) || ui.is_key_pressed(imgui::Key::Space) {
+                if ui.is_key_pressed(imgui::Key::Enter)
+                    || ui.is_key_pressed(imgui::Key::Space)
+                    || ui.is_key_pressed(PAD_OK)
+                {
                     self.enter_do(state);
+                    return;
+                }
+                // [移植] 十字键左右：放大看第一件 / 最后一件（放大视图里再左右翻）。
+                let n = layout::EXHIBIT_POS.len();
+                if ui.is_key_pressed(PAD_RIGHT) || ui.is_key_pressed(PAD_LEFT) {
+                    let first = if ui.is_key_pressed(PAD_RIGHT) {
+                        0
+                    } else {
+                        n - 1
+                    };
+                    self.spin = 0.;
+                    self.phase = Phase::Exhibit { zoom: Some(first) };
                     return;
                 }
                 // 数字键 1–5 也能放大看：原版只有鼠标，这是移植加的。
@@ -690,31 +724,49 @@ impl AppraiseGame {
                 self.show_backdrop(self.exhibit_zoom.as_ref());
                 // 放大视图（控件 0xaa0b09）没设过自转模式，原版是静止的。
                 self.place_model(i, 0, &layout::VIEW_EXHIBIT_ZOOM, (0., 0.), 0.);
+                // 原版 `Appr_Exhibit`（`appr_exhibit.cpp:389`）放大时：牌子的文字区
+                // `m_Remark` 写「名字\n说明」（真品那一条的 `name` / `desc`），名字框
+                // `m_ZoomName` 写名字。鉴别要点（`m_DftInfo`）展示页不显示——它是鉴定页
+                // 答错之后才给看的（`appr_do.cpp:941`）。
                 let name = self.names[i].0.clone();
-                let diffent = self
-                    .diffent
-                    .get(i)
-                    .map(|s| assis_lang::unescape(s))
-                    .unwrap_or_default();
-                self.draw_remark(ui, &name, &diffent);
+                let desc = assis_lang::unescape(&self.descs[i]);
+                self.draw_remark(ui, &name, &desc);
 
                 if right
                     || ui.is_key_pressed(imgui::Key::Escape)
+                    || ui.is_key_pressed(PAD_BACK)
+                    || ui.is_key_pressed(PAD_OK)
                     || (clicked && !layout::contains(layout::ZOOM_PANE, mouse.0, mouse.1))
                 {
                     self.phase = Phase::Exhibit { zoom: None };
+                } else {
+                    // [移植] 十字键左右翻到上一件 / 下一件。
+                    let n = layout::EXHIBIT_POS.len();
+                    let step = if ui.is_key_pressed(PAD_RIGHT) {
+                        Some(1)
+                    } else if ui.is_key_pressed(PAD_LEFT) {
+                        Some(n - 1)
+                    } else {
+                        None
+                    };
+                    if let Some(step) = step {
+                        self.phase = Phase::Exhibit {
+                            zoom: Some((i + step) % n),
+                        };
+                    }
                 }
             }
         }
     }
 
-    /// 说明牌（展示页的放大视图）：牌子 `+0x518`、名字 0xaa0c21、要点
-    /// 0xaa0c19，三个矩形都照原版。原版的文字区 [`layout::REMARK_TEXT`]
-    /// 比牌子本身高 54 px，长文字会漏到牌子外面，这里照抄。
-    fn draw_remark(&self, ui: &Ui, name: &str, body: &str) {
+    /// 说明牌（展示页的放大视图）：牌子 `+0x518`，名字框 0xaa0c21，牌子上的
+    /// 文字区 [`layout::REMARK_TEXT`]（`appr_exhibit.cpp:54`：牌子左 +22、上 +6 起
+    /// 428×158）。文字区写「名字」一行再接「说明」，和原版 `m_Remark` 一样；它比
+    /// 牌子本身高 54 px，长文字会漏到牌子外面，这里照抄。
+    fn draw_remark(&self, ui: &Ui, name: &str, desc: &str) {
         let remark = self.remark.clone();
         let name = name.to_string();
-        let body = body.to_string();
+        let body = format!("{name}\n{desc}");
         overlay(ui, "AppraiseRemark", |ui, at, scale| {
             let list = ui.get_window_draw_list();
             let r = layout::REMARK;
@@ -733,13 +785,15 @@ impl AppraiseGame {
                 list.add_text(at(n.0, n.1), TEXT_COLOR, &name);
             }
             let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
-            let t = layout::REMARK_DIFFENT;
+            let t = layout::REMARK_TEXT;
             let width = (t.2 - t.0) as f32 * scale;
             let mut y = at(t.0, t.1)[1];
             let line_h = ui.text_line_height_with_spacing();
-            for line in wrap_lines(ui, &body, width) {
-                list.add_text([at(t.0, t.1)[0], y], TEXT_COLOR, &line);
-                y += line_h;
+            for para in body.split('\n') {
+                for line in wrap_lines(ui, para, width) {
+                    list.add_text([at(t.0, t.1)[0], y], TEXT_COLOR, &line);
+                    y += line_h;
+                }
             }
         });
     }
@@ -787,7 +841,7 @@ impl AppraiseGame {
                 self.do_angle += dx / scale.max(1e-3) * DRAG_SPEED;
             }
             self.place_model(cur, which, &layout::VIEW_DO_ZOOM, (0., 0.), self.do_angle);
-            if right || ui.is_key_pressed(imgui::Key::Escape) {
+            if right || ui.is_key_pressed(imgui::Key::Escape) || ui.is_key_pressed(PAD_BACK) {
                 self.do_zoom_side = None;
             }
             self.draw_do_hud(ui, mouse, None);
@@ -854,6 +908,23 @@ impl AppraiseGame {
                 self.pick(i, state);
             }
         }
+        // [移植] 手柄 L / R：往前 / 往后翻到下一件还没鉴定的（`current` 开局就是 0，
+        // 第一题本来就是当前题）。全做完了就不动。
+        if ui.is_key_pressed(PAD_PREV) || ui.is_key_pressed(PAD_NEXT) {
+            let step = if ui.is_key_pressed(PAD_NEXT) {
+                1
+            } else {
+                ITEM_COUNT - 1
+            };
+            let mut i = self.round.current;
+            for _ in 0..ITEM_COUNT {
+                i = (i + step) % ITEM_COUNT;
+                if !self.round.done[i] {
+                    self.pick(i, state);
+                    break;
+                }
+            }
+        }
 
         // 勾选 + 确定
         if clicked && self.drag.is_none() {
@@ -863,15 +934,16 @@ impl AppraiseGame {
                 self.chosen = Some(false);
             }
         }
-        if ui.is_key_pressed(imgui::Key::LeftArrow) {
+        if ui.is_key_pressed(imgui::Key::LeftArrow) || ui.is_key_pressed(PAD_LEFT) {
             self.chosen = Some(true);
         }
-        if ui.is_key_pressed(imgui::Key::RightArrow) {
+        if ui.is_key_pressed(imgui::Key::RightArrow) || ui.is_key_pressed(PAD_RIGHT) {
             self.chosen = Some(false);
         }
         let confirm =
             (clicked && self.drag.is_none() && layout::contains(layout::CONFIRM, mouse.0, mouse.1))
-                || ui.is_key_pressed(imgui::Key::Enter);
+                || ui.is_key_pressed(imgui::Key::Enter)
+                || ui.is_key_pressed(PAD_OK);
 
         self.draw_do_hud(ui, mouse, self.drag);
 
@@ -1078,15 +1150,30 @@ impl AppraiseGame {
                 }
             }
         });
+        // [移植] 手柄 A / B 也关（答错的说明、结算框都走这里；只认键盘的话插底座
+        // 答错一题就卡在说明框上）。
         if ui.is_mouse_clicked(MouseButton::Left)
             || ui.is_key_pressed(imgui::Key::Enter)
             || ui.is_key_pressed(imgui::Key::Space)
             || ui.is_key_pressed(imgui::Key::Escape)
+            || ui.is_key_pressed(PAD_OK)
+            || ui.is_key_pressed(PAD_BACK)
         {
             self.phase = next;
         }
     }
 }
+
+// [移植] 鉴定的手柄键。原版 PC 只有鼠标和键盘；Switch 上 imgui 的手柄输入来自
+// `imgui/platform/switch.rs`——A 映射成 `GamepadFaceDown`（确定）、B 映射成
+// `GamepadFaceRight`（取消），不产生回车 / Esc / 数字键。插底座只用手柄时
+// 没有触屏当鼠标，不补这几个键就整个小游戏都操作不了。放大镜要拖动，手柄没接。
+const PAD_OK: imgui::Key = imgui::Key::GamepadFaceDown;
+const PAD_BACK: imgui::Key = imgui::Key::GamepadFaceRight;
+const PAD_LEFT: imgui::Key = imgui::Key::GamepadDpadLeft;
+const PAD_RIGHT: imgui::Key = imgui::Key::GamepadDpadRight;
+const PAD_PREV: imgui::Key = imgui::Key::GamepadL1;
+const PAD_NEXT: imgui::Key = imgui::Key::GamepadR1;
 
 /// 鼠标在 800×600 虚拟屏幕里的位置。
 pub(crate) fn virtual_mouse(ui: &Ui) -> (f32, f32) {
