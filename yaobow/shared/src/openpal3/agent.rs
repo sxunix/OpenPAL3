@@ -750,6 +750,13 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "locks" => {
+            // [] —— 主角为什么不听输入（各种锁），排查卡住用。
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: Some(director.debug_locks()),
+            })
+        }
         "heal" => {
             // [] —— 全队回满（指令 FullTeamAtt），探路连着打仗时用。
             director.heal_team();

@@ -320,6 +320,32 @@ impl AdventureDirector {
 
     /// Open the big map (102 13) right here, so it can be looked at without
     /// playing up to a scripted exit.
+    /// [调试] 主角为什么不听输入：脚本锁、飞行、冻结计数、物件锁（登记着的物件序号、类型、状态）、agent 走路。
+    pub fn debug_locks(&self) -> serde_json::Value {
+        let p = self.props.borrow();
+        let objects = p
+            .scene_manager
+            .scn_scene()
+            .map(|s| {
+                s.inner::<crate::openpal3::scene::ScnScene>()
+                    .object_lock_report()
+            })
+            .unwrap_or_default();
+        serde_json::json!({
+            "input_lock": p.input_lock,
+            "script_running": p.sce_vm.state().context().is_running(),
+            "active_commands": p.sce_vm.has_active_commands(),
+            "adv_input": p.sce_vm.global_state().adv_input_enabled(),
+            "fly": p.player_fly.is_some(),
+            "object_walk": p.object_walk.is_some(),
+            "frozen": p.sce_vm.global_state().frozen(),
+            "player_jump": p.player_jump.is_some(),
+            "agent_walk": p.agent_walk.as_ref().map(|(w, _)| w.len()),
+            "agent_goal": p.agent_walk_goal.as_ref().map(|g| (g.point.x, g.point.z, g.resumes)),
+            "objects": objects,
+        })
+    }
+
     /// [调试] 全队回满（同指令 `FullTeamAtt`），探路工具连着打仗时用。
     pub fn heal_team(&self) {
         let mut p = self.props.borrow_mut();

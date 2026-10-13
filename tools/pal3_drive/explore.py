@@ -94,9 +94,17 @@ def settle(c: Client, issues: list, label: str) -> dict:
             t_battles += time.time() - battle_t0
             last_change = time.time()
         in_battle = False
+        if cb.get("outcome") == "lose" and s.get("scene") and not cb.get("active") and s.get("current_script_fn") == "<agent walk>":
+            # 野怪战打输：停在战败画面等按键（按了回主菜单）。agent 走路的标记还挂着，下面不会按键。
+            issues.append({"kind": "battle_lost", "at": label})
+            c.key("Space")
+            return {"lost": True, "lines": lines, "battles": battles}
         if cb.get("outcome") == "lose" and not s.get("script_running"):
             issues.append({"kind": "battle_lost", "at": label})
         if not s.get("script_running"):
+            if battles:
+                # 剧情必输战之后脚本会把血设成 1，战斗一结束时回的血不算数——收尾完再回一次。
+                heal(c)
             return {"lines": lines, "battles": battles, "seconds": round(time.time() - t0, 1)}
         if s.get("current_script_fn") in ("<agent walk>", "<object>"):
             pass  # 引擎带着主角在走（fire_trigger）、或者场景物件在动（拨开关），别按键
@@ -298,6 +306,9 @@ def main() -> int:
             continue
         time.sleep(0.6)
         result = settle(c, issues, f"{key[0]}/{key[1]} {name}")
+        if result.get("lost"):
+            print(f"  [{step}] {key[0]}/{key[1]} {name} → 打输了（野怪战），回主菜单", flush=True)
+            break
         if result.get("crashed"):
             # 进程没了，别再去问它要状态。
             print(f"  [{step}] {key[0]}/{key[1]} {name} → 崩溃 / 无响应", flush=True)

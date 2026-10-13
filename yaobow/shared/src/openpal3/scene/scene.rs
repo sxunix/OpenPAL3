@@ -2088,6 +2088,11 @@ impl ScnScene {
         true
     }
 
+    /// [调试] 登记在 `ObjLockInput` 里、或者状态不是 0、或者队列没做完的物件：（序号, 类型, 状态, 锁着, 队列长）。
+    pub fn object_lock_report(&self) -> Vec<(usize, u8, u8, bool, usize)> {
+        self.object_actions.borrow().report()
+    }
+
     /// 物件那半个 `ObjLockInput` 还锁着。
     pub fn object_input_locked(&self) -> bool {
         self.object_actions.borrow().input_locked()

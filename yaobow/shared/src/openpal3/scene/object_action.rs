@@ -341,6 +341,16 @@ impl ObjectActions {
         self.objs.iter().any(|o| o.locked)
     }
 
+    /// [调试] 不闲着的物件：（序号, 类型, 状态, 锁着, 队列长）。
+    pub fn report(&self) -> Vec<(usize, u8, u8, bool, usize)> {
+        self.objs
+            .iter()
+            .enumerate()
+            .filter(|(_, o)| o.locked || o.state != 0 || !o.queue.is_empty())
+            .map(|(i, o)| (i, o.kind, o.state, o.locked, o.queue.len()))
+            .collect()
+    }
+
     /// 换场景时清掉（`ObjLockInput::OnLoadScene`）。
     pub fn clear_locks(&mut self) {
         for o in &mut self.objs {
