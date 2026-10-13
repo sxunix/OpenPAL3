@@ -731,6 +731,14 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "heal" => {
+            // [] —— 全队回满（指令 FullTeamAtt），探路连着打仗时用。
+            director.heal_team();
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "add_money" => {
             // [n] —— 加钱（负数扣钱），测买卖用。
             director.add_money(int_arg(0).unwrap_or(0) as i32);

@@ -310,6 +310,15 @@ impl AdventureDirector {
 
     /// Open the big map (102 13) right here, so it can be looked at without
     /// playing up to a scripted exit.
+    /// [调试] 全队回满（同指令 `FullTeamAtt`），探路工具连着打仗时用。
+    pub fn heal_team(&self) {
+        let mut p = self.props.borrow_mut();
+        let scene_manager = p.scene_manager.clone();
+        let cmd: Box<dyn crate::scripting::sce::SceCommand> =
+            Box::new(crate::scripting::sce::commands::SceCommandFullTeamAtt::new());
+        p.sce_vm.push_debug_command(cmd, scene_manager);
+    }
+
     pub fn start_debug_bigmap(&self) {
         let mut p = self.props.borrow_mut();
         let scene_manager = p.scene_manager.clone();

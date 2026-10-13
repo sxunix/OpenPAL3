@@ -41,6 +41,14 @@ def fingerprint(c: Client) -> tuple[str, str, str]:
     return s.get("scene", ""), s.get("block", ""), h
 
 
+def heal(c: Client) -> None:
+    """全队回满（`script_eval heal`）。探路只看剧情走不走得通，不练级；连着打仗不回血迟早全灭。"""
+    try:
+        c.eval("heal")
+    except AgentError:
+        pass
+
+
 def settle(c: Client, issues: list, label: str) -> dict:
     """把正在跑的脚本推完：对话、选项、片子、战斗。返回最后的状态和过程摘要。"""
     t0 = time.time()
@@ -75,6 +83,8 @@ def settle(c: Client, issues: list, label: str) -> dict:
                 c.key("Space")
             time.sleep(0.15)
             continue
+        if in_battle:
+            heal(c)
         in_battle = False
         if cb.get("outcome") == "lose" and not s.get("script_running"):
             issues.append({"kind": "battle_lost", "at": label})
@@ -195,6 +205,9 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=150)
     ap.add_argument("--save", type=int, default=3, help="剧情推进时存到这个档（0 = 不存）")
     ap.add_argument("--shots", action="store_true", help="每次推进都截图")
+    ap.add_argument("--level", type=int, default=0,
+                    help="开跑前把队里每人至少提到这一级（prime_level，按游戏自己的成长表涨属性）。"
+                         "探路几乎不打野怪，等级远低于正常玩到这里的水平，剧情战和迷宫怪会打不动")
     args = ap.parse_args()
 
     c = Client(args.base)
@@ -204,6 +217,15 @@ def main() -> int:
     run = Run(c, args.out, shots=args.shots)
     issues: list = []
     boot(c, args.load)
+    if args.level > 0:
+        for m in c.state().get("party") or []:
+            if m.get("in_team") and m.get("level", 0) < args.level:
+                try:
+                    # prime_level 升到「给的等级 − 1」、经验差 1 点到给的等级。
+                    c.eval("prime_level", m["slot"], args.level + 1)
+                except AgentError:
+                    pass
+    heal(c)
     settle(c, issues, "boot")
     run.mark("start", shot=True)
 
