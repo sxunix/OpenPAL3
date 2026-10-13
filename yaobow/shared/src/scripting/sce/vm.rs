@@ -282,6 +282,10 @@ pub struct SceProcContext {
     program_counter: usize,
     local_vars: HashMap<i16, i32>,
     dlgsel: i32,
+    /// 运行模式（指令 2）：1 一帧一条、遇到阻塞的指令就等，2 连着发。原版每个脚本实例
+    /// 各有一份，新建时是 1（`scAsmDecoder` 建实例时 `runmode = SC_RUNMODE_STEP`，
+    /// `scasmdecoder.cpp:256`），`ScriptRunMode` 只改正在跑的那个实例。
+    run_mode: i32,
 }
 
 impl SceProcContext {
@@ -315,6 +319,7 @@ impl SceProcContext {
             program_counter: 0,
             local_vars: HashMap::new(),
             dlgsel: 0,
+            run_mode: 1,
         }
     }
 
@@ -1226,6 +1231,19 @@ impl SceExecutionContext {
             .iter()
             .find(|h| h.id == proc_id)
             .map(|h| h.name.clone())
+    }
+
+    /// 栈顶过程的运行模式；没有过程在跑时按新实例的 1 算。先前整个脚本机只有一份，
+    /// 场景进入过程（如 Q01/b 的 1509）设成 2 不改回来就结束，接着跟人说话的过程也按 2
+    /// 连着发：对话框不等按键，选项里选「1」绕回来的循环在一帧里转不停，游戏卡死。
+    pub fn run_mode(&self) -> i32 {
+        self.proc_stack.last().map_or(1, |p| p.run_mode)
+    }
+
+    pub fn set_run_mode(&mut self, run_mode: i32) {
+        if let Some(p) = self.proc_stack.last_mut() {
+            p.run_mode = run_mode;
+        }
     }
 
     pub fn get_next_cmd(&mut self, global_state: &mut GlobalState) -> Option<Box<dyn SceCommand>> {

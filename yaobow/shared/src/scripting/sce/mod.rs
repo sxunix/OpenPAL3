@@ -59,7 +59,6 @@ pub struct SceState {
     asset_mgr: Rc<AssetManager>,
     global_state: GlobalState,
     context: SceExecutionContext,
-    run_mode: i32,
     curtain: f32,
     /// Engine-side door-transition state: `SceCommandLoadScene` snaps the
     /// curtain to black on an unscripted scene swap and sets this; the VM
@@ -203,7 +202,6 @@ impl SceState {
             asset_mgr: asset_mgr.clone(),
             global_state,
             context: SceExecutionContext::new(sce, sce_name, options),
-            run_mode: 1,
             curtain: 1.,
             auto_fade_in: false,
             fast_forward: false,
@@ -257,12 +255,13 @@ impl SceState {
         &self.audio_engine
     }
 
+    /// 正在跑的那个过程的运行模式（见 [`SceExecutionContext::run_mode`]）。
     pub fn run_mode(&self) -> i32 {
-        self.run_mode
+        self.context.run_mode()
     }
 
     pub fn set_run_mode(&mut self, run_mode: i32) {
-        self.run_mode = run_mode;
+        self.context.set_run_mode(run_mode);
     }
 
     /// Whether the agent-server fast-forward mode is active this frame.
