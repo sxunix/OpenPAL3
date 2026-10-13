@@ -60,6 +60,8 @@ def settle(c: Client, issues: list, label: str) -> dict:
     pokes = 0
     battles = 0
     in_battle = False
+    battle_t0 = t0
+    t_battles = 0.0
     while True:
         try:
             s = c.state()
@@ -81,12 +83,16 @@ def settle(c: Client, issues: list, label: str) -> dict:
             if not in_battle:
                 battles += 1
                 in_battle = True
+                battle_t0 = time.time()
             if cb.get("menu") in ("main", "target"):
                 c.key("Space")
             time.sleep(0.15)
             continue
         if in_battle:
             heal(c)
+            # 打仗的时间不算进收尾时限（古藤林一场常超过四分钟，打完 agent 还要接着走）。
+            t_battles += time.time() - battle_t0
+            last_change = time.time()
         in_battle = False
         if cb.get("outcome") == "lose" and not s.get("script_running"):
             issues.append({"kind": "battle_lost", "at": label})
@@ -136,7 +142,7 @@ def settle(c: Client, issues: list, label: str) -> dict:
             issues.append({"kind": "stuck", "at": label, "fn": s.get("current_script_fn"),
                            "dialog": dlg.get("text"), "scene": s.get("scene")})
             return {"stuck": True, "lines": lines}
-        if now - t0 > SETTLE_LIMIT:
+        if now - t0 - t_battles > SETTLE_LIMIT:
             issues.append({"kind": "settle_timeout", "at": label, "fn": s.get("current_script_fn")})
             return {"stuck": True, "lines": lines}
         time.sleep(0.3)
