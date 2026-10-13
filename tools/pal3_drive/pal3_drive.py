@@ -127,6 +127,18 @@ class Client:
         self._json("POST", "/v1/player/teleport",
                    {"player": player, "x": pos[0], "y": pos[1], "z": pos[2]})
 
+    def eval(self, fn: str, *args) -> Any:
+        """`script_eval` 的 26 个调试入口之一（见 README）。"""
+        return self._json("POST", "/v1/script/eval", {"function": fn, "args": list(args)},
+                          timeout=180.0)
+
+    def status_menu(self, open_: bool, page: Optional[str] = None) -> None:
+        """状态菜单：page 是 state / prop / equip / magic / lineup / sword / book / system。"""
+        body: dict[str, Any] = {"open": open_}
+        if page:
+            body["page"] = page
+        self._json("POST", "/v1/menu/status", body)
+
     # ---- 等待 ---------------------------------------------------------
     def wait(self, pred: Callable[[dict], bool], timeout: float = 60.0,
              poll: float = 0.25) -> dict:
@@ -205,3 +217,24 @@ class Run:
             for row in self.steps:
                 f.write(json.dumps(row, ensure_ascii=False) + "\n")
         return path
+
+
+def boot(c: Client, load_slot: Optional[int] = None) -> dict:
+    """进到能自由操作的状态。给了 `load_slot` 就读档，否则开新游戏、快进跳片头、
+    逐句推完序章（快进下 `SceCommandMovie` 整段跳过，台词仍要推）。"""
+    if load_slot is not None:
+        c.load(load_slot)
+        c.wait(lambda s: bool(s.get("scene")) and not s.get("script_running"), timeout=180)
+        time.sleep(1.5)
+        return c.state()
+    c.new_game()
+    c.fast_forward(True)
+    c.wait(lambda s: bool(s.get("scene")), timeout=120)
+    for _ in range(600):
+        c.dialog_advance()
+        time.sleep(0.12)
+        if not c.state().get("script_running"):
+            break
+    c.fast_forward(False)
+    time.sleep(1.0)
+    return c.state()

@@ -378,6 +378,18 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     // synthetic avatar click. Takes effect on the next idle frame.
     pub fn set_menu_open(self: refmut<Self>, open: bool) -> int {
         self.menu_open = open;
+        if !open {
+            // 关就是整个全屏菜单都关。`set_menu_page` 开的道具 / 系统等页各有自己
+            // 的状态，只清 `menu_open` 的话 `is_menu_open` 还是真、那一页照画——
+            // 回放里关完系统页，系统页一直挂在画面上。
+            self.prop_state = -1;
+            self.equip_state = -1;
+            self.magic_state = -1;
+            self.array_state = -1;
+            self.sword_state = -1;
+            self.book_state = -1;
+            self.sys_mode = -1;
+        }
         0
     }
 
