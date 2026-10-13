@@ -2073,6 +2073,11 @@ impl ScnScene {
         self.object_actions.borrow().layer(i)
     }
 
+    /// 第 `i` 个物件的参数 0..3。
+    pub fn object_params(&self, i: usize) -> Option<[i32; 4]> {
+        self.object_actions.borrow().params(i)
+    }
+
     /// 第 `i` 个物件的类型（低字节）。
     pub fn object_kind_at(&self, i: usize) -> Option<u8> {
         self.object_actions.borrow().kind(i)

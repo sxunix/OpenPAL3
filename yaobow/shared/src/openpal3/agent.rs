@@ -435,10 +435,20 @@ fn handle_scene_triggers(ctx: &Pal3DispatchCtx) -> AgentResponse {
     let Some(scn) = ctx.scene_manager.scn_scene() else {
         return AgentResponse::err(AgentError::conflict("no adventure scene on top"));
     };
+    let scn = scn.inner::<crate::openpal3::scene::ScnScene>();
+    // 特技机关只有参数 0 那个主角开得了，别的主角调查只会提示「cantopen」：不列，免得探路每换一次剧情
+    // 状态就把它们挨个再试一遍（古藤林有十几个长卿的）。
+    let controlled = ctx
+        .director
+        .map(|d| d.sce_vm().global_state().role_controlled());
     let triggers = scn
-        .inner::<crate::openpal3::scene::ScnScene>()
         .agent_triggers()
         .into_iter()
+        .filter(|t| {
+            !(t.kind == "obj"
+                && t.node_type == 0xc
+                && controlled.is_some_and(|r| scn.object_params(t.index).map(|p| p[0]) != Some(r)))
+        })
         .map(|t| agent_server::protocol::TriggerEntry {
             // 导航格多带一段「t<节点类型>l<层>」：走进去就触发的只有 t14 和同层的 t0。
             name: if t.kind == "nav" || t.kind == "obj" {
