@@ -30,6 +30,7 @@ python3 tools/pal3_drive/route_prologue.py --out runs/prologue
 python3 tools/pal3_drive/route_prologue.py --out runs/prologue --no-shots   # 只记状态，快
 python3 tools/pal3_drive/route_combat.py   --out runs/combat               # 要先有活着的存档/剧情
 python3 tools/pal3_drive/route_win.py      --out runs/win --monster 7306   # 从新游戏打赢一场看结算
+python3 tools/pal3_drive/route_combo.py    --out runs/combo --combos 501,504  # 放合击看演出
 ```
 
 `route_prologue` 开新游戏走到玩家可操作；`route_combat` 换场到有战场的地方

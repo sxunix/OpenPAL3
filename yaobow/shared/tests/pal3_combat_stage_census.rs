@@ -11,7 +11,7 @@ use std::path::PathBuf;
 use common::store_ext::StoreExt2;
 use mini_fs::StoreExt;
 use shared::openpal3::combat::stage::{
-    PARTY_SLOTS, STAGE_SLOTS, scene_light_path, scene_model_path,
+    PARTY_MODELS, PARTY_SLOTS, STAGE_SLOTS, scene_light_path, scene_model_path,
 };
 use shared::openpal3::states::combat_data::CombatData;
 
@@ -201,5 +201,36 @@ fn every_skill_has_an_effect_link() {
             .collect();
         assert!(missing.is_empty(), "这些技能 efflinker 里没有：{missing:?}");
         println!("{} 个技能都有特效链接", gdb.skills.len());
+    }
+}
+
+/// 我方五个战斗位的模型目录，每个都得有一套能打的战斗动作。
+///
+/// 先前龙葵配的是 105——冒险模式里蓝色龙葵的目录，只有 `z05` / `z17` / `z18`
+/// 三个动作，打起来每帧报「没有动作 z061」、普攻没有攻击动作。原版战斗里
+/// 一律用 106（`cbstagerole.cpp:134`）。这条测试就是为那次修的。
+#[test]
+fn every_party_battle_model_has_the_core_motions() {
+    let Some((vfs, _)) = data() else {
+        eprintln!("skipping: set YAOBOW_PAL3_ASSETS to an installed PAL3 directory");
+        return;
+    };
+    // z01 普攻、z04 待机、z061 出手段预备、z06 挨打、z17/z18 倒下、z20 胜利。
+    const CORE: [&str; 7] = ["z01", "z04", "z061", "z06", "z17", "z18", "z20"];
+    assert_eq!(PARTY_MODELS.len(), PARTY_SLOTS);
+    for model in PARTY_MODELS {
+        let dir = PathBuf::from(format!("/basedata/basedata/ROLE/{model}"));
+        let names: BTreeSet<String> = vfs
+            .entries(&dir)
+            .unwrap_or_else(|e| panic!("读不了 {}: {e}", dir.display()))
+            .filter_map(|e| e.ok())
+            .map(|e| e.name.to_string_lossy().to_lowercase())
+            .collect();
+        for m in CORE {
+            assert!(
+                names.contains(&format!("{m}.mv3")),
+                "战斗模型 {model} 缺 {m}.mv3"
+            );
+        }
     }
 }

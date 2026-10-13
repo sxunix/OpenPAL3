@@ -17,12 +17,20 @@ use radiance::scene::{SceneLight, SceneLighting};
 use crate::openpal3::states::combat_data::StagePos;
 
 /// 我方五个战斗位用的模型名，和 `PLAYER_COMBAT_IDS` 一一对应
-/// （101 景天 · 104 雪见 · 105 龙葵 · 107 紫萱 · 102 长卿）。
+/// （101 景天 · 104 雪见 · 106 龙葵 · 107 紫萱 · 102 长卿）。
 ///
-/// gdb 里主角那五条 `combat_actors` 的 `model_id` 写的是 `"Null"`——他们
-/// 直接用冒险模式的角色模型，所以名字要从这里来，不是从数据库。
-/// 龙葵的战斗 id 是 106（红葵），但模型目录是 105。
-pub const PARTY_MODELS: [&str; PARTY_SLOTS] = ["101", "104", "105", "107", "102"];
+/// gdb 里主角那五条 `combat_actors` 的 `model_id` 写的是 `"Null"`，名字要从
+/// 这里来，不是从数据库。原版写死在 `CCBStageRole::Create`
+/// （`cbstagerole.cpp:126`，2 号位 `"106"`）和 `CCBRoleState` 的模型目录表
+/// （`cbrolestate.cpp:1062`）两处。
+///
+/// **龙葵在战斗里一律是 106**，不跟冒险模式的形象走：冒险模式里 SCE 42
+/// 「设置龙葵形象」在 105（蓝）/ 106（红）之间换，但战斗那边直接
+/// `Init("106")` 再 `LoadRoleAction`，不看那个旗标。发行数据也只有 106 是
+/// 完整的一套战斗动作（36 个 `z*.mv3`，含合击 504 的 `z5041/z5042`）；105 只有
+/// `z05` / `z17` / `z18` 三个，连普攻 `z01`、待机 `z04` 都没有。先前这里写成
+/// 105，龙葵每帧报「没有动作 z061」、普攻只剩兜底的打击时刻。
+pub const PARTY_MODELS: [&str; PARTY_SLOTS] = ["101", "104", "106", "107", "102"];
 
 /// 战斗里一个位子上站着谁的模型。
 ///
@@ -293,8 +301,8 @@ x=4.0
         assert_eq!(model_name(0, None).as_deref(), Some("101"));
         assert_eq!(
             model_name(2, None).as_deref(),
-            Some("105"),
-            "龙葵目录是 105"
+            Some("106"),
+            "战斗里龙葵一律是 106（cbstagerole.cpp:134），不跟冒险模式的蓝红形象走"
         );
         assert_eq!(model_name(4, None).as_deref(), Some("102"));
         // 敌方拿数据库那一条。

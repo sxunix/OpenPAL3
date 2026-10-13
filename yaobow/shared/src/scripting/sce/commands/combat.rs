@@ -2002,6 +2002,8 @@ impl SceCommandCombat {
             .map(|a| a.as_ref().map(|a| a.home))
             .collect();
         let side_anchors = self.side_anchors;
+        // 特效里的 action 提示还有没有在演（合击的收尾看这个，见下面 Strike）。
+        let cues_running = !self.cues.is_empty();
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -2296,9 +2298,17 @@ impl SceCommandCombat {
                 let effects_done = run
                     .link
                     .is_none_or(|l| l.effects().enumerate().all(|(k, _)| run.played[k]));
-                let done = t >= hit_at
-                    && effects_done
-                    && rc.state() != crate::openpal3::scene::RoleState::PlayingAnimation;
+                // 出手者演完没有。普攻 / 仙术看他自己的出手动作播完没有；合击不能这么看——
+                // 合击的出手者不摆出手动作（见 `ComboBanner`），人怎么动全由特效里的 action
+                // 提示管，提示一交还，`animate_stage` 就按 `rest_motion` 把他摆回**循环**的
+                // 出手预备 z061（那一刻行动还没结算），循环动作永远是 `PlayingAnimation`，
+                // 这一步就永远走不完、`staging` 不落、整场时钟冻住。所以合击看提示都演完了没有。
+                let performer_done = if run.combo {
+                    !cues_running
+                } else {
+                    rc.state() != crate::openpal3::scene::RoleState::PlayingAnimation
+                };
+                let done = t >= hit_at && effects_done && performer_done;
                 if done && run.combo {
                     run.step = StageStep::ComboClose { t: 0. };
                 } else if done {
