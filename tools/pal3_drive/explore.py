@@ -29,6 +29,7 @@ from pal3_drive import AgentError, Client, Run, boot  # noqa: E402
 
 STUCK_SECONDS = 90.0      # 脚本在跑但快照什么都不变，超过这么久算卡住（章节字幕 SceCommandCaption 是按时间走的，13 列要三四十秒，进度不在快照里）
 WANDER_LIMIT = 80         # 没东西可试、只好走出去的连续次数上限（渝州城一圈门多，30 次会漏掉没走到的块）
+BACK_OUT_SECONDS = 15.0  # 没对话框、画面不变超过这么久就按 B 往外退
 CHOICE_TURNS: dict[tuple, int] = {}   # 每个选单（按选项文字）已经选过几次
 SETTLE_LIMIT = 240.0      # 一次收尾最多等多久
 
@@ -101,8 +102,12 @@ def settle(c: Client, issues: list, label: str) -> dict:
             # 没有对话框：可能是小游戏（鉴定、宿营……）或别的界面。按手柄 A——引擎里
             # 是确定（`GamePadEast`），imgui 里是 `GamepadFaceDown`，两边都认；空格
             # 鉴定的询问框不认。隔一下夹个十字键左：鉴定页得先选一边，A 才确定得了。
+            # 15 秒没动静多半是商店、当铺这类等玩家自己退出的界面，改按 B（取消）。
             pokes += 1
-            c.key("GamePadDPadLeft" if pokes % 3 == 0 else "GamePadEast")
+            if time.time() - last_change > BACK_OUT_SECONDS:
+                c.key("GamePadSouth")
+            else:
+                c.key("GamePadDPadLeft" if pokes % 3 == 0 else "GamePadEast")
         now = time.time()
         if now - last_change > STUCK_SECONDS:
             issues.append({"kind": "stuck", "at": label, "fn": s.get("current_script_fn"),
@@ -151,9 +156,18 @@ def main() -> int:
     wander = 0            # 连续「这里没有没试过的、只好走出去」的次数
     progress = 0
     for step in range(args.steps):
+        # 走动中撞上野怪：战斗舞台压在场景栈顶，列不出触发点（409），先打完。
+        try:
+            acts, navs = candidates(c)
+        except AgentError as e:
+            if e.status != 409:
+                raise
+            r = settle(c, issues, f"step{step}_encounter")
+            if r.get("crashed"):
+                break
+            continue
         key = fingerprint(c)
         done = tried.setdefault(key, set())
-        acts, navs = candidates(c)
         n_of = lambda n: count.get((key[0], key[1], n), 0)  # noqa: E731
         todo = sorted([n for n in acts + navs if n not in done],
                       key=lambda n: (n_of(n), n in navs))

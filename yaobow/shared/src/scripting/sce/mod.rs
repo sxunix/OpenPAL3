@@ -342,6 +342,11 @@ impl SceState {
         self.combat = Some(mirror);
     }
 
+    /// 战斗指令被调试入口丢掉时，摘要不再更新，留着会让驱动以为还在打。
+    pub fn clear_combat(&mut self) {
+        self.combat = None;
+    }
+
     /// 152: whether the water effect is on the player.
     pub fn water_magic(&self) -> bool {
         self.water_magic

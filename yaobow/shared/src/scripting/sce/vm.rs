@@ -206,6 +206,7 @@ impl SceVm {
                 self.active_commands.len()
             );
             self.active_commands.clear();
+            self.state.clear_combat();
         }
     }
 
