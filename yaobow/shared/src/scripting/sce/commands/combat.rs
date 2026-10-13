@@ -1028,7 +1028,7 @@ impl SceCommandCombat {
             turn_slot: session.turn.map(|t| t.slot),
             menu,
             staging: session.staging.is_some(),
-            pending_slot: session.pending.map(|p| p.slot()),
+            pending_slot: session.pending().map(|p| p.slot()),
             units,
             outcome: outcome.map(|o| match o {
                 Outcome::Win => "win",
@@ -1662,11 +1662,33 @@ impl SceCommandCombat {
         {
             let ours: Vec<String> = (0..PARTY_SLOTS)
                 .filter_map(|i| battle.get(i))
-                .map(|c| format!("{}({}/{})", c.actor_id, c.hp, c.max_hp))
+                .map(|c| {
+                    format!(
+                        "{}({}/{} 级{} 武{} 防{} 速{})",
+                        c.actor_id,
+                        c.hp,
+                        c.max_hp,
+                        c.level,
+                        c.attack_eff(),
+                        c.defense_eff(),
+                        c.speed_eff()
+                    )
+                })
                 .collect();
             let theirs: Vec<String> = (PARTY_SLOTS..SLOTS)
                 .filter_map(|i| battle.get(i))
-                .map(|c| format!("{}({}/{})", c.actor_id, c.hp, c.max_hp))
+                .map(|c| {
+                    format!(
+                        "{}({}/{} 级{} 武{} 防{} 速{})",
+                        c.actor_id,
+                        c.hp,
+                        c.max_hp,
+                        c.level,
+                        c.attack_eff(),
+                        c.defense_eff(),
+                        c.speed_eff()
+                    )
+                })
                 .collect();
             log::info!("Combat: 我方 {ours:?} 敌方 {theirs:?}");
         }
@@ -2014,7 +2036,7 @@ impl SceCommandCombat {
         let slot = staging.slot;
         // 新的一次：从登记的行动里读种类和目标。
         if self.run.map(|r| r.slot) != Some(slot) {
-            let kind = match session.pending {
+            let kind = match session.pending_for(slot) {
                 Some(Pending::Attack { .. }) => ActKind::Attack,
                 Some(Pending::Cast { special: true, .. }) => ActKind::Special,
                 Some(Pending::Cast { .. }) | Some(Pending::Combo { .. }) => ActKind::Cast,
@@ -2026,7 +2048,7 @@ impl SceCommandCombat {
                     return;
                 }
             };
-            let link_id = match session.pending {
+            let link_id = match session.pending_for(slot) {
                 Some(Pending::Cast { skill, special, .. }) => session
                     .cast_choice(slot, skill, special)
                     .map(|s| s.effect.id),
@@ -2046,12 +2068,12 @@ impl SceCommandCombat {
                 link,
                 target: None,
                 played: [false; 2],
-                combo: matches!(session.pending, Some(Pending::Combo { .. })),
+                combo: matches!(session.pending_for(slot), Some(Pending::Combo { .. })),
                 hits_done: 0,
                 events_done: 0,
             });
         }
-        let target = match session.pending {
+        let target = match session.pending_for(slot) {
             Some(Pending::Attack { target, .. })
             | Some(Pending::Cast { target, .. })
             | Some(Pending::Item { target, .. })
@@ -2112,7 +2134,7 @@ impl SceCommandCombat {
                     // 10 号位的原位。
                     use crate::openpal3::combat::stage as st;
                     use crate::openpal3::states::combat_data::StagePos;
-                    let range = match session.pending {
+                    let range = match session.pending_for(slot) {
                         Some(Pending::Combo { combo, .. }) => {
                             session.combos().get(combo).map(|c| c.range)
                         }
@@ -2164,7 +2186,7 @@ impl SceCommandCombat {
                 if t < COMBO_STEP_SECONDS {
                     run.step = StageStep::ComboShow { t };
                 } else {
-                    let name = match session.pending {
+                    let name = match session.pending_for(slot) {
                         Some(Pending::Combo { combo, .. }) => {
                             session.combos().get(combo).map(|c| c.name.clone())
                         }

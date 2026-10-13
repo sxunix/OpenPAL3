@@ -355,9 +355,15 @@ pub struct CombatSession {
     pub used_items: Vec<u32>,
     /// 合击技表（gdb 里的顺序），开战时给。
     combos: Vec<ComboDef>,
-    /// 选好了但还在出手段的那个行动，见 [`Pending`]。同一时刻只可能有一个
-    /// ——调度器一次只排一个行动任务。逃跑不占这一格，见 [`Self::escape`]。
-    pub pending: Option<Pending>,
+    /// 选好了、还在出手段的行动，见 [`Pending`]，每个位至多一个，按选定的先后排。
+    ///
+    /// 原版每个行动是一条单开的虚拟线程（`CCBSystem::AddThread`），出手段各走各的；舞台一次只演一个
+    /// （`CCBStage::ProcGrabStageRole` 抢舞台），这里由 [`Self::staging`] 管。主调度
+    /// `ProcControl`（`combat/cbsystem.cpp:910`）每帧把 11 个位过一遍，谁到了出招点就挑行动，
+    /// **不等别人的行动结算完**。先前这里只容一个、别人在出手段时轮到的人先等着：我方四五个人轮流
+    /// 满条，敌人常常一直轮不上（大渡口之后 M06 的虾兵、龟丞相整场没出过手）。
+    /// 逃跑不占这一格，见 [`Self::escape`]。
+    pub pending_actions: Vec<Pending>,
     /// 按了「逃」、正在等逃跑蓄力满的那一位（原版 `CCBSystem::ProcFleeWait`
     /// 是条**单开的虚拟线程**，不占行动任务那一格：等待期间别人照样出手，
     /// 所以这里也单开一格，逃跑的人不会把全场挂住）。
@@ -401,7 +407,7 @@ impl CombatSession {
             log: VecDeque::new(),
             turn: None,
             notice: None,
-            pending: None,
+            pending_actions: Vec::new(),
             escape: None,
             staging: None,
             stage_driven: false,
@@ -683,8 +689,7 @@ impl CombatSession {
             match due {
                 // 出手条满了：把先前选定的行动结算掉。
                 Due::Executed(slot) => {
-                    let staged =
-                        self.stage_driven && matches!(self.pending, Some(p) if p.slot() == slot);
+                    let staged = self.stage_driven && self.pending_for(slot).is_some();
                     if staged {
                         self.staging = Some(Staging {
                             slot,
@@ -700,10 +705,8 @@ impl CombatSession {
                 Due::Ready(slot) => {
                     // 调度器一次只排一个行动任务：有人还在出手段（登记的行动没结算），轮到的人
                     // 这一帧先等着，下一帧再看——出手完成的那个优先。
-                    if self.pending.is_some() {
-                        waiting.push(slot);
-                        continue;
-                    }
+                    // 原版 `ProcControl` 挑行动不看别人在不在出手段（见 `pending_actions`），
+                    // 只有舞台一次演一个（上面 `staging` 时整段不跑）。
                     let actor = self
                         .battle
                         .get(slot)
@@ -750,6 +753,19 @@ impl CombatSession {
         self.finished
     }
 
+    /// 最早选定、还在出手段的那个行动（测试和快照用）。
+    pub fn pending(&self) -> Option<Pending> {
+        self.pending_actions.first().copied()
+    }
+
+    /// 第 `slot` 位选定、还在出手段的行动。
+    pub fn pending_for(&self, slot: usize) -> Option<Pending> {
+        self.pending_actions
+            .iter()
+            .find(|p| p.slot() == slot)
+            .copied()
+    }
+
     /// 舞台演到出手那一刻：把交出去的行动结算掉。重复调用无害。
     pub fn strike(&mut self) {
         let Some(st) = self.staging.as_mut() else {
@@ -773,8 +789,8 @@ impl CombatSession {
         if st.landed {
             return;
         }
-        if let Some(Pending::Attack { slot, target }) = self.pending {
-            if slot == st.slot {
+        if let Some(Pending::Attack { slot, target }) = self.pending_for(st.slot) {
+            {
                 self.attack(slot, target);
                 self.settle_outcome();
             }
@@ -786,7 +802,7 @@ impl CombatSession {
         if self.escape == Some(slot) {
             return Some(Pending::Escape { slot });
         }
-        self.pending.filter(|p| p.slot() == slot)
+        self.pending_for(slot)
     }
 
     /// 逃跑等待被打掉：把这一次逃跑作废，人回蓄力段重新选。原版在
@@ -826,17 +842,12 @@ impl CombatSession {
             self.battle.finish_turn(slot);
             return;
         }
-        let Some(p) = self.pending.take() else {
+        let Some(i) = self.pending_actions.iter().position(|p| p.slot() == slot) else {
             // 没有登记的行动（例如被打断后又自己走完了出手段），当作空过。
             self.battle.finish_turn(slot);
             return;
         };
-        if p.slot() != slot {
-            // 不是这个单位的行动，放回去。
-            self.pending = Some(p);
-            self.battle.finish_turn(slot);
-            return;
-        }
+        let p = self.pending_actions.remove(i);
         match p {
             Pending::Attack { slot, target } => self.attack(slot, target),
             Pending::Cast {
@@ -885,7 +896,8 @@ impl CombatSession {
                 self.battle.begin_escape(slot);
             }
             _ => {
-                self.pending = Some(action);
+                self.pending_actions.retain(|p| p.slot() != slot);
+                self.pending_actions.push(action);
                 self.battle.begin_execute(slot, multiplier);
             }
         }
@@ -1394,6 +1406,7 @@ impl CombatSession {
     }
 
     fn push_log(&mut self, line: String) {
+        log::debug!("Combat log: {line}");
         if self.log.len() >= LOG_LINES {
             self.log.pop_front();
         }
@@ -1426,7 +1439,7 @@ impl CombatSession {
             MenuEntry::Skill => !has(K_SEAL),
             MenuEntry::Item | MenuEntry::Escape => !has(K_FORBID),
             MenuEntry::Lineup => {
-                !self.pending.is_some_and(|p| p.slot() < PARTY_SLOTS)
+                !self.pending_actions.iter().any(|p| p.slot() < PARTY_SLOTS)
                     && !self.escape.is_some_and(|s| s < PARTY_SLOTS)
             }
             MenuEntry::Protect => {
@@ -1966,7 +1979,7 @@ mod tests {
             1,
         );
         assert_eq!(
-            s.pending,
+            s.pending(),
             Some(Pending::Combo {
                 slot: 0,
                 target: 5,
@@ -1991,7 +2004,7 @@ mod tests {
             },
             1,
         );
-        assert!(matches!(s.pending, Some(Pending::Cast { .. })));
+        assert!(matches!(s.pending(), Some(Pending::Cast { .. })));
     }
     use crate::openpal3::combat::formulas;
     use crate::openpal3::combat::state::{Combatant, Phase};
@@ -2072,6 +2085,44 @@ mod tests {
         panic!("没人轮到出手");
     }
 
+    /// 我方四个人和怪一样快、玩家一轮到就按：怪照样轮得上（原版 `ProcControl` 挑行动不等别人的
+    /// 行动结算完，见 `pending_actions`）。注意这个测试的时序复现不出实机里那种饿死（实机 M06 一场
+    /// 40 秒怪一次没出手，出手段和舞台的时长和这里不一样），只守住「怪轮得上」。
+    #[test]
+    fn enemies_still_act_against_a_full_party() {
+        let mut s = session();
+        for slot in 0..4 {
+            s.battle.place(slot, fighter(Side::Party, 5000, 4));
+        }
+        {
+            let e = s.battle.get_mut(5).unwrap();
+            e.speed = 4;
+            e.max_hp = 5000;
+            e.hp = 5000;
+        }
+        // 有舞台：每次演出占一秒（舞台演的时候整场时钟停）。
+        s.stage_driven = true;
+        let mut show = 0.;
+        for _ in 0..20_000 {
+            s.tick(0.05);
+            if s.staging.is_some() {
+                show += 0.05;
+                if show >= 1. {
+                    show = 0.;
+                    s.release();
+                }
+            }
+            if s.turn.is_some() {
+                s.input(Input::Confirm);
+                s.input(Input::Confirm);
+            }
+            if s.log.iter().any(|l| l.starts_with("妖")) {
+                return;
+            }
+        }
+        panic!("怪一直轮不上：{:?}", s.log);
+    }
+
     #[test]
     fn without_a_stage_a_fleeing_enemy_is_gone_at_once() {
         let mut s = session();
@@ -2135,7 +2186,7 @@ mod tests {
         assert!(s.turn.is_none());
         // 确认菜单只是**选定**行动，单位这时进的是出手段；要等出手条走满
         // 才真正打出去（原版 `FUN_004db730` → `FUN_004db6c0`）。
-        assert!(s.pending.is_some(), "行动应当挂在出手段等着");
+        assert!(s.pending().is_some(), "行动应当挂在出手段等着");
         assert_eq!(s.tick(0.05), None, "出手条还没满");
         // 100 attack against 10 defence at level 5 kills a 60 HP enemy.
         assert_eq!(run_until_finished(&mut s), Some(Outcome::Win));
@@ -2224,7 +2275,7 @@ mod tests {
         s.input(Input::Down);
         s.input(Input::Confirm);
         assert!(s.turn.is_none(), "改过开关，这一回合用掉");
-        assert!(s.pending.is_none(), "这一回合不出手");
+        assert!(s.pending().is_none(), "这一回合不出手");
         assert!(s.battle.get(0).unwrap().delegation.on);
         for _ in 0..10_000 {
             if let Some(outcome) = s.tick(0.05) {
@@ -2295,7 +2346,7 @@ mod tests {
         assert_eq!(s.battle.get(0).unwrap().element_position, 6);
         s.input(Input::Cancel);
         assert!(s.turn.is_none(), "换过位，这一回合用掉");
-        assert!(s.pending.is_none());
+        assert!(s.pending().is_none());
     }
 
     #[test]
@@ -2430,7 +2481,7 @@ mod tests {
         }
         s.input(Input::Confirm);
         assert!(s.turn.is_none(), "改了援护，这一回合用掉");
-        assert!(s.pending.is_none());
+        assert!(s.pending().is_none());
         assert_eq!(s.battle.get(0).unwrap().protecting, Some(1));
         assert!(!s.entry_enabled(1, MenuEntry::Protect), "「援」只给景天");
     }
@@ -2467,7 +2518,7 @@ mod tests {
         assert_eq!(s.targets(), vec![5], "打人的特技指向敌方");
         s.input(Input::Confirm);
         assert_eq!(
-            s.pending,
+            s.pending(),
             Some(Pending::Cast {
                 slot: 0,
                 target: 5,
@@ -2569,7 +2620,7 @@ mod tests {
         s.input(Input::Confirm);
         assert!(s.turn.is_none());
         assert_eq!(s.escape, Some(0));
-        assert!(s.pending.is_none(), "逃跑不占行动那一格");
+        assert!(s.pending().is_none(), "逃跑不占行动那一格");
         // 逃跑一样要走一段出手（`LAB_00515200` 的 0x51527a）。
         for _ in 0..400 {
             if s.log.back().map(|l| l.contains("逃跑")).unwrap_or(false) {
@@ -2606,7 +2657,8 @@ mod tests {
         s.input(Input::Right); // 逃跑
         s.input(Input::Confirm);
         assert_eq!(s.escape, Some(0));
-        assert!(s.pending.is_none());
+        // 逃跑不占行动那一格（怪这时可能已经挑好了自己的行动）。
+        assert!(s.pending_for(0).is_none());
 
         let hp = s.battle.get(0).unwrap().hp;
         for _ in 0..2000 {
@@ -2667,11 +2719,11 @@ mod tests {
         for _ in 0..5000 {
             s.tick(0.01);
             assert!(s.turn.is_none(), "乱了不出控制盘");
-            if s.pending.is_some() {
+            if s.pending().is_some() {
                 break;
             }
         }
-        assert_eq!(s.pending, Some(Pending::Attack { slot: 0, target: 5 }));
+        assert_eq!(s.pending(), Some(Pending::Attack { slot: 0, target: 5 }));
     }
 
     #[test]
@@ -2693,7 +2745,7 @@ mod tests {
             }
         }
         assert!(s.log.back().is_some_and(|l| l.contains("定住了")));
-        assert!(s.pending.is_none());
+        assert!(s.pending().is_none());
     }
 
     /// 一件我方单体的疗伤药。
@@ -2725,11 +2777,11 @@ mod tests {
         s.input(Input::Confirm);
         assert_eq!(s.targets(), vec![0], "我方单体的药指向自己人");
         s.input(Input::Confirm);
-        assert!(matches!(s.pending, Some(Pending::Item { .. })));
+        assert!(matches!(s.pending(), Some(Pending::Item { .. })));
 
         for _ in 0..400 {
             s.tick(0.05);
-            if s.pending.is_none() {
+            if s.pending().is_none() {
                 break;
             }
         }
@@ -2796,7 +2848,7 @@ mod tests {
         s.input(Input::Confirm);
         for _ in 0..400 {
             s.tick(0.05);
-            if s.pending.is_none() {
+            if s.pending().is_none() {
                 break;
             }
         }
