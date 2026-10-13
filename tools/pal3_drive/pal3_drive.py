@@ -244,8 +244,10 @@ def boot(c: Client, load_slot: Optional[int] = None) -> dict:
     """进到能自由操作的状态。给了 `load_slot` 就读档，否则开新游戏、快进跳片头、
     逐句推完序章（快进下 `SceCommandMovie` 整段跳过，台词仍要推）。"""
     if load_slot is not None:
+        # 只等场景出来：读档的位置可能正踩在触发格上，进场就开一段对话，
+        # 那要调用方自己推（探路脚本接着就 settle）。
         c.load(load_slot)
-        c.wait(lambda s: bool(s.get("scene")) and not s.get("script_running"), timeout=180)
+        c.wait(lambda s: bool(s.get("scene")), timeout=180)
         time.sleep(1.5)
         return c.state()
     c.new_game()
