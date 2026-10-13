@@ -671,6 +671,11 @@ impl ScnScene {
         )
     }
 
+    /// 第 `index` 个走格触发点挂的过程号。
+    pub fn nav_trigger_proc(&self, index: usize) -> Option<u32> {
+        self.nav_triggers.borrow().get(index).map(|t| t.sce_proc_id)
+    }
+
     pub fn agent_triggers(&self) -> Vec<AgentTrigger> {
         let mut out = Vec::new();
         for (index, t) in self.nav_triggers.borrow().iter().enumerate() {

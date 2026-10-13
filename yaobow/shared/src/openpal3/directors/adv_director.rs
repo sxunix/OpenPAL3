@@ -77,6 +77,7 @@ impl AdventureDirector {
                 last_nav_trigger: None,
                 input_lock: false,
                 agent_walk: None,
+                agent_walk_goal: None,
                 agent_interact: false,
                 player_jump: None,
                 jump_charge: None,
@@ -199,6 +200,7 @@ impl AdventureDirector {
                 last_nav_trigger: None,
                 input_lock: false,
                 agent_walk: None,
+                agent_walk_goal: None,
                 agent_interact: false,
                 player_jump: None,
                 jump_charge: None,
@@ -582,22 +584,30 @@ impl AdventureDirector {
         interact: bool,
     ) -> Option<usize> {
         let mut p = self.props.borrow_mut();
-        let scene = p.scene_manager.scn_scene()?;
-        let role = p.scene_manager.get_resolved_role(p.sce_vm.state(), -1)?;
-        let layer = RoleController::get_role_controller(role.clone())
-            .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
-        let from = role.transform().borrow().position();
-        let path = scene
-            .inner::<crate::openpal3::scene::ScnScene>()
-            .agent_path(layer, &from, nav_index, &point)?;
+        let path = p.plan_agent_walk(nav_index, &point)?;
         let n = path.len();
+        let goal_proc = nav_index.and_then(|i| {
+            p.scene_manager.scn_scene().and_then(|s| {
+                s.inner::<crate::openpal3::scene::ScnScene>()
+                    .nav_trigger_proc(i)
+            })
+        });
         p.agent_walk = Some((path.into_iter().collect(), interact));
+        p.agent_walk_goal = Some(AgentWalkGoal {
+            nav_index,
+            point,
+            interact,
+            goal_proc,
+            scene: p.scene_key(),
+            resumes: 0,
+        });
         Some(n)
     }
 
     /// 调试用：agent 带着主角走的路还没走完。
     pub fn agent_walking(&self) -> bool {
-        self.props.borrow().agent_walk.is_some()
+        let p = self.props.borrow();
+        p.agent_walk.is_some() || p.agent_walk_goal.is_some()
     }
 
     /// 调试用：主角现在这层上能不能走到 `to`（见 [`ScnScene::agent_reachable`]）。
@@ -711,6 +721,9 @@ struct AdventureDirectorProps {
     /// [调试] agent 让主角照 [`ScnScene::agent_path`] 一帧一格走过去（探路工具用，传送会跨过路上的
     /// 走格触发）。第二项：走到了按一下调查键。脚本接手（上锁、冻结）就作罢。
     agent_walk: Option<(std::collections::VecDeque<(usize, Vec3)>, bool)>,
+    /// [调试] 正在走的那趟要去哪（走到半路碰出过程会停下，过程跑完、还在同一个场景就从当下的
+    /// 位置重新找路接着走——原版玩家按着方向键，过程放开后照样往前走）。
+    agent_walk_goal: Option<AgentWalkGoal>,
     /// [调试] 下一帧当调查键按下了（agent 走到地方以后）。
     agent_interact: bool,
     /// 主角正在跳（`FUN_00414a30` → 行为 4、动作 0）；第二项是跳的动作放出来没有。
@@ -2336,9 +2349,44 @@ impl AdventureDirectorProps {
     fn run_triggered_proc(&mut self, proc_id: u32) {
         self.sce_vm.call_proc(proc_id);
         self.input_lock = true;
-        // 原版碰出过程时主角站住（类型 0 的 `InterActRole` 里 `Stand()`）。agent 带着走的路也到此为止——
-        // 过程常常当帧就换了场景、跑完了，锁一放开，剩下的路点还是旧场景的坐标。
+        // 原版碰出过程时主角站住（类型 0 的 `InterActRole` 里 `Stand()`）。agent 带着走的路也先停下——
+        // 过程常常当帧就换了场景、跑完了，锁一放开，剩下的路点还是旧场景的坐标。去的就是这个触发点的话
+        // 这趟算走完了，不然过程跑完再接着走（见 `agent_walk_goal`）。
         self.agent_walk = None;
+        if self
+            .agent_walk_goal
+            .as_ref()
+            .is_some_and(|g| g.goal_proc == Some(proc_id))
+        {
+            self.agent_walk_goal = None;
+        }
+    }
+
+    /// [调试] 从主角现在的位置找去 agent 目标的路（见 [`ScnScene::agent_path`]）。
+    fn plan_agent_walk(
+        &self,
+        nav_index: Option<usize>,
+        point: &Vec3,
+    ) -> Option<Vec<(usize, Vec3)>> {
+        let scene = self.scene_manager.scn_scene()?;
+        let role = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)?;
+        let layer = RoleController::get_role_controller(role.clone())
+            .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
+        let from = role.transform().borrow().position();
+        scene
+            .inner::<crate::openpal3::scene::ScnScene>()
+            .agent_path(layer, &from, nav_index, point)
+    }
+
+    /// [调试] 现在是哪个场景（存档里的场景名 + 块名）。
+    fn scene_key(&self) -> (String, String) {
+        let p = self.sce_vm.global_state().persistent_state();
+        (
+            p.scene_name().unwrap_or_default(),
+            p.sub_scene_name().unwrap_or_default(),
+        )
     }
 
     fn player_on_object(&mut self, dt: f32) {
@@ -2735,6 +2783,18 @@ impl AdventureDirectorProps {
         if self.agent_walk.is_some() && (locked || frozen) {
             self.agent_walk = None;
         }
+        // 半路停下的，过程跑完了：还在同一个场景就重新找路接着走，换了场景或者走不到了就作罢。
+        if self.agent_walk.is_none() && !locked && !frozen {
+            if let Some(mut goal) = self.agent_walk_goal.take() {
+                if goal.scene == self.scene_key() && goal.resumes < 3 {
+                    if let Some(path) = self.plan_agent_walk(goal.nav_index, &goal.point) {
+                        self.agent_walk = Some((path.into_iter().collect(), goal.interact));
+                        goal.resumes += 1;
+                        self.agent_walk_goal = Some(goal);
+                    }
+                }
+            }
+        }
         if let Some((path, interact)) = self.agent_walk.as_mut() {
             match path.pop_front() {
                 Some((layer, p)) => {
@@ -2751,6 +2811,7 @@ impl AdventureDirectorProps {
                 None => {
                     self.agent_interact = *interact;
                     self.agent_walk = None;
+                    self.agent_walk_goal = None;
                 }
             }
         }
@@ -2878,6 +2939,17 @@ impl AdventureDirectorProps {
 
         None
     }
+}
+
+/// [调试] agent 带着主角走的那一趟的目标，见 `AdventureDirectorProps::agent_walk_goal`。
+struct AgentWalkGoal {
+    nav_index: Option<usize>,
+    point: Vec3,
+    interact: bool,
+    /// 去的走格触发点挂的过程：碰出的就是它，这趟算走完。
+    goal_proc: Option<u32>,
+    scene: (String, String),
+    resumes: u8,
 }
 
 /// 场景物件的动作 2 牵着主角走（`FUN_00412b60` 设的移动方式 4：起点 +0x554、终点 +0x540、按走的速度）。
