@@ -275,13 +275,17 @@ impl SceCommand for SceCommandMiniGameSki {
             return true;
         }
 
+        // [移植] 手柄键照全代码的约定：`GamePadEast`（Switch 的 A）是确定、
+        // `GamePadSouth`（B）是取消——其他界面都是空格配 East、Esc 配 South。
+        // 先前这里反着：按 A 直接弃权、按住 B 才加速，主线里这一段（M22「滑雪
+        // 之前」）一按 A 就丢了。改成 B 弃权、按住 A 加速（对应原版按住左键）。
         let quit = state.input().get_key_state(Key::Escape).pressed()
-            || state.input().get_key_state(Key::GamePadEast).pressed();
+            || state.input().get_key_state(Key::GamePadSouth).pressed();
 
         let input = SkiInput {
             // 原版是 `DAT_00bfc5f4 == 1`，左键**按住**。
             boost: ui.is_mouse_down(MouseButton::Left)
-                || state.input().get_key_state(Key::GamePadSouth).is_down(),
+                || state.input().get_key_state(Key::GamePadEast).is_down(),
             // 原版是 `(DAT_00bfc5f8 & 0xf) == 1`，右键**按下那一帧**。
             jump: ui.is_mouse_clicked(MouseButton::Right)
                 || state.input().get_key_state(Key::Space).pressed()

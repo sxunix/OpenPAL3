@@ -31,7 +31,15 @@ python3 tools/pal3_drive/route_prologue.py --out runs/prologue --no-shots   # �
 python3 tools/pal3_drive/route_combat.py   --out runs/combat               # 要先有活着的存档/剧情
 python3 tools/pal3_drive/route_win.py      --out runs/win --monster 7306   # 从新游戏打赢一场看结算
 python3 tools/pal3_drive/route_combo.py    --out runs/combo --combos 501,504  # 放合击看演出
+python3 tools/pal3_drive/route_ui.py       --out runs/ui                   # 状态菜单八页 + 三家店；顺手存 4 号档
+python3 tools/pal3_drive/route_minigames.py --out runs/mini --load 4       # 阵法 / 当铺投资 / 宿营
+python3 tools/pal3_drive/route_pad.py      --out runs/pad --load 4         # 只用手柄键过鉴定和宿营
 ```
+
+`route_pad.py` 模拟 **Switch 插底座、只有手柄**：只发 A / B / 十字键 / 肩键，
+不发回车、Esc、数字键。读 imgui 输入的小游戏原版是 PC 纯鼠标，Switch 上手柄
+只产生 imgui 的 `Gamepad*` 键，没有触屏时某一步不收手柄就是卡死——鉴定（第一章
+主线）和宿营都是这么抓出来的。新加读 imgui 输入的界面，要在这条路线里过一遍。
 
 `route_prologue` 开新游戏走到玩家可操作；`route_combat` 换场到有战场的地方
 开一场战斗再打几下。后者的两个坑写在它自己的文件头里。
@@ -83,6 +91,13 @@ run.write()
 * 片头 Bink 要 `Escape` 跳；也可以开 `fast_forward` 让 `SceCommandMovie`
   整段跳过（`commands/movie.rs:35`）。
 * 快照里 `quest_percentage` 还是 0 —— PAL3 侧没有这个量，没接。
+* **合成按键也灌给 imgui**（`radiance::imgui::queue_synthetic_key`）。引擎键表
+  没有回车，发 `"Enter"`；任意 imgui 键发 `"imgui:<名字>"`，比如
+  `"imgui:GamepadL1"`。手柄键按**含义**映射：`GamePadEast` = A = 确定
+  （imgui `GamepadFaceDown`），`GamePadSouth` = B = 取消（`GamepadFaceRight`），
+  和 Switch 平台一致。
+* 调试入口推进来的指令（商店、宿营、鉴定）不经过 proc，但跑着的时候快照的
+  `script_running` 也是真，可以靠它等结束。
 * **战斗里别盲按**。快照的 `combat` 字段给出 `turn_slot`（轮到谁）、`menu`
   （`main` / `target` / …）、`staging`（舞台在演出手）、各位的精、`outcome`。
   角色跑过去出手的那几秒里 Space 是「跳过演出」，盲按大半落空——头几场
