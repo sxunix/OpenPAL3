@@ -448,9 +448,13 @@ impl EncampGame {
                 }
             }
         });
+        // 原版是纯鼠标：点在说明牌上才往下走。[移植] 同时收任意键——Switch 上只有
+        // 触屏会变成 imgui 鼠标（`imgui/platform/switch.rs`），插底座只用手柄时
+        // 没有指针，这一屏就再也过不去。和下一步过场框同一个 `any_key`。
         let mouse = virtual_mouse(ui);
-        if ui.is_mouse_clicked(MouseButton::Left)
-            && layout::contains(layout::REMARK, mouse.0, mouse.1)
+        if (ui.is_mouse_clicked(MouseButton::Left)
+            && layout::contains(layout::REMARK, mouse.0, mouse.1))
+            || any_key(ui)
         {
             self.phase = Phase::Wait;
         }
@@ -489,11 +493,11 @@ impl EncampGame {
             self.settle(state);
             return;
         }
+        // 点转盘开始减速。[移植] 同上，手柄按确定也算。
         let mouse = virtual_mouse(ui);
-        if !braking
-            && ui.is_mouse_clicked(MouseButton::Left)
-            && layout::contains(layout::TURNTABLE, mouse.0, mouse.1)
-        {
+        let clicked = ui.is_mouse_clicked(MouseButton::Left)
+            && layout::contains(layout::TURNTABLE, mouse.0, mouse.1);
+        if !braking && (clicked || any_key(ui)) {
             self.phase = Phase::Spin { braking: true };
         }
     }
@@ -555,7 +559,9 @@ impl EncampGame {
         });
         let clicked =
             ui.is_mouse_clicked(MouseButton::Left) && layout::contains(ok, mouse.0, mouse.1);
-        if clicked || ui.is_key_pressed(imgui::Key::Enter) {
+        // [移植] `any_key` 里有手柄 A / B——Switch 的手柄只产生 imgui 的
+        // `Gamepad*` 键，不产生回车；插底座没有触屏时只认回车就卡在这里。
+        if clicked || any_key(ui) {
             play_sfx(state, sfx::OK);
             self.show_panels(state);
         }
@@ -686,8 +692,8 @@ impl EncampGame {
         }
         let clicked = ui.is_mouse_clicked(MouseButton::Left)
             && layout::contains(layout::TURNTABLE, mouse.0, mouse.1);
-        if clicked || ui.is_key_pressed(imgui::Key::Enter) || ui.is_key_pressed(imgui::Key::Escape)
-        {
+        // [移植] 同上，补手柄（`any_key` 已含回车 / Esc / A / B）。
+        if clicked || any_key(ui) {
             self.phase = Phase::Done;
         }
     }
