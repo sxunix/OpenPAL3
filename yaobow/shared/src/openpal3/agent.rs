@@ -24,14 +24,16 @@ use std::rc::Rc;
 
 use agent_server::protocol::{
     AgentCommand, AgentError, AgentResponse, AxisInputParams, CameraPoseParams, DialogSnapshot,
-    KeyAction, KeyInputParams, ScreenshotResponse, ScriptEvalParams, ScriptEvalResponse,
-    ScriptGlobalsParams, ScriptGlobalsResponse, SlotParams, StateSnapshot, StatusMenuParams,
-    StepTimeParams, TeleportParams,
+    InventoryEntry, KeyAction, KeyInputParams, PartyMember, ScreenshotResponse, ScriptEvalParams,
+    ScriptEvalResponse, ScriptGlobalsParams, ScriptGlobalsResponse, SlotParams, StateSnapshot,
+    StatusMenuParams, StepTimeParams, TeleportParams,
 };
 use crosscom::ComRc;
+use fileformats::pal3::gdb::PLAYER_ACTOR_COUNT;
 use radiance::comdef::ISceneManager;
 use radiance::input::{Axis, Key};
 use radiance::math::Vec3;
+use radiance::scene::ISceneExt;
 
 use crate::agent_common::AgentBridge;
 use crate::openpal3::directors::AdventureDirector;
@@ -206,6 +208,51 @@ pub fn build_snapshot(ctx: &Pal3DispatchCtx) -> StateSnapshot {
         },
         None => DialogSnapshot::default(),
     };
+
+    // 片子（`SceCommandMovie`）在不在放。脚本停在 movie 上时
+    // `script_running` 也是真，靠这一位才分得出「过场动画」和「对话卡住」。
+    snap.movie_playing = global.movie_playing();
+
+    // 队伍：PAL3 的可操作角色是 0..5（`PLAYER_ACTOR_COUNT`），在不在队里
+    // 看 `team`。没建过记录的（还没入队过）不列。
+    snap.party = (0..PLAYER_ACTOR_COUNT as u32)
+        .filter_map(|actor_id| {
+            let r = persistent.role(actor_id)?;
+            Some(PartyMember {
+                slot: actor_id as usize,
+                level: r.level,
+                hp: r.hp,
+                max_hp: r.max_hp,
+                mp: r.mp,
+                max_mp: r.max_mp,
+                in_team: persistent.is_in_team(actor_id),
+            })
+        })
+        .collect();
+
+    snap.money = persistent.money();
+    snap.inventory = persistent
+        .inventory()
+        .iter()
+        .filter(|(_, count)| **count > 0)
+        .map(|(id, count)| InventoryEntry {
+            id: *id as i32,
+            count: *count as i32,
+        })
+        .collect();
+
+    // 镜头。`IScene::camera()` 给的是当前场景那台，和画面里的是同一台。
+    if let Some(scene) = ctx.scene_manager.scene() {
+        let camera = scene.camera();
+        let t = camera.transform();
+        let eye = t.position();
+        snap.camera_eye = [eye.x, eye.y, eye.z];
+        // `Transform::look_at` 把 `normalize(位置 − 目标)` 写进矩阵第 2 列，
+        // 也就是说那一列是**背对**目标的，所以 target = 位置 − 该列。
+        let m = t.matrix();
+        snap.camera_target = [eye.x - m[0][2], eye.y - m[1][2], eye.z - m[2][2]];
+    }
+
     snap
 }
 

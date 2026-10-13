@@ -224,6 +224,13 @@ impl GlobalState {
         self.video_player.as_mut()
     }
 
+    /// 有没有片子正在放。`SceCommandMovie` 每帧拿
+    /// `video_player().get_state()` 判要不要收尾，这里给只读的那一侧
+    /// （agent 快照）一个同样的判据。
+    pub fn movie_playing(&self) -> bool {
+        self.video_player.get_state() != radiance::video::VideoStreamState::Stopped
+    }
+
     pub fn play_movie(&mut self, name: &str) -> Option<(u32, u32)> {
         let reader = self.asset_mgr.load_movie_data(name);
         let factory = self.asset_mgr.component_factory();
