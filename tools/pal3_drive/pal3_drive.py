@@ -75,11 +75,12 @@ class Client:
         env = self._json("GET", f"/v1/log/tail?after_seq={after_seq}&n={n}")
         return (env or {}).get("data", {})
 
-    def globals(self, start: int = 0, limit: int = 4096) -> list[int]:
-        """SCE 全局变量（剧情旗标）的一段。PAL3 的全局变量是稀疏的，服务端按
-        「最高写过的号 + 1」算长度。"""
-        env = self._json("GET", f"/v1/script/globals?start={start}&limit={limit}")
-        return (env or {}).get("data", {}).get("globals", [])
+    def globals(self) -> dict[int, int]:
+        """SCE 全局变量（剧情旗标）：{变量号: 值}。PAL3 的剧情变量号多是负的（主线
+        进度是 -32768），服务端放在 `named` 里，名字就是变量号。"""
+        env = self._json("GET", "/v1/script/globals?start=0&limit=1")
+        named = (env or {}).get("data", {}).get("named", [])
+        return {int(g["name"]): g["value"] for g in named}
 
     def triggers(self) -> list[dict]:
         """当前场景的触发点：`nav:<号>` 走进去就触发，`aabb:` / `item:` 要按调查键。"""

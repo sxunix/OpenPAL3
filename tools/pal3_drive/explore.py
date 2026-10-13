@@ -34,7 +34,7 @@ SETTLE_LIMIT = 240.0      # 一次收尾最多等多久
 def fingerprint(c: Client) -> tuple[str, str, str]:
     s = c.state()
     g = c.globals()
-    h = hashlib.sha1(json.dumps(g).encode()).hexdigest()[:10]
+    h = hashlib.sha1(json.dumps(sorted(g.items())).encode()).hexdigest()[:10]
     return s.get("scene", ""), s.get("block", ""), h
 
 
@@ -101,14 +101,14 @@ def settle(c: Client, issues: list, label: str) -> dict:
         time.sleep(0.3)
 
 
-def candidates(c: Client) -> list[str]:
-    """当前场景里能触发的东西，按尝试次序排。"""
+def candidates(c: Client) -> tuple[list[str], list[str]]:
+    """当前场景里能触发的东西：(人物 + 物件 + 拾取点, 导航格)。"""
     roles = [r["name"] for r in c.roles()
              if r.get("visible") and r.get("talk_function") and r["name"].startswith("role:")]
     trig = c.triggers()
     touch = [t["name"] for t in trig if t["shape"] in ("aabb", "item")]
     nav = [t["name"] for t in trig if t["shape"] == "nav"]
-    return roles + touch + nav
+    return roles + touch, nav
 
 
 def main() -> int:
@@ -117,6 +117,7 @@ def main() -> int:
     ap.add_argument("--out", default="runs/explore")
     ap.add_argument("--load", type=int, default=None)
     ap.add_argument("--steps", type=int, default=150)
+    ap.add_argument("--save", type=int, default=3, help="剧情推进时存到这个档（0 = 不存）")
     ap.add_argument("--shots", action="store_true", help="每次推进都截图")
     args = ap.parse_args()
 
@@ -131,18 +132,33 @@ def main() -> int:
     run.mark("start", shot=True)
 
     tried: dict[tuple, set] = {}
+    # 每个触发（按场景 + 块 + 名字）在所有剧情状态下一共试过几次。挑的时候少的先来：
+    # 剧情推进一次全局变量就变、状态就全新，不排序的话每推进一次就把整座城重逛一遍。
+    count: dict[tuple, int] = {}
+    wander = 0            # 连续「这里没有没试过的、只好走出去」的次数
     progress = 0
     for step in range(args.steps):
         key = fingerprint(c)
         done = tried.setdefault(key, set())
-        todo = [n for n in candidates(c) if n not in done]
-        if not todo:
-            issues.append({"kind": "dead_end", "scene": key[0], "block": key[1],
-                           "tried": sorted(done)})
-            run.mark(f"dead_end_{key[0]}_{key[1]}", shot=True)
-            break
-        name = todo[0]
-        done.add(name)
+        acts, navs = candidates(c)
+        n_of = lambda n: count.get((key[0], key[1], n), 0)  # noqa: E731
+        todo = sorted([n for n in acts + navs if n not in done],
+                      key=lambda n: (n_of(n), n in navs))
+        if todo:
+            name = todo[0]
+            done.add(name)
+            wander = 0
+        else:
+            # 这里在当前剧情状态下全试过了：走出去换个地方找，挑走得最少的出口。
+            # 连续 30 次都这样才算真的走不下去。
+            wander += 1
+            if wander > 30 or not navs:
+                issues.append({"kind": "dead_end", "scene": key[0], "block": key[1],
+                               "tried": sorted(done)})
+                run.mark(f"dead_end_{key[0]}_{key[1]}", shot=True)
+                break
+            name = min(navs, key=n_of)
+        count[(key[0], key[1], name)] = n_of(name) + 1
         try:
             c.fire(name)
         except AgentError as e:
@@ -158,6 +174,12 @@ def main() -> int:
         moved = after != key
         if moved:
             progress += 1
+        if args.save and after[2] != key[2]:
+            # 全局变量变了就是剧情往前走了：存一档，下次 `--load` 从这里接着走。
+            try:
+                c.save(args.save)
+            except AgentError as e:
+                issues.append({"kind": "save_error", "at": name, "detail": str(e)})
         row = run.mark(f"{step:03d}_{name}{'_progress' if moved else ''}", shot=args.shots and moved)
         row.update({"trigger": name, "result": result, "moved": moved,
                     "from": list(key), "to": list(after)})

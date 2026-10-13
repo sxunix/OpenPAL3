@@ -76,6 +76,7 @@ impl AdventureDirector {
                 player_slide_dir: None,
                 object_walk: None,
                 last_nav_trigger: None,
+                input_lock: false,
                 player_jump: None,
                 jump_charge: None,
                 snow: crate::openpal3::scene::Snow::new(),
@@ -196,6 +197,7 @@ impl AdventureDirector {
                 player_slide_dir: None,
                 object_walk: None,
                 last_nav_trigger: None,
+                input_lock: false,
                 player_jump: None,
                 jump_charge: None,
                 snow: crate::openpal3::scene::Snow::new(),
@@ -566,6 +568,22 @@ impl AdventureDirector {
     /// Teleport the leader (the role returned by `role_controlled`)
     /// to `pos`. Mirrors the agent server's `/v1/player/teleport`
     /// semantics. Returns `false` when no scene/role is available.
+    /// 传送主角并把导航层切到 `layer`。导航格触发（类型 0 等）只认主角**当前层**
+    /// 上的格子（原版 `Scene::InterActRole` 查的是 `m_objmap[role->m_onlayer]`），
+    /// 只改位置不改层的话，从二楼出来再传到一楼的触发区是不会触发的。
+    pub fn teleport_controlled_role_on_layer(&self, pos: Vec3, layer: usize) -> bool {
+        if !self.teleport_controlled_role(pos) {
+            return false;
+        }
+        let p = self.props.borrow();
+        if let Some(role) = p.scene_manager.get_resolved_role(p.sce_vm.state(), -1) {
+            if let Some(rc) = RoleController::get_role_controller(role) {
+                rc.inner::<RoleController>().set_nav_layer(layer);
+            }
+        }
+        true
+    }
+
     pub fn teleport_controlled_role(&self, pos: Vec3) -> bool {
         let p = self.props.borrow();
         if p.scene_manager.scene().is_none() {
@@ -639,6 +657,11 @@ struct AdventureDirectorProps {
     /// 上一帧主角站着的导航触发区的过程号。原版类型 0 触发点（`FUN_00424c20` case 0）只在「上一帧不在同一个物件上」
     /// 时跑过程，站着不动不会每帧重跑。
     last_nav_trigger: Option<u32>,
+    /// 主角碰出来的过程还在跑（原版 `ObjLockInput`：物件、对话、调查起的脚本连同它 `Call` 出去的
+    /// 都登记进去，`RoleCtrl::Update` 见它非空就不处理主角操作，`SceneMgr::Update` 也不查脚下物件，
+    /// `rolectrl.cpp` / `scenemgr.cpp:315`）。移植端的脚本机只有一条调用栈，碰出来的过程跑着时
+    /// 再按调查键会把同一个过程又压一层——爬梯子的过程就这样被反复从梯子底下重爬。
+    input_lock: bool,
     /// 主角正在跳（`FUN_00414a30` → 行为 4、动作 0）；第二项是跳的动作放出来没有。
     player_jump: Option<(crate::openpal3::scene::player_jump::Jump, bool)>,
     /// [移植] 跳键按住了多久（蓄力）。原版是右键点地面直接给落点，手柄上没有这一下。
@@ -2038,6 +2061,10 @@ impl AdventureDirectorProps {
     /// 物件动作 4 要跑的过程（`FUN_00432170(id, 0)`）：编号 ≥ 100 在当前场景的 `.sce` 里，
     /// < 100 在 `init.sce` 里（两张表 `DAT_00d8c308` / `DAT_00d8c2e8`，`FUN_00431fb0` 装的）。
     fn run_object_procs(&mut self, procs: Vec<i32>) {
+        // 物件起的脚本同样登记进 `ObjLockInput`（`sceneobj.cpp` 里的 `Add(NULL, runscript)`）。
+        if !procs.is_empty() {
+            self.input_lock = true;
+        }
         for id in procs {
             log::debug!("场景物件：跑过程 {id}");
             if id >= 100 {
@@ -2254,6 +2281,12 @@ impl AdventureDirectorProps {
     }
 
     /// `FUN_00420b40`：主角脚下那格的物件（被动作牵着走、移动方式 4 的时候不查）。
+    /// 主角碰出来的过程：跑起来，并且锁住主角操作直到它（连同它叫的）跑完（`ObjLockInput::Add`）。
+    fn run_triggered_proc(&mut self, proc_id: u32) {
+        self.sce_vm.call_proc(proc_id);
+        self.input_lock = true;
+    }
+
     fn player_on_object(&mut self, dt: f32) {
         if self.object_walk.is_some() {
             return;
@@ -2561,12 +2594,21 @@ impl AdventureDirectorProps {
         self.step_cave_wolf(delta_sec);
         self.test_save();
 
+        // `ObjLockInput::Update`：登记的过程都跑完了就解锁。
+        if self.input_lock
+            && !self.sce_vm.state().context().is_running()
+            && !self.sce_vm.has_active_commands()
+        {
+            self.input_lock = false;
+        }
+        let locked = self.input_lock;
+
         // 冻结计数小于 1（场景物件的动作 8）：主角不听输入（`FUN_0041d9a0`）、野怪停住、不撞怪、不查脚下物件。
         let frozen = self.sce_vm.global_state().frozen();
         // 跳的时候主角是行为 4：不听输入、不查脚下物件和触发区（`FUN_0041d9a0` / `FUN_00422e40`）。
         if self.player_jump.is_some() {
             self.step_player_jump(delta_sec);
-        } else if !frozen {
+        } else if !frozen && !locked {
             self.update_jump_charge(delta_sec);
         }
         // 蓄力时主角站着不动（原版瞄落点的时候也不走），但头上的图标照出。
@@ -2576,7 +2618,7 @@ impl AdventureDirectorProps {
             let icon = self.jump_icon_ndc();
             self.sce_vm.state_mut().set_jump_icon(icon);
         }
-        let (moving_direction, throw) = if frozen {
+        let (moving_direction, throw) = if frozen || locked {
             (Vec3::new(0., 0., 0.), 0.)
         } else {
             get_moving_direction_and_throw(
@@ -2591,7 +2633,7 @@ impl AdventureDirectorProps {
             throw,
         );
         // 主角脚下的场景物件（`FUN_00422e40` → `FUN_00420b40`）。
-        if !frozen {
+        if !frozen && !locked {
             self.player_on_object(delta_sec);
         }
 
@@ -2648,16 +2690,19 @@ impl AdventureDirectorProps {
         };
 
         let scene_rc = self.scene_manager.scn_scene().unwrap();
-        let proc_id_opt = {
-            let s = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
-            s.test_nav_trigger(nav_layer, &position)
-        };
-        let proc_id_opt = proc_id_opt.filter(|_| !frozen);
-        let entered = proc_id_opt.filter(|id| self.last_nav_trigger != Some(*id));
-        self.last_nav_trigger = proc_id_opt;
-        if let Some(proc_id) = entered {
-            debug!("New proc triggerd by nav: {}", proc_id);
-            self.sce_vm.call_proc(proc_id);
+        // 锁着的时候原版整段 `Scene::InterActRole` 不跑，「上一次站的物件」也不更新。
+        if !locked {
+            let proc_id_opt = {
+                let s = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+                s.test_nav_trigger(nav_layer, &position)
+            };
+            let proc_id_opt = proc_id_opt.filter(|_| !frozen);
+            let entered = proc_id_opt.filter(|id| self.last_nav_trigger != Some(*id));
+            self.last_nav_trigger = proc_id_opt;
+            if let Some(proc_id) = entered {
+                debug!("New proc triggerd by nav: {}", proc_id);
+                self.run_triggered_proc(proc_id);
+            }
         }
 
         let nav_layer_triggered = {
@@ -2710,10 +2755,12 @@ impl AdventureDirectorProps {
             self.layer_switch_triggered = false;
         }
 
-        let input = self.input_engine.borrow_mut();
+        let input_engine = self.input_engine.clone();
+        let input = input_engine.borrow_mut();
         // Space matches the original PC binding (空格 = 对话/调查/确定);
         // F is the upstream OpenPAL3 binding, GamePadEast the pad one.
         if !frozen
+            && !locked
             && (input.get_key_state(Key::F).pressed()
                 || input.get_key_state(Key::Space).pressed()
                 || input.get_key_state(Key::GamePadEast).pressed())
@@ -2732,7 +2779,7 @@ impl AdventureDirectorProps {
             };
             if let Some(proc_id) = trigger_proc_id {
                 debug!("New proc triggerd: {}", proc_id);
-                self.sce_vm.call_proc(proc_id);
+                self.run_triggered_proc(proc_id);
             }
 
             let result = {
@@ -2764,7 +2811,7 @@ impl AdventureDirectorProps {
                 }
                 Some(LadderTestResult::SceProc(proc_id)) => {
                     debug!("Ladder detected, proc_id {}", &proc_id);
-                    self.sce_vm.call_proc(proc_id);
+                    self.run_triggered_proc(proc_id);
                 }
                 None => {}
             }

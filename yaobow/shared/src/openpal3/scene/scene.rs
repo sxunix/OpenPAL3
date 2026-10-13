@@ -181,15 +181,34 @@ impl ScnScene {
         let nav_coord = self.scene_coord_to_nav_coord(layer, coord);
         let nav_coord = (nav_coord.0 as i32, nav_coord.1 as i32);
 
+        // 原版（`Scene::InterActRole`，`gamebase/scene.cpp:702`）按层建一张「格子 → 物件」
+        // 表，只查主角**当前层**那一张；踩中的物件要激活（`m_info.active`）才调
+        // `InterActRole`，里面 `times == 0` 直接返回。移植端先前门（类型 14）不分层、
+        // 不看激活、不看次数：二层的门在一层从底下走过也会切场景，开局未激活、等剧情
+        // 打开的触发点会提前触发，`times = 0` 的也照样触发。
+        //
+        // 还没照抄的：有限次数的递减（要跟存档走，全游戏 6 个），以及类型 6 陷阱等
+        // 先播模型动画再调脚本的机关。
         for trigger in &*self.nav_triggers.borrow() {
-            if Self::test_coord_in_bound(nav_coord, (trigger.nav_coord_min, trigger.nav_coord_max))
-            {
-                if trigger.node_type == 14
-                    || (trigger.node_type == 0 && trigger.layer as usize == layer)
-                {
-                    return Some(trigger.sce_proc_id);
-                }
+            if !(trigger.node_type == 0 || trigger.node_type == 14) {
+                continue;
             }
+            if self.nav_trigger_layer(trigger) != layer || trigger.times == 0 {
+                continue;
+            }
+            if !Self::test_coord_in_bound(nav_coord, (trigger.nav_coord_min, trigger.nav_coord_max))
+            {
+                continue;
+            }
+            let active = self
+                .object_blocking
+                .borrow()
+                .as_ref()
+                .is_none_or(|b| b.active(trigger.node_index));
+            if !active {
+                continue;
+            }
+            return Some(trigger.sce_proc_id);
         }
 
         None
@@ -228,15 +247,17 @@ impl ScnScene {
 
     /// 给 agent 看的触发点：导航格（走进去就触发）、物件 AABB 和拾取点（站进去按
     /// 调查键才触发）。平铺数据，坐标是世界坐标。
+    /// 触发格登记在哪一层：层号超出这个场景的层数就当 0（`FUN_0041fa90`，同挡路表）。
+    fn nav_trigger_layer(&self, t: &SceNavTrigger) -> usize {
+        let layer = t.layer as usize;
+        if layer < self.nav.layer_count() { layer } else { 0 }
+    }
+
     pub fn agent_triggers(&self) -> Vec<AgentTrigger> {
         let mut out = Vec::new();
         for (index, t) in self.nav_triggers.borrow().iter().enumerate() {
-            // 类型 14 不分层，类型 0 只认自己那一层（`test_nav_trigger`）。
-            let layer = if t.node_type == 14 {
-                0
-            } else {
-                t.layer as usize
-            };
+            // 走格触发只认主角当前层上的格子（`test_nav_trigger`），门也一样。
+            let layer = self.nav_trigger_layer(t);
             let (bx, bz) = self.nav_block_size(layer);
             let cx = (t.nav_coord_min.0 + t.nav_coord_max.0) as f32 * 0.5 + 0.5;
             let cz = (t.nav_coord_min.1 + t.nav_coord_max.1) as f32 * 0.5 + 0.5;
@@ -249,6 +270,7 @@ impl ScnScene {
                 center: self.nav_coord_to_scene_coord(layer, cx, cz),
                 half: Vec3::new(w * bx * 0.5, 0., d * bz * 0.5),
                 layer: layer as i32,
+                node_type: t.node_type,
             });
         }
         for (index, t) in self.aabb_triggers.borrow().iter().enumerate() {
@@ -264,6 +286,7 @@ impl ScnScene {
                     (a.z - b.z).abs() * 0.5,
                 ),
                 layer: -1,
+                node_type: 0,
             });
         }
         for (index, t) in self.item_triggers.borrow().iter().enumerate() {
@@ -274,6 +297,7 @@ impl ScnScene {
                 center: t.coord,
                 half: Vec3::new(0., 0., 0.),
                 layer: -1,
+                node_type: 0,
             });
         }
         out
@@ -1028,19 +1052,24 @@ impl ScnScene {
             entities.push(cvd);
         }
 
-        for obj in &self.scn_file.nodes {
+        for (node_index, obj) in self.scn_file.nodes.iter().enumerate() {
             let mut entity: Option<ComRc<IEntity>> = None;
             if obj.nav_trigger_coord_min.0 != 0
                 || obj.nav_trigger_coord_min.1 != 0
                 || obj.nav_trigger_coord_max.0 != 0
                 || obj.nav_trigger_coord_max.1 != 0
             {
+                // 文件里这几个 u16 都是两个字节拼的（原版 `ObjectInfo`）：
+                // `node_type` = type | savestate << 8，`nav_layer` = onlayer | wuling << 8，
+                // `w2` = times | switch << 8。只取低字节。
                 self.nav_triggers.borrow_mut().push(SceNavTrigger {
                     nav_coord_max: obj.nav_trigger_coord_max,
                     nav_coord_min: obj.nav_trigger_coord_min,
-                    node_type: obj.node_type,
-                    layer: obj.nav_layer,
+                    node_type: obj.node_type & 0xff,
+                    layer: obj.nav_layer & 0xff,
                     sce_proc_id: obj.sce_proc_id,
+                    node_index,
+                    times: (obj.w2 & 0xff) as u8,
                 });
             }
 
@@ -2010,6 +2039,9 @@ pub struct AgentTrigger {
     pub half: Vec3,
     /// 导航格触发器所在的层；其余是 −1。
     pub layer: i32,
+    /// 导航格触发器的节点类型（低字节）。走进去就触发的只有 0 和 14，且要同层、
+    /// 在场、次数不为 0（`test_nav_trigger`）；其余类型挂着格子范围但走进去不触发。
+    pub node_type: u16,
 }
 
 /// 见 [`ScnScene::agent_roles`]。
@@ -2026,9 +2058,15 @@ pub struct AgentRole {
 pub struct SceNavTrigger {
     nav_coord_min: (i32, i32),
     nav_coord_max: (i32, i32),
+    /// 物件类型（低字节）。
     node_type: u16,
+    /// 所在层（低字节）。
     layer: u16,
     sce_proc_id: u32,
+    /// 在 `.scn` 节点里的序号，查激活状态用（`ObjectBlocking::active`）。
+    node_index: usize,
+    /// 可触发次数：0 不可触发，0xFF 无限。
+    times: u8,
 }
 
 pub struct SceAabbTrigger {

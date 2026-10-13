@@ -668,6 +668,14 @@ impl PersistentState {
         self.global_vars.insert(var, value);
     }
 
+    /// 全部全局变量，按变量号排好。PAL3 的剧情变量号多是负的（主线进度是
+    /// `-32768`），只往正数方向探是探不到的。
+    pub fn globals(&self) -> Vec<(i16, i32)> {
+        let mut v: Vec<(i16, i32)> = self.global_vars.iter().map(|(k, v)| (*k, *v)).collect();
+        v.sort_unstable();
+        v
+    }
+
     pub fn get_global(&self, var: i16) -> Option<i32> {
         self.global_vars.get(&var).and_then(|v| Some(*v))
     }

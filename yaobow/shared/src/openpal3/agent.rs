@@ -429,7 +429,12 @@ fn handle_scene_triggers(ctx: &Pal3DispatchCtx) -> AgentResponse {
         .agent_triggers()
         .into_iter()
         .map(|t| agent_server::protocol::TriggerEntry {
-            name: format!("{}:{}", t.kind, t.index),
+            // 导航格多带一段「t<节点类型>l<层>」：走进去就触发的只有 t14 和同层的 t0。
+            name: if t.kind == "nav" {
+                format!("{}:{}:t{}l{}", t.kind, t.index, t.node_type, t.layer)
+            } else {
+                format!("{}:{}", t.kind, t.index)
+            },
             function: t.proc_id.to_string(),
             center: [t.center.x, t.center.y, t.center.z],
             half_size: [t.half.x, t.half.y, t.half.z],
@@ -497,7 +502,7 @@ fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str) -> AgentResponse {
     let Some(index) = parts.next().and_then(|s| s.parse::<i64>().ok()) else {
         return AgentResponse::err(AgentError::bad_request(format!("bad trigger name: {name}")));
     };
-    let (target, interact) = match kind {
+    let (target, interact, layer) = match kind {
         "nav" | "aabb" | "item" => {
             let Some(t) = scn
                 .agent_triggers()
@@ -508,7 +513,11 @@ fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str) -> AgentResponse {
                     "no such trigger: {name}"
                 )));
             };
-            (t.center, kind != "nav")
+            (
+                t.center,
+                kind != "nav",
+                (t.layer >= 0).then_some(t.layer as usize),
+            )
         }
         "role" | "monster" => {
             let Some(r) = scn
@@ -524,6 +533,7 @@ fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str) -> AgentResponse {
             (
                 Vec3::new(r.position.x + 40., r.position.y, r.position.z),
                 true,
+                None,
             )
         }
         _ => {
@@ -532,7 +542,12 @@ fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str) -> AgentResponse {
             )));
         }
     };
-    if !director.teleport_controlled_role(target) {
+    // 导航格按它所在的层传：类型 0 只认主角当前层上的格子。
+    let moved = match layer {
+        Some(l) => director.teleport_controlled_role_on_layer(target, l),
+        None => director.teleport_controlled_role(target),
+    };
+    if !moved {
         return AgentResponse::err(AgentError::conflict("controlled role cannot be resolved"));
     }
     if interact {
@@ -1062,10 +1077,21 @@ fn handle_get_globals(ctx: &Pal3DispatchCtx, params: ScriptGlobalsParams) -> Age
         // The wire format is `u32`, matching PAL4's bitcast convention.
         globals.push(v as u32);
     }
+    // `globals` 那个按下标的窗口只覆盖非负的变量号；PAL3 的剧情变量号多是负的
+    // （主线进度 `-32768`，见日志里的 `SceCommandCmp { var: -32768, … }`），
+    // 只看它永远是空的。整张表按变量号排好放进 `named`，名字就是变量号。
+    let named = persistent
+        .globals()
+        .into_iter()
+        .map(|(k, v)| agent_server::protocol::NamedGlobal {
+            name: k.to_string(),
+            value: serde_json::json!(v),
+        })
+        .collect();
     AgentResponse::ScriptGlobals(ScriptGlobalsResponse {
         len,
         start,
         globals,
-        ..Default::default()
+        named,
     })
 }

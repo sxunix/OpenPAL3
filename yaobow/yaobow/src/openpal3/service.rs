@@ -38,9 +38,10 @@ use radiance_scripting::comdef::services::IVideoHandle;
 use radiance_scripting::services::AudioSource;
 use radiance_scripting::services::ImguiTextureCache;
 use radiance_scripting::services::SpriteService;
+use shared::GameType;
 use shared::agent_common::AgentBridge;
 use shared::loaders::video_handle::VideoHandle;
-use shared::openpal3::agent::{dispatch_pal3_command, Pal3DispatchCtx};
+use shared::openpal3::agent::{Pal3DispatchCtx, dispatch_pal3_command};
 use shared::openpal3::asset_manager::AssetManager;
 use shared::openpal3::comdef::{
     IAdventureDirector, IPal3DialogRenderer, IPal3ScriptFactory, IPal3Service, IPal3ServiceImpl,
@@ -50,13 +51,12 @@ use shared::openpal3::directors::{AdventureDirector, SceneManagerExtensions};
 use shared::openpal3::scene::ScnScene;
 use shared::openpal3::states::game_db::GameDb;
 use shared::openpal3::states::item_use::{
-    self, TargetPick, UseContext, UseOutcome, EARTH_PEARL_PROC,
+    self, EARTH_PEARL_PROC, TargetPick, UseContext, UseOutcome,
 };
-use shared::openpal3::states::persistent_state::{PersistentState, PAL3_APP_NAME};
+use shared::openpal3::states::persistent_state::{PAL3_APP_NAME, PersistentState};
 use shared::openpal3::ui_atlas::{AtlasManifest, Pal3UiAtlas};
 use shared::scripting::sce::vm::SceExecutionOptions;
 use shared::ydirs;
-use shared::GameType;
 
 use crate::openpal3::debug_layer::OpenPal3DebugLayer;
 use crate::openpal3::sce_proc_hooks::SceRestHooks;
@@ -1032,6 +1032,15 @@ impl IPal3ServiceImpl for Pal3Service {
     }
 
     fn load_adventure_director(&self, asset_path: &str, slot: i32) -> Option<ComRc<IDirector>> {
+        // 档不存在就别往下走：`PersistentState::load` 打开文件直接 `unwrap`，读一个
+        // 空档位整个游戏就崩了。读档菜单只列存在的档，agent 的 `/v1/load` 不经过它。
+        if !shared::openpal3::states::persistent_state::PersistentState::slot_exists(
+            PAL3_APP_NAME,
+            slot,
+        ) {
+            log::warn!("load: 存档 {slot} 不存在");
+            return None;
+        }
         let asset_mgr = self.asset_manager_for(asset_path);
         let dialog_renderer = self.build_dialog_renderer(asset_mgr.clone());
         let status_renderer = self.build_status_renderer(asset_mgr.clone());
@@ -1518,7 +1527,7 @@ impl IPal3ServiceImpl for Pal3Service {
         oy: f32,
         scale: f32,
     ) -> bool {
-        use shared::openpal3::model_view::{v_range, ModelView, ViewCamera};
+        use shared::openpal3::model_view::{ModelView, ViewCamera, v_range};
         use shared::openpal3::scene::CvdPlayMode;
         let Some(asset_path) = self.last_asset_path.borrow().clone() else {
             return false;
