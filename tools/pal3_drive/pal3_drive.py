@@ -146,7 +146,7 @@ class Client:
 
     def teleport(self, player: int, pos: tuple[float, float, float]) -> None:
         self._json("POST", "/v1/player/teleport",
-                   {"player": player, "x": pos[0], "y": pos[1], "z": pos[2]})
+                   {"player": player, "pos": [pos[0], pos[1], pos[2]]})
 
     def eval(self, fn: str, *args) -> Any:
         """`script_eval` 的 26 个调试入口之一（见 README）。"""

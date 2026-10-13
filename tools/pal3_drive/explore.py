@@ -28,6 +28,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pal3_drive import AgentError, Client, Run, boot  # noqa: E402
 
 STUCK_SECONDS = 90.0      # 脚本在跑但快照什么都不变，超过这么久算卡住（章节字幕 SceCommandCaption 是按时间走的，13 列要三四十秒，进度不在快照里）
+WANDER_LIMIT = 80         # 没东西可试、只好走出去的连续次数上限（渝州城一圈门多，30 次会漏掉没走到的块）
+CHOICE_TURNS: dict[tuple, int] = {}   # 每个选单（按选项文字）已经选过几次
 SETTLE_LIMIT = 240.0      # 一次收尾最多等多久
 
 
@@ -80,9 +82,20 @@ def settle(c: Client, issues: list, label: str) -> dict:
         if s.get("movie_playing"):
             c.key("Escape")
         elif dlg.get("open"):
-            if dlg.get("choices"):
-                issues.append({"kind": "choice", "at": label, "choices": dlg["choices"]})
-            c.dialog_advance()
+            choices = dlg.get("choices") or []
+            if choices:
+                # 同一个选单每来一次换下一项：「是 / 否」先选「是」，「1. 关于… 2. … 3. 不想知道」
+                # 这种选了会绕回来的，轮到最后一项就出去了。选单每次打开光标都在第一项。
+                key_ = tuple(choices)
+                k = CHOICE_TURNS.get(key_, 0) % len(choices)
+                CHOICE_TURNS[key_] = CHOICE_TURNS.get(key_, 0) + 1
+                issues.append({"kind": "choice", "at": label, "choices": choices, "picked": k})
+                for _ in range(k):
+                    c.key("GamePadDPadDown")
+                    time.sleep(0.05)
+                c.key("GamePadEast")
+            else:
+                c.dialog_advance()
             lines += 1
         else:
             # 没有对话框：可能是小游戏（鉴定、宿营……）或别的界面。按手柄 A——引擎里
@@ -150,9 +163,9 @@ def main() -> int:
             wander = 0
         else:
             # 这里在当前剧情状态下全试过了：走出去换个地方找，挑走得最少的出口。
-            # 连续 30 次都这样才算真的走不下去。
+            # 连续 WANDER_LIMIT 次都这样才算真的走不下去。
             wander += 1
-            if wander > 30 or not navs:
+            if wander > WANDER_LIMIT or not navs:
                 issues.append({"kind": "dead_end", "scene": key[0], "block": key[1],
                                "tried": sorted(done)})
                 run.mark(f"dead_end_{key[0]}_{key[1]}", shot=True)
