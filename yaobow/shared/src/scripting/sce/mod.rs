@@ -107,6 +107,10 @@ pub struct SceState {
     /// back, and an automation driver has no other way to tell "waiting
     /// for the player to advance text" from "stuck".
     dialog: Option<DialogState>,
+    /// 战斗的摘要，也是给 agent 快照看的：战斗命令每帧写一次，散场后留着
+    /// （`outcome` 填上、`active` 落下），下一场开打时覆盖。没有它驱动脚本
+    /// 只能盲按，分不出「轮到我方选行动」和「角色正在跑动出手」。
+    combat: Option<CombatMirror>,
     /// 152 玩家周身的水特效开关。
     water_magic: bool,
     /// 140 开关下雪 — the flag at `0xbfda40` the frame loop tests
@@ -144,6 +148,36 @@ pub struct DialogState {
     pub avatar: String,
     /// Choices offered by a select-dialog, empty otherwise.
     pub choices: Vec<String>,
+}
+
+/// 战斗的摘要，见 [`SceState::combat`]。只用平铺的类型，不把战斗模块的
+/// 类型漏到脚本层来。
+#[derive(Debug, Clone, Default)]
+pub struct CombatMirror {
+    /// 战斗还在进行（胜负出来之前）。
+    pub active: bool,
+    /// 轮到哪个战斗位选行动（菜单开着、战斗停着等输入）；`None` = 没人在等。
+    pub turn_slot: Option<usize>,
+    /// 菜单停在哪一层：`main` / `skills` / `specials` / `items` / `target` /
+    /// `ai` / `lineup` / `protect`。
+    pub menu: Option<&'static str>,
+    /// 舞台在演一次出手（这期间时钟停着）。
+    pub staging: bool,
+    /// 有人登记了行动、还在出手段。
+    pub pending_slot: Option<usize>,
+    pub units: Vec<CombatUnitMirror>,
+    /// 胜负：`win` / `lose` / `escaped` / `round_out`；没出来是 `None`。
+    pub outcome: Option<&'static str>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct CombatUnitMirror {
+    pub slot: usize,
+    pub actor_id: u32,
+    pub hp: i32,
+    pub max_hp: i32,
+    pub alive: bool,
+    pub enemy: bool,
 }
 
 /// 68 / 157 提示框停多久：`FUN_00450c90` 在模式 2 时 `+0x108 += dt`，超过 4.0 秒
@@ -185,6 +219,7 @@ impl SceState {
             jump_icon_frames: None,
             jump_icon_clock: 0.,
             dialog: None,
+            combat: None,
             snow: false,
             water_magic: false,
             screen_effect: None,
@@ -297,6 +332,15 @@ impl SceState {
 
     pub fn close_dialog(&mut self) {
         self.dialog = None;
+    }
+
+    /// 最近一场战斗的摘要（还在打，或者刚散场）。
+    pub fn combat(&self) -> Option<&CombatMirror> {
+        self.combat.as_ref()
+    }
+
+    pub fn set_combat(&mut self, mirror: CombatMirror) {
+        self.combat = Some(mirror);
     }
 
     /// 152: whether the water effect is on the player.

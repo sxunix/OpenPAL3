@@ -118,6 +118,7 @@ impl AgentSession for NullAgentSession {
             debug_camera: false,
             camera_eye: [0.0; 3],
             camera_target: [0.0; 3],
+            combat: None,
         }
     }
 }

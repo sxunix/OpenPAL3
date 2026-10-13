@@ -993,6 +993,52 @@ impl SceCommandCombat {
     /// 每帧领走，照开战那一套填战斗位、补名片，再给它造个舞台角色。
     ///
     /// 原版造完还放 0x141 号特效当出场演出，移植端照放。
+    /// 把这一帧的战斗摘要写进 [`SceState::combat`]，agent 快照照抄。
+    fn publish_mirror(&self, state: &mut SceState, outcome: Option<Outcome>) {
+        use crate::openpal3::combat::session::Menu;
+        use crate::scripting::sce::{CombatMirror, CombatUnitMirror};
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let units = (0..SLOTS)
+            .filter_map(|slot| {
+                let c = session.battle.get(slot)?;
+                Some(CombatUnitMirror {
+                    slot,
+                    actor_id: c.actor_id,
+                    hp: c.hp,
+                    max_hp: c.max_hp,
+                    alive: c.alive && !c.retired,
+                    enemy: c.side == Side::Enemy,
+                })
+            })
+            .collect();
+        let menu = session.turn.map(|t| match t.menu {
+            Menu::Main { .. } => "main",
+            Menu::Skills { .. } => "skills",
+            Menu::Specials { .. } => "specials",
+            Menu::Items { .. } => "items",
+            Menu::Target { .. } => "target",
+            Menu::Ai { .. } => "ai",
+            Menu::Lineup { .. } => "lineup",
+            Menu::Protect { .. } => "protect",
+        });
+        state.set_combat(CombatMirror {
+            active: outcome.is_none(),
+            turn_slot: session.turn.map(|t| t.slot),
+            menu,
+            staging: session.staging.is_some(),
+            pending_slot: session.pending.map(|p| p.slot()),
+            units,
+            outcome: outcome.map(|o| match o {
+                Outcome::Win => "win",
+                Outcome::Lose => "lose",
+                Outcome::Escaped => "escaped",
+                Outcome::Ongoing => "ongoing",
+            }),
+        });
+    }
+
     fn spawn_pending(&mut self, state: &mut SceState) {
         let pending: Vec<(usize, u32)> = match self.session.as_mut() {
             Some(s) if !s.battle.pending_spawns.is_empty() => {
@@ -3301,6 +3347,7 @@ impl SceCommand for SceCommandCombat {
 
         self.spawn_pending(state);
         self.drive_staging(state, delta_sec);
+        self.publish_mirror(state, outcome);
         // 普攻暴击的特效（`FUN_004ce340(0x1d6, 挨打的人的当前位置)`）。
         let effects = self
             .session

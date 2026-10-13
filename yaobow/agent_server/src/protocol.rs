@@ -425,6 +425,49 @@ pub struct StateSnapshot {
     /// Current camera look-at target `[x, y, z]` in world space.
     #[serde(default)]
     pub camera_target: [f32; 3],
+    /// The current (or most recent) battle, for games whose adapter
+    /// reports one. `None` before the first battle of the session.
+    /// Stays populated after a battle ends with `active == false` and
+    /// `outcome` set, until the next battle overwrites it.
+    #[serde(default)]
+    pub combat: Option<CombatSnapshot>,
+}
+
+/// Battle summary in [`StateSnapshot::combat`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CombatSnapshot {
+    /// `true` until a result is decided.
+    pub active: bool,
+    /// Battle slot whose command menu is open (the battle clock is
+    /// stopped waiting for input); `None` when nobody is choosing.
+    #[serde(default)]
+    pub turn_slot: Option<usize>,
+    /// Which layer the command menu is on (adapter-defined names, e.g.
+    /// `"main"`, `"target"`); `None` when no menu is up.
+    #[serde(default)]
+    pub menu: Option<String>,
+    /// An action is being acted out on the stage.
+    #[serde(default)]
+    pub staging: bool,
+    /// Slot whose chosen action is still winding up.
+    #[serde(default)]
+    pub pending_slot: Option<usize>,
+    #[serde(default)]
+    pub units: Vec<CombatUnit>,
+    /// `"win"` / `"lose"` / `"escaped"` once decided.
+    #[serde(default)]
+    pub outcome: Option<String>,
+}
+
+/// One combatant in [`CombatSnapshot::units`].
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct CombatUnit {
+    pub slot: usize,
+    pub actor_id: u32,
+    pub hp: i32,
+    pub max_hp: i32,
+    pub alive: bool,
+    pub enemy: bool,
 }
 
 /// One inventory line item in [`StateSnapshot::inventory`].

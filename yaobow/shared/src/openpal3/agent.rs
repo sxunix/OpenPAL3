@@ -23,10 +23,11 @@
 use std::rc::Rc;
 
 use agent_server::protocol::{
-    AgentCommand, AgentError, AgentResponse, AxisInputParams, CameraPoseParams, DialogSnapshot,
-    InventoryEntry, KeyAction, KeyInputParams, PartyMember, ScreenshotResponse, ScriptEvalParams,
-    ScriptEvalResponse, ScriptGlobalsParams, ScriptGlobalsResponse, SlotParams, StateSnapshot,
-    StatusMenuParams, StepTimeParams, TeleportParams,
+    AgentCommand, AgentError, AgentResponse, AxisInputParams, CameraPoseParams, CombatSnapshot,
+    CombatUnit, DialogSnapshot, InventoryEntry, KeyAction, KeyInputParams, PartyMember,
+    ScreenshotResponse, ScriptEvalParams, ScriptEvalResponse, ScriptGlobalsParams,
+    ScriptGlobalsResponse, SlotParams, StateSnapshot, StatusMenuParams, StepTimeParams,
+    TeleportParams,
 };
 use crosscom::ComRc;
 use fileformats::pal3::gdb::PLAYER_ACTOR_COUNT;
@@ -212,6 +213,28 @@ pub fn build_snapshot(ctx: &Pal3DispatchCtx) -> StateSnapshot {
     // 片子（`SceCommandMovie`）在不在放。脚本停在 movie 上时
     // `script_running` 也是真，靠这一位才分得出「过场动画」和「对话卡住」。
     snap.movie_playing = global.movie_playing();
+
+    // 战斗摘要：`SceCommandCombat::publish_mirror` 每帧写进 `SceState`。
+    snap.combat = sce_vm.state().combat().map(|m| CombatSnapshot {
+        active: m.active,
+        turn_slot: m.turn_slot,
+        menu: m.menu.map(str::to_string),
+        staging: m.staging,
+        pending_slot: m.pending_slot,
+        units: m
+            .units
+            .iter()
+            .map(|u| CombatUnit {
+                slot: u.slot,
+                actor_id: u.actor_id,
+                hp: u.hp,
+                max_hp: u.max_hp,
+                alive: u.alive,
+                enemy: u.enemy,
+            })
+            .collect(),
+        outcome: m.outcome.map(str::to_string),
+    });
 
     // 队伍：PAL3 的可操作角色是 0..5（`PLAYER_ACTOR_COUNT`），在不在队里
     // 看 `team`。没建过记录的（还没入队过）不列。

@@ -29,6 +29,7 @@ cargo build --release -p yaobow
 python3 tools/pal3_drive/route_prologue.py --out runs/prologue
 python3 tools/pal3_drive/route_prologue.py --out runs/prologue --no-shots   # 只记状态，快
 python3 tools/pal3_drive/route_combat.py   --out runs/combat               # 要先有活着的存档/剧情
+python3 tools/pal3_drive/route_win.py      --out runs/win --monster 7306   # 从新游戏打赢一场看结算
 ```
 
 `route_prologue` 开新游戏走到玩家可操作；`route_combat` 换场到有战场的地方
@@ -81,6 +82,13 @@ run.write()
 * 片头 Bink 要 `Escape` 跳；也可以开 `fast_forward` 让 `SceCommandMovie`
   整段跳过（`commands/movie.rs:35`）。
 * 快照里 `quest_percentage` 还是 0 —— PAL3 侧没有这个量，没接。
+* **战斗里别盲按**。快照的 `combat` 字段给出 `turn_slot`（轮到谁）、`menu`
+  （`main` / `target` / …）、`staging`（舞台在演出手）、各位的精、`outcome`。
+  角色跑过去出手的那几秒里 Space 是「跳过演出」，盲按大半落空——头几场
+  就是这么输的。`route_win.py` 是看着 `menu` 按键的写法。
+* `prime_level` 只抬等级和上限，**不补现血**；`7368` 冰晶女（4 级）一招全体
+  冰系就能把 1 级景天加两个没补血的 9 级打穿。想稳赢用 `7306` 小树妖
+  （3 级、55 精）。
 * **战斗舞台按「当前场景_块」查 `combat.ini`**；内景查不到就只有 HUD 没有
   战场（日志 `Combat: 没算出战场名，舞台不建`）。要看战斗先 `load_scene`
   换到有映射的地方，`m01/1 → z08` 是最早能用的一条。
