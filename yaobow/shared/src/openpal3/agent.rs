@@ -708,7 +708,13 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
             })
         }
         "start_combat" => {
-            // [id0..id5, boss?] —— 六个战斗 actor id 加一个可选的 boss 标志。
+            // boss 那一支：`[id0..id5, 1]` —— 六个战斗位的 actor id。
+            // 普通那一支：`[怪数, m1, m2, m3, _, _, 0]` —— 第一个数是**只数**
+            //   不是 id（`SceCommandCombat::new(count, m1, m2, m3)`），后面三个
+            //   是随机池；第 7 位给 0 才走这一支，不给默认当 boss。
+            // 另外舞台是按「当前场景_块」查 `combat.ini` 建的，内景（比如
+            // q01/yn09a）查不到就只有 HUD 没有战场，先 `load_scene` 换到
+            // 有战场的地方（如 m01/1 → z08）。
             let mut ids = [0i32; 6];
             for (i, slot) in ids.iter_mut().enumerate() {
                 *slot = int_arg(i).unwrap_or(0) as i32;

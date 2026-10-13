@@ -28,7 +28,11 @@ cargo build --release -p yaobow
 ```bash
 python3 tools/pal3_drive/route_prologue.py --out runs/prologue
 python3 tools/pal3_drive/route_prologue.py --out runs/prologue --no-shots   # 只记状态，快
+python3 tools/pal3_drive/route_combat.py   --out runs/combat               # 要先有活着的存档/剧情
 ```
+
+`route_prologue` 开新游戏走到玩家可操作；`route_combat` 换场到有战场的地方
+开一场战斗再打几下。后者的两个坑写在它自己的文件头里。
 
 产物：
 
@@ -77,3 +81,13 @@ run.write()
 * 片头 Bink 要 `Escape` 跳；也可以开 `fast_forward` 让 `SceCommandMovie`
   整段跳过（`commands/movie.rs:35`）。
 * 快照里 `quest_percentage` 还是 0 —— PAL3 侧没有这个量，没接。
+* **战斗舞台按「当前场景_块」查 `combat.ini`**；内景查不到就只有 HUD 没有
+  战场（日志 `Combat: 没算出战场名，舞台不建`）。要看战斗先 `load_scene`
+  换到有映射的地方，`m01/1 → z08` 是最早能用的一条。
+* `script_eval` 一共 26 个调试入口：`call_proc` `set_global` `load_scene`
+  `start_combat` `combat_combo` `team_add` `add_item` `add_money`
+  `prime_level` `learn_skill` `lineup_set` `lineup_click` `bigmap`
+  `hockshop` `dealer` `smelting` `dlg_sel` `note` `caption` `xjpic`
+  `play_effect` `set_role_alpha` `object_transform` `set_water_magic`
+  `bigmap_set` `game_over`。都要有活着的 `AdventureDirector`，没开新游戏
+  返回 409。
