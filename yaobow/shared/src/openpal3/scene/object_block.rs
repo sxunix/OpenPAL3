@@ -185,6 +185,40 @@ impl ObjectBlocking {
         }
     }
 
+    /// 物件模型包围盒的 x、z 边长（`GetRawOBB` 的 `xlen`、`zlen`）；没有模型是 `None`。
+    pub fn model_extent(&self, i: usize) -> Option<(f32, f32)> {
+        match self.models.get(i) {
+            Some(Model::Box(obb)) => Some((obb.ext[0], obb.ext[2])),
+            _ => None,
+        }
+    }
+
+    /// `Scene::Obj_CanRoleGoTile`（`gamebase/scene.cpp:902`）：物件 `me` 看这一格能不能走——格子上登记的
+    /// 是它自己就只看格子；别的在场物件按类型：升降台 0x16、移动浮板 5 是「格子能走 或 可通过」，其余
+    /// 「格子能走 且 可通过」。越界不能走。
+    pub fn walkable_for(&self, me: usize, layer: usize, x: i32, z: i32, base: bool) -> bool {
+        let Some(g) = self.grids.get(layer) else {
+            return base;
+        };
+        if x < 0 || z < 0 || x >= g.w || z >= g.h {
+            return false;
+        }
+        let id = self.maps[layer][(z * g.w + x) as usize] as usize;
+        if id == me {
+            return base;
+        }
+        let Some(o) = self.objs.get(id) else {
+            return base;
+        };
+        if !o.active {
+            return base;
+        }
+        match o.kind {
+            0x16 | 5 => base || o.non_blocking,
+            _ => base && o.non_blocking,
+        }
+    }
+
     /// 物件 `i` 在不在场（+0xad）。
     pub fn active(&self, i: usize) -> bool {
         self.objs.get(i).is_some_and(|o| o.active)

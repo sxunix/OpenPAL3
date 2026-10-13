@@ -54,6 +54,7 @@ impl SceCommandLoadScene {
             Option<bool>,
             Option<u8>,
             i32,
+            Option<u8>,
         );
         let saved: Vec<Saved> = {
             let p = state.global_state().persistent_state();
@@ -68,12 +69,16 @@ impl SceCommandLoadScene {
                         p.scene_object_active(&self.name, &self.sub_name, id),
                         p.scene_object_layer(&self.name, &self.sub_name, id),
                         p.scene_object_state(&self.name, &self.sub_name, id),
+                        p.scene_object_times(&self.name, &self.sub_name, id),
                     )
                 })
                 .collect()
         };
 
-        for (id, position, active, layer, object_state) in saved {
+        for (id, position, active, layer, object_state, times) in saved {
+            if let Some(t) = times {
+                scene.set_object_times(id, t);
+            }
             if let (Some(p), Some(entity)) = (position, scene.get_root_object(id)) {
                 entity.transform().borrow_mut().set_position(&p);
             }
@@ -96,9 +101,25 @@ impl SceCommandLoadScene {
                     layer
                 );
             }
+            let kind = scene.object_node_type(id).unwrap_or(0) & 0xff;
+            if kind == 0x17 {
+                // 开关存的是开关标志 +0xaf（126 `GetSwitch` 读的那个），不是状态 +0x50。
+                // `SceneObj::OnLoad` case 23（`gamebase/sceneobj.cpp:4188`）：用完了（次数 0）、
+                // 或者参数 0 非 0 且开着的，模型停在最后一帧；参数 0 为 1 的「可通过」跟着开关走。
+                let p0 = scene.object_parameter(id).unwrap_or(0);
+                let on = object_state != 0;
+                if times == Some(0) || (p0 != 0 && on) {
+                    scene.hold_object_anim_end(id);
+                }
+                if p0 == 1 {
+                    if let Some(i) = scene.object_index_of(id) {
+                        scene.set_object_passable(i, on);
+                    }
+                }
+                continue;
+            }
             if object_state != 0 {
                 scene.set_object_state(id, object_state as u8);
-                let kind = scene.object_node_type(id).unwrap_or(0) & 0xff;
                 if matches!(kind, 0x13 | 0x1d) {
                     scene.hold_object_anim_end(id);
                 }
@@ -117,6 +138,16 @@ impl SceCommandLoadScene {
     fn restore_longkui_model(&self, scene_manager: ComRc<ISceneManager>, state: &mut SceState) {
         let mode = state.global_state().persistent_state().longkui_mode();
         story_flags::apply_longkui_model(&scene_manager, mode);
+    }
+
+    /// 读档：场景已经照存档建好，把存档里记的物件状态套上去（[`Self::restore_scene_objects`]）。
+    /// 原版读档同样是照存档里的物件记录建物件的。
+    pub fn restore_after_save_load(
+        &self,
+        scene_manager: ComRc<ISceneManager>,
+        state: &mut SceState,
+    ) {
+        self.restore_scene_objects(scene_manager, state);
     }
 
     /// Same swap as [`Self::load`], for the agent server's debug

@@ -9,8 +9,11 @@
 //!
 //! 排队的前提都是 `FUN_0042c1a0`：队列空、状态 0。乌龟沉下去（状态 3）、吊桥放下（状态 1）以后就不会再动。
 //!
-//! 这里做了吊桥（0x13）、乌龟重力机关（0x1d）、神树传送点（0x26）、上下传送板（0x28）。动作里用到主角、模型、
-//! 音效、脚本、冻结计数的地方都经 [`World`] 交给调用方。
+//! 这里做了吊桥（0x13）、乌龟重力机关（0x1d）、神树传送点（0x26）、上下传送板（0x28），以及调查键（事件 1）
+//! 触发的主角特技机关（0xc）和开关（0x17）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
+//! 交给调用方。
+//!
+//! `FUN_00424c20` 开头先看可用次数（+0xae）：不是 0xff（无限）又已经是 0 的，什么事件都不理。
 
 use std::collections::VecDeque;
 
@@ -31,6 +34,23 @@ pub const PORTAL_RISE: f32 = 200.;
 pub const PORTAL_SECS: f32 = 3.;
 /// 上下传送板挪到另一层要多久（case 0x28，`0x41000000`）。
 pub const PEDAL_SECS: f32 = 8.;
+/// 调查够得着的距离（`FUN_00424c20` case 0xc / 0x17 的 `600.0`，源码 `TOUCH_DIST`）。
+pub const TOUCH_DIST: f32 = 600.;
+/// `ROLE_RADIUS`（12）。特技机关：主角离机关（x、z）不到 3 倍就地施展，否则走到机关另一侧 12 处。
+pub const ROLE_RADIUS: f32 = 12.;
+/// 开关：主角离开关（x、z）减去半边长不到这么多（`ROLE_RADIUS × 2`）就地拨，否则先走过去。
+pub const SWITCH_REACH: f32 = 24.;
+/// 动作 0x13（`FUN_0042ebe0`）：走完以后离物件（减半边长）超过这么远就把队列清掉、提示「outdist」。
+/// [推断] exe 里读的是 `_DAT_00d8bef0`，没找到初始化它的地方；值取源码 `SceneObj_Common.cpp:278`
+/// 的 `DIST_RESTRICT = ROLE_RADIUS * 9`。
+pub const DIST_RESTRICT: f32 = ROLE_RADIUS * 9.;
+/// 开关参数 2 为 2 时，`p[2]` 起的三个参数是世界转到的角度（状态 11 用 5 秒转过去）。[未做]
+pub const ROTATE_SECS: f32 = 5.;
+/// 主角动作编号（`ACTION_KIND`，名字见 [`crate::openpal3::combat::motion::ACTION_NAMES`]）：技能、调查。
+pub const ACT_SKILL: usize = 8;
+pub const ACT_CHECK: usize = 0xb;
+/// 开关拨到一半的状态（`FUN_00424c20` 排的动作 3 参数 `0x4d`）：下一帧 `FUN_0042c810` 翻开关、转状态 1。
+const SWITCH_PENDING: u8 = 0x4d;
 
 /// 队列里的一条动作。编号是记录 +0 的类型。
 #[derive(Debug, Clone)]
@@ -69,6 +89,9 @@ pub enum Act {
     Layer { layer: usize, object: bool },
     /// 0x12（`FUN_0042e4d0`）：按物件类型放音效（`FUN_0042c440`）。
     Sound(i32),
+    /// 0x13（`FUN_0042e6c0` 排、`FUN_0042ebe0` 做）：主角离物件（x、z）减去半边长超过 [`DIST_RESTRICT`]
+    /// 就清空整个队列、提示「outdist」，否则接着做下一条。
+    DistRestrict,
 }
 
 #[derive(Debug, Clone)]
@@ -98,6 +121,10 @@ pub struct ObjNode {
     pub sound: Option<String>,
     /// 物件自己那条 SCE 过程（+0x12c，`.scn` 记录 +0x80）。见 [`ObjectActions::run`] 里动作 5 的说明。
     pub proc: i32,
+    /// 可用次数（+0xae，`.scn` 记录 +2）：0xff 无限。
+    pub times: u8,
+    /// 调查键能不能选中它（`TriggerType` +0xd0 的位 1，`.scn` 记录 +0x24）。
+    pub examinable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -113,6 +140,12 @@ struct Obj {
     /// +0x54。
     timer: f32,
     queue: VecDeque<Entry>,
+    /// +0xae。
+    times: u8,
+    examinable: bool,
+    /// 登记在 `ObjLockInput` 里（`FUN_0053d1a0(物件, 0)`）：物件闲下来（不在场，或队列空、状态 0，
+    /// 即 `IsStatic`）之前主角不听输入。
+    locked: bool,
 }
 
 /// 动作要碰的外部东西。`i` 都是物件在 `.scn` 里的序号。
@@ -155,6 +188,51 @@ pub trait World {
     fn party_size(&self) -> usize;
     /// `FUN_00430570(key)` + `FUN_00450bc0`：弹一句提示。
     fn hint(&mut self, key: &str);
+
+    // 下面是调查键那两种物件（0xc、0x17）才用到的；测试替身不用的都给了不起作用的缺省。
+
+    /// `DAT_00c10cc8`（`PlayerMgr::m_underctrl`）：正操作的是哪个主角。
+    fn controlled_role(&self) -> i32 {
+        0
+    }
+    /// 主角在第几层（+0x274）。
+    fn player_layer(&self) -> usize {
+        0
+    }
+    /// `FUN_0042ac80`（`SceneObj::CanRoleGoto`）：在物件所在的第 `layer` 层上，两点所在格之间按 Bresenham
+    /// 一格格都能走——物件自己压住的格子不算挡（`Scene::Obj_CanDirectGo`）。
+    fn can_role_goto(&self, _i: usize, _layer: usize, _from: &Vec3, _to: &Vec3) -> bool {
+        true
+    }
+    /// 物件模型包围盒的 x、z 边长（`GetRawOBB`）；没有模型是 `None`。
+    fn object_extent(&self, _i: usize) -> Option<(f32, f32)> {
+        None
+    }
+    /// 物件是不是带动画的模型（模型类型 3）。不是的话播动画那一步当场算完。
+    fn object_animated(&self, _i: usize) -> bool {
+        true
+    }
+    /// `FUN_004181e0`：主角站住。
+    fn stand(&mut self) {}
+    /// `FUN_00414e30(act, 1)`：主角把动作 `act` 播一遍。
+    fn show_act(&mut self, _act: usize) {}
+    /// 主角的 `PalScriptWaitObj::IsWaiting`（动作还没播完）。
+    fn player_acting(&self) -> bool {
+        false
+    }
+    /// `FUN_0042c810` 里那句 `+0xaf = !+0xaf`：翻开关，记进存档（126 `GetSwitch` 读的就是它）。返回新值。
+    fn toggle_switch(&mut self, _i: usize) -> bool {
+        false
+    }
+    /// 开关（+0xaf）现在是不是开着。
+    fn switch_on(&self, _i: usize) -> bool {
+        false
+    }
+    /// 物件不在场了（+0xad 置 0），记进存档。
+    fn deactivate(&mut self, _i: usize) {}
+    /// 可用次数（+0xae）变了，记进存档。[推断] 原版存档里那条物件记录就是 `ObjectInfo` 本身
+    /// （源码 `SceneObj::OnLoad(ObjectInfo &info, …)`，`gamebase/sceneobj.cpp:4002`），次数在里面。
+    fn save_times(&mut self, _i: usize, _times: u8) {}
 }
 
 /// 场景里所有物件的队列和状态，按 `.scn` 序号排。
@@ -188,6 +266,9 @@ impl ObjectActions {
                 state: 0,
                 timer: 0.,
                 queue: VecDeque::new(),
+                times: n.times,
+                examinable: n.examinable,
+                locked: false,
             })
             .collect();
         Self { ids, objs }
@@ -206,6 +287,48 @@ impl ObjectActions {
         if let Some(o) = self.objs.get_mut(i) {
             o.state = state;
             o.timer = 0.;
+        }
+    }
+
+    /// 可用次数（+0xae）。
+    pub fn times(&self, i: usize) -> Option<u8> {
+        self.objs.get(i).map(|o| o.times)
+    }
+
+    /// 读档 / 换场景回来时把次数摆回去。
+    pub fn set_times(&mut self, i: usize, times: u8) {
+        if let Some(o) = self.objs.get_mut(i) {
+            o.times = times;
+        }
+    }
+
+    /// 物件在第几层（+0xf6）。
+    pub fn layer(&self, i: usize) -> Option<usize> {
+        self.objs.get(i).map(|o| o.layer)
+    }
+
+    /// 物件的类型（+0xf4）。
+    pub fn kind(&self, i: usize) -> Option<u8> {
+        self.objs.get(i).map(|o| o.kind)
+    }
+
+    /// 调查键选物件那一轮（`FUN_00420cd0`）要先过的几条：调查得了（`TriggerType` 位 1）、次数没用完。
+    /// 在场、同层由调用方看。
+    pub fn examinable(&self, i: usize) -> bool {
+        self.objs
+            .get(i)
+            .is_some_and(|o| o.examinable && o.times != 0)
+    }
+
+    /// 物件那半个 `ObjLockInput`：还有登记着、没闲下来的物件。
+    pub fn input_locked(&self) -> bool {
+        self.objs.iter().any(|o| o.locked)
+    }
+
+    /// 换场景时清掉（`ObjLockInput::OnLoadScene`）。
+    pub fn clear_locks(&mut self) {
+        for o in &mut self.objs {
+            o.locked = false;
         }
     }
 
@@ -246,6 +369,9 @@ impl ObjectActions {
         let Some(o) = self.objs.get(i) else {
             return;
         };
+        if o.times == 0 {
+            return;
+        }
         let (kind, p, layer) = (o.kind, o.p, o.layer);
         let p0 = p[0];
         match kind {
@@ -410,7 +536,175 @@ impl ObjectActions {
                 self.run(i, w);
                 self.own_proc(i, w);
             }
+            0xc => self.skill_gate(i, ev, w),
+            0x17 => self.switch(i, ev, w),
             _ => {}
+        }
+    }
+
+    /// `FUN_00424c20` case 0xc（主角特技机关）：只认调查（事件 1）。正操作的主角得是参数 0 那个，否则提示
+    /// 「cantopen」。物件状态 0、主角离它（三维）不到 [`TOUCH_DIST`] 且走得过去时：离得（x、z）不到
+    /// 3 × [`ROLE_RADIUS`] 就当场施展（状态 2、主角播「技能」），否则先走到机关**另一侧**——主角到机关的方向
+    /// 反过来乘 12（龙葵、参数 0 为 2 时乘模型半径）——再转状态 1。都扣一次次数、登记 `ObjLockInput`。
+    /// 够不着提示「outdist」。之后见 [`Self::step`]。
+    fn skill_gate<W: World>(&mut self, i: usize, ev: u8, w: &mut W) {
+        if ev != 1 {
+            return;
+        }
+        let p0 = self.objs[i].p[0];
+        if w.controlled_role() != p0 {
+            w.hint("cantopen");
+            return;
+        }
+        if self.objs[i].state != 0 {
+            return;
+        }
+        let obj = w.object_pos(i);
+        let pl = w.player_pos();
+        let layer = self.objs[i].layer;
+        if Vec3::sub(&obj, &pl).norm() >= TOUCH_DIST || !w.can_role_goto(i, layer, &pl, &obj) {
+            w.hint("outdist");
+            return;
+        }
+        self.objs[i].timer = 0.;
+        let (dx, dz) = (pl.x - obj.x, pl.z - obj.z);
+        let len = (dx * dx + dz * dz).sqrt();
+        if 1. <= len - ROLE_RADIUS * 3. {
+            let k = if p0 == 2 {
+                -w.object_extent(i)
+                    .map_or(0., |(x, z)| 0.5 * (x * x + z * z).sqrt())
+            } else {
+                -ROLE_RADIUS
+            };
+            let to = Vec3::new(obj.x + dx / len * k, obj.y, obj.z + dz / len * k);
+            self.push(
+                i,
+                Act::Walk {
+                    to,
+                    check: true,
+                    fix: true,
+                },
+                w,
+            );
+            self.push(i, Act::State { state: 1, wait: 0 }, w);
+            self.run(i, w);
+        } else {
+            self.objs[i].state = 2;
+            w.show_act(ACT_SKILL);
+        }
+        self.use_once(i, w);
+        self.objs[i].locked = true;
+    }
+
+    /// `FUN_00424c20` case 0x17（开关）。参数 1 定谁能拨：0 只认调查、1 只认别的机关（事件 2）、2 调查时
+    /// 只跑自己那条过程（同层、离得不到 200、走得过去，过程没在跑；否则提示「outdist」），其余都认。
+    ///
+    /// 能拨、状态 0 时先登记 `ObjLockInput`。事件 2：翻开关、状态 3、模型从头按 2 倍速播并放音效、扣次数，
+    /// 参数 0 为 1 的「可通过」跟着开关走。调查：取主角→开关连线上离开关半边长（包围盒 x、z 边长大的一半）
+    /// 那一点，离主角 [`TOUCH_DIST`] 以上不理；主角离开关（x、z）减半边长不到 [`SWITCH_REACH`] 就当场拨
+    /// （状态 2、转身、播「调查」、`FUN_0042c810` 翻开关），否则排「走过去 → 动作 0x13 → 状态 0x4d」。
+    fn switch<W: World>(&mut self, i: usize, ev: u8, w: &mut W) {
+        let p = self.objs[i].p;
+        let obj = w.object_pos(i);
+        let pl = w.player_pos();
+        let half = self.half_size(i, w);
+        let d = Vec3::sub(&obj, &pl).norm();
+        match p[1] {
+            0 if ev != 1 => return,
+            1 if ev != 2 => return,
+            2 if ev == 1 => {
+                let layer = self.objs[i].layer;
+                if w.player_layer() == layer && d < 200. && w.can_role_goto(i, layer, &pl, &obj) {
+                    if !w.proc_running() {
+                        self.own_proc(i, w);
+                    }
+                } else {
+                    w.hint("outdist");
+                }
+                return;
+            }
+            2 if ev != 2 => return,
+            _ => {}
+        }
+        if self.objs[i].state != 0 {
+            return;
+        }
+        self.objs[i].locked = true;
+        if ev == 2 {
+            let on = w.toggle_switch(i);
+            self.objs[i].state = 3;
+            if w.object_animated(i) {
+                w.play_anim(i, ANIM_SPEED);
+                self.sound(i, 0, w);
+            }
+            self.use_once(i, w);
+            if p[0] == 1 {
+                w.set_passable(i, on);
+            }
+            return;
+        }
+        let f = d - half;
+        if TOUCH_DIST <= f || d <= 0. {
+            return;
+        }
+        let to = Vec3::new(
+            pl.x + (obj.x - pl.x) / d * f,
+            pl.y + (obj.y - pl.y) / d * f,
+            pl.z + (obj.z - pl.z) / d * f,
+        );
+        self.objs[i].timer = 0.;
+        let (dx, dz) = (pl.x - obj.x, pl.z - obj.z);
+        if (dx * dx + dz * dz).sqrt() - half - SWITCH_REACH < 0. {
+            self.objs[i].state = 2;
+            w.face_player(&obj);
+            w.show_act(ACT_CHECK);
+            self.open_switch(i, w);
+            return;
+        }
+        for a in [
+            Act::Walk {
+                to,
+                check: true,
+                fix: true,
+            },
+            Act::DistRestrict,
+            Act::State {
+                state: SWITCH_PENDING,
+                wait: 0,
+            },
+        ] {
+            self.push(i, a, w);
+        }
+        self.run(i, w);
+    }
+
+    /// 包围盒 x、z 边长大的那个的一半（开关、动作 0x13 用，`FUN_00429ee0` 取的旋转后的盒子，边长不变）。
+    fn half_size<W: World>(&self, _i: usize, w: &W) -> f32 {
+        w.object_extent(_i).map_or(0., |(x, z)| x.max(z) * 0.5)
+    }
+
+    /// 次数不是无限就扣一次。
+    fn use_once<W: World>(&mut self, i: usize, w: &mut W) {
+        let o = &mut self.objs[i];
+        if o.times != 0xff {
+            o.times = o.times.saturating_sub(1);
+            let t = o.times;
+            w.save_times(i, t);
+        }
+    }
+
+    /// `FUN_0042c810`（`SceneObj::OpenSwitch`）：扣次数、翻开关。[未做] 参数 2 为 1（神树花的总开关）时
+    /// 还要把场景里所有类型 0x25 的花一起开合。
+    fn open_switch<W: World>(&mut self, i: usize, w: &mut W) {
+        self.use_once(i, w);
+        w.toggle_switch(i);
+    }
+
+    fn sound<W: World>(&self, i: usize, p: i32, w: &mut W) {
+        let o = &self.objs[i];
+        if let Some(name) = object_sound(o.sound.as_deref(), o.kind, o.p[0], p) {
+            let name = name.to_string();
+            w.sound(&name);
         }
     }
 
@@ -432,6 +726,11 @@ impl ObjectActions {
                 continue;
             }
             self.advance(i, dt, w);
+            match self.objs[i].kind {
+                0xc => self.step_skill_gate(i, w),
+                0x17 => self.step_switch(i, dt, w),
+                _ => {}
+            }
             let o = &mut self.objs[i];
             let mut changed = None;
             if o.kind == 0x1d {
@@ -450,6 +749,112 @@ impl ObjectActions {
             if let Some(state) = changed {
                 w.save_state(i, state);
             }
+        }
+        // `ObjLockInput::Update`：不在场、或者闲下来的物件除名。
+        for i in 0..self.objs.len() {
+            if self.objs[i].locked && (!w.active(i) || self.idle(i)) {
+                self.objs[i].locked = false;
+            }
+        }
+    }
+
+    /// `FUN_00426eb0` case 0xc。状态 1（走到了）：转向机关、站住、播「技能」，转 2。2：主角动作播完，
+    /// 机关模型按 2 倍速播、放音效，转 3。3：模型播完（不是动画模型就当场算完），回 0、清掉压住的格子、
+    /// 物件不在场。
+    fn step_skill_gate<W: World>(&mut self, i: usize, w: &mut W) {
+        match self.objs[i].state {
+            1 => {
+                let p = w.object_pos(i);
+                w.face_player(&p);
+                w.stand();
+                self.objs[i].timer = 0.;
+                self.objs[i].state = 2;
+                w.show_act(ACT_SKILL);
+            }
+            2 => {
+                if !w.player_acting() {
+                    w.stand();
+                    self.objs[i].state = 3;
+                    if w.object_animated(i) {
+                        w.play_anim(i, ANIM_SPEED);
+                    }
+                    self.sound(i, 0, w);
+                }
+            }
+            3 => {
+                if !w.object_animated(i) || w.anim_done(i) {
+                    self.objs[i].state = 0;
+                    let layer = self.objs[i].layer;
+                    w.object_tiles(i, true, layer);
+                    w.deactivate(i);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `FUN_00426eb0` case 0x17。0x4d（走到了）：`FUN_0042c810` 翻开关，转 1。1：站住、转向开关、播「调查」，
+    /// 转 2。2：主角动作播完，开关模型从头按 2 倍速播、放音效，转 3。3：模型播完（不是动画模型就当场算完），
+    /// 停在最后一帧，回 0，跑自己那条过程（登记 `ObjLockInput`）；参数 0 为 1 的「可通过」跟着开关走；
+    /// 连着的物件收到事件 2。11：世界转动（参数 2 为 2）。
+    ///
+    /// [未做] 参数 2 为 1（神树花总开关，`FUN_0042c730`）、参数 2 为 2 的世界转动（状态 11）、连着的是
+    /// 移动浮板（类型 5）时让浮板开到另一头——这三样都只记日志。
+    fn step_switch<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
+        match self.objs[i].state {
+            SWITCH_PENDING => {
+                self.open_switch(i, w);
+                self.objs[i].state = 1;
+            }
+            1 => {
+                w.stand();
+                self.objs[i].timer = 0.;
+                self.objs[i].state = 2;
+                let p = w.object_pos(i);
+                w.face_player(&p);
+                w.show_act(ACT_CHECK);
+            }
+            2 => {
+                if !w.player_acting() {
+                    w.stand();
+                    self.objs[i].state = 3;
+                    w.play_anim(i, ANIM_SPEED);
+                    self.sound(i, 0, w);
+                }
+            }
+            11 => {
+                self.objs[i].timer += dt;
+                if self.objs[i].timer >= ROTATE_SECS {
+                    self.objs[i].state = 0;
+                }
+            }
+            3 => {
+                if w.object_animated(i) && !w.anim_done(i) {
+                    return;
+                }
+                self.objs[i].state = 0;
+                self.own_proc(i, w);
+                let p = self.objs[i].p;
+                if p[2] == 1 {
+                    log::warn!("场景物件：#{i} 是神树花总开关，花的开合没做");
+                }
+                if p[0] == 1 {
+                    // `+0xd1 = +0xaf`：开关这时已经翻过。
+                    let on = w.switch_on(i);
+                    w.set_passable(i, on);
+                }
+                if p[2] == 2 {
+                    log::warn!("场景物件：#{i} 要转动世界，没做");
+                }
+                if let Some(l) = self.objs[i].link {
+                    if self.objs[l].kind == 5 {
+                        log::warn!("场景物件：#{i} 连着移动浮板 #{l}，浮板开动没做");
+                    } else {
+                        self.event(l, 2, false, 0.001, w);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 
@@ -519,11 +924,17 @@ impl ObjectActions {
                 Act::Freeze(release) => w.freeze(release),
                 Act::Passable(v) => w.set_passable(i, v),
                 Act::Face(p) => w.face_player(&p),
-                Act::Sound(p) => {
-                    let o = &self.objs[i];
-                    if let Some(name) = object_sound(o.sound.as_deref(), o.kind, p) {
-                        let name = name.to_string();
-                        w.sound(&name);
+                Act::Sound(p) => self.sound(i, p, w),
+                Act::DistRestrict => {
+                    // `FUN_0042ebe0` case 0x13：y 分量是 −主角 +8，而主角 +8 是相对地面的高度，站着恒 0，
+                    // 所以只量 x、z。
+                    let o = w.object_pos(i);
+                    let pl = w.player_pos();
+                    let d = Vec3::new(o.x - pl.x, 0., o.z - pl.z).norm();
+                    if d - self.half_size(i, w) > DIST_RESTRICT {
+                        self.objs[i].queue.clear();
+                        w.hint("outdist");
+                        return;
                     }
                 }
             }
@@ -595,9 +1006,18 @@ impl ObjectActions {
     }
 }
 
-/// `FUN_0042c440`：按物件类型挑音效。[未做] 物件自己带名字（+0x234 非空）时用它自己的。
-fn sound_name(kind: u8, p: i32) -> Option<&'static str> {
+/// `FUN_0042c440`：按物件类型挑音效。`p0` 是物件参数 0，`p` 是动作带的参数。
+/// 特技机关按参数 0（哪个主角）分五种（`We026`..`We030`），开关（0x17）表里没有。
+fn sound_name(kind: u8, p0: i32, p: i32) -> Option<&'static str> {
     match kind {
+        0xc => match p0 {
+            0 => Some("We026"),
+            1 => Some("We027"),
+            2 => Some("We028"),
+            3 => Some("We029"),
+            4 => Some("We030"),
+            _ => None,
+        },
         0x13 => Some("wg001"),
         0x1d => Some(if p == 0 { "wg005" } else { "we026" }),
         _ => None,
@@ -605,8 +1025,8 @@ fn sound_name(kind: u8, p: i32) -> Option<&'static str> {
 }
 
 /// `FUN_0042c440` 开头：物件自己带名字（+0x234 非空）就用它，否则按类型查表。
-fn object_sound<'a>(own: Option<&'a str>, kind: u8, p: i32) -> Option<&'a str> {
-    own.or_else(|| sound_name(kind, p))
+fn object_sound<'a>(own: Option<&'a str>, kind: u8, p0: i32, p: i32) -> Option<&'a str> {
+    own.or_else(|| sound_name(kind, p0, p))
 }
 
 #[cfg(test)]
@@ -632,6 +1052,14 @@ mod tests {
         player_layer: usize,
         saved_states: Vec<(usize, u8)>,
         proc_busy: bool,
+        controlled: i32,
+        switches: Vec<bool>,
+        /// 主角动作还剩几帧播完。
+        acting: i32,
+        acts: Vec<usize>,
+        deactivated: Vec<usize>,
+        saved_times: Vec<(usize, u8)>,
+        extent: Option<(f32, f32)>,
     }
 
     impl World for Mock {
@@ -718,6 +1146,32 @@ mod tests {
         fn save_state(&mut self, i: usize, state: u8) {
             self.saved_states.push((i, state));
         }
+        fn controlled_role(&self) -> i32 {
+            self.controlled
+        }
+        fn object_extent(&self, _: usize) -> Option<(f32, f32)> {
+            self.extent
+        }
+        fn show_act(&mut self, act: usize) {
+            self.acts.push(act);
+            self.acting = 2;
+        }
+        fn player_acting(&self) -> bool {
+            self.acting > 0
+        }
+        fn toggle_switch(&mut self, i: usize) -> bool {
+            self.switches[i] = !self.switches[i];
+            self.switches[i]
+        }
+        fn switch_on(&self, i: usize) -> bool {
+            self.switches[i]
+        }
+        fn deactivate(&mut self, i: usize) {
+            self.deactivated.push(i);
+        }
+        fn save_times(&mut self, i: usize, t: u8) {
+            self.saved_times.push((i, t));
+        }
     }
 
     impl Mock {
@@ -725,6 +1179,7 @@ mod tests {
             for n in self.anim_left.iter_mut() {
                 *n -= 1;
             }
+            self.acting -= 1;
             a.step(dt, self);
         }
     }
@@ -740,6 +1195,8 @@ mod tests {
                 link_id: 0xb,
                 sound: None,
                 proc: 0,
+                times: 0xff,
+                examinable: false,
             },
             ObjNode {
                 object_id: 11,
@@ -749,6 +1206,8 @@ mod tests {
                 link_id: 0xffff,
                 sound: None,
                 proc: 0,
+                times: 0xff,
+                examinable: false,
             },
         ]);
         let w = Mock {
@@ -769,6 +1228,13 @@ mod tests {
             player_layer: 0,
             saved_states: vec![],
             proc_busy: false,
+            controlled: 0,
+            switches: vec![false, false],
+            acting: 0,
+            acts: vec![],
+            deactivated: vec![],
+            saved_times: vec![],
+            extent: None,
         };
         (a, w)
     }
@@ -868,6 +1334,8 @@ mod tests {
             link_id: 0xffff,
             sound: None,
             proc: 506,
+            times: 0xff,
+            examinable: false,
         }]);
         let (_, mut w) = m01();
         w.pos = vec![Vec3::new(0., 100., 0.)];
@@ -887,11 +1355,13 @@ mod tests {
     #[test]
     fn object_sound_prefers_its_own_name() {
         // 物件自己带名字就用它（M01/1 的吊桥记录里写的是 wg007，不是类型表的 wg001）。
-        assert_eq!(object_sound(Some("wg007"), 0x13, 0), Some("wg007"));
-        assert_eq!(object_sound(None, 0x13, 0), Some("wg001"));
-        assert_eq!(object_sound(None, 0x1d, 0), Some("wg005"));
-        assert_eq!(object_sound(None, 0x1d, 1), Some("we026"));
-        assert_eq!(object_sound(None, 0x11, 0), None);
+        assert_eq!(object_sound(Some("wg007"), 0x13, 0, 0), Some("wg007"));
+        assert_eq!(object_sound(None, 0x13, 0, 0), Some("wg001"));
+        assert_eq!(object_sound(None, 0x1d, 0, 0), Some("wg005"));
+        assert_eq!(object_sound(None, 0x1d, 0, 1), Some("we026"));
+        assert_eq!(object_sound(None, 0x11, 0, 0), None);
+        assert_eq!(object_sound(None, 0xc, 3, 0), Some("We029"));
+        assert_eq!(object_sound(None, 0x17, 0, 0), None);
     }
 
     #[test]
@@ -905,6 +1375,8 @@ mod tests {
                 link_id: 0x5,
                 sound: None,
                 proc: 0,
+                times: 0xff,
+                examinable: false,
             },
             ObjNode {
                 object_id: 5,
@@ -914,6 +1386,8 @@ mod tests {
                 link_id: 0xffff,
                 sound: None,
                 proc: 0,
+                times: 0xff,
+                examinable: false,
             },
             // 高字节非零：`cmp bx, di` 配不上任何物件（实机数据里没有这种）。
             ObjNode {
@@ -924,6 +1398,8 @@ mod tests {
                 link_id: 0x104,
                 sound: None,
                 proc: 0,
+                times: 0xff,
+                examinable: false,
             },
         ]);
         assert_eq!(a.objs[0].link, Some(1));
@@ -947,6 +1423,8 @@ mod tests {
             link_id: 0xffff,
             sound: None,
             proc: 0,
+            times: 0xff,
+            examinable: false,
         }]);
         (a, w)
     }
@@ -1028,5 +1506,152 @@ mod tests {
         }
         assert_eq!(w.player_layer, 0);
         assert_eq!(w.pos[0].y, 510.);
+    }
+
+    /// M08/3 的 OBJECT_13（类型 0x17，过程 500，次数 1，参数全 0）：离得远先走过去，走到了翻开关、播「调查」，
+    /// 开关模型播完跑过程，次数用完再按不理。
+    fn m08_switch() -> (ObjectActions, Mock) {
+        let (_, mut w) = m01();
+        let a = ObjectActions::new(&[ObjNode {
+            object_id: 13,
+            kind: 0x17,
+            layer: 0,
+            p: [0, 0, 0, 0],
+            link_id: 0xffff,
+            sound: None,
+            proc: 500,
+            times: 1,
+            examinable: true,
+        }]);
+        w.pos = vec![Vec3::new(411.86, 0., -300.55)];
+        w.passable = vec![false];
+        w.anim_left = vec![0];
+        w.switches = vec![false];
+        w.extent = Some((40., 30.));
+        (a, w)
+    }
+
+    #[test]
+    fn switch_walks_over_then_flips_and_runs_its_proc() {
+        let (mut a, mut w) = m08_switch();
+        w.player = Vec3::new(411.86 + 150., 0., -300.55);
+        a.event(0, 1, false, 0.001, &mut w);
+        assert!(a.input_locked());
+        // 走到主角→开关连线上离开关 20（半边长）的地方。
+        let (to, _) = w.walking.unwrap();
+        assert!((to.x - (411.86 + 20.)).abs() < 1e-3, "{to:?}");
+        assert!(!w.switches[0]);
+        let dt = 0.1;
+        for _ in 0..3 {
+            w.frame(&mut a, dt);
+        }
+        // 走到了：动作 0x13 放行，状态 0x4d → 翻开关、扣次数。
+        assert!(w.switches[0]);
+        assert_eq!(w.saved_times, [(0, 0)]);
+        for _ in 0..12 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(w.acts, [ACT_CHECK]);
+        assert_eq!(w.played, [0]);
+        assert_eq!(w.procs, [500]);
+        assert!(a.idle(0));
+        assert!(!a.input_locked());
+        // 次数 0：再按什么都不做。
+        a.event(0, 1, false, 0.001, &mut w);
+        assert!(a.idle(0));
+        assert!(w.switches[0]);
+        assert!(!a.examinable(0));
+    }
+
+    #[test]
+    fn switch_within_reach_flips_on_the_spot() {
+        let (mut a, mut w) = m08_switch();
+        // x、z 距离 − 半边长 20 < 24。
+        w.player = Vec3::new(411.86 + 43., 0., -300.55);
+        a.event(0, 1, false, 0.001, &mut w);
+        assert!(w.walking.is_none());
+        assert!(w.switches[0]);
+        assert_eq!(w.acts, [ACT_CHECK]);
+        assert_eq!(a.state(0), Some(2));
+    }
+
+    #[test]
+    fn switch_walk_ending_too_far_is_cancelled() {
+        let (mut a, mut w) = m08_switch();
+        w.player = Vec3::new(411.86 + 150., 0., -300.55);
+        a.event(0, 1, false, 0.001, &mut w);
+        // 走不过去（替身里走完不挪主角）：动作 0x13 量出来离得太远，清空队列、提示。
+        w.walking = Some((w.player, 0));
+        for _ in 0..3 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(w.hints, ["outdist"]);
+        assert!(!w.switches[0]);
+        assert!(a.idle(0));
+    }
+
+    #[test]
+    fn skill_gate_needs_the_right_hero_and_then_disappears() {
+        let (_, mut w) = m01();
+        // M08/2 的 OBJECT_9（wz11，参数 0 = 0 景天）。
+        let mut a = ObjectActions::new(&[ObjNode {
+            object_id: 9,
+            kind: 0xc,
+            layer: 0,
+            p: [0, 0, 0, 0],
+            link_id: 0xffff,
+            sound: None,
+            proc: 0,
+            times: 1,
+            examinable: true,
+        }]);
+        w.pos = vec![Vec3::new(732.85, 0., -531.69)];
+        w.player = Vec3::new(732.85 + 30., 0., -531.69);
+        w.passable = vec![false];
+        w.anim_left = vec![0];
+        w.controlled = 1;
+        a.event(0, 1, false, 0.001, &mut w);
+        assert_eq!(w.hints, ["cantopen"]);
+        assert!(a.idle(0));
+        w.controlled = 0;
+        // 离得不到 36：就地施展。
+        a.event(0, 1, false, 0.001, &mut w);
+        assert_eq!(w.acts, [ACT_SKILL]);
+        assert_eq!(w.saved_times, [(0, 0)]);
+        for _ in 0..10 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(w.sounds, ["We026"]);
+        assert_eq!(w.tiles, [(0, true, 0)]);
+        assert_eq!(w.deactivated, [0]);
+        assert!(a.idle(0));
+    }
+
+    #[test]
+    fn skill_gate_far_away_walks_to_the_far_side() {
+        let (_, mut w) = m01();
+        let mut a = ObjectActions::new(&[ObjNode {
+            object_id: 9,
+            kind: 0xc,
+            layer: 0,
+            p: [0, 0, 0, 0],
+            link_id: 0xffff,
+            sound: None,
+            proc: 0,
+            times: 1,
+            examinable: true,
+        }]);
+        w.pos = vec![Vec3::new(0., 0., 0.)];
+        w.player = Vec3::new(100., 0., 0.);
+        w.passable = vec![false];
+        w.anim_left = vec![0];
+        a.event(0, 1, false, 0.001, &mut w);
+        // 主角到机关的方向反过来乘 12：机关另一侧。
+        let (to, _) = w.walking.unwrap();
+        assert_eq!((to.x, to.z), (-12., 0.));
+        for _ in 0..3 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(w.acts, [ACT_SKILL]);
     }
 }

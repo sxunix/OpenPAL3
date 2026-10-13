@@ -179,6 +179,14 @@ impl AdventureDirector {
             status_renderer,
         );
 
+        // 存档里记的物件状态（拨过的开关、清掉的机关、放下的吊桥、脚本藏起的物件……）套回这个场景，
+        // 再跑进场脚本——和脚本换场景（`SceCommandLoadScene::load`）同一个顺序。
+        crate::scripting::sce::commands::SceCommandLoadScene::new(
+            scene_name.clone().unwrap(),
+            sub_scene_name.clone().unwrap(),
+        )
+        .restore_after_save_load(scene_manager.clone(), sce_vm.state_mut());
+
         // don't draw curtain when loading a save
         sce_vm.state_mut().set_curtain(0.);
         sce_vm.state_mut().try_call_proc_by_name(&format!(
@@ -617,6 +625,16 @@ impl AdventureDirector {
     pub fn agent_walking(&self) -> bool {
         let p = self.props.borrow();
         p.agent_walk.is_some() || p.agent_walk_goal.is_some()
+    }
+
+    /// 调试用：场景物件正在动（动作队列没做完，或者登记在 `ObjLockInput` 里还没闲下来——开关、
+    /// 特技机关拨到一半）。这时主角不听输入。
+    pub fn object_busy(&self) -> bool {
+        let p = self.props.borrow();
+        p.scene_manager.scn_scene().is_some_and(|s| {
+            let s = s.inner::<crate::openpal3::scene::ScnScene>();
+            s.object_input_locked() || s.object_actions_busy()
+        })
     }
 
     /// 调试用：主角现在这层上能不能走到 `to`（见 [`ScnScene::agent_reachable`]）。
@@ -2110,6 +2128,38 @@ impl AdventureDirectorProps {
         Some(to)
     }
 
+    /// 调查键没找到人（`SceneMgr::GetSelRole_RoleCtrl`）时选物件（`FUN_00420cd0`）、交给它
+    /// （`Role::Check` → `InterActRole(主角, 1, 0, 0.001)`）。只接移植端做了的物件类型（特技机关 0xc、
+    /// 开关 0x17），做了返回 `true`；别的类型照旧走后面的老路子（梯子 / 藤等）。
+    fn examine_object(&mut self, position: &Vec3, layer: usize) -> bool {
+        let Some(scene_rc) = self.scene_manager.scn_scene() else {
+            return false;
+        };
+        let player = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1);
+        let forward = player
+            .as_ref()
+            .map(crate::openpal3::scene::ScnScene::facing_of)
+            .unwrap_or(Vec3::new(0., 0., 1.));
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let Some(i) = scene.select_examine_object(position, &forward, layer) else {
+            return false;
+        };
+        debug!("调查键选中物件 #{i}（类型 {:?}）", scene.object_kind_at(i));
+        let mut w = ObjWorld {
+            scene,
+            player,
+            state: self.sce_vm.state_mut(),
+            walk: &mut self.object_walk,
+            procs: vec![],
+        };
+        let done = scene.examine_object(i, &mut w);
+        let procs = std::mem::take(&mut w.procs);
+        self.run_object_procs(procs);
+        done
+    }
+
     /// 场景物件的动作队列和状态（`FUN_00426eb0` 里 `FUN_0042f460` 和状态机那部分）。
     fn step_object_actions(&mut self, dt: f32) {
         let Some(scene_rc) = self.scene_manager.scn_scene() else {
@@ -2712,7 +2762,12 @@ impl AdventureDirectorProps {
         {
             self.input_lock = false;
         }
-        let locked = self.input_lock;
+        // 物件那半个 `ObjLockInput`（开关、特技机关拨到一半）同样锁。
+        let locked = self.input_lock
+            || self.scene_manager.scn_scene().is_some_and(|s| {
+                s.inner::<crate::openpal3::scene::ScnScene>()
+                    .object_input_locked()
+            });
 
         // 冻结计数小于 1（场景物件的动作 8）：主角不听输入（`FUN_0041d9a0`）、野怪停住、不撞怪、不查脚下物件。
         let frozen = self.sce_vm.global_state().frozen();
@@ -2828,6 +2883,45 @@ impl AdventureDirectorProps {
                 }
                 None => {
                     self.agent_interact = *interact;
+                    // [调试] 要按调查键的，先转向目标（调查键挑人、挑物件都看朝向）。目标是场景物件时，
+                    // 原版选物件最后比的是最后一个进了视野的物件（见 `select_examine_object`），正对着
+                    // 目标、它后面又有序号更大的物件时会落空——这时转一圈找个能选中它的朝向。
+                    if *interact {
+                        if let (Some(goal), Some(role)) = (
+                            self.agent_walk_goal.as_ref(),
+                            self.scene_manager
+                                .get_resolved_role(self.sce_vm.state(), -1),
+                        ) {
+                            let pos = role.transform().borrow().position();
+                            let (dx, dz) = (goal.point.x - pos.x, goal.point.z - pos.z);
+                            let base = dz.atan2(dx);
+                            let layer = RoleController::get_role_controller(role.clone())
+                                .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
+                            let scene = self.scene_manager.scn_scene();
+                            let picks = |a: f32| {
+                                let fwd = Vec3::new(a.cos(), 0., a.sin());
+                                scene.as_ref().is_some_and(|s| {
+                                    let s = s.inner::<crate::openpal3::scene::ScnScene>();
+                                    s.select_examine_object(&pos, &fwd, layer)
+                                        .and_then(|i| s.object_entity_at(i))
+                                        .is_some_and(|e| {
+                                            let o = e.transform().borrow().position();
+                                            (o.x - goal.point.x).abs() < 1.
+                                                && (o.z - goal.point.z).abs() < 1.
+                                        })
+                                })
+                            };
+                            let a = (0..16)
+                                .map(|k| base + k as f32 * std::f32::consts::PI / 8.)
+                                .find(|a| picks(*a))
+                                .unwrap_or(base);
+                            role.transform().borrow_mut().look_at(&Vec3::new(
+                                pos.x + a.cos(),
+                                pos.y,
+                                pos.z + a.sin(),
+                            ));
+                        }
+                    }
                     self.agent_walk = None;
                     self.agent_walk_goal = None;
                 }
@@ -2918,6 +3012,8 @@ impl AdventureDirectorProps {
             if let Some(proc_id) = trigger_proc_id {
                 debug!("New proc triggerd: {}", proc_id);
                 self.run_triggered_proc(proc_id);
+            } else if self.examine_object(&position, nav_layer) {
+                return None;
             }
 
             let result = {
@@ -3006,11 +3102,16 @@ impl ObjWorld<'_> {
         f(&mut p, &city, &scene, id);
     }
 
-    fn player_layer(&self) -> usize {
+    fn nav_layer_of_player(&self) -> usize {
         self.player
             .as_ref()
             .and_then(|p| RoleController::get_role_controller(p.clone()))
             .map_or(0, |rc| rc.inner::<RoleController>().nav_layer())
+    }
+    fn player_rc(&self) -> Option<ComRc<crate::openpal3::comdef::IRoleController>> {
+        self.player
+            .as_ref()
+            .and_then(|p| RoleController::get_role_controller(p.clone()))
     }
 
     fn set_player(&mut self, p: &Vec3) {
@@ -3072,13 +3173,13 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
     /// `FUN_00416490`：放到这一点，再按脚下重算高度（`FUN_00412230`）。
     fn carry_player(&mut self, p: &Vec3) {
         let mut q = *p;
-        q.y = self.scene.floor_height(self.player_layer(), &q);
+        q.y = self.scene.floor_height(self.nav_layer_of_player(), &q);
         self.set_player(&q);
     }
 
     fn fix_player_height(&mut self) {
         let mut p = self.player_pos();
-        p.y = self.scene.floor_height(self.player_layer(), &p);
+        p.y = self.scene.floor_height(self.nav_layer_of_player(), &p);
         self.set_player(&p);
     }
 
@@ -3170,7 +3271,7 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
             return true;
         };
         let pos = self.player_pos();
-        let layer = self.player_layer();
+        let layer = self.nav_layer_of_player();
         let (sx, sz) = (wk.target.x - wk.start.x, wk.target.z - wk.start.z);
         let len = (sx * sx + sz * sz).sqrt();
         let (rx, rz) = (pos.x - wk.start.x, pos.z - wk.start.z);
@@ -3285,6 +3386,94 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
             }
             None => log::warn!("场景物件：lang.txt 里没有 {key}"),
         }
+    }
+
+    fn controlled_role(&self) -> i32 {
+        self.state.global_state().role_controlled()
+    }
+
+    fn player_layer(&self) -> usize {
+        self.nav_layer_of_player()
+    }
+
+    fn can_role_goto(&self, i: usize, layer: usize, from: &Vec3, to: &Vec3) -> bool {
+        self.scene.object_can_direct_go(i, layer, from, to)
+    }
+
+    fn object_extent(&self, i: usize) -> Option<(f32, f32)> {
+        self.scene.object_extent(i)
+    }
+
+    fn object_animated(&self, i: usize) -> bool {
+        !self.cvds(i).is_empty()
+    }
+
+    fn stand(&mut self) {
+        self.idle();
+    }
+
+    /// `FUN_00414e30(act, 1)`：动作名照 `PTR_DAT_0056fdac` 那张表。
+    fn show_act(&mut self, act: usize) {
+        let Some(name) = crate::openpal3::combat::motion::ACTION_NAMES.get(act) else {
+            return;
+        };
+        if let Some(rc) = self.player_rc() {
+            let ok = rc.inner::<RoleController>().play_anim(
+                name,
+                crate::openpal3::scene::RoleAnimationRepeatMode::Repeat(1),
+            );
+            log::debug!(
+                "场景物件：主角播动作 {name}（{}）",
+                if ok { "开始" } else { "没有这个动作" }
+            );
+        }
+    }
+
+    fn player_acting(&self) -> bool {
+        self.player_rc().is_some_and(|rc| {
+            rc.inner::<RoleController>().state()
+                == crate::openpal3::scene::RoleState::PlayingAnimation
+        })
+    }
+
+    fn toggle_switch(&mut self, i: usize) -> bool {
+        let next = !self.switch_on(i);
+        log::debug!("场景物件：#{i} 开关 -> {}", next as i32);
+        self.save_override(i, |s, city, scene, id| {
+            s.set_scene_object_state(city, scene, id, next as i32)
+        });
+        next
+    }
+
+    fn switch_on(&self, i: usize) -> bool {
+        let Some(id) = self.scene.object_id_at(i) else {
+            return false;
+        };
+        self.state
+            .global_state()
+            .persistent_state()
+            .scene_object_state(self.scene.name(), self.scene.sub_name(), id)
+            != 0
+    }
+
+    fn deactivate(&mut self, i: usize) {
+        log::debug!("场景物件：#{i} 不在场了");
+        let Some(id) = self.scene.object_id_at(i) else {
+            return;
+        };
+        self.scene.set_object_active(id, false);
+        if let Some(e) = self.scene.object_entity_at(i) {
+            e.set_visible(false);
+        }
+        self.save_override(i, |s, city, scene, id| {
+            s.set_scene_object_active(city, scene, id, false)
+        });
+    }
+
+    fn save_times(&mut self, i: usize, times: u8) {
+        self.save_override(i, |s, city, scene, id| {
+            s.set_scene_object_times(city, scene, id, times)
+        });
     }
 }
 

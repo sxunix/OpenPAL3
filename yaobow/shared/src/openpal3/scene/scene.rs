@@ -377,6 +377,7 @@ impl ScnScene {
             .ladder_triggers
             .borrow()
             .iter()
+            .filter(|l| self.node_present(l.node_index))
             .map(|l| (l.nav_coord1, l.nav_coord2, l.switch_layer))
             .collect();
         let layer_zone = |l: usize, x: i32, z: i32| -> bool {
@@ -553,10 +554,13 @@ impl ScnScene {
         p: &Vec3,
     ) -> Option<(usize, i32, i32)> {
         use super::nav_path::FieldNav as _;
+        // 物件压着自己周围的格子（宝箱、开关的包围盒再外扩一格半），点本身常常走不上去：
+        // 6 格以内取最近的走得到的格子。
         let (gx, gz) = FieldNavView { scene: self, layer }.tile_of(p);
-        (-1..=1)
-            .flat_map(|dz| (-1..=1).map(move |dx| (gx + dx, gz + dz)))
-            .find(|&(x, z)| flood.reached(layer, x, z))
+        (-6..=6)
+            .flat_map(|dz| (-6..=6).map(move |dx| (gx + dx, gz + dz)))
+            .filter(|&(x, z)| flood.reached(layer, x, z))
+            .min_by_key(|&(x, z)| (x - gx) * (x - gx) + (z - gz) * (z - gz))
             .map(|(x, z)| (layer, x, z))
     }
 
@@ -726,7 +730,7 @@ impl ScnScene {
         // 挂了过程的梯子 / 藤（`test_ladder` 的 `SceProc`：站在旁边按调查键就跑，比如九龙坡小木屋
         // 一楼爬上二楼）。不挂过程的那种是「瞬移到另一头」，探路泛洪已经当成路。
         for (index, t) in self.ladder_triggers.borrow().iter().enumerate() {
-            if t.sce_proc_id == 0 {
+            if t.sce_proc_id == 0 || !self.node_present(t.node_index) {
                 continue;
             }
             out.push(AgentTrigger {
@@ -737,6 +741,27 @@ impl ScnScene {
                 half: Vec3::new(0., 0., 0.),
                 layer: -1,
                 node_type: 15,
+            });
+        }
+        // 调查键才动的物件（特技机关 0xc、开关 0x17）：在场、调查得了、次数没用完的。`index` 是 `.scn` 序号。
+        for i in 0..self.scn_file.nodes.len() {
+            let Some(kind @ (0xc | 0x17)) = self.object_kind_at(i) else {
+                continue;
+            };
+            if !self.object_active_at(i) || !self.object_actions.borrow().examinable(i) {
+                continue;
+            }
+            let Some(e) = self.object_entity_at(i) else {
+                continue;
+            };
+            out.push(AgentTrigger {
+                kind: "obj",
+                index: i,
+                proc_id: self.scn_file.nodes[i].sce_proc_id,
+                center: e.transform().borrow().position(),
+                half: Vec3::new(0., 0., 0.),
+                layer: self.object_layer_at(i).map_or(-1, |l| l as i32),
+                node_type: kind as u16,
             });
         }
         out
@@ -921,6 +946,9 @@ impl ScnScene {
             .nav
             .round_nav_coord(layer, self.scene_coord_to_nav_coord(layer, coord));
         for ladder in &*self.ladder_triggers.borrow() {
+            if !self.node_present(ladder.node_index) {
+                continue;
+            }
             let new_layer = if ladder.switch_layer {
                 (layer + 1) % 2
             } else {
@@ -1658,6 +1686,7 @@ impl ScnScene {
             match obj.node_type {
                 ScnNodeTypes::LADDER | ScnNodeTypes::LADDER2 => {
                     self.ladder_triggers.borrow_mut().push(LadderTrigger {
+                        node_index,
                         position: obj.position,
                         nav_coord1: obj.ladder_nav_coord1,
                         nav_coord2: obj.ladder_nav_coord2,
@@ -1666,10 +1695,11 @@ impl ScnScene {
                         sce_proc_id: obj.sce_proc_id,
                     })
                 }
+                // 开关（23）不在这里：它走调查键选物件那条路（`examine_object`），拨了要翻开关状态，
+                // 不是直接跑过程。
                 ScnNodeTypes::ITEM_TRIGGER
                 | ScnNodeTypes::ITEM_TRIGGER2
-                | ScnNodeTypes::ITEM_TRIGGER3
-                | ScnNodeTypes::TRIGGER_SOURCE => {
+                | ScnNodeTypes::ITEM_TRIGGER3 => {
                     self.item_triggers.borrow_mut().push(SceItemTrigger {
                         coord: obj.position,
                         sce_proc_id: obj.sce_proc_id,
@@ -1724,6 +1754,8 @@ impl ScnScene {
                 link_id: n.w148,
                 sound: n.sound_name(),
                 proc: n.sce_proc_id as i32,
+                times: (n.w2 & 0xff) as u8,
+                examinable: n.w24 & 2 != 0,
             })
             .collect();
         *self.object_actions.borrow_mut() = super::object_action::ObjectActions::new(&nodes);
@@ -1770,6 +1802,14 @@ impl ScnScene {
             .nodes
             .get(i)
             .and_then(|n| self.get_root_object(n.object_id()))
+    }
+
+    /// 第 `i` 个物件在不在场；挡路表没建（没有导航）时都算在场。
+    fn node_present(&self, i: usize) -> bool {
+        self.object_blocking
+            .borrow()
+            .as_ref()
+            .is_none_or(|b| b.active(i))
     }
 
     /// 第 `i` 个物件在不在场（+0xad）。
@@ -1950,6 +1990,108 @@ impl ScnScene {
     pub fn object_state(&self, object_id: i32) -> Option<u8> {
         let a = self.object_actions.borrow();
         a.index_of(object_id).and_then(|i| a.state(i))
+    }
+
+    /// 调查键选物件（`FUN_00420cd0`，源码 `Scene::GetObjSelect_RoleCtrl`）：在场、调查得了（`TriggerType`
+    /// 位 1）、次数没用完、和主角同层、在主角视野里（`FUN_0041a070(点, 1)`）的物件里取（x、z）最近的；
+    /// 最后拿「距离² − 模型半径²」比 100²，不到才算选中。
+    ///
+    /// 两处照原版：比的距离是循环里**最后一个**进了视野的物件的，不一定是最近那个的（`local_14`
+    /// 只在进视野时更新）；物件的点 y 取 0、主角 +8 是相对高度（站着恒 0），所以都只量 x、z。
+    /// 视野：距离超过 435（500 × 0.87）看不见；不到 96（`ROLE_RADIUS × 8`）看得见；否则要在朝向
+    /// ±acos 0.87 以内。半径是 `0.5 × √(xlen² + zlen²)`（`SceneObj::Create`，模型类型 2/3），没有模型是 0。
+    pub fn select_examine_object(&self, pos: &Vec3, forward: &Vec3, layer: usize) -> Option<usize> {
+        let actions = self.object_actions.borrow();
+        let mut best: Option<usize> = None;
+        let mut min = f32::MAX;
+        let mut last = f32::MAX;
+        for i in 0..self.scn_file.nodes.len() {
+            if !self.object_active_at(i) || !actions.examinable(i) {
+                continue;
+            }
+            if actions.layer(i) != Some(layer) {
+                continue;
+            }
+            let Some(e) = self.object_entity_at(i) else {
+                continue;
+            };
+            let o = e.transform().borrow().position();
+            let (dx, dz) = (o.x - pos.x, o.z - pos.z);
+            let len = (dx * dx + dz * dz).sqrt();
+            let in_view = len <= 435.
+                && (len < 96. || (len > 0. && (dx * forward.x + dz * forward.z) / len > 0.87));
+            if !in_view {
+                continue;
+            }
+            last = dx * dx + dz * dz;
+            if last < min {
+                min = last;
+                best = Some(i);
+            }
+        }
+        let i = best?;
+        let r = self.object_radius(i);
+        (last - r * r < 100. * 100.).then_some(i)
+    }
+
+    /// 物件模型的半径（`+0x370`）：`0.5 × √(xlen² + zlen²)`，没有模型是 0。
+    pub fn object_radius(&self, i: usize) -> f32 {
+        self.object_extent(i)
+            .map_or(0., |(x, z)| 0.5 * (x * x + z * z).sqrt())
+    }
+
+    /// 物件模型包围盒的 x、z 边长。
+    pub fn object_extent(&self, i: usize) -> Option<(f32, f32)> {
+        self.object_blocking
+            .borrow()
+            .as_ref()
+            .and_then(|b| b.model_extent(i))
+    }
+
+    /// 第 `i` 个物件在第几层（物件动作里的那份，传送板会改）。
+    pub fn object_layer_at(&self, i: usize) -> Option<usize> {
+        self.object_actions.borrow().layer(i)
+    }
+
+    /// 第 `i` 个物件的类型（低字节）。
+    pub fn object_kind_at(&self, i: usize) -> Option<u8> {
+        self.object_actions.borrow().kind(i)
+    }
+
+    /// 调查键选中了物件 `i`（`Role::Check` → `InterActRole(role, 1, 0, 0.001)`）。返回这种物件有没有做。
+    pub fn examine_object<W: super::object_action::World>(&self, i: usize, w: &mut W) -> bool {
+        let mut a = self.object_actions.borrow_mut();
+        if !matches!(a.kind(i), Some(0xc | 0x17)) {
+            return false;
+        }
+        a.event(i, 1, false, 0.001, w);
+        true
+    }
+
+    /// 物件那半个 `ObjLockInput` 还锁着。
+    pub fn object_input_locked(&self) -> bool {
+        self.object_actions.borrow().input_locked()
+    }
+
+    /// 读档 / 换场景回来时摆回物件的可用次数。
+    pub fn set_object_times(&self, object_id: i32, times: u8) {
+        let mut a = self.object_actions.borrow_mut();
+        if let Some(i) = a.index_of(object_id) {
+            a.set_times(i, times);
+        }
+    }
+
+    /// `Scene::Obj_CanDirectGo`（物件 `i` 自己压住的格子不算挡）：两点所在格之间看得见。
+    pub fn object_can_direct_go(&self, i: usize, layer: usize, from: &Vec3, to: &Vec3) -> bool {
+        use super::nav_path::FieldNav as _;
+        let view = FieldNavView { scene: self, layer };
+        let (a, b) = (view.tile_of(from), view.tile_of(to));
+        let grid = ObjNavView {
+            scene: self,
+            layer,
+            me: i,
+        };
+        super::nav_path::line_clear(&grid, a, b)
     }
 
     /// 有物件的动作队列没做完。
@@ -2410,7 +2552,6 @@ impl ScnNodeTypes {
     pub const ITEM_TRIGGER: u16 = 16;
     pub const AABB_TRIGGER: u16 = 20;
     pub const TRIGGER_TARGET: u16 = 22;
-    pub const TRIGGER_SOURCE: u16 = 23;
     pub const ITEM_TRIGGER3: u16 = 33;
 
     // Elevators
@@ -2564,13 +2705,13 @@ impl Nav {
 /// 见 [`ScnScene::agent_triggers`]。
 #[derive(Debug, Clone)]
 pub struct AgentTrigger {
-    /// `nav` / `aabb` / `item`。
+    /// `nav` / `aabb` / `item` / `ladder` / `obj`。
     pub kind: &'static str,
     pub index: usize,
     pub proc_id: u32,
     pub center: Vec3,
     pub half: Vec3,
-    /// 导航格触发器所在的层；其余是 −1。
+    /// 导航格触发器、`obj` 物件所在的层；其余是 −1。
     pub layer: i32,
     /// 导航格触发器的节点类型（低字节）。走进去就触发的只有 0 和 14，且要同层、
     /// 在场、次数不为 0（`test_nav_trigger`）；其余类型挂着格子范围但走进去不触发。
@@ -2638,6 +2779,9 @@ pub struct SceItemTrigger {
 }
 
 pub struct LadderTrigger {
+    /// 藤 / 梯子本身是 `.scn` 里第几个物件。不在场（+0xad 为 0，脚本 85 还没放出来）的调查键选不中
+    /// （`FUN_00420cd0` 只看在场的物件）。
+    node_index: usize,
     position: Vec3,
     nav_coord1: (i32, i32),
     nav_coord2: (i32, i32),
@@ -2720,6 +2864,34 @@ struct FieldNavView<'a> {
 impl super::nav_path::NavGrid for FieldNavView<'_> {
     fn walkable(&self, x: i32, z: i32) -> bool {
         self.scene.tile_walkable(self.layer, x, z)
+    }
+
+    fn tile_type(&self, x: i32, z: i32) -> u8 {
+        self.scene
+            .nav
+            .get(self.layer, x, z)
+            .map_or(0, |t| (t.distance_to_border & 0xff) as u8)
+    }
+}
+
+/// 物件 `me` 眼里的格子（`Scene::Obj_CanRoleGoTile`）：它自己压住的格子只看格子本身。
+struct ObjNavView<'a> {
+    scene: &'a ScnScene,
+    layer: usize,
+    me: usize,
+}
+
+impl super::nav_path::NavGrid for ObjNavView<'_> {
+    fn walkable(&self, x: i32, z: i32) -> bool {
+        let base = self
+            .scene
+            .nav
+            .get(self.layer, x, z)
+            .is_some_and(|t| (t.distance_to_border & 0xff) > 1);
+        match &*self.scene.object_blocking.borrow() {
+            Some(b) => b.walkable_for(self.me, self.scene.nav.layer(self.layer), x, z, base),
+            None => base,
+        }
     }
 
     fn tile_type(&self, x: i32, z: i32) -> u8 {

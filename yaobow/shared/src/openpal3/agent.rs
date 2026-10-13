@@ -197,7 +197,12 @@ pub fn build_snapshot(ctx: &Pal3DispatchCtx) -> StateSnapshot {
     if walking && snap.current_script_fn.is_none() {
         snap.current_script_fn = Some("<agent walk>".to_string());
     }
-    snap.script_running = script_running || walking;
+    // 场景物件在动（开关、特技机关拨到一半）同样算忙。
+    let object = director.object_busy();
+    if object && snap.current_script_fn.is_none() {
+        snap.current_script_fn = Some("<object>".to_string());
+    }
+    snap.script_running = script_running || walking || object;
 
     // The dialog box itself lives in a p7 renderer that cannot be read
     // back, so the dialog commands mirror what they are showing onto
@@ -421,8 +426,9 @@ fn scene_block(ctx: &Pal3DispatchCtx) -> (String, String) {
 }
 
 /// 当前场景的触发点（`ScnScene::agent_triggers`）。`name` 是 `nav:<号>` /
-/// `aabb:<号>` / `item:<号>`，`function` 是 SCE proc 号，`shape` 同 `kind`。
-/// 导航格的走进去就触发；物件和拾取点要站进去按调查键。
+/// `aabb:<号>` / `item:<号>` / `ladder:<号>` / `obj:<号>`，`function` 是 SCE proc 号，`shape` 同 `kind`。
+/// 导航格的走进去就触发；物件和拾取点要站进去按调查键。`obj:` 是调查键才动的场景物件
+/// （特技机关 t12、开关 t23），后面同样带「t<类型>l<层>」。
 fn handle_scene_triggers(ctx: &Pal3DispatchCtx) -> AgentResponse {
     use crate::openpal3::directors::SceneManagerExtensions;
     let (scene, block) = scene_block(ctx);
@@ -435,7 +441,7 @@ fn handle_scene_triggers(ctx: &Pal3DispatchCtx) -> AgentResponse {
         .into_iter()
         .map(|t| agent_server::protocol::TriggerEntry {
             // 导航格多带一段「t<节点类型>l<层>」：走进去就触发的只有 t14 和同层的 t0。
-            name: if t.kind == "nav" {
+            name: if t.kind == "nav" || t.kind == "obj" {
                 format!("{}:{}:t{}l{}", t.kind, t.index, t.node_type, t.layer)
             } else {
                 format!("{}:{}", t.kind, t.index)
@@ -509,6 +515,7 @@ fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str, teleport: bool) -> Age
             || vm.has_active_commands()
             || !vm.global_state().adv_input_enabled()
             || director.agent_walking()
+            || director.object_busy()
         {
             return AgentResponse::err(AgentError::conflict("a script is running"));
         }
@@ -520,7 +527,7 @@ fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str, teleport: bool) -> Age
         return AgentResponse::err(AgentError::bad_request(format!("bad trigger name: {name}")));
     };
     let (target, interact, layer) = match kind {
-        "nav" | "aabb" | "item" | "ladder" => {
+        "nav" | "aabb" | "item" | "ladder" | "obj" => {
             let Some(t) = scn
                 .agent_triggers()
                 .into_iter()

@@ -249,6 +249,11 @@ pub struct PersistentState {
     /// 物件在第几层（+0xf6）。上下传送板把自己挪到另一层之后要记住。
     #[serde(default)]
     scene_object_layers: BTreeMap<String, u8>,
+    /// 物件的可用次数（+0xae，`.scn` 记录 +2）用过以后的值：开关、特技机关用一次就是 0，回来不能再拨。
+    /// [推断] 原版存档里那条物件记录就是整个 `ObjectInfo`（源码 `SceneObj::OnLoad(ObjectInfo &info, …)`），
+    /// 次数在里面。
+    #[serde(default)]
+    scene_object_times: BTreeMap<String, u8>,
     /// Where opcode 90 has slid a scene object to. `LAB_004378e0` sets
     /// the object's "position was modified" flag at `+0x244` after the
     /// move, except in the nine scenes listed at 0x437997–0x437a67.
@@ -362,6 +367,7 @@ impl PersistentState {
             scene_object_positions: BTreeMap::new(),
             scene_object_activations: BTreeMap::new(),
             scene_object_layers: BTreeMap::new(),
+            scene_object_times: BTreeMap::new(),
             bigmap_elements: BTreeMap::new(),
             bigmap_new: Default::default(),
             purple_powder: false,
@@ -458,6 +464,17 @@ impl PersistentState {
     pub fn set_scene_object_layer(&mut self, city: &str, scene: &str, object_id: i32, layer: u8) {
         self.scene_object_layers
             .insert(scene_object_key(city, scene, object_id), layer);
+    }
+
+    pub fn scene_object_times(&self, city: &str, scene: &str, object_id: i32) -> Option<u8> {
+        self.scene_object_times
+            .get(&scene_object_key(city, scene, object_id))
+            .copied()
+    }
+
+    pub fn set_scene_object_times(&mut self, city: &str, scene: &str, object_id: i32, times: u8) {
+        self.scene_object_times
+            .insert(scene_object_key(city, scene, object_id), times);
     }
 
     pub fn do_not_load_object_from_save(&mut self, object_id: i32) {
