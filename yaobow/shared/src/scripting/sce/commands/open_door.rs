@@ -41,9 +41,17 @@ fn cvd_components(entity: &ComRc<IEntity>, out: &mut Vec<ComRc<ICvdModel>>) {
 /// }
 /// ```
 ///
-/// and the opcode then blocks on `IsWaiting()`, i.e. until `m_subobj.state`
-/// is back to 0. Pal3.Unity fires and forgets at normal speed; this follows
-/// the binary.
+/// and the opcode adds the door to the script's wait list
+/// (`AddWaitObjToRuningInst`). The door's `IsWaiting()` is
+/// `return m_subobj.state == 0;` (`sceneobj.cpp:4269`; exe 0x42bee0:
+/// `mov dl,[ecx+0x50] / xor eax,eax / test dl,dl / sete al / ret`), and
+/// `Script_OpenDoor` has just set the state to 2 — so the next
+/// `PalScript::Update` finds it not waiting and drops it. The script does
+/// **not** wait for the door to finish opening: it goes on one frame later
+/// while the door plays.
+///
+/// 先前这里等到动画播完。安宁村民居丁（Q07 proc 667）是并行模式下先开门、同一帧就换子场景：
+/// 旧门的动画随旧场景停了，这条命令永远播不完，输入一直锁着。
 ///
 /// 「animation type 3」就是**模型是 `.cvd`**——`MyMdl::Load`
 /// （`gamebase/sceneobj.cpp:3054`）按扩展名定 `m_mdltype`：`.cvd` 是 3、
@@ -56,6 +64,7 @@ pub struct SceCommandOpenDoor {
     object_id: i32,
     playing: Vec<ComRc<ICvdModel>>,
     started: bool,
+    dropped_next_frame: bool,
 }
 
 impl std::fmt::Debug for SceCommandOpenDoor {
@@ -72,7 +81,7 @@ impl SceCommand for SceCommandOpenDoor {
         &mut self,
         scene_manager: ComRc<ISceneManager>,
         _ui: &Ui,
-        state: &mut SceState,
+        _state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
         if !self.started {
@@ -95,13 +104,11 @@ impl SceCommand for SceCommandOpenDoor {
             }
         }
 
-        if state.fast_forward() {
-            return true;
+        // 起门那一帧之后的下一帧：等待列表把它移掉（见上）。
+        if !std::mem::replace(&mut self.dropped_next_frame, true) {
+            return false;
         }
-
-        self.playing
-            .iter()
-            .all(|c| c.inner::<CvdModelComponent>().finished())
+        true
     }
 }
 
@@ -111,6 +118,7 @@ impl SceCommandOpenDoor {
             object_id,
             playing: vec![],
             started: false,
+            dropped_next_frame: false,
         }
     }
 }
