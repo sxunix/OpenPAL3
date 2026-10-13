@@ -896,10 +896,20 @@ swap(this->+0x80..+0x88, this->+0x8c..+0x94);
   敌方 (207,78) (181,235) (23,257) (69,4) (-40,118) (98,151)
   ```
 
-- 模型名：**我方五个从 `PARTY_MODELS`（101/104/105/107/102）来，不是从
+- 模型名：**我方五个从 `PARTY_MODELS`（101/104/106/107/102）来，不是从
   数据库**——gdb 里主角那五条 `combat_actors` 的 `model_id` 写的是
-  `"Null"`，他们直接用冒险模式的模型。敌方才用 `model_id`（`B01` 这种，
-  对应 `basedata/ROLE/B01`）。167 个战斗角色都带 `model_id`。
+  `"Null"`。敌方才用 `model_id`（`B01` 这种，对应 `basedata/ROLE/B01`）。
+  167 个战斗角色都带 `model_id`。
+
+  **龙葵在战斗里一律是 106**（2026-10-13 更正，先前这里写的 105 是错的）。
+  源码写死在 `CCBStageRole::Create`（`cbstagerole.cpp:134`，2 号位
+  `"106"`）和 `CCBRoleState` 的模型目录表（`cbrolestate.cpp:1065`），直接
+  `Init` 再 `LoadRoleAction`，**不看**冒险模式的形象旗标；源码把 106 叫
+  「龙葵鬼」。冒险模式里 SCE 42 在 105（蓝）/ 106（红）之间换，宿营、阵法页
+  那些界面跟着存档里的形象走，那是另一条路。发行数据也只有 106 是完整的
+  战斗动作（36 个 `z*.mv3`）；105 只有 `z05/z17/z18`。这条是回放时发现的：
+  用 105 龙葵每帧报「没有动作 z061」，普攻没有攻击动作。普查
+  `every_party_battle_model_has_the_core_motions` 钉住了。
 
 `SceCommandCombat::initialize` 里建一个 `CoreScene`、放战场和活着的参战者、
 压到场景栈；散场时弹掉。缺哪一件就少摆哪一个，规则层不碰这些实体。
