@@ -303,6 +303,12 @@ impl ImguiContext {
         if !synthetic.is_empty() {
             let io = context.io_mut();
             for (key, down) in synthetic {
+                // 后端没声明 `HAS_GAMEPAD` 时 imgui 每帧把手柄键全清零（1.87 起的
+                // `UpdateKeyboardInputs`）。Switch 平台声明了，桌面没有——合成的手柄键
+                // 在桌面上会被吞掉，回放就测不了手柄那一路。有合成手柄键时补上标志。
+                if format!("{key:?}").starts_with("Gamepad") {
+                    io.backend_flags.insert(imgui::BackendFlags::HAS_GAMEPAD);
+                }
                 io.add_key_event(key, down);
             }
         }

@@ -110,8 +110,12 @@ impl SyntheticInputBridge {
             Key::Num7 => I::Alpha7,
             Key::Num8 => I::Alpha8,
             Key::Num9 => I::Alpha9,
-            Key::GamePadEast => I::GamepadFaceRight,
-            Key::GamePadSouth => I::GamepadFaceDown,
+            // 按含义对，不按位置：引擎里 `GamePadEast`（Switch 的 A）全代码当
+            // 「确定」、`GamePadSouth`（B）当「取消」；Switch 平台给 imgui 的映射是
+            // A → `FaceDown`（imgui 的 activate）、B → `FaceRight`
+            // （`imgui/platform/switch.rs`），这里跟它一致。
+            Key::GamePadEast => I::GamepadFaceDown,
+            Key::GamePadSouth => I::GamepadFaceRight,
             Key::GamePadWest => I::GamepadFaceLeft,
             Key::GamePadNorth => I::GamepadFaceUp,
             Key::GamePadDPadUp => I::GamepadDpadUp,

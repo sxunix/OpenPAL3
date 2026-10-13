@@ -284,10 +284,28 @@ pub fn build_snapshot(ctx: &Pal3DispatchCtx) -> StateSnapshot {
 }
 
 fn handle_key_input(bridge: &Rc<AgentBridge>, params: KeyInputParams) -> AgentResponse {
-    // 引擎键表里没有、只有 imgui 认的键：回车。读 imgui 输入的那几个界面
-    // （宿营的结果框、闲聊休息……）拿它当确定。只灌给 imgui。
-    if matches!(params.key.to_ascii_lowercase().as_str(), "enter" | "return") {
-        let k = imgui::Key::Enter;
+    // 引擎键表里没有、只有 imgui 认的键，只灌给 imgui：回车（宿营的结果框、
+    // 闲聊休息拿它当确定），以及 `imgui:<名字>` 形式的任意 imgui 键（比如
+    // `imgui:GamepadL1`——引擎键表没有肩键，鉴定页的手柄翻页要用）。
+    let lower = params.key.to_ascii_lowercase();
+    let imgui_only = if matches!(lower.as_str(), "enter" | "return") {
+        Some(imgui::Key::Enter)
+    } else if let Some(name) = params.key.strip_prefix("imgui:") {
+        match imgui::Key::VARIANTS
+            .iter()
+            .find(|k| format!("{k:?}").eq_ignore_ascii_case(name))
+        {
+            Some(k) => Some(*k),
+            None => {
+                return AgentResponse::err(AgentError::bad_request(format!(
+                    "unknown imgui key name: {name}"
+                )));
+            }
+        }
+    } else {
+        None
+    };
+    if let Some(k) = imgui_only {
         match params.action {
             KeyAction::Down => radiance::imgui::queue_synthetic_key(k, true),
             KeyAction::Up => radiance::imgui::queue_synthetic_key(k, false),
@@ -717,6 +735,16 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
             // [] —— 只弹战败画面，按一下回标题。
             director.start_debug_command(Box::new(
                 crate::scripting::sce::commands::SceCommandGameOverScreen::default(),
+            ));
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "appraise" => {
+            // [] —— 直接开鉴定小游戏（104），从「要玩鉴定游戏吗？」开始。
+            director.start_debug_command(Box::new(
+                crate::scripting::sce::commands::SceCommandAppraise::new(),
             ));
             AgentResponse::Script(ScriptEvalResponse {
                 function: params.function,
