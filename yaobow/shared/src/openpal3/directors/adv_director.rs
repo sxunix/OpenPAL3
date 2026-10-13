@@ -2548,7 +2548,13 @@ impl AdventureDirectorProps {
             return None;
         }
 
-        if self.scene_manager.scene().is_none() {
+        // 下面是冒险模式的世界模拟（主角移动、NPC 巡逻、野怪、触发器），要求栈顶
+        // 就是冒险场景。小游戏和战斗会往场景栈上压自己的 `CoreScene`（宿营 106、
+        // 战斗舞台……），这时 `scn_scene()` 是 `None`——原版那是 `SwitchMode` 换了
+        // 一个模式，冒险世界根本不更新。战斗和多数剧情会先关冒险输入，被上面的
+        // `!adv_enabled` 挡掉；宿营不关，先前走到 `scn_scene().unwrap()` 就崩了
+        // （回放里经调试入口开宿营时实测）。
+        if self.scene_manager.scn_scene().is_none() {
             return None;
         }
 
