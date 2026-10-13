@@ -74,6 +74,7 @@ impl AdventureDirector {
                 agent_bridge: None,
                 player_slide_dir: None,
                 object_walk: None,
+                player_fly: None,
                 last_nav_trigger: None,
                 input_lock: false,
                 agent_walk: None,
@@ -205,6 +206,7 @@ impl AdventureDirector {
                 agent_bridge: None,
                 player_slide_dir: None,
                 object_walk: None,
+                player_fly: None,
                 last_nav_trigger: None,
                 input_lock: false,
                 agent_walk: None,
@@ -617,6 +619,7 @@ impl AdventureDirector {
             goal_proc,
             scene: p.scene_key(),
             resumes: 0,
+            free_resume: false,
         });
         Some(n)
     }
@@ -737,6 +740,8 @@ struct AdventureDirectorProps {
     player_slide_dir: Option<Vec3>,
     /// 场景物件的动作 2 正牵着主角走（`FUN_00412b60` 设的移动方式 4）。
     object_walk: Option<ObjectWalk>,
+    /// 主角在「旋转飞」（`Role::RotateFly`，食人花吞进去、吐出来）。
+    player_fly: Option<PlayerFly>,
     /// 上一帧主角站着的导航触发区的过程号。原版类型 0 触发点（`FUN_00424c20` case 0）只在「上一帧不在同一个物件上」
     /// 时跑过程，站着不动不会每帧重跑。
     last_nav_trigger: Option<u32>,
@@ -2152,6 +2157,7 @@ impl AdventureDirectorProps {
             player,
             state: self.sce_vm.state_mut(),
             walk: &mut self.object_walk,
+            fly: &mut self.player_fly,
             procs: vec![],
         };
         let done = scene.examine_object(i, &mut w);
@@ -2160,8 +2166,36 @@ impl AdventureDirectorProps {
         done
     }
 
+    /// 主角「旋转飞」的一帧（特殊动作 0xb）：飞完站住。
+    fn step_player_fly(&mut self, dt: f32) {
+        let Some(mut fly) = self.player_fly.take() else {
+            return;
+        };
+        fly.t = (fly.t + dt).min(FLY_SECS);
+        let k = (1. - (fly.t / FLY_SECS * std::f32::consts::PI).cos()) * 0.5;
+        let p = Vec3::new(
+            fly.to.x * k + (1. - k) * fly.from.x,
+            fly.to.y * k + (1. - k) * fly.from.y,
+            fly.to.z * k + (1. - k) * fly.from.z,
+        );
+        if let Some(e) = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)
+        {
+            e.transform().borrow_mut().set_position(&p);
+        }
+        self.sce_vm
+            .global_state_mut()
+            .persistent_state_mut()
+            .set_position(p);
+        if fly.t < FLY_SECS {
+            self.player_fly = Some(fly);
+        }
+    }
+
     /// 场景物件的动作队列和状态（`FUN_00426eb0` 里 `FUN_0042f460` 和状态机那部分）。
     fn step_object_actions(&mut self, dt: f32) {
+        self.step_player_fly(dt);
         let Some(scene_rc) = self.scene_manager.scn_scene() else {
             return;
         };
@@ -2174,6 +2208,7 @@ impl AdventureDirectorProps {
             player,
             state: self.sce_vm.state_mut(),
             walk: &mut self.object_walk,
+            fly: &mut self.player_fly,
             procs: vec![],
         };
         scene.step_object_actions(dt, &mut w);
@@ -2396,6 +2431,7 @@ impl AdventureDirectorProps {
             player: Some(player),
             state: self.sce_vm.state_mut(),
             walk: &mut self.object_walk,
+            fly: &mut self.player_fly,
             procs: vec![],
         };
         scene.player_landed(layer, &pos, dt, &mut w);
@@ -2470,6 +2506,7 @@ impl AdventureDirectorProps {
             player: Some(player),
             state: self.sce_vm.state_mut(),
             walk: &mut self.object_walk,
+            fly: &mut self.player_fly,
             procs: vec![],
         };
         scene.player_on_object(layer, &pos, dt, &mut w);
@@ -2764,6 +2801,7 @@ impl AdventureDirectorProps {
         }
         // 物件那半个 `ObjLockInput`（开关、特技机关拨到一半）同样锁。
         let locked = self.input_lock
+            || self.player_fly.is_some()
             || self.scene_manager.scn_scene().is_some_and(|s| {
                 s.inner::<crate::openpal3::scene::ScnScene>()
                     .object_input_locked()
@@ -2846,6 +2884,13 @@ impl AdventureDirectorProps {
         // [调试] agent 带着主角一格一格走（`agent_walk_to`）。
         if self.agent_walk.is_some() && (locked || frozen) {
             self.agent_walk = None;
+            // 只是场景物件在动（食人花吞吐、开关）的那种打断，接着走不算一次重试——古藤林一条路
+            // 要过好几朵花。
+            if !self.input_lock && !frozen {
+                if let Some(g) = self.agent_walk_goal.as_mut() {
+                    g.free_resume = true;
+                }
+            }
         }
         // 换了场景，旧场景的路点和目标都作废（过场里冒险循环不跑，走到这儿时可能已经换过场景了）。
         if self
@@ -2862,7 +2907,9 @@ impl AdventureDirectorProps {
                 if goal.scene == self.scene_key() && goal.resumes < 3 {
                     if let Some(path) = self.plan_agent_walk(goal.nav_index, &goal.point) {
                         self.agent_walk = Some((path.into_iter().collect(), goal.interact));
-                        goal.resumes += 1;
+                        if !std::mem::take(&mut goal.free_resume) {
+                            goal.resumes += 1;
+                        }
                         self.agent_walk_goal = Some(goal);
                     }
                 }
@@ -3082,6 +3129,8 @@ struct AgentWalkGoal {
     goal_proc: Option<u32>,
     scene: (String, String),
     resumes: u8,
+    /// 上一次停下是场景物件在动，接着走不算重试。
+    free_resume: bool,
 }
 
 /// 场景物件的动作 2 牵着主角走（`FUN_00412b60` 设的移动方式 4：起点 +0x554、终点 +0x540、按走的速度）。
@@ -3092,12 +3141,27 @@ struct ObjectWalk {
     speed: f32,
 }
 
+/// `Role::RotateFly`（`FUN_00414e50` 起、`FUN_00415xxx` 特殊动作 0xb 每帧推）：0.5 秒里按
+/// `(1 − cos πt) / 2` 从起点挪到终点；`flag` 1 飞进去时缩放 1 → 0.7，2 飞出来时 0.7 → 1。
+/// [未做] 同时绕「(起点 − 终点) × Y」那根轴转 0 → 90°（飞出来 90 → 0）、蹲下的动作（0x12）和缩放，
+/// 移植端只挪位置。
+#[derive(Debug, Clone, Copy)]
+struct PlayerFly {
+    from: Vec3,
+    to: Vec3,
+    t: f32,
+}
+
+/// 飞一趟的秒数（`+0x4e4 = 0.5`）。
+const FLY_SECS: f32 = 0.5;
+
 /// 场景物件的动作要碰的主角、模型、音效、冻结计数。
 struct ObjWorld<'a> {
     scene: &'a crate::openpal3::scene::ScnScene,
     player: Option<ComRc<radiance::comdef::IEntity>>,
     state: &'a mut crate::scripting::sce::SceState,
     walk: &'a mut Option<ObjectWalk>,
+    fly: &'a mut Option<PlayerFly>,
     /// 动作 4 要跑的过程，推完一帧再交给 SCE 虚拟机。
     procs: Vec<i32>,
 }
@@ -3448,10 +3512,11 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
     }
 
     fn player_acting(&self) -> bool {
-        self.player_rc().is_some_and(|rc| {
-            rc.inner::<RoleController>().state()
-                == crate::openpal3::scene::RoleState::PlayingAnimation
-        })
+        self.fly.is_some()
+            || self.player_rc().is_some_and(|rc| {
+                rc.inner::<RoleController>().state()
+                    == crate::openpal3::scene::RoleState::PlayingAnimation
+            })
     }
 
     fn toggle_switch(&mut self, i: usize) -> bool {
@@ -3486,6 +3551,41 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         self.save_override(i, |s, city, scene, id| {
             s.set_scene_object_active(city, scene, id, false)
         });
+    }
+
+    fn fly_player(&mut self, to: &Vec3, flag: u8) {
+        log::debug!(
+            "场景物件：主角飞向 ({:.0}, {:.0}, {:.0})（{flag}）",
+            to.x,
+            to.y,
+            to.z
+        );
+        self.idle();
+        let from = self.player_pos();
+        *self.fly = Some(PlayerFly {
+            from,
+            to: *to,
+            t: 0.,
+        });
+    }
+
+    fn set_player_shown(&mut self, shown: bool) {
+        if let Some(e) = &self.player {
+            e.set_visible(shown);
+        }
+    }
+
+    fn place_player(&mut self, layer: usize, x: i32, z: i32, at: &Vec3) {
+        log::debug!("场景物件：主角放到层 {layer} ({x}, {z})");
+        self.set_player_layer(layer);
+        self.set_player(at);
+    }
+
+    fn reset_anim(&mut self, i: usize) {
+        for c in self.cvds(i) {
+            c.inner::<crate::openpal3::scene::CvdModelComponent>()
+                .rewind();
+        }
     }
 
     fn save_times(&mut self, i: usize, times: u8) {

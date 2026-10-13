@@ -908,3 +908,12 @@ From the pre-switch save the explorer then found the whole route by
 itself — switch in M08/3, vine in M08/2, M08/4, the far side of M08/1b,
 1002 and its boss (at level 36; at 26 the party loses and the boss is a
 game-over one) — and left 九顶山 for 德阳: plot 40300, chapter 4.
+
+古藤林 (M10/1, 40900) is a teleport maze of 食人花 (node type 32): step
+into a flower's tile rect and it swallows you and spits you out next to
+its partner. Ported from `FUN_00424c20` / `FUN_00426eb0` case 0x20 and
+`Role::RotateFly` (`FUN_00414e50`, 0.5 s cosine ease): fly into the
+flower, the flower plays its model while the player is hidden, then the
+player is placed on the tile in parameters 0/1 and flies out from the
+partner flower (parameter 2). The fly's tilt, scale and crouch pose are
+not drawn yet. Plot 41100.

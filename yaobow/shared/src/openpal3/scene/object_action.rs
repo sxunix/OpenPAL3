@@ -10,7 +10,7 @@
 //! 排队的前提都是 `FUN_0042c1a0`：队列空、状态 0。乌龟沉下去（状态 3）、吊桥放下（状态 1）以后就不会再动。
 //!
 //! 这里做了吊桥（0x13）、乌龟重力机关（0x1d）、神树传送点（0x26）、上下传送板（0x28），以及调查键（事件 1）
-//! 触发的主角特技机关（0xc）和开关（0x17）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
+//! 触发的主角特技机关（0xc）和开关（0x17），以及古藤林的食人花（0x20）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
 //! 交给调用方。
 //!
 //! `FUN_00424c20` 开头先看可用次数（+0xae）：不是 0xff（无限）又已经是 0 的，什么事件都不理。
@@ -230,6 +230,17 @@ pub trait World {
     }
     /// 物件不在场了（+0xad 置 0），记进存档。
     fn deactivate(&mut self, _i: usize) {}
+    /// `FUN_00414e50(to, flag)`（`Role::RotateFly`）：主角站住，0.5 秒里按余弦缓动从现在的位置飞到 `to`；
+    /// `flag` 1 是飞进去（缩到 0.7），2 是飞出来（从 0.7 放回 1）。飞的时候算「动作没播完」
+    /// （[`World::player_acting`]）。
+    fn fly_player(&mut self, _to: &Vec3, _flag: u8) {}
+    /// 主角在不在场（`+0x278`）：被食人花吞进去时是 0。
+    fn set_player_shown(&mut self, _shown: bool) {}
+    /// `FUN_004163b0(x, z)`：主角放到第 `layer` 层 (`x`, `z`) 格，再把渲染位置挪到 `at`
+    /// （主角 `+0xa0`，食人花取配对那朵花的位置）。
+    fn place_player(&mut self, _layer: usize, _x: i32, _z: i32, _at: &Vec3) {}
+    /// 物件模型停回第一帧、不再播（`SetTimeScale(0)` + `Reset(0)`）。
+    fn reset_anim(&mut self, _i: usize) {}
     /// 可用次数（+0xae）变了，记进存档。[推断] 原版存档里那条物件记录就是 `ObjectInfo` 本身
     /// （源码 `SceneObj::OnLoad(ObjectInfo &info, …)`，`gamebase/sceneobj.cpp:4002`），次数在里面。
     fn save_times(&mut self, _i: usize, _times: u8) {}
@@ -305,6 +316,11 @@ impl ObjectActions {
     /// 物件在第几层（+0xf6）。
     pub fn layer(&self, i: usize) -> Option<usize> {
         self.objs.get(i).map(|o| o.layer)
+    }
+
+    /// 物件参数 0..3（+0xf8..+0x104）。
+    pub fn params(&self, i: usize) -> Option<[i32; 4]> {
+        self.objs.get(i).map(|o| o.p)
     }
 
     /// 物件的类型（+0xf4）。
@@ -538,6 +554,21 @@ impl ObjectActions {
             }
             0xc => self.skill_gate(i, ev, w),
             0x17 => self.switch(i, ev, w),
+            // 食人花（`FUN_00424c20` case 0x20）：只认踩上来（事件 0）、状态 0。转状态 1、主角飞进花心、
+            // 放音效；`break` 出来，末尾照样跑自己那条过程。之后见 [`Self::step_flower`]。
+            0x20 => {
+                if ev != 0 || self.objs[i].state != 0 {
+                    return;
+                }
+                self.objs[i].state = 1;
+                // [移植] 原版飞行时主角是特殊动作模式、被吞时不在场，都不听输入；这里借
+                // `ObjLockInput` 那一位锁住，回到状态 0 时放开。
+                self.objs[i].locked = true;
+                let p = w.object_pos(i);
+                w.fly_player(&p, 1);
+                self.sound(i, 0, w);
+                self.own_proc(i, w);
+            }
             _ => {}
         }
     }
@@ -729,6 +760,7 @@ impl ObjectActions {
             match self.objs[i].kind {
                 0xc => self.step_skill_gate(i, w),
                 0x17 => self.step_switch(i, dt, w),
+                0x20 => self.step_flower(i, w),
                 _ => {}
             }
             let o = &mut self.objs[i];
@@ -788,6 +820,37 @@ impl ObjectActions {
                     w.object_tiles(i, true, layer);
                     w.deactivate(i);
                 }
+            }
+            _ => {}
+        }
+    }
+
+    /// `FUN_00426eb0` case 0x20（食人花）。状态 1：主角飞完，花的模型按 2 倍速播（吞）、主角不在场，转 2。
+    /// 2：模型播完，停回第一帧，主角回来、状态 0；主角放到参数 (0, 1) 那格，渲染位置挪到参数 2 那朵
+    /// （配对的）花上，再飞向那格的中心（y 取格子自己的高度）。
+    fn step_flower<W: World>(&mut self, i: usize, w: &mut W) {
+        match self.objs[i].state {
+            1 => {
+                if !w.player_acting() {
+                    w.play_anim(i, ANIM_SPEED);
+                    self.objs[i].state = 2;
+                    w.set_player_shown(false);
+                }
+            }
+            2 => {
+                if w.object_animated(i) && !w.anim_done(i) {
+                    return;
+                }
+                w.reset_anim(i);
+                w.set_player_shown(true);
+                self.objs[i].state = 0;
+                let (p, layer) = (self.objs[i].p, self.objs[i].layer);
+                let at = self
+                    .index_of(p[2])
+                    .map_or_else(|| w.object_pos(i), |o| w.object_pos(o));
+                w.place_player(layer, p[0], p[1], &at);
+                let (center, _) = w.tile_point(layer, p[0], p[1]);
+                w.fly_player(&center, 2);
             }
             _ => {}
         }
@@ -1653,5 +1716,51 @@ mod tests {
             w.frame(&mut a, 0.1);
         }
         assert_eq!(w.acts, [ACT_SKILL]);
+    }
+
+    #[test]
+    fn flower_swallows_and_spits_out_at_the_paired_one() {
+        let (_, mut w) = m01();
+        // M10/1 的 #18 / #19（_a.cvd，参数 (268, 67)、配对 33 号；(63, 39)、配对 32 号）。
+        let mut a = ObjectActions::new(&[
+            ObjNode {
+                object_id: 32,
+                kind: 0x20,
+                layer: 0,
+                p: [268, 67, 33, 0],
+                link_id: 0xffff,
+                sound: None,
+                proc: 0,
+                times: 0xff,
+                examinable: false,
+            },
+            ObjNode {
+                object_id: 33,
+                kind: 0x20,
+                layer: 0,
+                p: [63, 39, 32, 0],
+                link_id: 0xffff,
+                sound: None,
+                proc: 0,
+                times: 0xff,
+                examinable: false,
+            },
+        ]);
+        w.pos = vec![
+            Vec3::new(-1263., 137., -1254.),
+            Vec3::new(1346., 62., -763.),
+        ];
+        a.event(0, 0, false, 0.1, &mut w);
+        assert_eq!(a.state(0), Some(1));
+        assert!(a.input_locked());
+        // 站着不动的下一帧不再触发。
+        a.event(0, 0, true, 0.1, &mut w);
+        assert_eq!(a.state(0), Some(1));
+        for _ in 0..10 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(w.played, [0]);
+        assert_eq!(a.state(0), Some(0));
+        assert!(!a.input_locked());
     }
 }

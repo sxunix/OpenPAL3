@@ -428,6 +428,14 @@ impl ScnScene {
                     next.push((o, ox, oz, true));
                 }
             }
+            // 食人花（0x20）：踩进花的格子范围就被吞、从参数 (0, 1) 那格出来（`step_flower`）。
+            if let Some((o, 0x20)) = self.tile_object(l, x, z) {
+                if self.object_active_at(o) {
+                    if let Some(p) = self.object_actions.borrow().params(o) {
+                        next.push((l, p[0], p[1], true));
+                    }
+                }
+            }
             if maze && matches!(self.tile_object(l, x, z), Some((_, 0x2c | 0x26))) {
                 let (bx, bz) = self.nav_block_size(l);
                 let rx = (super::player_jump::MAX_DIST / bx).ceil() as i32;
