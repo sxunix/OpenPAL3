@@ -221,6 +221,71 @@ impl ScnScene {
             && coord.1 <= boundary.1.1
     }
 
+    /// `Role::UpdateLayer(-1)`（`gamebase/role.cpp:3805`，键盘操作时每帧）：主角那格落在本层哪个
+    /// 「传送口」（导航文件每层 8 个矩形，`left == right == 0` 的是空的）里，就到另一层同号的传送口里找离
+    /// 主角那格（按另一层的格子算）最近的一格（同距离取先扫到的，按行扫）；那格中心（y 是格子高度）离主角
+    /// 不到 `ROLE_RADIUS × 6` 并且大致在前面（水平方向和朝向点积 > 0.3）才换过去。`forward` 为 `None`
+    /// 时不看朝向（探路泛洪用）。返回（新层, 新位置）。
+    pub fn portal_switch(
+        &self,
+        layer: usize,
+        position: &Vec3,
+        forward: Option<&Vec3>,
+    ) -> Option<(usize, Vec3)> {
+        if self.nav.layer_count() < 2 {
+            return None;
+        }
+        let portals = |l: usize| -> Vec<((i32, i32), (i32, i32))> {
+            self.nav.nav_file.maps[self.nav_layer(l)]
+                .layer_triggers
+                .as_ref()
+                .map(|v| {
+                    v.iter()
+                        .map(|p| (p.nav_coord_min, p.nav_coord_max))
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let (x, z) = self.scene_coord_to_nav_coord(layer, position);
+        let now = (x as i32, z as i32);
+        let here = portals(layer);
+        let i = here.iter().position(|&(min, max)| {
+            !(min.0 == max.0 && max.0 == 0) && Self::test_coord_in_bound(now, (min, max))
+        })?;
+        let other = (layer + 1) % 2;
+        let rect = portals(other).get(i).copied()?;
+        let (ox, oz) = self.scene_coord_to_nav_coord(other, position);
+        let now2 = (ox as i32, oz as i32);
+        let mut best: Option<((i32, i32), i64)> = None;
+        for tz in rect.0.1..=rect.1.1 {
+            for tx in rect.0.0..=rect.1.0 {
+                let d = ((now2.0 - tx) as i64).pow(2) + ((now2.1 - tz) as i64).pow(2);
+                if best.is_none_or(|(_, b)| d < b) {
+                    best = Some(((tx, tz), d));
+                }
+            }
+        }
+        let ((tx, tz), _) = best?;
+        let (newpos, _) = self.tile_point(other, tx, tz);
+        let offset = Vec3::sub(&newpos, position);
+        // `ROLE_RADIUS = 12`（`gamebase/roledef.h:327`）。
+        const ROLE_RADIUS: f32 = 12.;
+        if offset.norm() >= ROLE_RADIUS * 6. {
+            return None;
+        }
+        if let Some(f) = forward {
+            let mut dir = Vec3::new(newpos.x - position.x, 0., newpos.z - position.z);
+            let len = dir.norm();
+            if len > 0. {
+                dir = Vec3::scalar_mul(1. / len, &dir);
+            }
+            if Vec3::dot(&dir, f) <= 0.3 {
+                return None;
+            }
+        }
+        Some((other, newpos))
+    }
+
     pub fn test_nav_layer_trigger(&self, layer: usize, coord: &Vec3) -> bool {
         if let Some(layer_triggers) = &self.nav.nav_file.maps[self.nav_layer(layer)].layer_triggers
         {
@@ -260,9 +325,15 @@ impl ScnScene {
     /// 调试用：从 `layer` 层 `from` 那格泛洪，边和主角能走的一样——8 邻格（能不能走按
     /// [`Self::tile_walkable`]，含场景物件挡路）、梯子 / 藤（移植端的 `test_ladder`：站在一头附近按
     /// 调查键就到另一头，`switch_layer` 时另一头在另一层）、导航文件里的换层区
-    /// （`test_nav_layer_trigger`）、战斗关里站在跳跃区上的跳（`jump_target` 那条格子直线）。
+    /// （传送口，[`Self::portal_switch`]）、战斗关里站在跳跃区上的跳（`jump_target` 那条格子直线）。
     /// 不出这个块。探路工具靠它判断触发点走不走得到、按它给的路一格一格走过去。
-    fn agent_flood(&self, layer: usize, from: &Vec3) -> AgentFlood {
+    /// `avoid` 里的格子（层, x, z）当走不了——走路时绕开路上别的走格触发点。
+    fn agent_flood(
+        &self,
+        layer: usize,
+        from: &Vec3,
+        avoid: &std::collections::HashSet<(usize, i32, i32)>,
+    ) -> AgentFlood {
         use super::nav_path::FieldNav as _;
         let layers = self.nav.layer_count().max(1);
         let sizes: Vec<(i32, i32)> = (0..layers)
@@ -343,8 +414,18 @@ impl ScnScene {
                     }
                 }
             }
+            // 传送口换层（`portal_switch`，不看朝向——主角能转过去）。
             if layers > 1 && layer_zone(l, x, z) {
-                next.push(((l + 1) % 2, x, z, true));
+                let (c, _) = self.tile_point(l, x, z);
+                if let Some((o, p)) = self.portal_switch(l, &c, None) {
+                    use super::nav_path::FieldNav as _;
+                    let (ox, oz) = FieldNavView {
+                        scene: self,
+                        layer: o,
+                    }
+                    .tile_of(&p);
+                    next.push((o, ox, oz, true));
+                }
             }
             if maze && matches!(self.tile_object(l, x, z), Some((_, 0x2c | 0x26))) {
                 let (bx, bz) = self.nav_block_size(l);
@@ -372,7 +453,7 @@ impl ScnScene {
                     continue;
                 }
                 let k = flood.key(nl, nx, nz);
-                if flood.parent[nl][k].is_some() {
+                if flood.parent[nl][k].is_some() || avoid.contains(&(nl, nx, nz)) {
                     continue;
                 }
                 if !self.tile_walkable(nl, nx, nz) {
@@ -397,6 +478,58 @@ impl ScnScene {
             }
         }
         flood
+    }
+
+    /// 调试图：各层并排；灰 = 能走，红 = 被物件压住，绿 = 连通，青 = 走格触发点，蓝 = 起点。
+    fn agent_flood_png(&self, flood: &AgentFlood, path: &str) {
+        let total_w: i32 = flood.sizes.iter().map(|(w, _)| w + 4).sum();
+        let max_h: i32 = flood.sizes.iter().map(|(_, h)| *h).max().unwrap_or(1);
+        let mut img = image::RgbImage::new(total_w.max(1) as u32, max_h.max(1) as u32);
+        let mut x0 = 0;
+        for (l, &(w, h)) in flood.sizes.iter().enumerate() {
+            for z in 0..h {
+                for x in 0..w {
+                    let base = self
+                        .nav
+                        .get(l, x, z)
+                        .is_some_and(|t| (t.distance_to_border & 0xff) > 1);
+                    let c = if flood.reached(l, x, z) {
+                        [40, 200, 40]
+                    } else if base && !self.tile_walkable(l, x, z) {
+                        [220, 40, 40]
+                    } else if base {
+                        [120, 120, 120]
+                    } else {
+                        [0, 0, 0]
+                    };
+                    img.put_pixel((x0 + x) as u32, z as u32, image::Rgb(c));
+                }
+            }
+            for t in self.nav_triggers.borrow().iter() {
+                if self.nav_trigger_layer(t) != l {
+                    continue;
+                }
+                for z in t.nav_coord_min.1..=t.nav_coord_max.1 {
+                    for x in t.nav_coord_min.0..=t.nav_coord_max.0 {
+                        if x >= 0 && z >= 0 && x < w && z < h {
+                            img.put_pixel((x0 + x) as u32, z as u32, image::Rgb([0, 200, 220]));
+                        }
+                    }
+                }
+            }
+            if flood.start.0 == l {
+                for dz in -1..=1 {
+                    for dx in -1..=1 {
+                        let (x, z) = (flood.start.1 + dx, flood.start.2 + dz);
+                        if x >= 0 && z >= 0 && x < w && z < h {
+                            img.put_pixel((x0 + x) as u32, z as u32, image::Rgb([60, 60, 255]));
+                        }
+                    }
+                }
+            }
+            x0 += w + 4;
+        }
+        let _ = img.save(path);
     }
 
     /// 走格触发点框里有没有一格连通，有就给那一格。
@@ -435,7 +568,10 @@ impl ScnScene {
         from: &Vec3,
         to: &[Vec3],
     ) -> (Vec<bool>, usize, Vec<String>, Vec<usize>) {
-        let flood = self.agent_flood(layer, from);
+        let flood = self.agent_flood(layer, from, &Default::default());
+        if let Ok(path) = std::env::var("YAOBOW_REACH_PNG") {
+            self.agent_flood_png(&flood, &path);
+        }
         let names = self
             .agent_triggers()
             .into_iter()
@@ -470,13 +606,50 @@ impl ScnScene {
         nav_index: Option<usize>,
         point: &Vec3,
     ) -> Option<Vec<(usize, Vec3)>> {
-        let flood = self.agent_flood(layer, from);
-        let goal = match nav_index {
+        // 先绕开别的会触发的走格触发点（不然从门口出来往哪走都先踩回门里）；绕不过去再直走。
+        // 起点已经站在里面的那个不绕（站在同一个上不重复触发）。
+        let here = {
+            use super::nav_path::FieldNav as _;
+            FieldNavView { scene: self, layer }.tile_of(from)
+        };
+        let avoid: std::collections::HashSet<(usize, i32, i32)> = self
+            .nav_triggers
+            .borrow()
+            .iter()
+            .enumerate()
+            .filter(|(i, t)| {
+                Some(*i) != nav_index
+                    && !(self.nav_trigger_layer(t) == layer
+                        && Self::test_coord_in_bound(here, (t.nav_coord_min, t.nav_coord_max)))
+                    && matches!(t.node_type, 0 | 14)
+                    && t.times != 0
+                    && self
+                        .object_blocking
+                        .borrow()
+                        .as_ref()
+                        .is_none_or(|b| b.active(t.node_index))
+            })
+            .flat_map(|(_, t)| {
+                let l = self.nav_trigger_layer(t);
+                (t.nav_coord_min.1..=t.nav_coord_max.1).flat_map(move |z| {
+                    (t.nav_coord_min.0..=t.nav_coord_max.0).map(move |x| (l, x, z))
+                })
+            })
+            .collect();
+        let goal_of = |flood: &AgentFlood| match nav_index {
             Some(i) => {
                 let t = self.nav_triggers.borrow().get(i).cloned()?;
-                self.agent_nav_trigger_tile(&flood, &t)?
+                self.agent_nav_trigger_tile(flood, &t)
             }
-            None => self.agent_point_tile(&flood, layer, point)?,
+            None => self.agent_point_tile(flood, layer, point),
+        };
+        let mut flood = self.agent_flood(layer, from, &avoid);
+        let goal = match goal_of(&flood) {
+            Some(g) => g,
+            None => {
+                flood = self.agent_flood(layer, from, &Default::default());
+                goal_of(&flood)?
+            }
         };
         let mut tiles = vec![goal];
         let mut at = goal;

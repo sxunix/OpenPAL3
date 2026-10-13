@@ -71,7 +71,6 @@ impl AdventureDirector {
                 sce_vm,
                 camera_rotation: 0.,
                 scripted_camera_seeded: false,
-                layer_switch_triggered: false,
                 agent_bridge: None,
                 player_slide_dir: None,
                 object_walk: None,
@@ -194,7 +193,6 @@ impl AdventureDirector {
                 sce_vm,
                 camera_rotation: 0.,
                 scripted_camera_seeded: false,
-                layer_switch_triggered: false,
                 agent_bridge: None,
                 player_slide_dir: None,
                 object_walk: None,
@@ -694,7 +692,6 @@ struct AdventureDirectorProps {
     /// camera since a script last focused it somewhere. Reset when the
     /// camera goes back to following the player.
     scripted_camera_seeded: bool,
-    layer_switch_triggered: bool,
     /// Agent-server bridge. `None` when the embedded HTTP listener
     /// is not running; `Some(_)` gates pause/step + provides the
     /// synthetic-input overlay backing `/v1/input/*`.
@@ -2339,6 +2336,9 @@ impl AdventureDirectorProps {
     fn run_triggered_proc(&mut self, proc_id: u32) {
         self.sce_vm.call_proc(proc_id);
         self.input_lock = true;
+        // 原版碰出过程时主角站住（类型 0 的 `InterActRole` 里 `Stand()`）。agent 带着走的路也到此为止——
+        // 过程常常当帧就换了场景、跑完了，锁一放开，剩下的路点还是旧场景的坐标。
+        self.agent_walk = None;
     }
 
     fn player_on_object(&mut self, dt: f32) {
@@ -2783,54 +2783,26 @@ impl AdventureDirectorProps {
             }
         }
 
-        let nav_layer_triggered = {
-            let s = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
-            s.test_nav_layer_trigger(nav_layer, &position)
-        };
-        if nav_layer_triggered {
-            if !self.layer_switch_triggered {
-                let layer = {
-                    let e = self
-                        .scene_manager
-                        .get_resolved_role(self.sce_vm.state(), -1)
-                        .unwrap();
-                    let r = RoleController::get_role_controller(e).unwrap();
-                    r.inner::<RoleController>().nav_layer()
-                };
-                let new_layer = (layer + 1) % 2;
-
-                let mut test_coord = position;
-                let mut d = 0.0;
-                for _i in 0..50 {
-                    d = {
-                        let s = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
-                        s.get_distance_to_border_by_scene_coord(new_layer, &test_coord)
-                    };
-                    if d > 0.0 {
-                        break;
+        // 换层（`Role::UpdateLayer(-1)`，`gamebase/role.cpp:243`：键盘操作时每帧）：站进本层的传送口，
+        // 另一层同号传送口里最近那格离得够近、又大致在前面，就换过去。见 [`ScnScene::portal_switch`]。
+        // 先前这里是移植端自己的做法（踩进换层区沿走的方向找另一层能走的格子），宾化仓库后门那种
+        // 只靠传送口连着的地方会走不过去。
+        if !frozen && !locked && self.agent_walk.is_none() {
+            if let Some(role) = self
+                .scene_manager
+                .get_resolved_role(self.sce_vm.state(), -1)
+            {
+                let forward = crate::openpal3::scene::ScnScene::facing_of(&role);
+                let switched = scene_rc
+                    .inner::<crate::openpal3::scene::ScnScene>()
+                    .portal_switch(nav_layer, &position, Some(&forward));
+                if let Some((layer, p)) = switched {
+                    if let Some(rc) = RoleController::get_role_controller(role.clone()) {
+                        rc.inner::<RoleController>().set_nav_layer(layer);
                     }
-
-                    test_coord = Vec3::add(&test_coord, &moving_direction);
-                }
-
-                if d > 0.0 {
-                    let e = self
-                        .scene_manager
-                        .get_resolved_role(self.sce_vm.state(), -1)
-                        .unwrap();
-                    let r = RoleController::get_role_controller(e).unwrap();
-                    r.inner::<RoleController>().switch_nav_layer();
-                    self.scene_manager
-                        .get_resolved_role(self.sce_vm.state(), -1)
-                        .unwrap()
-                        .transform()
-                        .borrow_mut()
-                        .set_position(&test_coord);
-                    self.layer_switch_triggered = true;
+                    role.transform().borrow_mut().set_position(&p);
                 }
             }
-        } else {
-            self.layer_switch_triggered = false;
         }
 
         let agent_interact = std::mem::take(&mut self.agent_interact);
