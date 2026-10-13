@@ -869,3 +869,42 @@ pickups, save points, push boxes, character-skill gates, switches, vines,
 lifts…) have no examine behaviour yet — the original's
 `SceneObj::InterActRole` / `Update` (~2500 lines) is ported only for four
 types. The main story has not been blocked by it so far.
+
+It did block at 31400 (chapter 3, 九顶山 M08). Story proc 1002 sits in
+the part of M08/1b that is only reached through M08/4, and M08/4 only
+through a vine in M08/2 that the block's entry script (1501) shows when
+the switch in M08/3 (object 13) is on. Three things were wrong:
+
+- upstream treated node type 23 (switch) as an "item trigger": examine ran
+  its proc (500, which lowers the vine in M08/3) but never flipped the
+  switch flag that opcode 126 `GetSwitch` reads, so the M08/2 vine never
+  appeared;
+- vines and ladders were usable while their object was inactive (the
+  original selects only active objects), so the hidden M08/2 vine could
+  in fact be climbed — the agent just never tried it;
+- nothing picked an object for the examine key.
+
+Ported now, from the exe (`FUN_00424c20` / `FUN_00426eb0` cases 0xc and
+0x17, `FUN_00420cd0`, `FUN_0042c810`, action 0x13 in `FUN_0042ebe0`):
+object selection for the examine key, the switch (walk over, flip, play
+the 调查 action and the switch model, run its proc, link), the
+character-skill gate (only for the hero named in parameter 0; plays 技能,
+then the gate is cleared and goes inactive), remaining-uses counting with
+the count kept in the save, and object-side `ObjLockInput`. One quirk is
+kept as the exe has it: selection compares the *last* in-view object's
+distance, not the nearest one's, so examining with a farther object
+straight behind the target finds nothing. Not done: the 神树 flower
+master switch, the world-rotating switch (state 11), a switch driving a
+moving platform.
+
+A fourth problem turned up on the way: loading a save never applied the
+saved object state to the scene it was loaded into (only script scene
+changes did), so a lowered bridge, a sunk turtle, a thrown switch or an
+object a script had hidden all came back as built from the `.scn` after
+a load. Loading now restores them before the entry script runs, in the
+same order as a script scene change.
+
+From the pre-switch save the explorer then found the whole route by
+itself — switch in M08/3, vine in M08/2, M08/4, the far side of M08/1b,
+1002 and its boss (at level 36; at 26 the party loses and the boss is a
+game-over one) — and left 九顶山 for 德阳: plot 40300, chapter 4.

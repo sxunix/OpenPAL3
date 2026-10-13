@@ -30,6 +30,8 @@ from pal3_drive import AgentError, Client, Run, boot  # noqa: E402
 STUCK_SECONDS = 90.0      # 脚本在跑但快照什么都不变，超过这么久算卡住（章节字幕 SceCommandCaption 是按时间走的，13 列要三四十秒，进度不在快照里）
 WANDER_LIMIT = 80         # 没东西可试、只好走出去的连续次数上限（渝州城一圈门多，30 次会漏掉没走到的块）
 BACK_OUT_SECONDS = 15.0  # 没对话框、画面不变超过这么久就按 B 往外退
+# 状态静止多久以后才开始按键推界面（见 `settle`）。
+POKE_DELAY = 1.5
 CHOICE_TURNS: dict[tuple, int] = {}   # 每个选单（按选项文字）已经选过几次
 SETTLE_LIMIT = 240.0      # 一次收尾最多等多久
 
@@ -90,8 +92,8 @@ def settle(c: Client, issues: list, label: str) -> dict:
             issues.append({"kind": "battle_lost", "at": label})
         if not s.get("script_running"):
             return {"lines": lines, "battles": battles, "seconds": round(time.time() - t0, 1)}
-        if s.get("current_script_fn") == "<agent walk>":
-            pass  # 引擎带着主角在走（fire_trigger），别按键
+        if s.get("current_script_fn") in ("<agent walk>", "<object>"):
+            pass  # 引擎带着主角在走（fire_trigger）、或者场景物件在动（拨开关），别按键
         elif s.get("movie_playing"):
             c.key("Escape")
         elif dlg.get("open"):
@@ -119,6 +121,11 @@ def settle(c: Client, issues: list, label: str) -> dict:
             # 是确定（`GamePadEast`），imgui 里是 `GamepadFaceDown`，两边都认；空格
             # 鉴定的询问框不认。隔一下夹个十字键左：鉴定页得先选一边，A 才确定得了。
             # 15 秒没动静多半是商店、当铺这类等玩家自己退出的界面，改按 B（取消）。
+            # 刚变过（换场景那一下也是「脚本在跑、没对话框」）先别按：落脚点旁边要是有藤梯 / 门，
+            # 这一按就又调查出去了（九顶山 1a→1b 落在回 1a 的藤旁边，被按回去过）。
+            if time.time() - last_change < POKE_DELAY:
+                time.sleep(0.3)
+                continue
             pokes += 1
             if time.time() - last_change > BACK_OUT_SECONDS:
                 c.key("GamePadSouth")
@@ -162,14 +169,15 @@ def far(name: str) -> float:
 
 
 def candidates(c: Client) -> tuple[list[str], list[str]]:
-    """当前场景里从主角现在的位置**走得到**的触发点：(人物 + 物件 + 拾取点, 导航格)。
+    """当前场景里从主角现在的位置**走得到**的触发点：(人物 + 物件 + 拾取点 + 机关, 导航格)。
 
     「走得到」问引擎（`script_eval reachable`：走路、梯子 / 藤、换层区、迷宫里的跳，含物件挡路，
     不出这个块）。触发点是传送过去触发的，不筛的话会穿过机关、跳过要跳的沟，看不出机关挡路。"""
     roles = [r for r in c.roles()
              if r.get("visible") and r.get("talk_function") and r["name"].startswith("role:")]
     trig = c.triggers()
-    touch = [t for t in trig if t["shape"] in ("aabb", "item", "ladder")]
+    # obj：调查键才动的场景物件（特技机关、开关）。
+    touch = [t for t in trig if t["shape"] in ("aabb", "item", "ladder", "obj")]
     # 不挂过程的走格触发（跳跃区之类）走过去什么也不发生，不算。
     nav = [t["name"] for t in trig if t["shape"] == "nav" and str(t.get("function")) not in ("", "0")]
     points = [r["position"] for r in roles] + [t["center"] for t in touch]
@@ -260,13 +268,15 @@ def main() -> int:
         else:
             # 这里在当前剧情状态下全试过了：走出去换个地方找，挑走得最少的出口。
             # 连续 WANDER_LIMIT 次都这样才算真的走不下去。
+            # 出口除了走格门，还有挂过程的藤梯（九顶山 1a / 1b 之间只有藤梯）。
+            exits = navs + [a for a in acts if a.startswith("ladder:")]
             wander += 1
-            if wander > WANDER_LIMIT or not navs:
+            if wander > WANDER_LIMIT or not exits:
                 issues.append({"kind": "dead_end", "scene": key[0], "block": key[1],
                                "tried": sorted(done), **LAST_UNREACHABLE})
                 run.mark(f"dead_end_{key[0]}_{key[1]}", shot=True)
                 break
-            name = min(navs, key=lambda n: (n_of(n), -far(n)))
+            name = min(exits, key=lambda n: (n_of(n), -far(n)))
         count[(key[0], key[1], name)] = n_of(name) + 1
         try:
             c.fire(name)
@@ -274,9 +284,11 @@ def main() -> int:
             if e.status == 409 and "script is running" in e.message:
                 # 上一步的过场还没完（卡住判定先到了），接着推完再挑。
                 done.discard(name)
+                print(f"  [{step}] {key[0]}/{key[1]} {name} → 还在忙，等一下", flush=True)
                 settle(c, issues, f"{key[0]}/{key[1]} (等过场)")
                 continue
             issues.append({"kind": "fire_error", "trigger": name, "detail": str(e)})
+            print(f"  [{step}] {key[0]}/{key[1]} {name} → 触发不了：{e}", flush=True)
             continue
         time.sleep(0.6)
         result = settle(c, issues, f"{key[0]}/{key[1]} {name}")
