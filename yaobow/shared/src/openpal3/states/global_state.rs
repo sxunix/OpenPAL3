@@ -163,7 +163,11 @@ impl GlobalState {
     }
 
     pub fn set_role_controlled(&mut self, role_controlled: i32) {
-        self.role_controlled = role_controlled
+        self.role_controlled = role_controlled;
+        // 存档时一并存下（见 `PersistentState::controlled_role`）。
+        self.persistent_state
+            .borrow_mut()
+            .set_controlled_role(role_controlled);
     }
 
     pub fn play_bgm(&mut self, name: &str) {
@@ -249,6 +253,11 @@ impl GlobalState {
 
     pub fn persistent_state(&self) -> Ref<'_, PersistentState> {
         self.persistent_state.borrow()
+    }
+
+    /// 存档那份状态本身（存档前补字段时只拿得到 `&GlobalState`）。
+    pub fn persistent_state_shared(&self) -> &RefCell<PersistentState> {
+        &self.persistent_state
     }
 
     pub fn persistent_state_mut(&mut self) -> RefMut<'_, PersistentState> {

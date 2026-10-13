@@ -165,7 +165,7 @@ pub use quake::SceCommandQuake;
 pub use rnd::SceCommandRnd;
 pub use role_act_auto_stand::SceCommandRoleActAutoStand;
 pub use role_active::SceCommandRoleActive;
-pub use role_ctrl::SceCommandRoleCtrl;
+pub use role_ctrl::{SceCommandRoleCtrl, set_ctrl};
 pub use role_emote::SceCommandRoleEmote;
 pub use role_end_action::SceCommandRoleEndAction;
 pub use role_face_role::SceCommandRoleFaceRole;

@@ -563,10 +563,11 @@ impl ScnScene {
     ) -> Option<(usize, i32, i32)> {
         use super::nav_path::FieldNav as _;
         // 物件压着自己周围的格子（宝箱、开关的包围盒再外扩一格半），点本身常常走不上去：
-        // 6 格以内取最近的走得到的格子。
+        // 12 格以内取最近的走得到的格子（蜀山故道龙葵的特技机关模型大，中心离能站的地方七八格；
+        // 原版选物件时距离要减去模型半径，站得远也选得中）。
         let (gx, gz) = FieldNavView { scene: self, layer }.tile_of(p);
-        (-6..=6)
-            .flat_map(|dz| (-6..=6).map(move |dx| (gx + dx, gz + dz)))
+        (-12..=12)
+            .flat_map(|dz| (-12..=12).map(move |dx| (gx + dx, gz + dz)))
             .filter(|&(x, z)| flood.reached(layer, x, z))
             .min_by_key(|&(x, z)| (x - gx) * (x - gx) + (z - gz) * (z - gz))
             .map(|(x, z)| (layer, x, z))

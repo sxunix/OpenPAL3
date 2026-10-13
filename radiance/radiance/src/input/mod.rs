@@ -104,6 +104,10 @@ pub enum Key {
     GamePadDPadDown,
     GamePadDPadLeft,
     GamePadDPadRight,
+    /// 放在最后（`Unknown` 前），不挪动前面各键的编号——p7 脚本是按编号取键的。
+    Tab,
+    /// 手柄左肩键（Switch 的 L、Xbox 的 LB）。
+    GamePadLeftShoulder,
     Unknown,
 }
 
@@ -169,6 +173,8 @@ impl Key {
             "gamepaddpaddown" => Self::GamePadDPadDown,
             "gamepaddpadleft" => Self::GamePadDPadLeft,
             "gamepaddpadright" => Self::GamePadDPadRight,
+            "tab" => Self::Tab,
+            "gamepadleftshoulder" => Self::GamePadLeftShoulder,
             _ => return None,
         })
     }

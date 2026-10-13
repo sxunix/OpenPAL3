@@ -23,31 +23,7 @@ impl SceCommand for SceCommandRoleCtrl {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
-        let old = state.global_state().role_controlled();
-        let new = self.role_id;
-        if old != new {
-            if let Some(scn) = scene_manager.scn_scene() {
-                let scn = scn.inner::<ScnScene>();
-                if let (Some(o), Some(n)) = (scn.get_role_entity(old), scn.get_role_entity(new)) {
-                    let transform = o.transform().borrow().matrix().clone();
-                    n.transform().borrow_mut().set_matrix(transform);
-                    let layer = RoleController::get_role_controller(o.clone())
-                        .map(|rc| rc.inner::<RoleController>().nav_layer());
-                    if let Some(rc) = RoleController::get_role_controller(o) {
-                        rc.inner::<RoleController>().set_active(false);
-                    }
-                    if let Some(rc) = RoleController::get_role_controller(n) {
-                        let rc = rc.inner::<RoleController>();
-                        if let Some(layer) = layer {
-                            rc.set_nav_layer(layer);
-                        }
-                        rc.set_active(true);
-                        rc.idle();
-                    }
-                }
-            }
-        }
-        state.global_state_mut().set_role_controlled(new);
+        set_ctrl(&scene_manager, state, self.role_id);
         true
     }
 }
@@ -56,4 +32,56 @@ impl SceCommandRoleCtrl {
     pub fn new(role_id: i32) -> Self {
         Self { role_id }
     }
+}
+
+/// `PlayerMgr::SetCtrl(new, true)`（`FUN_0040e5f0`）：新主角接过旧主角的位置、朝向、所在层，旧的不在场、
+/// 新的在场并站好，再换成新主角受控。换成龙葵时她的模型一律换回 `"105"`（蓝，人形）。
+/// [未做] `SceneMgr::m_fHurtTime = 10`、头像框、中毒状态的画面提示。
+pub fn set_ctrl(scene_manager: &ComRc<ISceneManager>, state: &mut SceState, new: i32) {
+    let old = state.global_state().role_controlled();
+    if old != new {
+        if let Some(scn) = scene_manager.scn_scene() {
+            let scn = scn.inner::<ScnScene>();
+            if let (Some(o), Some(n)) = (scn.get_role_entity(old), scn.get_role_entity(new)) {
+                let transform = o.transform().borrow().matrix().clone();
+                n.transform().borrow_mut().set_matrix(transform);
+                let layer = RoleController::get_role_controller(o.clone())
+                    .map(|rc| rc.inner::<RoleController>().nav_layer());
+                if let Some(rc) = RoleController::get_role_controller(o) {
+                    rc.inner::<RoleController>().set_active(false);
+                }
+                if let Some(rc) = RoleController::get_role_controller(n) {
+                    let rc = rc.inner::<RoleController>();
+                    if let Some(layer) = layer {
+                        rc.set_nav_layer(layer);
+                    }
+                    rc.set_active(true);
+                    rc.idle();
+                }
+            }
+        }
+    }
+    if new == super::story_flags::LONGKUI_ROLE_ID {
+        if let Some(scn) = scene_manager.scn_scene() {
+            let scn = scn.inner::<ScnScene>();
+            if let Some(rc) = scn
+                .get_role_entity(new)
+                .and_then(RoleController::get_role_controller)
+            {
+                let rc = rc.inner::<RoleController>();
+                if !rc
+                    .model_name()
+                    .eq_ignore_ascii_case(super::story_flags::LONGKUI_MODEL_BLUE)
+                {
+                    rc.set_model_name(super::story_flags::LONGKUI_MODEL_BLUE);
+                }
+            }
+        }
+        // 原版是把角色记录里的模型名写成 "105"，存档、换场景都跟着它；移植端的对应物是龙葵形象标志。
+        state
+            .global_state_mut()
+            .persistent_state_mut()
+            .set_longkui_mode(0);
+    }
+    state.global_state_mut().set_role_controlled(new);
 }

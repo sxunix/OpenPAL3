@@ -12,6 +12,7 @@ const NPAD_A: u64 = 1 << 0;
 const NPAD_B: u64 = 1 << 1;
 const NPAD_X: u64 = 1 << 2;
 const NPAD_Y: u64 = 1 << 3;
+const NPAD_L: u64 = 1 << 6;
 const NPAD_LEFT: u64 = 1 << 12;
 const NPAD_UP: u64 = 1 << 13;
 const NPAD_RIGHT: u64 = 1 << 14;
@@ -105,6 +106,7 @@ impl SwitchGamepadInput {
         set_key_state(states, Key::GamePadDPadDown, buttons & NPAD_DOWN != 0);
         set_key_state(states, Key::GamePadDPadLeft, buttons & NPAD_LEFT != 0);
         set_key_state(states, Key::GamePadDPadRight, buttons & NPAD_RIGHT != 0);
+        set_key_state(states, Key::GamePadLeftShoulder, buttons & NPAD_L != 0);
 
         let left = self.pad.sticks[0];
         let right = self.pad.sticks[1];

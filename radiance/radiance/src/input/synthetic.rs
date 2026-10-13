@@ -122,6 +122,8 @@ impl SyntheticInputBridge {
             Key::GamePadDPadDown => I::GamepadDpadDown,
             Key::GamePadDPadLeft => I::GamepadDpadLeft,
             Key::GamePadDPadRight => I::GamepadDpadRight,
+            Key::Tab => I::Tab,
+            Key::GamePadLeftShoulder => I::GamepadL1,
             Key::Unknown => return None,
         })
     }

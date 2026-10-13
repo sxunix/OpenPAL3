@@ -1130,6 +1130,7 @@ fn handle_save_slot(ctx: &Pal3DispatchCtx, params: SlotParams) -> AgentResponse 
             params.slot
         )));
     }
+    director.record_for_save();
     director
         .sce_vm()
         .global_state()

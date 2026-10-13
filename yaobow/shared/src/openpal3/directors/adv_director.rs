@@ -149,16 +149,29 @@ impl AdventureDirector {
             Rc::new(RefCell::new(p_state)),
         );
 
-        // The role id should be saved in persistant state
-        let role_entity = scene_manager
-            .scn_scene()
-            .unwrap()
-            .inner::<crate::openpal3::scene::ScnScene>()
-            .get_role_entity(0)
+        // 读档时由存档里记的那个主角受控（`SetCtrl(loc.underctrl, false)`，`Archive.cpp:278`）：
+        // 它站到存档位置上、在场，景天（建场景时默认在场的那个）换下。
+        let controlled = global_state.persistent_state().controlled_role();
+        let scn = scene_manager.scn_scene().unwrap();
+        let scn = scn.inner::<crate::openpal3::scene::ScnScene>();
+        let role_entity = scn
+            .get_role_entity(controlled)
+            .or_else(|| scn.get_role_entity(0))
             .unwrap();
+        if controlled != 0 {
+            if let Some(rc) = scn
+                .get_role_entity(0)
+                .and_then(RoleController::get_role_controller)
+            {
+                rc.inner::<RoleController>().set_active(false);
+            }
+        }
+        global_state.set_role_controlled(controlled);
 
         let role = RoleController::get_role_controller(role_entity.clone()).unwrap();
         role.inner::<RoleController>().set_active(true);
+        let layer = global_state.persistent_state().player_layer() as usize;
+        role.inner::<RoleController>().set_nav_layer(layer);
         role_entity
             .transform()
             .borrow_mut()
@@ -651,6 +664,11 @@ impl AdventureDirector {
     }
 
     /// 调试用：agent 带着主角走的路还没走完。
+    /// 存档前补上存档里要有的东西（见 `AdventureDirectorProps::record_for_save`）。
+    pub fn record_for_save(&self) {
+        self.props.borrow().record_for_save();
+    }
+
     pub fn agent_walking(&self) -> bool {
         let p = self.props.borrow();
         p.agent_walk.is_some() || p.agent_walk_goal.is_some()
@@ -1948,10 +1966,27 @@ impl AdventureDirectorProps {
             save_slot
         };
 
+        if save_slot > 0 {
+            self.record_for_save();
+        }
         self.sce_vm
             .global_state()
             .persistent_state()
             .save(save_slot);
+    }
+
+    /// 存档前把存档里要有、平时不随时写进去的东西补上：主角所在层。
+    fn record_for_save(&self) {
+        let layer = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)
+            .and_then(RoleController::get_role_controller)
+            .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
+        self.sce_vm
+            .global_state()
+            .persistent_state_shared()
+            .borrow_mut()
+            .set_player_layer(layer as u8);
     }
 
     /// 山洞之狼（SCE 112）。原版把它做成主循环的游戏状态 7
@@ -2306,6 +2341,55 @@ impl AdventureDirectorProps {
         let clip = |i: usize| (0..4).map(|k| r[i][k] * head[k]).sum::<f32>();
         let w = clip(3);
         (w > 1e-4).then(|| [clip(0) / w, clip(1) / w])
+    }
+
+    /// 切换主角（见调用处）。
+    fn update_role_switch(&mut self) {
+        let pressed = {
+            let input = self.input_engine.borrow();
+            input.get_key_state(Key::Tab).pressed()
+                || input.get_key_state(Key::GamePadLeftShoulder).pressed()
+        };
+        if !pressed {
+            return;
+        }
+        let maze = self
+            .scene_manager
+            .scn_scene()
+            .is_some_and(|s| s.inner::<crate::openpal3::scene::ScnScene>().scene_type() == 2);
+        if !maze {
+            return;
+        }
+        let acting = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)
+            .and_then(RoleController::get_role_controller)
+            .is_some_and(|rc| {
+                rc.inner::<RoleController>().state()
+                    == crate::openpal3::scene::RoleState::PlayingAnimation
+            });
+        if acting {
+            return;
+        }
+        let cur = self.sce_vm.global_state().role_controlled();
+        let p = self.sce_vm.global_state().persistent_state();
+        let mut i = cur + 1;
+        if i > 4 {
+            i = 0;
+        }
+        while !p.is_in_team(i as u32) {
+            i += 1;
+            if i > 4 {
+                i = 0;
+            }
+            if i == cur {
+                break;
+            }
+        }
+        drop(p);
+        log::debug!("切换主角：{cur} -> {i}");
+        let scene_manager = self.scene_manager.clone();
+        crate::scripting::sce::commands::set_ctrl(&scene_manager, self.sce_vm.state_mut(), i);
     }
 
     /// [移植] 蓄力跳：站在跳跃区上按住 J / 手柄 Y（北）蓄力，松手起跳，按多久对应跳多远
@@ -2840,6 +2924,12 @@ impl AdventureDirectorProps {
             self.step_player_jump(delta_sec);
         } else if !frozen && !locked {
             self.update_jump_charge(delta_sec);
+        }
+        // 切换主角（`RoleCtrl::Update`，exe 0x4…：`FUN_0040e5f0` 前那段）：迷宫里（场景类型 2）、按下切换键、
+        // 没有登记着的锁、不在组队动画里、主角没在做动作时，从下一个编号起找第一个在队里的主角接手。
+        // 键盘是原版的 Tab；[移植] 手柄原版没有，用左肩键（十字键在冒险里管走路）。
+        if !frozen && !locked && self.player_jump.is_none() {
+            self.update_role_switch();
         }
         // 蓄力时主角站着不动（原版瞄落点的时候也不走），但头上的图标照出。
         let frozen = frozen || self.player_jump.is_some() || self.jump_charge.is_some();

@@ -100,6 +100,7 @@ fn map_keycode(code: KeyCode) -> Key {
         KeyCode::KeyZ => Key::Z,
         KeyCode::Backquote => Key::Tilde,
         KeyCode::Escape => Key::Escape,
+        KeyCode::Tab => Key::Tab,
         KeyCode::ArrowUp => Key::Up,
         KeyCode::ArrowDown => Key::Down,
         KeyCode::ArrowLeft => Key::Left,

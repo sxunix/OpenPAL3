@@ -197,6 +197,14 @@ pub struct PersistentState {
     /// rebuilds ROLE_2 from the default table.
     #[serde(default)]
     longkui_mode: i32,
+    /// 正操作的主角（`PlayerMgr::m_underctrl`）。原版存进存档、读档时 `SetCtrl(loc.underctrl, false)`
+    /// （`Archive.cpp:278`）：迷宫里切成龙葵存的档，读回来还是龙葵。
+    #[serde(default)]
+    controlled_role: i32,
+    /// 主角在第几层（`Role::m_onlayer`）。原版的存档位置带着层；不记的话读档后主角落在 0 层，
+    /// 站在 1 层地面上的位置（蜀山故道入口）一格也走不动。存档时由冒险导演填（`record_for_save`）。
+    #[serde(default)]
+    player_layer: u8,
     /// 花盈's behaviour — opcode 88: 0 隐藏, 1 跟随雪见, 2 单飞. The original
     /// keeps it in `DAT_00c10ccc` and writes it to the save file.
     #[serde(default)]
@@ -353,6 +361,8 @@ impl PersistentState {
             seen_monsters: BTreeSet::new(),
             features: BTreeSet::new(),
             longkui_mode: 0,
+            controlled_role: 0,
+            player_layer: 0,
             huaying_mode: 0,
             compose_recipes: BTreeSet::new(),
             cave_wolf_wins: 0,
@@ -591,6 +601,22 @@ impl PersistentState {
 
     pub fn record_cave_wolf_win(&mut self) {
         self.cave_wolf_wins += 1;
+    }
+
+    pub fn player_layer(&self) -> u8 {
+        self.player_layer
+    }
+
+    pub fn set_player_layer(&mut self, layer: u8) {
+        self.player_layer = layer;
+    }
+
+    pub fn controlled_role(&self) -> i32 {
+        self.controlled_role
+    }
+
+    pub fn set_controlled_role(&mut self, role: i32) {
+        self.controlled_role = role;
     }
 
     pub fn longkui_mode(&self) -> i32 {
