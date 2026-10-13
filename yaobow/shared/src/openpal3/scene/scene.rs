@@ -250,7 +250,252 @@ impl ScnScene {
     /// 触发格登记在哪一层：层号超出这个场景的层数就当 0（`FUN_0041fa90`，同挡路表）。
     fn nav_trigger_layer(&self, t: &SceNavTrigger) -> usize {
         let layer = t.layer as usize;
-        if layer < self.nav.layer_count() { layer } else { 0 }
+        if layer < self.nav.layer_count() {
+            layer
+        } else {
+            0
+        }
+    }
+
+    /// 调试用：从 `layer` 层 `from` 那格泛洪，边和主角能走的一样——8 邻格（能不能走按
+    /// [`Self::tile_walkable`]，含场景物件挡路）、梯子 / 藤（移植端的 `test_ladder`：站在一头附近按
+    /// 调查键就到另一头，`switch_layer` 时另一头在另一层）、导航文件里的换层区
+    /// （`test_nav_layer_trigger`）、战斗关里站在跳跃区上的跳（`jump_target` 那条格子直线）。
+    /// 不出这个块。探路工具靠它判断触发点走不走得到、按它给的路一格一格走过去。
+    fn agent_flood(&self, layer: usize, from: &Vec3) -> AgentFlood {
+        use super::nav_path::FieldNav as _;
+        let layers = self.nav.layer_count().max(1);
+        let sizes: Vec<(i32, i32)> = (0..layers)
+            .map(|l| {
+                let (w, h) = self.nav.get_map_size(l);
+                (w as i32, h as i32)
+            })
+            .collect();
+        let mut flood = AgentFlood {
+            parent: sizes
+                .iter()
+                .map(|(w, h)| vec![None; (w * h).max(0) as usize])
+                .collect(),
+            sizes,
+            start: (layer, 0, 0),
+            tiles: 0,
+            blockers: std::collections::BTreeSet::new(),
+        };
+        let mut start = FieldNavView { scene: self, layer }.tile_of(from);
+        // 起点那格走不了（传送到人物旁边常落在墙里）就从最近的能走的格子起。
+        if !self.tile_walkable(layer, start.0, start.1) {
+            if let Some(p) = (1..=6).find_map(|r: i32| {
+                (-r..=r)
+                    .flat_map(|dz| (-r..=r).map(move |dx| (dx, dz)))
+                    .filter(|(dx, dz)| dx.abs() == r || dz.abs() == r)
+                    .map(|(dx, dz)| (start.0 + dx, start.1 + dz))
+                    .find(|&(x, z)| self.tile_walkable(layer, x, z))
+            }) {
+                start = p;
+            }
+        }
+        flood.start = (layer, start.0, start.1);
+        if !flood.inside(layer, start.0, start.1) {
+            return flood;
+        }
+        let mut queue = std::collections::VecDeque::new();
+        let k0 = flood.key(layer, start.0, start.1);
+        flood.parent[layer][k0] = Some((layer, start.0, start.1, false));
+        queue.push_back((layer, start.0, start.1));
+        let ladders: Vec<((i32, i32), (i32, i32), bool)> = self
+            .ladder_triggers
+            .borrow()
+            .iter()
+            .map(|l| (l.nav_coord1, l.nav_coord2, l.switch_layer))
+            .collect();
+        let layer_zone = |l: usize, x: i32, z: i32| -> bool {
+            self.nav.nav_file.maps[self.nav_layer(l)]
+                .layer_triggers
+                .as_ref()
+                .is_some_and(|ts| {
+                    ts.iter().any(|t| {
+                        Self::test_coord_in_bound((x, z), (t.nav_coord_min, t.nav_coord_max))
+                    })
+                })
+        };
+        let maze = self.scene_type() == 2;
+        while let Some((l, x, z)) = queue.pop_front() {
+            flood.tiles += 1;
+            // (层, x, z, 是不是一跳 / 一爬过去的)
+            let mut next: Vec<(usize, i32, i32, bool)> = vec![];
+            for (dx, dz) in [
+                (1, 0),
+                (-1, 0),
+                (0, 1),
+                (0, -1),
+                (1, 1),
+                (1, -1),
+                (-1, 1),
+                (-1, -1),
+            ] {
+                next.push((l, x + dx, z + dz, false));
+            }
+            for &(a, b, switch) in &ladders {
+                let other = if switch { (l + 1) % 2 } else { l };
+                for (here, there) in [(a, b), (b, a)] {
+                    if (x - here.0).abs() <= 1 && (z - here.1).abs() <= 1 {
+                        next.push((other, there.0, there.1, true));
+                    }
+                }
+            }
+            if layers > 1 && layer_zone(l, x, z) {
+                next.push(((l + 1) % 2, x, z, true));
+            }
+            if maze && matches!(self.tile_object(l, x, z), Some((_, 0x2c | 0x26))) {
+                let (bx, bz) = self.nav_block_size(l);
+                let rx = (super::player_jump::MAX_DIST / bx).ceil() as i32;
+                let rz = (super::player_jump::MAX_DIST / bz).ceil() as i32;
+                for tz in z - rz..=z + rz {
+                    for tx in x - rx..=x + rx {
+                        let (wx, wz) = ((tx - x) as f32 * bx, (tz - z) as f32 * bz);
+                        if wx * wx + wz * wz > super::player_jump::MAX_DIST.powi(2) {
+                            continue;
+                        }
+                        let (ok, last) = super::player_jump::line(
+                            (x, z),
+                            (tx, tz),
+                            |a, b| self.jump_passable(l, a, b),
+                            |a, b| self.tile_walkable(l, a, b),
+                        );
+                        let land = if ok { (tx, tz) } else { last };
+                        next.push((l, land.0, land.1, true));
+                    }
+                }
+            }
+            for (nl, nx, nz, hop) in next {
+                if !flood.inside(nl, nx, nz) {
+                    continue;
+                }
+                let k = flood.key(nl, nx, nz);
+                if flood.parent[nl][k].is_some() {
+                    continue;
+                }
+                if !self.tile_walkable(nl, nx, nz) {
+                    let base = self
+                        .nav
+                        .get(nl, nx, nz)
+                        .is_some_and(|t| (t.distance_to_border & 0xff) > 1);
+                    if base {
+                        if let Some(o) = self
+                            .object_blocking
+                            .borrow()
+                            .as_ref()
+                            .and_then(|b| b.owner(self.nav.layer(nl), nx, nz))
+                        {
+                            flood.blockers.insert(o);
+                        }
+                    }
+                    continue;
+                }
+                flood.parent[nl][k] = Some((l, x, z, hop));
+                queue.push_back((nl, nx, nz));
+            }
+        }
+        flood
+    }
+
+    /// 走格触发点框里有没有一格连通，有就给那一格。
+    fn agent_nav_trigger_tile(
+        &self,
+        flood: &AgentFlood,
+        t: &SceNavTrigger,
+    ) -> Option<(usize, i32, i32)> {
+        let l = self.nav_trigger_layer(t);
+        (t.nav_coord_min.1..=t.nav_coord_max.1)
+            .flat_map(|z| (t.nav_coord_min.0..=t.nav_coord_max.0).map(move |x| (x, z)))
+            .find(|&(x, z)| flood.reached(l, x, z))
+            .map(|(x, z)| (l, x, z))
+    }
+
+    /// 一点（同层）挨着连通区的那一格：人物、物件站的那格自己常不能走。
+    fn agent_point_tile(
+        &self,
+        flood: &AgentFlood,
+        layer: usize,
+        p: &Vec3,
+    ) -> Option<(usize, i32, i32)> {
+        use super::nav_path::FieldNav as _;
+        let (gx, gz) = FieldNavView { scene: self, layer }.tile_of(p);
+        (-1..=1)
+            .flat_map(|dz| (-1..=1).map(move |dx| (gx + dx, gz + dz)))
+            .find(|&(x, z)| flood.reached(layer, x, z))
+            .map(|(x, z)| (layer, x, z))
+    }
+
+    /// 返回（每个点到得了没有，连通的格子数，到得了的走格触发点名字，挡在连通区边上的物件——格子本身
+    /// 能走、被物件压住——按 `.scn` 序号）。见 [`Self::agent_flood`]。
+    pub fn agent_reachable(
+        &self,
+        layer: usize,
+        from: &Vec3,
+        to: &[Vec3],
+    ) -> (Vec<bool>, usize, Vec<String>, Vec<usize>) {
+        let flood = self.agent_flood(layer, from);
+        let names = self
+            .agent_triggers()
+            .into_iter()
+            .zip(
+                self.nav_triggers
+                    .borrow()
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>(),
+            )
+            .filter(|(_, t)| self.agent_nav_trigger_tile(&flood, t).is_some())
+            .map(|(a, _)| format!("{}:{}:t{}l{}", a.kind, a.index, a.node_type, a.layer))
+            .collect();
+        let found = to
+            .iter()
+            .map(|p| self.agent_point_tile(&flood, layer, p).is_some())
+            .collect();
+        (
+            found,
+            flood.tiles,
+            names,
+            flood.blockers.iter().copied().collect(),
+        )
+    }
+
+    /// 从 `from` 走到第 `nav_index` 个走格触发点（`nav_index` 为 `None` 时走到 `point` 旁边）的路：
+    /// 一串（层, 落脚点），落脚点是格子中心、高度取连物件的地面。到不了是 `None`。
+    pub fn agent_path(
+        &self,
+        layer: usize,
+        from: &Vec3,
+        nav_index: Option<usize>,
+        point: &Vec3,
+    ) -> Option<Vec<(usize, Vec3)>> {
+        let flood = self.agent_flood(layer, from);
+        let goal = match nav_index {
+            Some(i) => {
+                let t = self.nav_triggers.borrow().get(i).cloned()?;
+                self.agent_nav_trigger_tile(&flood, &t)?
+            }
+            None => self.agent_point_tile(&flood, layer, point)?,
+        };
+        let mut tiles = vec![goal];
+        let mut at = goal;
+        while at != flood.start {
+            let k = flood.key(at.0, at.1, at.2);
+            let (pl, px, pz, _) = flood.parent[at.0][k]?;
+            at = (pl, px, pz);
+            tiles.push(at);
+        }
+        tiles.reverse();
+        Some(
+            tiles
+                .into_iter()
+                .map(|(l, x, z)| {
+                    let (c, floor) = self.tile_point(l, x, z);
+                    (l, Vec3::new(c.x, floor, c.z))
+                })
+                .collect(),
+        )
     }
 
     pub fn agent_triggers(&self) -> Vec<AgentTrigger> {
@@ -1330,25 +1575,7 @@ impl ScnScene {
         let mut t = clamp_aim(from, aim);
         t.y = self.floor_height(layer, &t);
         let nav = FieldNavView { scene: self, layer };
-        let (w, h) = self.nav.size(layer);
-        let passable = |x: i32, z: i32| {
-            if x < 0 || z < 0 || x >= w as i32 || z >= h as i32 {
-                return false;
-            }
-            let owner_kind = self
-                .object_blocking
-                .borrow()
-                .as_ref()
-                .and_then(|b| b.owner(layer, x, z).and_then(|i| b.kind(i)));
-            if owner_kind == Some(0x2c) {
-                return true;
-            }
-            let raw = self
-                .nav
-                .get(layer, x, z)
-                .map_or(0, |p| p.distance_to_border);
-            (raw & 0xff) > 1 || (raw >> 8) & 0xff == 1
-        };
+        let passable = |x: i32, z: i32| self.jump_passable(layer, x, z);
         let walkable = |x: i32, z: i32| self.tile_walkable(layer, x, z);
         let (ok, (lx, lz)) = line(nav.tile_of(from), nav.tile_of(&t), passable, walkable);
         if !ok {
@@ -1356,6 +1583,28 @@ impl ScnScene {
             t = Vec3::new(c.x, floor, c.z);
         }
         t
+    }
+
+    /// `FUN_004214b0`：跳的格子直线上这一格过得去——在界内，且是跳跃区、能走（记录 +4 字节 > 1）或
+    /// 地面类型 1（缺口）。
+    fn jump_passable(&self, layer: usize, x: i32, z: i32) -> bool {
+        let (w, h) = self.nav.size(layer);
+        if x < 0 || z < 0 || x >= w as i32 || z >= h as i32 {
+            return false;
+        }
+        let owner_kind = self
+            .object_blocking
+            .borrow()
+            .as_ref()
+            .and_then(|b| b.owner(layer, x, z).and_then(|i| b.kind(i)));
+        if owner_kind == Some(0x2c) {
+            return true;
+        }
+        let raw = self
+            .nav
+            .get(layer, x, z)
+            .map_or(0, |p| p.distance_to_border);
+        (raw & 0xff) > 1 || (raw >> 8) & 0xff == 1
     }
 
     /// 跳下来落地（`FUN_00420b40(主角, dt, 1)`）：脚下那格是在场的神树传送点就发事件 3（带「上一帧也在它上面」），
@@ -2055,6 +2304,30 @@ pub struct AgentRole {
     pub combat: bool,
 }
 
+/// [`ScnScene::agent_flood`] 的结果：每层每格从哪一格过来（起点指向自己），没到过是 `None`。
+struct AgentFlood {
+    sizes: Vec<(i32, i32)>,
+    parent: Vec<Vec<Option<(usize, i32, i32, bool)>>>,
+    start: (usize, i32, i32),
+    tiles: usize,
+    blockers: std::collections::BTreeSet<usize>,
+}
+
+impl AgentFlood {
+    fn inside(&self, l: usize, x: i32, z: i32) -> bool {
+        l < self.sizes.len() && x >= 0 && z >= 0 && x < self.sizes[l].0 && z < self.sizes[l].1
+    }
+
+    fn key(&self, l: usize, x: i32, z: i32) -> usize {
+        (z * self.sizes[l].0 + x) as usize
+    }
+
+    fn reached(&self, l: usize, x: i32, z: i32) -> bool {
+        self.inside(l, x, z) && self.parent[l][self.key(l, x, z)].is_some()
+    }
+}
+
+#[derive(Clone)]
 pub struct SceNavTrigger {
     nav_coord_min: (i32, i32),
     nav_coord_max: (i32, i32),

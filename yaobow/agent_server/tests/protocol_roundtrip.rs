@@ -76,6 +76,7 @@ fn every_command_roundtrips() {
             wait_until_idle: false,
             collect_trace: false,
             timeout_ms: None,
+            teleport: false,
         }),
         AgentCommand::InteractObject(NameParams {
             name: "npc_lingsha".into(),

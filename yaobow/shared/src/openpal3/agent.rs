@@ -131,7 +131,7 @@ pub fn dispatch_pal3_command(ctx: &Pal3DispatchCtx, command: AgentCommand) -> Ag
         )),
         C::GetSceneTriggers => handle_scene_triggers(ctx),
         C::GetSceneObjects => handle_scene_objects(ctx),
-        C::FireSceneTrigger(p) => handle_fire_trigger(ctx, &p.name),
+        C::FireSceneTrigger(p) => handle_fire_trigger(ctx, &p.name, p.teleport),
         C::InteractObject(_) => AgentResponse::err(AgentError::not_implemented(
             "PAL3 has no GOB Examine handler analog",
         )),
@@ -191,8 +191,13 @@ pub fn build_snapshot(ctx: &Pal3DispatchCtx) -> StateSnapshot {
     let script_running = !global.adv_input_enabled()
         || sce_vm.state().context().is_running()
         || sce_vm.has_active_commands();
-    snap.script_running = script_running;
     snap.current_script_fn = sce_vm.state().context().current_proc_name();
+    // agent 带着主角走（fire_trigger）的时候也算忙，免得驱动脚本以为停下了接着按键。
+    let walking = director.agent_walking();
+    if walking && snap.current_script_fn.is_none() {
+        snap.current_script_fn = Some("<agent walk>".to_string());
+    }
+    snap.script_running = script_running || walking;
 
     // The dialog box itself lives in a p7 renderer that cannot be read
     // back, so the dialog commands mirror what they are showing onto
@@ -488,7 +493,7 @@ fn handle_scene_objects(ctx: &Pal3DispatchCtx) -> AgentResponse {
 /// 「新进入」就调 proc），物件 / 拾取点 / 人物传送过去再按一下调查键——触发
 /// 条件、去重、冻结判断全照原来的走。`name` 用 [`handle_scene_triggers`] /
 /// [`handle_scene_objects`] 给的那个。
-fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str) -> AgentResponse {
+fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str, teleport: bool) -> AgentResponse {
     use crate::openpal3::directors::SceneManagerExtensions;
     let Some(director) = ctx.director else {
         return AgentResponse::err(AgentError::conflict("no active adventure director"));
@@ -542,7 +547,23 @@ fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str) -> AgentResponse {
             )));
         }
     };
-    // 导航格按它所在的层传：类型 0 只认主角当前层上的格子。
+    // 走过去（照引擎能走的路：走路、梯子 / 藤、换层区、迷宫里的跳），路上的走格触发照常触发；
+    // 到不了就 409。`teleport: true` 时照旧直接传送（导航格按它所在的层传：类型 0 只认主角当前层上的格子）。
+    if !teleport {
+        let nav_index = (kind == "nav").then_some(index as usize);
+        // 找人走到人站的那格旁边（传送才要往旁边让 40）。
+        let target = if matches!(kind, "role" | "monster") {
+            Vec3::new(target.x - 40., target.y, target.z)
+        } else {
+            target
+        };
+        return match director.agent_walk_to(nav_index, target, interact) {
+            Some(_) => AgentResponse::Ok,
+            None => AgentResponse::err(AgentError::conflict(format!(
+                "unreachable from here: {name}"
+            ))),
+        };
+    }
     let moved = match layer {
         Some(l) => director.teleport_controlled_role_on_layer(target, l),
         None => director.teleport_controlled_role(target),
@@ -789,6 +810,27 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
             AgentResponse::Script(ScriptEvalResponse {
                 function: params.function,
                 result: None,
+            })
+        }
+        "reachable" => {
+            // [x, y, z, x, y, z, …] —— 主角从现在的位置能不能走到这些点（走路、梯子 / 藤、换层区、
+            // 跳；含物件挡路；不出这个块）。`points` 按顺序给每个点的结果。
+            let f = |i: usize| params.args.get(i).and_then(|v| v.as_f64()).unwrap_or(0.) as f32;
+            let points: Vec<Vec3> = (0..params.args.len() / 3)
+                .map(|k| Vec3::new(f(3 * k), f(3 * k + 1), f(3 * k + 2)))
+                .collect();
+            let r = director.agent_reachable(&points);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: r.map(|(ok, n, navs, blockers)| {
+                    serde_json::json!({
+                        "reachable": ok.first().copied().unwrap_or(false),
+                        "points": ok,
+                        "tiles": n,
+                        "nav_triggers": navs,
+                        "blockers": blockers
+                    })
+                }),
             })
         }
         "team_add" => {

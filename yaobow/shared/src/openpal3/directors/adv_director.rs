@@ -77,6 +77,8 @@ impl AdventureDirector {
                 object_walk: None,
                 last_nav_trigger: None,
                 input_lock: false,
+                agent_walk: None,
+                agent_interact: false,
                 player_jump: None,
                 jump_charge: None,
                 snow: crate::openpal3::scene::Snow::new(),
@@ -198,6 +200,8 @@ impl AdventureDirector {
                 object_walk: None,
                 last_nav_trigger: None,
                 input_lock: false,
+                agent_walk: None,
+                agent_interact: false,
                 player_jump: None,
                 jump_charge: None,
                 snow: crate::openpal3::scene::Snow::new(),
@@ -571,6 +575,51 @@ impl AdventureDirector {
     /// 传送主角并把导航层切到 `layer`。导航格触发（类型 0 等）只认主角**当前层**
     /// 上的格子（原版 `Scene::InterActRole` 查的是 `m_objmap[role->m_onlayer]`），
     /// 只改位置不改层的话，从二楼出来再传到一楼的触发区是不会触发的。
+    /// 调试用：让主角从现在的位置一帧一格走到第 `nav_index` 个走格触发点（或 `point` 旁边），
+    /// `interact` 到了按一下调查键。返回路上几格，到不了是 `None`。
+    pub fn agent_walk_to(
+        &self,
+        nav_index: Option<usize>,
+        point: Vec3,
+        interact: bool,
+    ) -> Option<usize> {
+        let mut p = self.props.borrow_mut();
+        let scene = p.scene_manager.scn_scene()?;
+        let role = p.scene_manager.get_resolved_role(p.sce_vm.state(), -1)?;
+        let layer = RoleController::get_role_controller(role.clone())
+            .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
+        let from = role.transform().borrow().position();
+        let path = scene
+            .inner::<crate::openpal3::scene::ScnScene>()
+            .agent_path(layer, &from, nav_index, &point)?;
+        let n = path.len();
+        p.agent_walk = Some((path.into_iter().collect(), interact));
+        Some(n)
+    }
+
+    /// 调试用：agent 带着主角走的路还没走完。
+    pub fn agent_walking(&self) -> bool {
+        self.props.borrow().agent_walk.is_some()
+    }
+
+    /// 调试用：主角现在这层上能不能走到 `to`（见 [`ScnScene::agent_reachable`]）。
+    pub fn agent_reachable(
+        &self,
+        to: &[Vec3],
+    ) -> Option<(Vec<bool>, usize, Vec<String>, Vec<usize>)> {
+        let p = self.props.borrow();
+        let scene = p.scene_manager.scn_scene()?;
+        let role = p.scene_manager.get_resolved_role(p.sce_vm.state(), -1)?;
+        let layer = RoleController::get_role_controller(role.clone())
+            .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
+        let from = role.transform().borrow().position();
+        Some(
+            scene
+                .inner::<crate::openpal3::scene::ScnScene>()
+                .agent_reachable(layer, &from, to),
+        )
+    }
+
     pub fn teleport_controlled_role_on_layer(&self, pos: Vec3, layer: usize) -> bool {
         if !self.teleport_controlled_role(pos) {
             return false;
@@ -662,6 +711,11 @@ struct AdventureDirectorProps {
     /// `rolectrl.cpp` / `scenemgr.cpp:315`）。移植端的脚本机只有一条调用栈，碰出来的过程跑着时
     /// 再按调查键会把同一个过程又压一层——爬梯子的过程就这样被反复从梯子底下重爬。
     input_lock: bool,
+    /// [调试] agent 让主角照 [`ScnScene::agent_path`] 一帧一格走过去（探路工具用，传送会跨过路上的
+    /// 走格触发）。第二项：走到了按一下调查键。脚本接手（上锁、冻结）就作罢。
+    agent_walk: Option<(std::collections::VecDeque<(usize, Vec3)>, bool)>,
+    /// [调试] 下一帧当调查键按下了（agent 走到地方以后）。
+    agent_interact: bool,
     /// 主角正在跳（`FUN_00414a30` → 行为 4、动作 0）；第二项是跳的动作放出来没有。
     player_jump: Option<(crate::openpal3::scene::player_jump::Jump, bool)>,
     /// [移植] 跳键按住了多久（蓄力）。原版是右键点地面直接给落点，手柄上没有这一下。
@@ -2677,6 +2731,30 @@ impl AdventureDirectorProps {
         self.camera_rotation =
             get_camera_rotation(self.input_engine.clone(), self.camera_rotation, delta_sec);
 
+        // [调试] agent 带着主角一格一格走（`agent_walk_to`）。
+        if self.agent_walk.is_some() && (locked || frozen) {
+            self.agent_walk = None;
+        }
+        if let Some((path, interact)) = self.agent_walk.as_mut() {
+            match path.pop_front() {
+                Some((layer, p)) => {
+                    if let Some(role) = self
+                        .scene_manager
+                        .get_resolved_role(self.sce_vm.state(), -1)
+                    {
+                        role.transform().borrow_mut().set_position(&p);
+                        if let Some(rc) = RoleController::get_role_controller(role) {
+                            rc.inner::<RoleController>().set_nav_layer(layer);
+                        }
+                    }
+                }
+                None => {
+                    self.agent_interact = *interact;
+                    self.agent_walk = None;
+                }
+            }
+        }
+
         let (position, nav_layer) = {
             let role = self
                 .scene_manager
@@ -2755,13 +2833,15 @@ impl AdventureDirectorProps {
             self.layer_switch_triggered = false;
         }
 
+        let agent_interact = std::mem::take(&mut self.agent_interact);
         let input_engine = self.input_engine.clone();
         let input = input_engine.borrow_mut();
         // Space matches the original PC binding (空格 = 对话/调查/确定);
         // F is the upstream OpenPAL3 binding, GamePadEast the pad one.
         if !frozen
             && !locked
-            && (input.get_key_state(Key::F).pressed()
+            && (agent_interact
+                || input.get_key_state(Key::F).pressed()
                 || input.get_key_state(Key::Space).pressed()
                 || input.get_key_state(Key::GamePadEast).pressed())
         {

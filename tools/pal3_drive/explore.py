@@ -80,7 +80,9 @@ def settle(c: Client, issues: list, label: str) -> dict:
             issues.append({"kind": "battle_lost", "at": label})
         if not s.get("script_running"):
             return {"lines": lines, "battles": battles, "seconds": round(time.time() - t0, 1)}
-        if s.get("movie_playing"):
+        if s.get("current_script_fn") == "<agent walk>":
+            pass  # 引擎带着主角在走（fire_trigger），别按键
+        elif s.get("movie_playing"):
             c.key("Escape")
         elif dlg.get("open"):
             choices = dlg.get("choices") or []
@@ -119,14 +121,52 @@ def settle(c: Client, issues: list, label: str) -> dict:
         time.sleep(0.3)
 
 
+# 最近一次 candidates() 看到、但从主角现在的位置走不到的触发点，和挡在半路的物件——走不下去时报出来。
+LAST_UNREACHABLE: dict = {}
+# 最近一次 candidates() 里各触发点的位置；进块时主角站的位置。挑出口时同样没走过的先挑离进来的
+# 地方远的——近的那个多半就是来时的门。
+CENTERS: dict = {}
+ARRIVAL: dict = {}
+
+
+def far(name: str) -> float:
+    """触发点离进块时主角站的位置多远（x、z）。不知道的当 0。"""
+    a, b = ARRIVAL.get("pos"), CENTERS.get(name)
+    if not a or not b:
+        return 0.0
+    return ((a[0] - b[0]) ** 2 + (a[2] - b[2]) ** 2) ** 0.5
+
+
 def candidates(c: Client) -> tuple[list[str], list[str]]:
-    """当前场景里能触发的东西：(人物 + 物件 + 拾取点, 导航格)。"""
-    roles = [r["name"] for r in c.roles()
+    """当前场景里从主角现在的位置**走得到**的触发点：(人物 + 物件 + 拾取点, 导航格)。
+
+    「走得到」问引擎（`script_eval reachable`：走路、梯子 / 藤、换层区、迷宫里的跳，含物件挡路，
+    不出这个块）。触发点是传送过去触发的，不筛的话会穿过机关、跳过要跳的沟，看不出机关挡路。"""
+    roles = [r for r in c.roles()
              if r.get("visible") and r.get("talk_function") and r["name"].startswith("role:")]
     trig = c.triggers()
-    touch = [t["name"] for t in trig if t["shape"] in ("aabb", "item")]
+    touch = [t for t in trig if t["shape"] in ("aabb", "item")]
     nav = [t["name"] for t in trig if t["shape"] == "nav"]
-    return roles + touch, nav
+    points = [r["position"] for r in roles] + [t["center"] for t in touch]
+    names = [r["name"] for r in roles] + [t["name"] for t in touch]
+    here = c.state().get("leader_pos") or [0, 0, 0]
+    flat = [v for p in (points or [here]) for v in p]
+    res = (c.eval("reachable", *flat).get("data") or {}).get("result")
+    if not res:
+        return names, nav
+    ok = res.get("points") or []
+    acts = [n for n, good in zip(names, ok) if good]
+    reach_nav = set(res.get("nav_triggers") or [])
+    navs = [n for n in nav if n in reach_nav]
+    CENTERS.clear()
+    CENTERS.update({t["name"]: t["center"] for t in trig})
+    CENTERS.update({r["name"]: r["position"] for r in roles})
+    LAST_UNREACHABLE.clear()
+    LAST_UNREACHABLE.update({
+        "unreachable": [n for n, good in zip(names, ok) if not good] + [n for n in nav if n not in reach_nav],
+        "blockers": res.get("blockers") or [],
+    })
+    return acts, navs
 
 
 def main() -> int:
@@ -169,8 +209,10 @@ def main() -> int:
         key = fingerprint(c)
         done = tried.setdefault(key, set())
         n_of = lambda n: count.get((key[0], key[1], n), 0)  # noqa: E731
+        if ARRIVAL.get("block") != (key[0], key[1]):
+            ARRIVAL.update({"block": (key[0], key[1]), "pos": c.state().get("leader_pos")})
         todo = sorted([n for n in acts + navs if n not in done],
-                      key=lambda n: (n_of(n), n in navs))
+                      key=lambda n: (n_of(n), n in navs, -far(n)))
         if todo:
             name = todo[0]
             done.add(name)
@@ -181,10 +223,10 @@ def main() -> int:
             wander += 1
             if wander > WANDER_LIMIT or not navs:
                 issues.append({"kind": "dead_end", "scene": key[0], "block": key[1],
-                               "tried": sorted(done)})
+                               "tried": sorted(done), **LAST_UNREACHABLE})
                 run.mark(f"dead_end_{key[0]}_{key[1]}", shot=True)
                 break
-            name = min(navs, key=n_of)
+            name = min(navs, key=lambda n: (n_of(n), -far(n)))
         count[(key[0], key[1], name)] = n_of(name) + 1
         try:
             c.fire(name)

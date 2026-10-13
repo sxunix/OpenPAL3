@@ -579,6 +579,12 @@ pub struct FireTriggerParams {
     /// server-side.
     #[serde(default)]
     pub timeout_ms: Option<u64>,
+    /// PAL3: `true` puts the player straight onto the trigger (the old
+    /// behaviour). The default walks there along a path the engine
+    /// would let the player take, so walk-on triggers on the way still
+    /// fire, and an unreachable trigger is a 409.
+    #[serde(default)]
+    pub teleport: bool,
 }
 
 impl FireTriggerParams {
@@ -604,6 +610,7 @@ impl From<NameParams> for FireTriggerParams {
             wait_until_idle: false,
             collect_trace: false,
             timeout_ms: None,
+            teleport: false,
         }
     }
 }
