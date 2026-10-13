@@ -751,12 +751,24 @@ impl ScnScene {
                 node_type: 15,
             });
         }
-        // 调查键才动的物件（特技机关 0xc、开关 0x17）：在场、调查得了、次数没用完的。`index` 是 `.scn` 序号。
+        // 调查键才动的物件（特技机关 0xc、开关 0x17）：在场、调查得了、次数没用完的；还有站上去才动的
+        // 乌龟重力机关（0x1d，还没沉下去的）——它放下的吊桥探路泛洪看不出来。`index` 是 `.scn` 序号。
         for i in 0..self.scn_file.nodes.len() {
-            let Some(kind @ (0xc | 0x17)) = self.object_kind_at(i) else {
+            let Some(kind @ (0xc | 0x17 | 0x1d)) = self.object_kind_at(i) else {
                 continue;
             };
-            if !self.object_active_at(i) || !self.object_actions.borrow().examinable(i) {
+            if !self.object_active_at(i) {
+                continue;
+            }
+            let ok = {
+                let a = self.object_actions.borrow();
+                if kind == 0x1d {
+                    a.idle(i)
+                } else {
+                    a.examinable(i)
+                }
+            };
+            if !ok {
                 continue;
             }
             let Some(e) = self.object_entity_at(i) else {
