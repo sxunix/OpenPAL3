@@ -741,6 +741,30 @@ impl ScnScene {
                 combat: role.is_combat_npc(),
             });
         }
+        // 队友（ROLE_0..5，`load_roles` 每个场景都建）：剧情里常由脚本摆出来、挂上对话过程
+        // （指令 29 RoleScript，如船上的雪见、紫萱、长卿），`.scn` 的角色表里没有。
+        for i in 0..6 {
+            if out.iter().any(|r| r.index == i) {
+                continue;
+            }
+            let Some(e) = self.get_role_entity(i) else {
+                continue;
+            };
+            let proc_id = RoleController::get_role_controller(e.clone())
+                .map(|rc| rc.inner::<RoleController>().proc_id() as u32)
+                .unwrap_or(0);
+            if proc_id == 0 || !e.visible() {
+                continue;
+            }
+            out.push(AgentRole {
+                index: i,
+                name: format!("party{i}"),
+                position: e.transform().borrow().position(),
+                visible: true,
+                proc_id,
+                combat: false,
+            });
+        }
         out
     }
 
@@ -778,29 +802,95 @@ impl ScnScene {
         None
     }
 
-    pub fn test_role_trigger(&self, coord: &Vec3, exclude_role: i32) -> Option<u32> {
-        const D: f32 = 100.;
-        for role in self.scene.entities() {
-            if role.name() == format!("ROLE_{}", exclude_role) {
-                continue;
+    /// 调查键找人说话：`SceneMgr::GetSelRole_RoleCtrl`（`gamebase/scenemgr.cpp:378`）挑人，
+    /// `RoleCtrl::Update` 再看能不能说（`kind != 2` 且挂了脚本才 `TalkTo`）。
+    ///
+    /// 挑人：在场、同层、`IsPointInView2` 看得见的 NPC 里取最近的；再和在场、
+    /// `IsPointInView` 看得见的队友（除了正操作的）比，更近的换上。最后最近那个减掉它的半径
+    /// 超过 `ROLE_RADIUS × 4.5` 就谁也不选。选中的是野怪（`kind == 2`）或没挂脚本就什么也不做——
+    /// 不会退而求其次找下一个。距离按渲染位置（带高度）量。
+    ///
+    /// 视野：离得超过 `VIEW_RANGE × VIEW_ANG`（500 × 0.87）看不见；NPC 不到 `ROLE_RADIUS × 2`、
+    /// 队友不到 `ROLE_RADIUS × 8` 算看得见；否则要在朝向 ±acos 0.87 以内，NPC 还要两格之间能直走
+    /// （`CanDirectGo`，即 [`super::nav_path::line_clear`]）。原版 `IsPointInView*` 开头那句
+    /// `t.y = 0` 随即被 `t = pt - position` 盖掉，所以长度带着高度差。
+    ///
+    /// 先前这里是「第一个在 100 以内看得见的角色」，不看朝向、不看层、不算队友，挂了 0 号过程的
+    /// 路人会挡住真正该说话的人；剧情里脚本摆出来、用指令 29 挂上对话的队友（船上的雪见、紫萱、
+    /// 长卿）根本选不到。
+    pub fn test_role_trigger(
+        &self,
+        coord: &Vec3,
+        exclude_role: i32,
+        forward: &Vec3,
+        layer: usize,
+    ) -> Option<u32> {
+        use super::nav_path::FieldNav as _;
+        const VIEW_RANGE: f32 = 500.;
+        const VIEW_ANG: f32 = 0.87;
+        const ROLE_RADIUS: f32 = 12.;
+        let nav = FieldNavView { scene: self, layer };
+        let in_view = |p: &Vec3, npc: bool| -> bool {
+            let t = Vec3::sub(p, coord);
+            let len = t.norm();
+            if len > VIEW_RANGE * VIEW_ANG {
+                return false;
             }
-
-            if !role.visible() {
-                continue;
-            }
-
-            let role_position = role.transform().borrow().position();
-            if Vec3::sub(coord, &role_position).norm2() < D * D {
-                let role_model = RoleController::get_role_controller(role);
-                if role_model.is_none() {
-                    continue;
+            if len
+                < if npc {
+                    ROLE_RADIUS * 2.
+                } else {
+                    ROLE_RADIUS * 8.
                 }
-
-                return Some(role_model.unwrap().inner::<RoleController>().proc_id() as u32);
+            {
+                return true;
+            }
+            if Vec3::dot(&Vec3::scalar_mul(1. / len, &t), forward) <= VIEW_ANG {
+                return false;
+            }
+            !npc || super::nav_path::line_clear(
+                &nav,
+                nav.tile_of(coord),
+                nav.tile_of(&Vec3::new(p.x, 0., p.z)),
+            )
+        };
+        // (距离, 半径, 过程号, 是不是野怪)
+        let mut best: Option<(f32, f32, u32, bool)> = None;
+        let mut consider = |e: &ComRc<IEntity>, npc: bool, combat: bool| {
+            let Some(rc) = RoleController::get_role_controller(e.clone()) else {
+                return;
+            };
+            let rc = rc.inner::<RoleController>();
+            if !e.visible() || (npc && rc.nav_layer() != layer) {
+                return;
+            }
+            let p = e.transform().borrow().position();
+            if !in_view(&p, npc) {
+                return;
+            }
+            let d = Vec3::sub(&p, coord).norm();
+            if best.is_none_or(|(b, ..)| d < b) {
+                best = Some((d, rc.model_radius(), rc.proc_id() as u32, combat));
+            }
+        };
+        for role in &self.scn_file.roles {
+            if let Some(e) = self.get_role_entity(role.index as i32) {
+                consider(&e, true, role.is_combat_npc());
             }
         }
-
-        None
+        for i in 0..5 {
+            if i == exclude_role {
+                continue;
+            }
+            if let Some(e) = self.get_role_entity(i) {
+                consider(&e, false, false);
+            }
+        }
+        let (d, radius, proc_id, combat) = best?;
+        if d - radius > ROLE_RADIUS * 4.5 || combat || proc_id == 0 {
+            return None;
+        }
+        Some(proc_id)
     }
 
     pub fn test_ladder(&self, layer: usize, coord: &Vec3) -> Option<LadderTestResult> {

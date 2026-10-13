@@ -2823,9 +2823,16 @@ impl AdventureDirectorProps {
                     .test_aabb_trigger(&position)
                     .or_else(|| scene.test_item_trigger(&position))
                     .or_else(|| {
+                        let forward = self
+                            .scene_manager
+                            .get_resolved_role(self.sce_vm.state(), -1)
+                            .map(|r| crate::openpal3::scene::ScnScene::facing_of(&r))
+                            .unwrap_or(Vec3::new(0., 0., 1.));
                         scene.test_role_trigger(
                             &position,
                             self.sce_vm.global_state().role_controlled(),
+                            &forward,
+                            nav_layer,
                         )
                     })
             };
