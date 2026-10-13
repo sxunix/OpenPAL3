@@ -275,6 +275,19 @@ def main() -> int:
             ARRIVAL.update({"block": (key[0], key[1]), "pos": c.state().get("leader_pos")})
         todo = sorted([n for n in acts + navs if n not in done],
                       key=lambda n: (not story(n), n_of(n), n in navs, -far(n)))
+        if not todo:
+            # 迷宫里特技机关只列当前主角开得了的：轮着切一圈主角（Tab），哪个主角有没试过的机关就留在哪个。
+            for _ in range(5):
+                c.key("Tab")
+                time.sleep(0.5)
+                try:
+                    acts2, _ = candidates(c)
+                except AgentError:
+                    break
+                todo = [n for n in acts2 if n.startswith("obj:") and n not in done]
+                if todo:
+                    print(f"  [{step}] {key[0]}/{key[1]} 切换主角后有新机关：{todo}", flush=True)
+                    break
         if todo:
             name = todo[0]
             done.add(name)
