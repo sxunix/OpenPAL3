@@ -49,6 +49,27 @@ pub fn push_blend_normal() {
     push_blend_marker(CALLBACK_BLEND_NORMAL);
 }
 
+fn push_background_blend_marker(tag: usize) {
+    unsafe {
+        sys::ImDrawList_AddCallback(
+            sys::igGetBackgroundDrawList_Nil(),
+            Some(blend_marker),
+            tag as *mut std::ffi::c_void,
+        );
+    }
+}
+
+/// [`push_blend_additive`] for the **background** draw list, where the
+/// scripted UI host places its absolutely-positioned art (`image_rect`).
+pub fn push_background_blend_additive() {
+    push_background_blend_marker(CALLBACK_BLEND_ADDITIVE);
+}
+
+/// Back to the normal alpha blend on the background draw list.
+pub fn push_background_blend_normal() {
+    push_background_blend_marker(CALLBACK_BLEND_NORMAL);
+}
+
 pub struct FontIndex;
 impl FontIndex {
     pub const LARGE_FONT: usize = 0;

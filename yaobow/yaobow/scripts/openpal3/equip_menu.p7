@@ -272,7 +272,7 @@ pub fn paint_equip_menu(
                 let hover = mx >= grid_x0 && mx <= grid_x0 + 258.0 * s
                     && my >= ry0 && my <= ry0 + LIST_ROW_H * s;
                 if index == sel {
-                    chrome.sprite(ui, atlas, SPR_SELECTED, grid_x0, ry0, s);
+                    chrome.sprite_additive(ui, atlas, SPR_SELECTED, grid_x0, ry0, s);
                 }
                 if hover && click {
                     if index == sel {

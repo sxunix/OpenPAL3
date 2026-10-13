@@ -96,6 +96,24 @@ pub fn sprite(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, name
         sp.u0(), sp.v0(), sp.u1(), sp.v1());
 }
 
+// The list-row highlight. `UIListBox` (`ui/uilistbox.cpp:437`) draws its
+// `SetSelTexture` bar through `UIRenderQuadList` with the vertex colour
+// `m_seltexcolor` = (168, 168, 168, 200) and the render effect
+// `gfxscript\ui_tex_color.gbf`, whose blend is `SrcAlpha, One` — additive.
+// `ListBoxSelPic` itself is a dark RGB strip, so added on top it only
+// brightens the row; drawn with the normal blend it is a black bar that
+// hides the row's text. Used by the 道具 / 装备 / 仙术 / 御剑 lists, the four
+// pages whose `UIListBox`es take `MU_LISTBOX_SELPIC`.
+pub fn sprite_additive(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, name: string,
+                       x: float, y: float, s: float) {
+    let osp = atlas.sprite(name);
+    if osp == null { return; }
+    let sp = osp!;
+    ui.image_rect_additive(sp.com_id(), x, y, x + (sp.width() as float) * s, y + (sp.height() as float) * s,
+        sp.u0(), sp.v0(), sp.u1(), sp.v1(),
+        168.0 / 255.0, 168.0 / 255.0, 168.0 / 255.0, 200.0 / 255.0);
+}
+
 // Blit an atlas sprite stretched into the screen rect (x0,y0)-(x1,y1).
 // Only for art the original itself tiles or stretches (the toolbar bars).
 pub fn blit(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, name: string,

@@ -860,6 +860,16 @@ interface IUiHost: IUnknown {
                     float x0, float y0, float x1, float y1,
                     float u0, float v0, float u1, float v1);
 
+    // `image_rect`, tinted by `r,g,b,a` and blended **additively**
+    // (`SrcAlpha, One`): dst += tex.rgb·tint.rgb · tex.a·tint.a. That is
+    // PAL3's `gfxscript\ui_tex_color.gbf`, which `UIListBox` draws its
+    // selected-row bar (`ListBoxSelPic`, tint 168,168,168,200) with — so
+    // the bar only brightens the row and never covers the row's text.
+    void image_rect_additive(int texture_com_id,
+                    float x0, float y0, float x1, float y1,
+                    float u0, float v0, float u1, float v1,
+                    float r, float g, float b, float a);
+
     // Draw `s` at absolute position `[x,y]` (top-left) in colour
     // `r,g,b,a`, using the registered LARGE game font (the PAL3 in-game
     // dialog font) when available, falling back to the default font.

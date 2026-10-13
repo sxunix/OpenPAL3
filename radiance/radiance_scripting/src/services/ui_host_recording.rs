@@ -207,6 +207,18 @@ pub enum UiCall {
         u1: f32,
         v1: f32,
     },
+    ImageRectAdditive {
+        texture_com_id: i32,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        u0: f32,
+        v0: f32,
+        u1: f32,
+        v1: f32,
+        tint: [f32; 4],
+    },
     TextAt {
         x: f32,
         y: f32,
@@ -685,6 +697,36 @@ impl IUiHostImpl for HostFacade {
             a,
         });
     }
+    fn image_rect_additive(
+        &self,
+        texture_com_id: i32,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        u0: f32,
+        v0: f32,
+        u1: f32,
+        v1: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        self.inner.record(UiCall::ImageRectAdditive {
+            texture_com_id,
+            x0,
+            y0,
+            x1,
+            y1,
+            u0,
+            v0,
+            u1,
+            v1,
+            tint: [r, g, b, a],
+        });
+    }
+
     fn image_rect(
         &self,
         texture_com_id: i32,

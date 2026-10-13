@@ -196,7 +196,7 @@ pub fn paint_magic_menu(
             let hover = mx >= grid_x0 && mx <= grid_x0 + GRID_W * s
                 && my >= ry0 && my <= ry0 + ROW_H * s;
             if k == sel {
-                chrome.sprite(ui, atlas, SPR_SELECTED, grid_x0, ry0, s);
+                chrome.sprite_additive(ui, atlas, SPR_SELECTED, grid_x0, ry0, s);
             }
             if hover && click { sel = k; }
 
