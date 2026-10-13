@@ -169,7 +169,7 @@ def candidates(c: Client) -> tuple[list[str], list[str]]:
     roles = [r for r in c.roles()
              if r.get("visible") and r.get("talk_function") and r["name"].startswith("role:")]
     trig = c.triggers()
-    touch = [t for t in trig if t["shape"] in ("aabb", "item")]
+    touch = [t for t in trig if t["shape"] in ("aabb", "item", "ladder")]
     # 不挂过程的走格触发（跳跃区之类）走过去什么也不发生，不算。
     nav = [t["name"] for t in trig if t["shape"] == "nav" and str(t.get("function")) not in ("", "0")]
     points = [r["position"] for r in roles] + [t["center"] for t in touch]

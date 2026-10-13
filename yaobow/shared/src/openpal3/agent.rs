@@ -508,7 +508,7 @@ fn handle_fire_trigger(ctx: &Pal3DispatchCtx, name: &str, teleport: bool) -> Age
         return AgentResponse::err(AgentError::bad_request(format!("bad trigger name: {name}")));
     };
     let (target, interact, layer) = match kind {
-        "nav" | "aabb" | "item" => {
+        "nav" | "aabb" | "item" | "ladder" => {
             let Some(t) = scn
                 .agent_triggers()
                 .into_iter()

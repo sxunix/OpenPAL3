@@ -723,6 +723,22 @@ impl ScnScene {
                 node_type: 0,
             });
         }
+        // 挂了过程的梯子 / 藤（`test_ladder` 的 `SceProc`：站在旁边按调查键就跑，比如九龙坡小木屋
+        // 一楼爬上二楼）。不挂过程的那种是「瞬移到另一头」，探路泛洪已经当成路。
+        for (index, t) in self.ladder_triggers.borrow().iter().enumerate() {
+            if t.sce_proc_id == 0 {
+                continue;
+            }
+            out.push(AgentTrigger {
+                kind: "ladder",
+                index,
+                proc_id: t.sce_proc_id,
+                center: t.position,
+                half: Vec3::new(0., 0., 0.),
+                layer: -1,
+                node_type: 15,
+            });
+        }
         out
     }
 
