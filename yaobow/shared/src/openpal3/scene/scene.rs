@@ -485,6 +485,19 @@ impl ScnScene {
                     }
                 }
             }
+            // 滑道（0x23）：踩上触发区就被带着沿路线滑到终点（同一层）。
+            if let Some((o, 0x23)) = self.tile_object(l, x, z) {
+                if self.object_active_at(o) {
+                    if let Some(end) = self.object_actions.borrow().slide_end(o) {
+                        let (tx, tz) = FieldNavView {
+                            scene: self,
+                            layer: l,
+                        }
+                        .tile_of(&end);
+                        next.push((l, tx, tz, true));
+                    }
+                }
+            }
             if maze && matches!(self.tile_object(l, x, z), Some((_, 0x2c | 0x26))) {
                 let (bx, bz) = self.nav_block_size(l);
                 let rx = (super::player_jump::MAX_DIST / bx).ceil() as i32;

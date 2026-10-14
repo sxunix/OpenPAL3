@@ -10,7 +10,7 @@
 //! 排队的前提都是 `FUN_0042c1a0`：队列空、状态 0。乌龟沉下去（状态 3）、吊桥放下（状态 1）以后就不会再动。
 //!
 //! 这里做了吊桥（0x13）、乌龟重力机关（0x1d）、神树传送点（0x26）、上下传送板（0x28），以及调查键（事件 1）
-//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21），神魔之井的电梯（0x27），灵山仙人洞的旋转石梁（7、8），草海的坠落障碍物（0x24），黄泉路的推箱子（0xb）和升降机关门（0x1e）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
+//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21），神魔之井的电梯（0x27），灵山仙人洞的旋转石梁（7、8），草海的坠落障碍物（0x24），黄泉路的推箱子（0xb）和升降机关门（0x1e），冰风谷的滑道（0x23）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
 //! 交给调用方。
 //!
 //! `FUN_00424c20` 开头先看可用次数（+0xae）：不是 0xff（无限）又已经是 0 的，什么事件都不理。
@@ -48,6 +48,9 @@ pub const ACT_PUSH: usize = 7;
 /// 三态箱子推完（第 `推的方向 − 2` 行、现在的状态那一列）换成的状态，`0xff` 是推不动的那一格
 /// （`FUN_0042afa0` 栈上 `{2, 0, 0xff, 1, 0xff, 0}`）。
 const BOX_NEXT_STATE: [[u8; 3]; 2] = [[2, 0, 0xff], [1, 0xff, 0]];
+/// 滑道：主角每秒滑多远（`FUN_0042ebe0` case 0xc 的 `总长 × 0.0016666667`），滑的时候换的动作。
+pub const SLIDE_SPEED: f32 = 600.;
+pub const ACT_SLIDE: usize = 2;
 /// 升降机关门升 / 降多久（`FUN_00426eb0` case 0x1e 的 `2.0`）。
 pub const DOOR_SECS: f32 = 2.;
 
@@ -115,6 +118,10 @@ pub enum Act {
     /// 高度减 4 当落点 `to_y`；每帧（`FUN_0042f460`）速度减 `490 × dt`、位置加速度 × dt，掉到落点停住，
     /// 原位 +0xd4 改成现在的位置。
     Fall { to_y: f32, vy: f32 },
+    /// 0xc（`FUN_0042dbd0` 排）：主角沿物件的路线滑过去。开始时（`FUN_0042ebe0`）主角站住，路线 =
+    /// 主角现在的位置 + 物件的折线（`.scn` +0x84），时长 = 总长 / 600，主角换动作 2、交给机关控制；
+    /// 每帧（`FUN_0042f460`）按余弦缓动沿路线取点，主角放过去、朝那一段的方向；到了站住、还回控制。
+    PlayerPath { path: Option<PathLine> },
     /// 0x13（`FUN_0042e6c0` 排、`FUN_0042ebe0` 做）：主角离物件（x、z）减去半边长超过 [`DIST_RESTRICT`]
     /// 就清空整个队列、提示「outdist」，否则接着做下一条。
     DistRestrict,
@@ -189,6 +196,8 @@ struct Obj {
     lift: bool,
     /// 旋转石梁（7、8）要转到的角度（+0x38）。
     beam_to: f32,
+    /// `.scn` 的折线（+0x130 点数、+0x13c 起的点），滑道用。
+    path: Vec<Vec3>,
     /// 推箱子：三态箱子的状态（+0x51）、推的方向（+0x324，0 往 +x、1 往 −x、2 往 +z、3 往 −z）、
     /// 开推时箱子的位置（+0x38）、每秒挪多少（+0x44）。升降机关门：开动时的位置（+0x38）、
     /// 升降多高（+0x44，模型高 − 2）。
@@ -490,6 +499,7 @@ impl ObjectActions {
                 depend: n.depend.clone(),
                 lift: false,
                 beam_to: 0.,
+                path: n.path.clone(),
                 box_state: 0,
                 push_dir: 0,
                 push_from: Vec3::new(0., 0., 0.),
@@ -876,6 +886,25 @@ impl ObjectActions {
             }
             0x5 => self.platform_touch(i, w),
             0xb => self.push_box_touch(i, ev, w),
+            // 滑道（`FUN_00424c20` case 0x23）：主角踩上来（事件 0）、闲着才动。排「主角沿路线滑」、跑自己
+            // 那条过程并等它跑完，登记 `ObjLockInput`。
+            0x23 => {
+                if ev != 0 || !self.idle(i) {
+                    return;
+                }
+                let proc = self.objs[i].proc;
+                for a in [
+                    Act::PlayerPath { path: None },
+                    Act::Proc {
+                        id: proc,
+                        wait: true,
+                    },
+                ] {
+                    self.push(i, a, w);
+                }
+                self.objs[i].locked = true;
+                self.run(i, w);
+            }
             // 坠落的障碍物（`FUN_00424c20` case 0x24）：主角走进触发区（事件 0）或被别的机关叫（事件 2），
             // 闲着才动。主角站住；排「落下」、状态 1（等每帧那边清掉触发区、转 2）、按落下后的位置登记格子、
             // 不可通过、跑自己那条过程（不等）；放音效，开始跑队列，登记 `ObjLockInput`。
@@ -1222,6 +1251,11 @@ impl ObjectActions {
         let mut p = o.push_from;
         p.y += if state == 1 { -k } else { k };
         w.set_object_pos(i, &p);
+    }
+
+    /// 滑道 `i` 的路线终点（探路用：站上滑道就被带到那儿）。
+    pub fn slide_end(&self, i: usize) -> Option<Vec3> {
+        self.objs.get(i).and_then(|o| o.path.last().copied())
     }
 
     /// 读档：三态箱子的状态。
@@ -1841,6 +1875,20 @@ impl ObjectActions {
         while let Some(e) = self.objs[i].queue.front() {
             match e.act.clone() {
                 Act::Move { .. } | Act::Delay(_) => return,
+                Act::PlayerPath { .. } => {
+                    w.stand();
+                    let mut points = vec![w.player_pos()];
+                    points.extend(self.objs[i].path.iter().copied());
+                    let path = PathLine::new(points);
+                    let dur = path.total() / SLIDE_SPEED;
+                    if let Some(e) = self.objs[i].queue.front_mut() {
+                        e.act = Act::PlayerPath { path: Some(path) };
+                        e.dur = dur;
+                        e.elapsed = 0.;
+                    }
+                    w.set_act(ACT_SLIDE);
+                    return;
+                }
                 Act::Fall { .. } => {
                     let layer = self.objs[i].layer;
                     let floor = w.nav_floor(layer, &w.object_pos(i)) - FALL_BELOW_FLOOR;
@@ -1955,6 +2003,19 @@ impl ObjectActions {
                 }
                 if kind == 0x21 || kind == 0x1d {
                     w.fix_player_height();
+                }
+            }
+            Act::PlayerPath { path: Some(path) } => {
+                let k = if e.dur > 0. {
+                    (1. - (e.elapsed / e.dur * std::f32::consts::PI).cos()) * 0.5
+                } else {
+                    1.
+                };
+                let (p, n) = path.at(k * path.total());
+                w.carry_player(&p);
+                w.face_player(&Vec3::new(p.x + n.x, p.y, p.z + n.z));
+                if done {
+                    w.stand();
                 }
             }
             Act::Fall { to_y, vy } => {
@@ -2591,6 +2652,34 @@ mod tests {
             depend: None,
             switch_init: false,
         }
+    }
+
+    /// 滑道（0x23）：踩上去（事件 0）就沿「主角位置 + 折线」滑，每秒 600、余弦缓动，到了终点再跑自己那条
+    /// 过程（等它跑完），之前一直锁着输入。
+    #[test]
+    fn slide_carries_the_player_along_its_path() {
+        let mut a = ObjectActions::new(&[ObjNode {
+            path: vec![Vec3::new(100., 0., 300.), Vec3::new(100., 0., 600.)],
+            ..push_node(11, 0x23, [0; 4])
+        }]);
+        let (_, mut w) = single(0x23, [0; 4], 0);
+        w.player = Vec3::new(100., 0., 200.);
+        a.event(0, 1, false, 0.1, &mut w);
+        assert!(a.idle(0), "调查不理");
+        a.event(0, 0, false, 0.1, &mut w);
+        assert!(a.input_locked());
+        let dt = 0.1;
+        for _ in 0..3 {
+            w.frame(&mut a, dt);
+        }
+        assert!(w.player.z > 200. && w.player.z < 400., "缓动：起步慢");
+        for _ in 0..5 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(w.player.z, 600.);
+        assert_eq!(w.procs, [77]);
+        w.frame(&mut a, dt);
+        assert!(!a.input_locked());
     }
 
     /// 推箱子（0xb）：调查键才推；主角从 −z 那边走到推点（箱子边长 30、景天往里收 12，离箱子 18），
