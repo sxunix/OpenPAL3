@@ -816,9 +816,9 @@ impl ScnScene {
         }
         // 调查键才动的物件（特技机关 0xc、开关 0x17）：在场、调查得了、次数没用完的；还有站上去才动的
         // 乌龟重力机关（0x1d，还没沉下去的）——它放下的吊桥探路泛洪看不出来；神魔之井的电梯（0x27，没有模型，
-        // 位置取触发矩形中间那格）和上下传送板（0x28）。`index` 是 `.scn` 序号。
+        // 位置取触发矩形中间那格）、上下传送板（0x28）和神树传送点（0x26）。`index` 是 `.scn` 序号。
         for i in 0..self.scn_file.nodes.len() {
-            let Some(kind @ (0xc | 0xd | 0x17 | 0x1d | 0x21 | 0x27 | 0x28)) =
+            let Some(kind @ (0xc | 0xd | 0x17 | 0x1d | 0x21 | 0x26 | 0x27 | 0x28)) =
                 self.object_kind_at(i)
             else {
                 continue;
@@ -833,6 +833,9 @@ impl ScnScene {
                     self.rams.borrow().iter().any(|(r, _)| r.node == i)
                 } else if matches!(kind, 0x1d | 0x27 | 0x28) {
                     a.idle(i)
+                } else if kind == 0x26 {
+                    // 神树传送点：站上去满 4 秒才动，参数 0 是 0 的站上去不动（只能跳下来落上去）。
+                    a.idle(i) && a.params(i).is_some_and(|p| p[0] != 0)
                 } else if kind == 0x21 {
                     a.idle(i) && a.times(i) != Some(0)
                 } else {
