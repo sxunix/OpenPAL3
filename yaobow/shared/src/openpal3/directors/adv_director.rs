@@ -3902,6 +3902,14 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         self.scene.nav_floor(layer, p)
     }
 
+    fn put_player(&mut self, p: &Vec3) {
+        self.set_player(p);
+    }
+
+    fn walkable_at(&self, layer: usize, p: &Vec3) -> bool {
+        self.scene.walkable_at(layer, p)
+    }
+
     fn box_can_go(&self, i: usize, at: &Vec3) -> bool {
         self.scene.object_box_can_go(i, at)
     }

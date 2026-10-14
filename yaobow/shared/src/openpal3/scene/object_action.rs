@@ -51,6 +51,10 @@ const BOX_NEXT_STATE: [[u8; 3]; 2] = [[2, 0, 0xff], [1, 0xff, 0]];
 /// 滑道：主角每秒滑多远（`FUN_0042ebe0` case 0xc 的 `总长 × 0.0016666667`），滑的时候换的动作。
 pub const SLIDE_SPEED: f32 = 600.;
 pub const ACT_SLIDE: usize = 2;
+/// 参数 0 为 1 的移动浮板（海底城）：每秒走多远（`FUN_00426eb0` case 5 的 `段长 × 0.011111111`），到点后
+/// 往前看多远找落脚的地方（`144.0` = `ROLE_RADIUS × 12`）。
+pub const HOP_SPEED: f32 = 90.;
+pub const HOP_LOOKAHEAD: f32 = ROLE_RADIUS * 12.;
 /// 升降机关门升 / 降多久（`FUN_00426eb0` case 0x1e 的 `2.0`）。
 pub const DOOR_SECS: f32 = 2.;
 
@@ -455,6 +459,14 @@ pub trait World {
     }
     /// 主角换成动作 `act` 一直播（`m_curact = act; OnChangeAct()`）。
     fn set_act(&mut self, _act: usize) {}
+    /// 主角原样放到 `p`（带高度，不按地面重算；站在浮着的物件上用）。
+    fn put_player(&mut self, p: &Vec3) {
+        self.carry_player(p);
+    }
+    /// 第 `layer` 层 `p` 那一格能不能走（`FUN_00420fb0(层, 点, 0xff)`）。
+    fn walkable_at(&self, _layer: usize, _p: &Vec3) -> bool {
+        true
+    }
     fn floor_at(&self, _layer: usize, _p: &Vec3) -> f32 {
         0.
     }
@@ -884,6 +896,7 @@ impl ObjectActions {
                 self.objs[i].locked = true;
                 self.own_proc(i, w);
             }
+            0x5 if self.objs[i].p[0] == 1 => self.hop_touch(i, ev, w),
             0x5 => self.platform_touch(i, w),
             0xb => self.push_box_touch(i, ev, w),
             // 滑道（`FUN_00424c20` case 0x23）：主角踩上来（事件 0）、闲着才动。排「主角沿路线滑」、跑自己
@@ -1258,6 +1271,133 @@ impl ObjectActions {
         self.objs.get(i).and_then(|o| o.path.last().copied())
     }
 
+    /// 参数 0 为 1 的移动浮板（`FUN_00424c20` case 5，`+0xf8 == 1` 那一支）：主角踩上来（事件 0）、闲着才动。
+    /// 推的方向 = 浮板位置 − 主角位置（浮板高出 40 以上不理），去掉 y、归一；排「清掉格子、主角走到浮板
+    /// 中间、状态 11」，开始跑队列，登记 `ObjLockInput`，再跑自己那条过程。
+    fn hop_touch<W: World>(&mut self, i: usize, ev: u8, w: &mut W) {
+        if ev != 0 || !self.idle(i) {
+            return;
+        }
+        let at = w.object_pos(i);
+        let pl = w.player_pos();
+        if at.y - pl.y > PLATFORM_MAX_RISE {
+            return;
+        }
+        let (dx, dz) = (at.x - pl.x, at.z - pl.z);
+        let len = dx.hypot(dz).max(1e-6);
+        self.objs[i].push_vel = Vec3::new(dx / len, 0., dz / len);
+        for a in [
+            Act::Tiles(true),
+            Act::Walk {
+                to: at,
+                check: false,
+                fix: true,
+            },
+            Act::State { state: 11, wait: 0 },
+        ] {
+            self.push(i, a, w);
+        }
+        self.run(i, w);
+        self.objs[i].locked = true;
+        self.own_proc(i, w);
+    }
+
+    /// `FUN_00426eb0` case 5（参数 0 为 1）。状态 11：现在停在折线第 `box_state` 个点；在末点只能往回、在第 0
+    /// 点只能往前，中间的看前后两段（去掉 y、归一）哪段和「推的方向」点积大就往哪走；转状态 12，方向改成那一段
+    /// （带 y、归一），时长 = 段长 / 90。状态 12：按时间在两点间插值，主角站在浮板上跟着走、朝那一段；到了换到
+    /// 下一个点，往前看 144：那格能走就回状态 0，主角走过去、按新位置登记格子；不能走就回状态 11 接着走。
+    fn step_hop<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
+        let n = self.objs[i].path.len();
+        if n < 2 {
+            return;
+        }
+        let norm = |v: Vec3| {
+            let l = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+            if l > 0. {
+                Vec3::new(v.x / l, v.y / l, v.z / l)
+            } else {
+                v
+            }
+        };
+        match self.objs[i].state {
+            11 => {
+                let o = &mut self.objs[i];
+                let cur = (o.box_state as usize).min(n - 1);
+                let dir: isize = if cur == n - 1 {
+                    -1
+                } else if cur == 0 {
+                    1
+                } else {
+                    let flat = |a: Vec3, b: Vec3| norm(Vec3::new(b.x - a.x, 0., b.z - a.z));
+                    let pos = flat(o.path[cur], o.path[cur + 1]);
+                    let neg = flat(o.path[cur], o.path[cur - 1]);
+                    let v = o.push_vel;
+                    let dot = |a: Vec3| a.x * v.x + a.y * v.y + a.z * v.z;
+                    if dot(pos) < dot(neg) { -1 } else { 1 }
+                };
+                let next = (cur as isize + dir) as usize;
+                let (a, b) = (o.path[cur], o.path[next]);
+                o.push_dir = next;
+                o.box_state = cur as u8;
+                o.push_vel = norm(Vec3::new(b.x - a.x, b.y - a.y, b.z - a.z));
+                let d = Vec3::new(a.x - b.x, a.y - b.y, a.z - b.z);
+                o.beam_to = (d.x * d.x + d.y * d.y + d.z * d.z).sqrt() / HOP_SPEED;
+                o.timer = 0.;
+                o.state = 12;
+            }
+            12 => {
+                let o = &mut self.objs[i];
+                o.timer += dt;
+                let dur = o.beam_to;
+                let end = dur <= o.timer;
+                if end {
+                    o.timer = dur;
+                }
+                let k = if dur > 0. { o.timer / dur } else { 1. };
+                let (a, b) = (o.path[o.box_state as usize], o.path[o.push_dir]);
+                let p = Vec3::new(
+                    a.x + (b.x - a.x) * k,
+                    a.y + (b.y - a.y) * k,
+                    a.z + (b.z - a.z) * k,
+                );
+                let vel = o.push_vel;
+                w.set_object_pos(i, &p);
+                w.put_player(&p);
+                w.face_player(&Vec3::new(p.x + vel.x, p.y, p.z + vel.z));
+                if !end {
+                    return;
+                }
+                let o = &mut self.objs[i];
+                o.box_state = o.push_dir as u8;
+                let st = o.box_state;
+                w.save_state(i, st);
+                let dest = Vec3::new(
+                    p.x + vel.x * HOP_LOOKAHEAD,
+                    p.y + vel.y * HOP_LOOKAHEAD,
+                    p.z + vel.z * HOP_LOOKAHEAD,
+                );
+                let layer = self.objs[i].layer;
+                if w.walkable_at(layer, &dest) {
+                    self.objs[i].state = 0;
+                    for a in [
+                        Act::Walk {
+                            to: dest,
+                            check: false,
+                            fix: true,
+                        },
+                        Act::Tiles(false),
+                    ] {
+                        self.push(i, a, w);
+                    }
+                    self.run(i, w);
+                } else {
+                    self.objs[i].state = 11;
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// 读档：三态箱子的状态。
     pub fn set_box_state(&mut self, i: usize, state: u8) {
         if let Some(o) = self.objs.get_mut(i) {
@@ -1357,9 +1497,6 @@ impl ObjectActions {
     fn platform_touch<W: World>(&mut self, i: usize, w: &mut W) {
         let state = self.objs[i].state;
         let Some(plat) = self.objs[i].plat.as_mut() else {
-            if self.objs[i].p[0] == 1 {
-                log::warn!("场景物件：#{i} 是参数 0 为 1 的移动浮板，没做");
-            }
             return;
         };
         if !plat.on || !(state == 0 || state == 3) {
@@ -1682,6 +1819,7 @@ impl ObjectActions {
             }
             self.advance(i, dt, w);
             match self.objs[i].kind {
+                0x5 if self.objs[i].p[0] == 1 => self.step_hop(i, dt, w),
                 0x5 => self.step_platform(i, dt, w),
                 7 | 8 => self.step_beam(i, dt, w),
                 0xb => self.step_push_box(i, dt, w),
@@ -2129,6 +2267,8 @@ mod tests {
         saved_yaws: usize,
         /// 清过几次触发区。
         trigger_clears: usize,
+        /// `walkable_at`：x 不到这个值才算能走。
+        walkable_max_x: f32,
     }
 
     impl World for Mock {
@@ -2211,6 +2351,9 @@ mod tests {
         }
         fn clear_trigger_rect(&mut self, _i: usize) {
             self.trigger_clears += 1;
+        }
+        fn walkable_at(&self, _layer: usize, p: &Vec3) -> bool {
+            p.x < self.walkable_max_x
         }
         fn set_player_layer(&mut self, layer: usize) {
             self.player_layer = layer;
@@ -2342,6 +2485,7 @@ mod tests {
             yaw: vec![0.; 4],
             saved_yaws: 0,
             trigger_clears: 0,
+            walkable_max_x: f32::MAX,
             flowers: vec![],
         };
         (a, w)
@@ -2652,6 +2796,49 @@ mod tests {
             depend: None,
             switch_init: false,
         }
+    }
+
+    /// 参数 0 为 1 的移动浮板（海底城）：从 −x 那边踩上去就往 +x 走；到了第 1 个点前方 144 不能落脚，按
+    /// 推的方向拐到下一段；到了第 2 个点前方能落脚，停下、主角走过去、按新位置登记格子。
+    #[test]
+    fn hop_platform_rides_until_there_is_ground_ahead() {
+        let mut a = ObjectActions::new(&[ObjNode {
+            path: vec![
+                Vec3::new(0., 0., 0.),
+                Vec3::new(300., 0., 0.),
+                Vec3::new(300., 0., 300.),
+            ],
+            ..push_node(11, 0x5, [1, 0, 0, 0])
+        }]);
+        let (_, mut w) = single(0x5, [1, 0, 0, 0], 0);
+        w.pos = vec![Vec3::new(0., 0., 0.)];
+        w.player = Vec3::new(-40., 0., 0.);
+        w.walkable_max_x = 400.;
+        a.event(0, 0, false, 0.1, &mut w);
+        assert_eq!(w.tiles, [(0, true, 0)]);
+        let dt = 0.5;
+        for _ in 0..3 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(a.objs[0].state, 12);
+        for _ in 0..8 {
+            w.frame(&mut a, dt);
+        }
+        // 300 / 90 秒到第 1 个点：x = 444 那边不能落脚，拐上第二段。
+        assert_eq!(a.objs[0].box_state, 1);
+        assert_eq!(a.objs[0].state, 12);
+        for _ in 0..8 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(a.objs[0].box_state, 2);
+        assert_eq!(a.objs[0].state, 0);
+        assert_eq!((w.pos[0].x, w.pos[0].z), (300., 300.));
+        for _ in 0..4 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!((w.player.x, w.player.z), (300., 444.));
+        assert_eq!(w.tiles, [(0, true, 0), (0, false, 0)]);
+        assert!(w.saved_states.contains(&(0, 2)));
     }
 
     /// 滑道（0x23）：踩上去（事件 0）就沿「主角位置 + 折线」滑，每秒 600、余弦缓动，到了终点再跑自己那条

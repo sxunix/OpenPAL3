@@ -229,6 +229,12 @@ impl SceCommandLoadScene {
                         scene.set_object_tiles(i, false, l);
                     }
                 }
+                // 参数 0 为 1 的那种（海底城）存的是停在折线第几个点。
+                if scene.object_parameter(id) == Some(1) {
+                    if let Some(i) = scene.object_index_of(id) {
+                        scene.set_box_state(i, object_state as u8);
+                    }
+                }
                 continue;
             }
             if object_state != 0 {
