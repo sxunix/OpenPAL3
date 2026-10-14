@@ -32,6 +32,8 @@ WANDER_LIMIT = 80         # 没东西可试、只好走出去的连续次数上�
 BACK_OUT_SECONDS = 15.0  # 没对话框、画面不变超过这么久就按 B 往外退
 # 状态静止多久以后才开始按键推界面（见 `settle`）。
 POKE_DELAY = 1.5
+# 住店会推进剧情的两个值（`yaobow/shared/src/openpal3/states/inn.rs` STORY_ADVANCES）。
+REST_PLOTS = (11101, 120301)
 CHOICE_TURNS: dict[tuple, int] = {}   # 每个选单（按选项文字）已经选过几次
 SETTLE_LIMIT = 240.0      # 一次收尾最多等多久
 
@@ -58,6 +60,7 @@ def settle(c: Client, issues: list, label: str) -> dict:
     last_sig = None
     lines = 0
     pokes = 0
+    rested = False
     battles = 0
     in_battle = False
     battle_t0 = t0
@@ -110,6 +113,15 @@ def settle(c: Client, issues: list, label: str) -> dict:
             pass  # 引擎带着主角在走（fire_trigger）、或者场景物件在动（拨开关），别按键
         elif s.get("movie_playing"):
             c.key("Escape")
+        elif ("住宿" in (s.get("current_script_fn") or "") and not dlg.get("open")
+              and c.globals().get(-32768) in REST_PLOTS and not rested):
+            # 客栈三项菜单「聊天 / 住宿 / 退出」：手柄 East 在这里是取消。剧情停在住店才往下走的
+            # 那两个值（`inn.rs` 的 STORY_ADVANCES：11101、120301）时选住宿 → 过 M_Rest → 住下。
+            rested = True
+            time.sleep(1.0)
+            for k in ("Down", "Space", "Space", "Space"):
+                c.key(k)
+                time.sleep(1.0)
         elif dlg.get("open"):
             choices = dlg.get("choices") or []
             if choices:
