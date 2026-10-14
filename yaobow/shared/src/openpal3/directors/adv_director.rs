@@ -3092,7 +3092,8 @@ impl AdventureDirectorProps {
             self.agent_walk = None;
             // 只是场景物件在动（食人花吞吐、开关）的那种打断，接着走不算一次重试——古藤林一条路
             // 要过好几朵花。
-            if !self.input_lock && !frozen {
+            // 被冲撞撞飞不算：人已经被挪走了，再走多半又被撞（蜀山故道的「打回起点」）。
+            if !self.input_lock && !frozen && self.ram_fly.is_none() {
                 if let Some(g) = self.agent_walk_goal.as_mut() {
                     g.free_resume = true;
                 }

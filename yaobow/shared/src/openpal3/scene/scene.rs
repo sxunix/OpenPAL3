@@ -674,6 +674,15 @@ impl ScnScene {
                 })
             })
             .collect();
+        // 冲撞扫过的地方也先绕开（被撞会飞到别处，「打回起点」那种会让人永远走不到），去的就是那个冲撞时不绕。
+        let mut avoid = avoid;
+        for (base, tiles, _) in self.ram_zones() {
+            let (dx, dz) = (base.x - point.x, base.z - point.z);
+            if nav_index.is_none() && dx * dx + dz * dz < 1. {
+                continue;
+            }
+            avoid.extend(tiles);
+        }
         let goal_of = |flood: &AgentFlood| match nav_index {
             Some(i) => {
                 let t = self.nav_triggers.borrow().get(i).cloned()?;
@@ -2583,8 +2592,8 @@ impl ScnScene {
         hit
     }
 
-    /// 探路用：冲撞的部件扫过的那一段（原位往方向上 −30 到 +90）附近一格以内的格子，和落地的层、格。
-    pub fn ram_zones(&self) -> Vec<(Vec<(usize, i32, i32)>, (usize, i32, i32))> {
+    /// 探路用：冲撞的原位、部件扫过的那一段（原位往方向上 −30 到 +90）附近一格以内的格子、落地的层和格。
+    pub fn ram_zones(&self) -> Vec<(Vec3, Vec<(usize, i32, i32)>, (usize, i32, i32))> {
         use super::nav_path::FieldNav as _;
         let mut out = vec![];
         for (ram, _) in self.rams.borrow().iter() {
@@ -2609,7 +2618,7 @@ impl ScnScene {
                 }
                 k += 6.;
             }
-            out.push((tiles, ram.target));
+            out.push((ram.base, tiles, ram.target));
         }
         out
     }

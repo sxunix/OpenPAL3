@@ -14,7 +14,7 @@
 //! | 1 | 动画播一遍（时间缩放 1.0），状态置 4 |
 //! | 2 | 动画循环播（时间缩放 1.0），状态置 1 |
 //! | 22 | 把物件抬到 `+0xf8` 给的高度，再按一次放回 |
-//! | 23 | 翻转开关标志 `+0xaf`；动画型物件重播一遍，时间缩放 2.0 |
+//! | 23 | 翻转开关标志 `+0xaf`；动画型物件重播一遍，时间缩放 2.0；参数 0 为 1 时「可通过」跟着开关走（交给物件动作） |
 //! | 28 | 只翻转开关标志（`+0xf8 == 1` 时） |
 //! | 19（0x13，吊桥） | 放下来：交给场景物件的动作队列（[`crate::openpal3::scene::object_action`]） |
 //! | 其它 | 对 `param_2 == 2` 不响应 |
@@ -42,10 +42,6 @@ use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use imgui::Ui;
 use radiance::comdef::{IEntity, IEntityExt, ISceneManager};
-
-/// `gbVisNode::SetTimeScale(node, 2.0)` in type 23's arm — the same
-/// double speed opcode 87 opens doors at.
-pub const SWITCH_ANIM_SPEED: f32 = 2.0;
 
 /// Types 1 and 2 play at normal speed.
 pub const PLAIN_ANIM_SPEED: f32 = 1.0;
@@ -123,12 +119,9 @@ impl SceCommand for SceCommandInteractWithObject {
                     play_loop(entity, PLAIN_ANIM_SPEED);
                 }
             }
-            23 => {
-                let _ = self.toggle_switch(&scene, state);
-                if let Some(entity) = &entity {
-                    play_once(entity, SWITCH_ANIM_SPEED);
-                }
-            }
+            // 开关（`FUN_00424c20` case 0x17 事件 2）交给物件动作：翻开关、播动画、扣次数，参数 0 为 1 的
+            // 「可通过」跟着开关走（蜀山故道最上方的石门就是这种）。先前这里只翻开关、播动画，门开了格子还挡着。
+            23 => scene.post_object_event(self.object_id, 2),
             28 => {
                 let _ = self.toggle_switch(&scene, state);
             }
@@ -199,7 +192,6 @@ mod tests {
         // Everything else in `FUN_00424c20` returns early for the 2 this
         // opcode passes; the list is what the switch actually acts on.
         assert_eq!(INTERACTIVE_TYPES, [1, 2, 19, 22, 23, 28]);
-        assert_eq!(SWITCH_ANIM_SPEED, 2.0);
         assert_eq!(PLAIN_ANIM_SPEED, 1.0);
     }
 }

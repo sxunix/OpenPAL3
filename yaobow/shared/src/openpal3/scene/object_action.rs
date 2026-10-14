@@ -994,7 +994,12 @@ impl ObjectActions {
                     let o = &mut self.objs[i];
                     o.state = state;
                     o.timer = 0.;
-                    w.save_state(i, state);
+                    // 开关（0x17）在存档里那一格存的是开关标志（126 `GetSwitch` 读它），不能拿状态盖掉——
+                    // 走过去再拨时排的「状态 0x4d」先写进去，紧接着翻开关就读成了「开着」、翻成了关。
+                    // 特技机关、食人花、踏板这几种的状态只是过场，读档回来不用。
+                    if !matches!(o.kind, 0xc | 0x17 | 0x20 | 0x21) {
+                        w.save_state(i, state);
+                    }
                     if wait != 0 {
                         return;
                     }
@@ -1667,6 +1672,8 @@ mod tests {
         assert_eq!(w.procs, [500]);
         assert!(a.idle(0));
         assert!(!a.input_locked());
+        // 过场状态（0x4d、1、2、3）不进存档：那一格是开关标志。
+        assert!(w.saved_states.is_empty(), "{:?}", w.saved_states);
         // 次数 0：再按什么都不做。
         a.event(0, 1, false, 0.001, &mut w);
         assert!(a.idle(0));
