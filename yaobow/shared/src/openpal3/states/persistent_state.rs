@@ -491,6 +491,17 @@ impl PersistentState {
         self.objects_not_from_save.insert(object_id);
     }
 
+    /// 158 名单里的物件这一次照 `.scn` 建（`FUN_00538d60` 不套它那条存档记录），离开场景时原版把它当时的
+    /// 记录写回存档、盖掉旧的。移植端只在变化时写，所以进场景时就把旧记录清掉，效果一样。
+    pub fn forget_scene_object(&mut self, city: &str, scene: &str, object_id: i32) {
+        let key = scene_object_key(city, scene, object_id);
+        self.scene_object_states.remove(&key);
+        self.scene_object_activations.remove(&key);
+        self.scene_object_layers.remove(&key);
+        self.scene_object_times.remove(&key);
+        self.scene_object_positions.remove(&key);
+    }
+
     pub fn object_loads_from_save(&self, object_id: i32) -> bool {
         !self.objects_not_from_save.contains(&object_id)
     }

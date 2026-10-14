@@ -75,6 +75,21 @@ impl SceCommandLoadScene {
                 .collect()
         };
 
+        // 158 名单里的物件照 `.scn` 建：旧的存档记录作废（开关标志、次数之类不能再从存档读回来）。
+        {
+            let skipped: Vec<i32> = {
+                let p = state.global_state().persistent_state();
+                scene
+                    .object_ids()
+                    .into_iter()
+                    .filter(|id| !p.object_loads_from_save(*id))
+                    .collect()
+            };
+            let mut p = state.global_state_mut().persistent_state_mut();
+            for id in skipped {
+                p.forget_scene_object(&self.name, &self.sub_name, id);
+            }
+        }
         // 158 记的名单只管这一次进场景，用完就清（`FUN_00538d60` 末尾把 vector 的 end 置成 begin）。
         state
             .global_state_mut()
