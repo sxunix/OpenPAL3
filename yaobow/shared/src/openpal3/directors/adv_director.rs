@@ -3861,6 +3861,27 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         });
     }
 
+    fn depend_switch_on(&self, scene: &str, id: i32) -> bool {
+        self.state
+            .global_state()
+            .persistent_state()
+            .scene_object_state(self.scene.name(), scene, id)
+            != 0
+    }
+
+    fn player_on(&self, i: usize) -> bool {
+        // 脚下那格在主角这一层登记的是它，就是同一层（不能借物件动作查层：这时正借着）。
+        let layer = self.nav_layer_of_player();
+        self.scene.object_under(layer, &self.player_pos()) == Some(i)
+    }
+
+    fn save_pos(&mut self, i: usize) {
+        let p = self.object_pos(i);
+        self.save_override(i, |s, city, scene, id| {
+            s.set_scene_object_position(city, scene, id, p)
+        });
+    }
+
     fn object_tile_walkable(&self, i: usize, p: &Vec3) -> bool {
         self.scene
             .object_tile_walkable(i, self.nav_layer_of_player(), p)

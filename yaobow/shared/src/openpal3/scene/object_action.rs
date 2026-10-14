@@ -91,6 +91,8 @@ pub enum Act {
     Layer { layer: usize, object: bool },
     /// 0x12（`FUN_0042e4d0`）：按物件类型放音效（`FUN_0042c440`）。
     Sound(i32),
+    /// 0x14（`FUN_0042e870(秒)`）：等这么久。
+    Delay(f32),
     /// 0x13（`FUN_0042e6c0` 排、`FUN_0042ebe0` 做）：主角离物件（x、z）减去半边长超过 [`DIST_RESTRICT`]
     /// 就清空整个队列、提示「outdist」，否则接着做下一条。
     DistRestrict,
@@ -129,6 +131,11 @@ pub struct ObjNode {
     pub examinable: bool,
     /// 移动浮板（0x5）的路线（`.scn` 记录 +0x84 起的 `PolyLine`：点数 + 16 个点）。别的类型是空的。
     pub path: Vec<Vec3>,
+    /// `.scn` 里的位置 y（物件原位 +0xd8；升降平台降到底的高度）。
+    pub home_y: f32,
+    /// 升降平台（0x16）跟着哪个场景的哪个开关（`depend_scenename` / `depend_id`，`.scn` 记录 +0x14a /
+    /// +0x16a）：那个开关开着就直接停在上面。
+    pub depend: Option<(String, i32)>,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +159,10 @@ struct Obj {
     locked: bool,
     /// 移动浮板（0x5、参数 0 为 0 的那种）。
     plat: Option<Platform>,
+    /// 升降平台（0x16）：原位 y、跟着的开关、载着主角（+0x338）。
+    home_y: f32,
+    depend: Option<(String, i32)>,
+    lift: bool,
 }
 
 /// 移动浮板沿路线来回（`FUN_00426eb0` case 5）。物件状态 +0x50：0 停在起点、1 往终点走、2 往起点走、
@@ -350,6 +361,16 @@ pub trait World {
     fn save_times(&mut self, _i: usize, _times: u8) {}
     /// 神树花总开关翻了：记下花开没开（`DAT_00d8bc38`），把场上的花都换过去。
     fn switch_flowers(&mut self, _open: bool) {}
+    /// 当前城里 `scene` 那个子场景的 `id` 号物件，开关标志开着没有（`Archive::FindObj`，存档里那条）。
+    fn depend_switch_on(&self, _scene: &str, _id: i32) -> bool {
+        false
+    }
+    /// 主角站在物件 `i` 压住的格子上（`FUN_0042b450` / `IfOnMe`：同一层、脚下那格登记的是它）。
+    fn player_on(&self, _i: usize) -> bool {
+        false
+    }
+    /// 物件 `i` 的位置记进存档（升降平台停住时）。
+    fn save_pos(&mut self, _i: usize) {}
     /// 物件 `i` 自己的开关标志 +0xaf 改成 `on`（开关推动移动浮板时写浮板的）。
     fn set_switch(&mut self, _i: usize, _on: bool) {}
     /// `FUN_00421150(i, 层, x, z)`：物件 `i` 眼里 `p` 那一格能不能走（它自己压住的格子只看格子本身）。
@@ -401,6 +422,9 @@ impl ObjectActions {
                 examinable: n.examinable,
                 locked: false,
                 // `SceneObj::Create` case 5（`sceneobj.cpp:197`）：有路线就建 `PathObj`，状态 0。
+                home_y: n.home_y,
+                depend: n.depend.clone(),
+                lift: false,
                 plat: (n.kind == 5 && n.p[0] == 0 && n.path.len() >= 2).then(|| Platform {
                     path: PathLine::new(n.path.clone()),
                     dist: 0.,
@@ -498,6 +522,7 @@ impl ObjectActions {
     pub fn is_static(&self, i: usize) -> bool {
         match self.objs.get(i) {
             Some(o) if o.kind == 5 => o.queue.is_empty() && (o.state == 0 || o.state == 3),
+            Some(o) if o.kind == 0x16 => o.queue.is_empty() && (o.state == 0 || o.state == 2),
             _ => self.idle(i),
         }
     }
@@ -770,6 +795,24 @@ impl ObjectActions {
                 self.own_proc(i, w);
             }
             0x5 => self.platform_touch(i, w),
+            // 升降平台（`FUN_00424c20` case 0x16）：只认被别的机关叫（事件 2）。停在下面就往参数 0 那么高
+            // 升，停在上面就往原位降，别的状态不理；放音效 Wg005，主角站在它上面就载着，扣一次次数，
+            // 登记 `ObjLockInput`。不跑自己那条过程（停住时才跑）。
+            0x16 => {
+                if ev != 2 {
+                    return;
+                }
+                let o = &mut self.objs[i];
+                o.state = match o.state {
+                    0 => 1,
+                    2 => 3,
+                    _ => return,
+                };
+                self.sound(i, 0, w);
+                self.objs[i].lift = w.player_on(i);
+                self.use_once(i, w);
+                self.objs[i].locked = true;
+            }
             0xc => self.skill_gate(i, ev, w),
             0x17 => self.switch(i, ev, w),
             // 踏板开关（`FUN_00424c20` case 0x21）：只认刚踩上来（事件 0、上一帧不在上面）、闲着。主角走到
@@ -823,6 +866,97 @@ impl ObjectActions {
                 self.own_proc(i, w);
             }
             _ => {}
+        }
+    }
+
+    /// `FUN_00426eb0` case 0x16：升（1）每秒 30 到参数 0，降（3）每秒 30 到原位。到了：停住（2 / 0）、
+    /// 可通过，参数 1 非 0 就换层（`FUN_0042b510`：上面是 1 层、下面是 0 层，载着的主角一起换），
+    /// 排「等 2 秒」；每帧 `FUN_0042b350` 把参数 2 那个物件的高度带上、层不同就挪过来，开着
+    /// `depend` 那个开关时直接摆到上面。停住那一帧：不再载人，叫连着的物件，跑自己那条过程。
+    /// [未做] 镜头锁主角（`FUN_0042ea30`）。
+    fn step_lift<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
+        let state = self.objs[i].state;
+        if state != 1 && state != 3 {
+            return;
+        }
+        let o = &self.objs[i];
+        let (top, rises_layer) = (o.p[0] as f32, o.p[1] != 0);
+        let mut at = w.object_pos(i);
+        let mut stopped = None;
+        if state == 1 {
+            at.y += 30. * dt;
+            if top <= at.y {
+                at.y = top;
+                stopped = Some(2);
+            }
+        } else {
+            at.y -= 30. * dt;
+            if at.y <= o.home_y {
+                at.y = o.home_y;
+                stopped = Some(0);
+            }
+        }
+        w.set_object_pos(i, &at);
+        if let Some(s) = stopped {
+            self.lift_stop(i, s, rises_layer, w);
+            for a in [Act::Delay(2.)] {
+                self.push(i, a, w);
+            }
+            self.run(i, w);
+        }
+        self.lift_carry(i, w);
+        let now = self.objs[i].state;
+        if (state == 1 && now == 2) || (state == 3 && now == 0) {
+            self.objs[i].lift = false;
+            if let Some(l) = self.objs[i].link {
+                self.event(l, 2, false, 0.001, w);
+            }
+            self.own_proc(i, w);
+        }
+    }
+
+    /// 升降平台停在 `state`（2 上 / 0 下）：可通过，参数 1 非 0 时换层（2 → 1 层、0 → 0 层，载着的主角
+    /// 一起换），状态和位置进存档。
+    fn lift_stop<W: World>(&mut self, i: usize, state: u8, move_layer: bool, w: &mut W) {
+        self.objs[i].state = state;
+        w.set_passable(i, true);
+        if move_layer {
+            let (to, from) = if state == 2 { (1, 0) } else { (0, 1) };
+            if self.objs[i].lift {
+                w.set_player_layer(to);
+            }
+            self.objs[i].layer = to;
+            w.object_tiles(i, true, from);
+            w.object_tiles(i, false, to);
+        }
+        w.save_state(i, state);
+        w.save_pos(i);
+    }
+
+    /// `FUN_0042b350`（`MoveTouchedObj`）。
+    fn lift_carry<W: World>(&mut self, i: usize, w: &mut W) {
+        if let Some((scene, id)) = self.objs[i].depend.clone() {
+            if w.depend_switch_on(&scene, id) {
+                let mut at = w.object_pos(i);
+                at.y = self.objs[i].p[0] as f32;
+                w.set_object_pos(i, &at);
+                let move_layer = self.objs[i].p[1] != 0;
+                self.lift_stop(i, 2, move_layer, w);
+            }
+        }
+        let touched = self.index_of(self.objs[i].p[2]);
+        if let Some(t) = touched.filter(|&t| t != i) {
+            let y = w.object_pos(i).y;
+            let mut tp = w.object_pos(t);
+            tp.y = y;
+            w.set_object_pos(t, &tp);
+            let layer = self.objs[i].layer;
+            if self.objs[t].layer != layer {
+                let old = self.objs[t].layer;
+                w.object_tiles(t, true, old);
+                w.object_tiles(t, false, layer);
+                self.objs[t].layer = layer;
+            }
         }
     }
 
@@ -1156,6 +1290,7 @@ impl ObjectActions {
             self.advance(i, dt, w);
             match self.objs[i].kind {
                 0x5 => self.step_platform(i, dt, w),
+                0x16 => self.step_lift(i, dt, w),
                 0xc => self.step_skill_gate(i, w),
                 0x17 => self.step_switch(i, dt, w),
                 0x20 => self.step_flower(i, w),
@@ -1321,6 +1456,7 @@ impl ObjectActions {
     fn push<W: World>(&mut self, i: usize, act: Act, w: &W) {
         let dur = match act {
             Act::Move { dur, .. } => dur,
+            Act::Delay(secs) => secs,
             _ => 0.,
         };
         let from = w.object_pos(i);
@@ -1336,7 +1472,7 @@ impl ObjectActions {
     fn run<W: World>(&mut self, i: usize, w: &mut W) {
         while let Some(e) = self.objs[i].queue.front() {
             match e.act.clone() {
-                Act::Move { .. } => return,
+                Act::Move { .. } | Act::Delay(_) => return,
                 Act::Walk { to, .. } => {
                     w.walk_begin(&to);
                     return;
@@ -1488,6 +1624,7 @@ fn sound_name(kind: u8, p0: i32, p: i32) -> Option<&'static str> {
         0x13 => Some("wg001"),
         0x1d => Some(if p == 0 { "wg005" } else { "we026" }),
         0x27 => Some("wc014"),
+        0x16 => Some("Wg005"),
         _ => None,
     }
 }
@@ -1677,6 +1814,8 @@ mod tests {
                 times: 0xff,
                 examinable: false,
                 path: vec![],
+                home_y: 0.,
+                depend: None,
             },
             ObjNode {
                 object_id: 11,
@@ -1689,6 +1828,8 @@ mod tests {
                 times: 0xff,
                 examinable: false,
                 path: vec![],
+                home_y: 0.,
+                depend: None,
             },
         ]);
         let w = Mock {
@@ -1819,6 +1960,8 @@ mod tests {
             times: 0xff,
             examinable: false,
             path: vec![],
+            home_y: 0.,
+            depend: None,
         }]);
         let (_, mut w) = m01();
         w.pos = vec![Vec3::new(0., 100., 0.)];
@@ -1861,6 +2004,8 @@ mod tests {
                 times: 0xff,
                 examinable: false,
                 path: vec![],
+                home_y: 0.,
+                depend: None,
             },
             ObjNode {
                 object_id: 5,
@@ -1873,6 +2018,8 @@ mod tests {
                 times: 0xff,
                 examinable: false,
                 path: vec![],
+                home_y: 0.,
+                depend: None,
             },
             // 高字节非零：`cmp bx, di` 配不上任何物件（实机数据里没有这种）。
             ObjNode {
@@ -1886,6 +2033,8 @@ mod tests {
                 times: 0xff,
                 examinable: false,
                 path: vec![],
+                home_y: 0.,
+                depend: None,
             },
         ]);
         assert_eq!(a.objs[0].link, Some(1));
@@ -1912,6 +2061,8 @@ mod tests {
             times: 0xff,
             examinable: false,
             path: vec![],
+            home_y: 0.,
+            depend: None,
         }]);
         (a, w)
     }
@@ -1993,6 +2144,43 @@ mod tests {
         }
         assert_eq!(w.player_layer, 0);
         assert_eq!(w.pos[0].y, 510.);
+    }
+
+    /// 升降平台（0x16）：只认事件 2；每秒 30 升到参数 0，停住可通过、参数 1 非 0 换到 1 层，等 2 秒才放开
+    /// 输入；再叫一次降回原位、换回 0 层。
+    #[test]
+    fn lift_rises_to_param_0_changes_layer_and_waits_two_seconds() {
+        let (mut a, mut w) = single(0x16, [60, 1, 0, 0], 0);
+        w.pos[0].y = 0.;
+        w.passable[0] = false;
+        a.objs[0].home_y = 0.;
+        a.event(0, 0, false, 0.1, &mut w);
+        assert_eq!(a.state(0), Some(0));
+        a.event(0, 2, false, 0.1, &mut w);
+        assert_eq!(a.state(0), Some(1));
+        assert_eq!(w.sounds, ["Wg005"]);
+        assert!(a.input_locked());
+        for _ in 0..21 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(a.state(0), Some(2));
+        assert_eq!(w.pos[0].y, 60.);
+        assert!(w.passable[0]);
+        assert_eq!(a.layer(0), Some(1));
+        assert!(a.input_locked());
+        for _ in 0..21 {
+            w.frame(&mut a, 0.1);
+        }
+        assert!(!a.input_locked());
+
+        a.event(0, 2, false, 0.1, &mut w);
+        assert_eq!(a.state(0), Some(3));
+        for _ in 0..21 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(a.state(0), Some(0));
+        assert_eq!(w.pos[0].y, 0.);
+        assert_eq!(a.layer(0), Some(0));
     }
 
     #[test]
@@ -2108,6 +2296,8 @@ mod tests {
             times: 1,
             examinable: true,
             path: vec![],
+            home_y: 0.,
+            depend: None,
         }]);
         w.pos = vec![Vec3::new(411.86, 0., -300.55)];
         w.passable = vec![false];
@@ -2216,6 +2406,8 @@ mod tests {
             times: 1,
             examinable: true,
             path: vec![],
+            home_y: 0.,
+            depend: None,
         }]);
         w.pos = vec![Vec3::new(732.85, 0., -531.69)];
         w.player = Vec3::new(732.85 + 30., 0., -531.69);
@@ -2253,6 +2445,8 @@ mod tests {
             times: 1,
             examinable: true,
             path: vec![],
+            home_y: 0.,
+            depend: None,
         }]);
         w.pos = vec![Vec3::new(0., 0., 0.)];
         w.player = Vec3::new(100., 0., 0.);
@@ -2284,6 +2478,8 @@ mod tests {
                 times: 0xff,
                 examinable: false,
                 path: vec![],
+                home_y: 0.,
+                depend: None,
             },
             ObjNode {
                 object_id: 33,
@@ -2296,6 +2492,8 @@ mod tests {
                 times: 0xff,
                 examinable: false,
                 path: vec![],
+                home_y: 0.,
+                depend: None,
             },
         ]);
         w.pos = vec![
@@ -2331,6 +2529,8 @@ mod tests {
             times: 1,
             examinable: false,
             path: vec![],
+            home_y: 0.,
+            depend: None,
         }]);
         w.pos = vec![Vec3::new(-54.8, -634., 3540.4)];
         w.player = Vec3::new(-54.8 + 20., -634., 3540.4);

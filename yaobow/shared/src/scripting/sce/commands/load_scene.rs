@@ -135,7 +135,8 @@ impl SceCommandLoadScene {
                 if matches!(kind, 0x13 | 0x1d) {
                     scene.hold_object_anim_end(id);
                 }
-                if kind == 0x13 {
+                // 吊桥放下了、升降平台停在上面（`SceneObj::OnLoad` case 22：`cango = 1`）：可通过。
+                if kind == 0x13 || (kind == 0x16 && object_state == 2) {
                     if let Some(i) = scene.object_index_of(id) {
                         scene.set_object_passable(i, true);
                     }

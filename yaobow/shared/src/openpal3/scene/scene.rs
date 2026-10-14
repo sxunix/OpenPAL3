@@ -1894,6 +1894,20 @@ impl ScnScene {
                         Vec3::new(f(0), f(4), f(8))
                     })
                     .collect(),
+                home_y: n.position.y,
+                // `depend_scenename`（记录 +0x14a，32 字节）/ `depend_id`（+0x16a）：名字空或 id 0xff 是没有。
+                depend: {
+                    let name: Vec<u8> = n
+                        .b14a
+                        .iter()
+                        .take(32)
+                        .take_while(|b| **b != 0)
+                        .copied()
+                        .collect();
+                    let id = n.b14a.get(32).copied().unwrap_or(0xff);
+                    (!name.is_empty() && id != 0xff)
+                        .then(|| (String::from_utf8_lossy(&name).into_owned(), id as i32))
+                },
             })
             .collect();
         *self.object_actions.borrow_mut() = super::object_action::ObjectActions::new(&nodes);
@@ -2307,6 +2321,16 @@ impl ScnScene {
             me: i,
         }
         .walkable(x, z)
+    }
+
+    /// `IfOnMe`：主角（在 `layer` 层的 `p`）脚下那格登记的是物件 `i`。
+    pub fn object_under(&self, layer: usize, p: &Vec3) -> Option<usize> {
+        use super::nav_path::FieldNav as _;
+        let (x, z) = FieldNavView { scene: self, layer }.tile_of(p);
+        self.object_blocking
+            .borrow()
+            .as_ref()
+            .and_then(|b| b.owner(layer, x, z))
     }
 
     /// 读档：移动浮板的开关标志照存档。
