@@ -241,6 +241,8 @@ pub struct SceCommandCombat {
     floats: Vec<FloatText>,
     /// 每个战斗位伤害数的叠高（`CCBStage::m_fDamageNumPosY`）。
     float_stack: [f32; SLOTS],
+    /// 被选中的人头顶的「现精/满精」（`CCBStageRole::Render`）：世界坐标锚点、文字。
+    pointer_texts: Vec<(Vec3, String)>,
 }
 
 /// 舞台上正在飘的一个字：`ProcShowDamage`（`FUN_004fdb10`）/ `ProcShowMiss`（`FUN_004fdd90`）那一步
@@ -717,6 +719,7 @@ impl SceCommandCombat {
             settled: false,
             floats: Vec::new(),
             float_stack: [0.; SLOTS],
+            pointer_texts: Vec::new(),
         }
     }
 
@@ -2563,6 +2566,50 @@ impl SceCommandCombat {
             },
             None => Vec::new(),
         };
+        // 被选中的人头顶写「现精/满精」（`CCBStageRole::Render`，`combat/cbstagerole.cpp:369`）：
+        // 我方都写，敌方站在原位才写；boss 精高于四分之一（或 10 号位、这场必输）写一串问号
+        // （`pHPSign`，按开战时精的位数：< 1000 是 ???/???，依次加一位）。点和指针同一处、同一个跳动。
+        // [推断] exe 里这段在没反出来的舞台角色渲染里，按源码做。
+        self.pointer_texts.clear();
+        if let Some(session) = self.session.as_ref() {
+            for &slot in &lit {
+                let (Some(c), Some(actor)) = (
+                    session.battle.get(slot),
+                    self.actors.get(slot).and_then(|a| a.as_ref()),
+                ) else {
+                    continue;
+                };
+                let at_home = {
+                    let p = actor.entity.transform().borrow().position();
+                    (p.x - actor.home.x).hypot(p.z - actor.home.z) < 1. && actor.walk.is_none()
+                };
+                if slot >= PARTY_SLOTS && !at_home {
+                    continue;
+                }
+                let Some(top) = head_point(&actor.entity) else {
+                    continue;
+                };
+                let mut y = top.y + 10.;
+                if c.actor_id == 707 {
+                    y -= 80.;
+                }
+                y += 6. + 5. * (self.battle_clock * 10. + slot as f32).sin();
+                let hidden =
+                    (slot == 10 && session.battle.must_fail) || (c.boss && c.hp > c.max_hp / 4);
+                let text = if hidden {
+                    let n = match c.max_hp {
+                        h if h < 1000 => 3,
+                        h if h < 10000 => 4,
+                        h if h < 100000 => 5,
+                        _ => 6,
+                    };
+                    format!("{0}/{0}", "?".repeat(n))
+                } else {
+                    format!("{}/{}", c.hp, c.max_hp)
+                };
+                self.pointer_texts.push((Vec3::new(top.x, y, top.z), text));
+            }
+        }
         for (slot, pointer) in self.pointers.iter().enumerate() {
             let top = lit
                 .contains(&slot)
@@ -2645,9 +2692,14 @@ impl SceCommandCombat {
     /// 画飘字（`CCBDisplayChain` 的文字项：`GB_FONT_UNICODE20`、颜色带透明）。数：横 = 投影 − 16 + 随机，
     /// 基线 = 投影 − 30·t + 叠高，透明从 255 线性降到 0；MISS：横同上，基线 = 投影 − 32·进度 + 16。
     /// 像素量都是 800×600 下的，按界面比例放大。
-    fn draw_floats(ui: &Ui, floats: &[FloatText], stage: &ComRc<IScene>) {
+    fn draw_floats(
+        ui: &Ui,
+        floats: &[FloatText],
+        pointer_texts: &[(Vec3, String)],
+        stage: &ComRc<IScene>,
+    ) {
         use crate::openpal3::combat::state::PopupKind;
-        if floats.is_empty() {
+        if floats.is_empty() && pointer_texts.is_empty() {
             return;
         }
         let m = {
@@ -2661,18 +2713,36 @@ impl SceCommandCombat {
             let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
             let base_px = ui.current_font_size();
             ui.set_window_font_scale(FLOAT_FONT_PX * scale / base_px);
-            for f in floats {
-                let v = [f.anchor.x, f.anchor.y, f.anchor.z, 1.];
+            let project = |a: &Vec3| -> Option<(f32, f32)> {
+                let v = [a.x, a.y, a.z, 1.];
                 let clip: Vec<f32> = (0..4)
                     .map(|i| (0..4).map(|j| r[i][j] * v[j]).sum())
                     .collect();
-                if clip[3] <= 0. {
+                (clip[3] > 0.).then(|| {
+                    (
+                        (clip[0] / clip[3] + 1.) * 0.5 * w,
+                        (1. - clip[1] / clip[3]) * 0.5 * h,
+                    )
+                })
+            };
+            // 现精/满精：白字（显示链默认色），横向夹在 [0, 宽 − 字数 × 10]、基线夹在 [20, 高]。
+            for (anchor, text) in pointer_texts {
+                let Some((px, py)) = project(anchor) else {
                     continue;
-                }
-                let (px, py) = (
-                    (clip[0] / clip[3] + 1.) * 0.5 * w,
-                    (1. - clip[1] / clip[3]) * 0.5 * h,
+                };
+                let tw = text.len() as f32 * 10. * scale;
+                let x = px.clamp(0., (w - tw).max(0.));
+                let baseline = py.clamp(20. * scale, h);
+                list.add_text(
+                    [x, baseline - FLOAT_ASCENT_PX * scale],
+                    [1., 1., 1., 1.],
+                    text,
                 );
+            }
+            for f in floats {
+                let Some((px, py)) = project(&f.anchor) else {
+                    continue;
+                };
                 let ratio = (f.t / f.secs).min(1.);
                 let alpha = 1. - ratio;
                 let (text, rgb, baseline) = match f.kind {
@@ -3645,7 +3715,7 @@ impl SceCommand for SceCommandCombat {
             Self::draw_result(ui, player, &self.result_panels, self.result_tex.as_ref());
         } else if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
             if let Some(stage) = self.stage.as_ref() {
-                Self::draw_floats(ui, &self.floats, stage);
+                Self::draw_floats(ui, &self.floats, &self.pointer_texts, stage);
             }
             Self::draw(ui, session, hud, self.battle_clock);
             if let Some(text) = self.sneak_text.as_deref() {
