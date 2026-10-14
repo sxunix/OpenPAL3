@@ -11,6 +11,12 @@
 //!
 //! `t` 是 `Update`（0x4b7f60）每帧加上的 `dt`。
 //!
+//! 传送点（MeshFx 第 1 类 `MXTransport`，名字 `+1`；exe 建在 0x4befb0）同一套画法：地上 `Effect\trans.tga`
+//! 一块（边长 72、高 0），两圈光柱都用 `ray.tga`——外圈 6 面锥（底 28、顶 41、高 50，颜色 (245,188,28)）
+//! 和地上那块一起绕 Y 转 `−0.2t` 度，内圈 6 面锥（底 18、顶 34、高 68，颜色 (10,67,227)）转 `−2t` 度；
+//! 不抬高。`Update`（0x4bf4f0）每帧 `t += 32·dt`。渲染效果 `gfxscript\Geom_Fx.gbf`（SrcAlpha/One，
+//! alpha 只取贴图）。[未做] 状态 1（传送时一圈圈往上升的光环、主角渐隐，0x4bf515 起）。
+//!
 //! [推断] `gbDynVertBuf::RenderGeomQuad` 没逆，四个顶点的贴图坐标按 `(su,sv) (eu,sv) (eu,ev) (su,ev)` 排。
 
 use std::rc::Rc;
@@ -50,40 +56,45 @@ fn quad_uv(su: f32, sv: f32, eu: f32, ev: f32) -> [[f32; 2]; 4] {
     [[su, sv], [eu, sv], [eu, ev], [su, ev]]
 }
 
-/// 地上那块（`m_trans`）。
-pub fn ground_quad() -> Quad {
-    let s = GROUND_HALF;
+/// 地上那块（`m_trans`）：半边长 `half`、高 `y`。
+pub fn flat_quad(half: f32, y: f32) -> Quad {
+    let s = half;
     Quad {
-        v: [
-            [-s, GROUND_Y, -s],
-            [-s, GROUND_Y, s],
-            [s, GROUND_Y, s],
-            [s, GROUND_Y, -s],
-        ],
+        v: [[-s, y, -s], [-s, y, s], [s, y, s], [s, y, -s]],
         uv: quad_uv(0., 0., 1., 1.),
     }
 }
 
-/// `Geom_NewCone`（`effect\GeomFactory.cpp:12`，exe `FUN_004b63c0`）：第 i 面是底圈 i、i+1 两点和顶圈
-/// i+1、i 两点，`su` 每面加 1/铺几遍；建完再把 `ev` 改成 0.94。
-pub fn cone_quads() -> Vec<Quad> {
-    let step = std::f32::consts::PI * 2. / SIDES as f32;
+/// 存盘点地上那块。
+pub fn ground_quad() -> Quad {
+    flat_quad(GROUND_HALF, GROUND_Y)
+}
+
+/// `Geom_NewCone(top, bottom, height, sides, …, loop)`（`effect\GeomFactory.cpp:12`，exe `FUN_004b63c0`）：
+/// 第 i 面是底圈 i、i+1 两点和顶圈 i+1、i 两点，`su` 每面加 1/铺几遍；建完再把 `ev` 改成 0.94。
+pub fn cone(top: f32, bottom: f32, height: f32, sides: usize) -> Vec<Quad> {
+    let step = std::f32::consts::PI * 2. / sides as f32;
     let du = 1. / CONE_TEX_LOOP;
-    (0..SIDES)
+    (0..sides)
         .map(|i| {
             let (a, b) = (i as f32 * step, i as f32 * step + step);
             let su = i as f32 * du;
             Quad {
                 v: [
-                    [CONE_BOTTOM * a.cos(), 0., CONE_BOTTOM * a.sin()],
-                    [CONE_BOTTOM * b.cos(), 0., CONE_BOTTOM * b.sin()],
-                    [CONE_TOP * b.cos(), CONE_HEIGHT, CONE_TOP * b.sin()],
-                    [CONE_TOP * a.cos(), CONE_HEIGHT, CONE_TOP * a.sin()],
+                    [bottom * a.cos(), 0., bottom * a.sin()],
+                    [bottom * b.cos(), 0., bottom * b.sin()],
+                    [top * b.cos(), height, top * b.sin()],
+                    [top * a.cos(), height, top * a.sin()],
                 ],
                 uv: quad_uv(su, 0., su + du, CONE_EV),
             }
         })
         .collect()
+}
+
+/// 存盘点那一圈光柱。
+pub fn cone_quads() -> Vec<Quad> {
+    cone(CONE_TOP, CONE_BOTTOM, CONE_HEIGHT, SIDES)
 }
 
 /// 石头这一帧离物件原点多高（`25 + 8·sin(3t)`）、绕 Y 转了多少度（`3t`）。
@@ -97,15 +108,40 @@ fn yaw(v: [f32; 3], deg: f32) -> [f32; 3] {
     [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]
 }
 
-/// 局部顶点在这一帧的世界坐标：先抬高 1、绕 Y 转 `−t` 弧度，再按物件朝向转、平移到物件位置。
-pub fn place(v: [f32; 3], t: f32, base: &Vec3, rotate: f32) -> Vec3 {
-    let p = yaw(v, (-t).to_degrees());
-    let p = yaw([p[0], p[1] + 1., p[2]], rotate);
+/// 局部顶点在这一帧的世界坐标：先绕 Y 转 `spin` 度、抬高 `lift`，再按物件朝向转、平移到物件位置。
+pub fn place_with(v: [f32; 3], spin: f32, lift: f32, base: &Vec3, rotate: f32) -> Vec3 {
+    let p = yaw(v, spin);
+    let p = yaw([p[0], p[1] + lift, p[2]], rotate);
     Vec3::new(base.x + p[0], base.y + p[1], base.z + p[2])
 }
 
-/// 场景里的一个存盘点特效。
+/// 存盘点：先抬高 1、绕 Y 转 `−t` 弧度。
+pub fn place(v: [f32; 3], t: f32, base: &Vec3, rotate: f32) -> Vec3 {
+    place_with(v, (-t).to_degrees(), 1., base, rotate)
+}
+
+/// 传送点（`MXTransport`）的参数。
+pub const TRANSPORT_SIDES: usize = 6;
+pub const TRANSPORT_GROUND_HALF: f32 = 36.;
+/// 外圈：顶 41、底 28、高 50，颜色 (245,188,28)；内圈：顶 34、底 18、高 68，颜色 (10,67,227)。
+pub const TRANSPORT_OUTER: (f32, f32, f32) = (41., 28., 50.);
+pub const TRANSPORT_INNER: (f32, f32, f32) = (34., 18., 68.);
+pub const TRANSPORT_INNER_COLOR: [f32; 4] = [10. / 255., 67. / 255., 227. / 255., 1.];
+/// `Update` 每秒加多少（`dt × 32`）；地上那块和外圈每单位转 −0.2 度，内圈 −2 度。
+pub const TRANSPORT_TIME_SCALE: f32 = 32.;
+pub const TRANSPORT_OUTER_SPIN: f32 = -0.2;
+pub const TRANSPORT_INNER_SPIN: f32 = -2.;
+
+/// 哪一类 MeshFx。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MeshFxKind {
+    SavePoint,
+    Transport,
+}
+
+/// 场景里的一个存盘点 / 传送点特效。
 pub struct SavePointFx {
+    pub kind: MeshFxKind,
     /// `.scn` 序号。
     pub node: usize,
     pub base: Vec3,
@@ -115,6 +151,8 @@ pub struct SavePointFx {
     pub stone: Option<ComRc<IEntity>>,
     pub ground: ComRc<IEntity>,
     pub cone: ComRc<IEntity>,
+    /// 传送点的内圈。
+    pub inner: Option<ComRc<IEntity>>,
 }
 
 /// 建一个 `count` 个四边形的加法混合网格，顶点每帧重写。
@@ -154,7 +192,12 @@ pub fn build_quads_entity(
 }
 
 /// 把四边形按这一帧的转角写进网格。
-pub fn write_quads(entity: &ComRc<IEntity>, quads: &[Quad], color: [f32; 4], fx: &SavePointFx) {
+pub fn write_quads(
+    entity: &ComRc<IEntity>,
+    quads: &[Quad],
+    color: [f32; 4],
+    place: impl Fn([f32; 3]) -> Vec3,
+) {
     let Some(rc) = entity.get_rendering_component() else {
         return;
     };
@@ -164,7 +207,7 @@ pub fn write_quads(entity: &ComRc<IEntity>, quads: &[Quad], color: [f32; 4], fx:
             for (i, q) in quads.iter().enumerate() {
                 for k in 0..4 {
                     let v = i * 4 + k;
-                    let p = place(q.v[k], fx.t, &fx.base, fx.rotate);
+                    let p = place(q.v[k]);
                     buffer.set_component(v, VertexComponents::POSITION, |o: &mut Vec3| *o = p);
                     buffer.set_component(v, VertexComponents::TEXCOORD, |o: &mut Vec2| {
                         *o = Vec2::new(q.uv[k][0], q.uv[k][1])
@@ -179,21 +222,48 @@ pub fn write_quads(entity: &ComRc<IEntity>, quads: &[Quad], color: [f32; 4], fx:
 }
 
 impl SavePointFx {
-    /// `Update` + 摆位置：时间加 `dt`，石头挪到这一帧的高度、转角，两块网格重写。
+    /// `Update` + 摆位置：时间往前走，石头挪到这一帧的高度、转角，网格重写。
     pub fn step(&mut self, dt: f32) {
-        self.t += dt;
-        if let Some(stone) = &self.stone {
-            let (h, deg) = stone_pose(self.t);
-            let p = Vec3::new(self.base.x, self.base.y + h, self.base.z);
-            stone
-                .transform()
-                .borrow_mut()
-                .set_position(&p)
-                .clear_rotation()
-                .rotate_axis_angle_local(&Vec3::UP, (self.rotate + deg).to_radians());
+        let (base, rotate) = (self.base, self.rotate);
+        match self.kind {
+            MeshFxKind::SavePoint => {
+                self.t += dt;
+                let t = self.t;
+                if let Some(stone) = &self.stone {
+                    let (h, deg) = stone_pose(t);
+                    let p = Vec3::new(base.x, base.y + h, base.z);
+                    stone
+                        .transform()
+                        .borrow_mut()
+                        .set_position(&p)
+                        .clear_rotation()
+                        .rotate_axis_angle_local(&Vec3::UP, (rotate + deg).to_radians());
+                }
+                let at = |v| place(v, t, &base, rotate);
+                write_quads(&self.ground, &[ground_quad()], [1., 1., 1., 1.], at);
+                write_quads(&self.cone, &cone_quads(), CONE_COLOR, at);
+            }
+            MeshFxKind::Transport => {
+                self.t += dt * TRANSPORT_TIME_SCALE;
+                let t = self.t;
+                let outer = |v| place_with(v, t * TRANSPORT_OUTER_SPIN, 0., &base, rotate);
+                let inner = |v| place_with(v, t * TRANSPORT_INNER_SPIN, 0., &base, rotate);
+                let ground = flat_quad(TRANSPORT_GROUND_HALF, 0.);
+                write_quads(&self.ground, &[ground], [1., 1., 1., 1.], outer);
+                let (a, b, h) = TRANSPORT_OUTER;
+                write_quads(
+                    &self.cone,
+                    &cone(a, b, h, TRANSPORT_SIDES),
+                    CONE_COLOR,
+                    outer,
+                );
+                if let Some(e) = &self.inner {
+                    let (a, b, h) = TRANSPORT_INNER;
+                    let quads = cone(a, b, h, TRANSPORT_SIDES);
+                    write_quads(e, &quads, TRANSPORT_INNER_COLOR, inner);
+                }
+            }
         }
-        write_quads(&self.ground, &[ground_quad()], [1., 1., 1., 1.], self);
-        write_quads(&self.cone, &cone_quads(), CONE_COLOR, self);
     }
 
     pub fn set_visible(&self, visible: bool) {
@@ -202,6 +272,9 @@ impl SavePointFx {
         }
         self.ground.set_visible(visible);
         self.cone.set_visible(visible);
+        if let Some(e) = &self.inner {
+            e.set_visible(visible);
+        }
     }
 }
 

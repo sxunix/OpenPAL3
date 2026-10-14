@@ -1819,8 +1819,9 @@ impl ScnScene {
                     );
                 } else if obj.name.as_bytes()[0] as char == '+' {
                     entity = self.build_scene_effect(obj);
-                    // 存盘点（MeshFx 第 2 类）：物件本身是个空实体（调查、走过去要它的位置），特效另建。
-                    if entity.is_none() && obj.name == "+2" {
+                    // 存盘点（MeshFx 第 2 类）、传送点（第 1 类）：物件本身是个空实体（调查、走过去要它的位置），
+                    // 特效另建。
+                    if entity.is_none() && (obj.name == "+2" || obj.name == "+1") {
                         entity = Some(radiance::scene::CoreEntity::create(
                             format!("OBJECT_{}", obj.object_id()),
                             visible,
@@ -2950,7 +2951,7 @@ impl ScnScene {
     }
 
     /// 存盘点特效（`MXSavePoint::Create`，exe 0x4b7d30）：石头 `effect\stone.pol`、地上 `save.tga` 一块、
-    /// `ray.tga` 一圈光柱。
+    /// `ray.tga` 一圈光柱。传送点（`MXTransport::Create`，0x4befb0）：地上 `trans.tga` 一块、`ray.tga` 两圈。
     fn load_save_point(
         &self,
         node_index: usize,
@@ -2958,18 +2959,23 @@ impl ScnScene {
         entities: &mut Vec<ComRc<IEntity>>,
     ) {
         use super::save_point as sp;
+        let kind = if obj.name == "+1" {
+            sp::MeshFxKind::Transport
+        } else {
+            sp::MeshFxKind::SavePoint
+        };
         let factory = self.asset_mgr.component_factory();
         let effect = self.asset_mgr.effect_root();
         let id = obj.object_id();
         let mut quads = |tex: &str, count: usize, tag: &str| {
             let path = effect.join(tex);
             let Some(image) = self.asset_mgr.read_picture(&path) else {
-                log::warn!("存盘点：读不到 {}", path.display());
+                log::warn!("MeshFx：读不到 {}", path.display());
                 return None;
             };
             let e = sp::build_quads_entity(
                 &factory,
-                format!("SAVEPOINT_{tag}_{id}"),
+                format!("MESHFX_{tag}_{id}"),
                 path.to_str().unwrap_or(tex),
                 image,
                 count,
@@ -2977,19 +2983,29 @@ impl ScnScene {
             entities.push(e.clone());
             Some(e)
         };
-        let (Some(ground), Some(cone)) = (
-            quads("save.tga", 1, "GROUND"),
-            quads("ray.tga", sp::SIDES, "RAY"),
-        ) else {
+        let (ground, cone, inner, stone) = match kind {
+            sp::MeshFxKind::SavePoint => (
+                quads("save.tga", 1, "GROUND"),
+                quads("ray.tga", sp::SIDES, "RAY"),
+                None,
+                self.asset_mgr
+                    .load_effect_pol("stone.pol", format!("MESHFX_STONE_{id}")),
+            ),
+            sp::MeshFxKind::Transport => (
+                quads("trans.tga", 1, "GROUND"),
+                quads("ray.tga", sp::TRANSPORT_SIDES, "RAY"),
+                quads("ray.tga", sp::TRANSPORT_SIDES, "RAY2"),
+                None,
+            ),
+        };
+        let (Some(ground), Some(cone)) = (ground, cone) else {
             return;
         };
-        let stone = self
-            .asset_mgr
-            .load_effect_pol("stone.pol", format!("SAVEPOINT_STONE_{id}"));
         if let Some(e) = &stone {
             entities.push(e.clone());
         }
         let mut fx = sp::SavePointFx {
+            kind,
             node: node_index,
             base: obj.position,
             rotate: obj.rotation,
@@ -2997,6 +3013,7 @@ impl ScnScene {
             stone,
             ground,
             cone,
+            inner,
         };
         fx.step(0.);
         self.save_points.borrow_mut().push(fx);
