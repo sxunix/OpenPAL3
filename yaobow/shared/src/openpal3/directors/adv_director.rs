@@ -3310,24 +3310,25 @@ impl AdventureDirectorProps {
                 || input.get_key_state(Key::Space).pressed()
                 || input.get_key_state(Key::GamePadEast).pressed())
         {
+            // 空格先找人（`RoleCtrl` 键盘那一支：`SceneMgr::GetSelRole_RoleCtrl()`，选不到人才
+            // `GetObjSelect_RoleCtrl()` 找物件，`gamebase/rolectrl.cpp:405`）。以前先查虚拟盒子 / 道具，
+            // 人站在床边时（蜀山高级弟子房间的龙葵）空格总是触发床。
             let trigger_proc_id = {
                 let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+                let forward = self
+                    .scene_manager
+                    .get_resolved_role(self.sce_vm.state(), -1)
+                    .map(|r| crate::openpal3::scene::ScnScene::facing_of(&r))
+                    .unwrap_or(Vec3::new(0., 0., 1.));
                 scene
-                    .test_aabb_trigger(&position)
+                    .test_role_trigger(
+                        &position,
+                        self.sce_vm.global_state().role_controlled(),
+                        &forward,
+                        nav_layer,
+                    )
+                    .or_else(|| scene.test_aabb_trigger(&position))
                     .or_else(|| scene.test_item_trigger(&position))
-                    .or_else(|| {
-                        let forward = self
-                            .scene_manager
-                            .get_resolved_role(self.sce_vm.state(), -1)
-                            .map(|r| crate::openpal3::scene::ScnScene::facing_of(&r))
-                            .unwrap_or(Vec3::new(0., 0., 1.));
-                        scene.test_role_trigger(
-                            &position,
-                            self.sce_vm.global_state().role_controlled(),
-                            &forward,
-                            nav_layer,
-                        )
-                    })
             };
             if let Some(proc_id) = trigger_proc_id {
                 debug!("New proc triggerd: {}", proc_id);
