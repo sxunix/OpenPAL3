@@ -991,6 +991,15 @@ From 71800 to 100400 (神树, 锁妖塔, 蜀山 after 雪见's death):
   registered at the new angle, a 2 s hold; the angle is saved and the
   tiles re-registered on load (`SceneObj::OnLoad` case 7).
 
+- 草海 M18 cave falling obstacles (node type 0x24): walking into the
+  trigger drops the block (gravity 490, to the tile floor − 4), clears
+  the trigger rect and blocks the tiles — the caves become one-way;
+- the 御剑 page's 御剑飞行 button (`yjfx`, 0xa00571), shown once opcode
+  138 sets `DAT_00de625a`: refused in mazes (AssisLang 373) and in Q14
+  (108), otherwise the main UI goes to page 8, which opens the world
+  map (exe 0x4ae65e). From chapter 11 this is the only way out of 蜀山
+  to 酆都; without it the story stopped at 120100.
+
 Not done yet: the closed-flower and plate model swaps, the type 21
 eyeball's look, the lift and beam camera locks, the spell-side MISS case
 in FUN_0050a700.
