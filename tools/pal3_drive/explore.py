@@ -345,8 +345,9 @@ def main() -> int:
         moved = after != key
         if moved:
             progress += 1
-        if args.save and after[2] != key[2]:
-            # 全局变量变了就是剧情往前走了：存一档，下次 `--load` 从这里接着走。
+        if args.save and (after[2] != key[2] or after[:2] != key[:2]):
+            # 全局变量变了就是剧情往前走了：存一档，下次 `--load` 从这里接着走。换了场景也存——迷宫里
+            # 剧情半天不动，打输一场野怪战就得从迷宫口重走。
             try:
                 c.save(args.save)
             except AgentError as e:
