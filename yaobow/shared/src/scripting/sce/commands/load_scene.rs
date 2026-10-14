@@ -75,6 +75,12 @@ impl SceCommandLoadScene {
                 .collect()
         };
 
+        // 158 记的名单只管这一次进场景，用完就清（`FUN_00538d60` 末尾把 vector 的 end 置成 begin）。
+        state
+            .global_state_mut()
+            .persistent_state_mut()
+            .clear_objects_not_from_save();
+
         for (id, position, active, layer, object_state, times) in saved {
             if let Some(t) = times {
                 scene.set_object_times(id, t);

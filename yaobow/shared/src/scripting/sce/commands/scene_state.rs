@@ -74,8 +74,8 @@ impl SceCommandGetSwitch {
 }
 
 /// 158 某个物件出场时不从存档里拿状态 — `LAB_00438f30` →
-/// `FUN_00539e70`, a `push_back` onto the store's vector. Additive, and
-/// never cleared here.
+/// `FUN_00539e70`, a `push_back` onto the store's vector. 下一次进场景
+/// 套存档时（`FUN_00538d60`）名单里的物件跳过，套完清空。
 #[derive(Debug, Clone)]
 pub struct SceCommandObjectNotFromSave {
     object_id: i32,

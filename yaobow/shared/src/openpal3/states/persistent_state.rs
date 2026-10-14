@@ -495,6 +495,12 @@ impl PersistentState {
         !self.objects_not_from_save.contains(&object_id)
     }
 
+    /// 进场景套完存档后清掉 158 记的名单（`FUN_00538d60` 套存档的函数末尾 `end = begin`）：
+    /// 名单只管下一次进场景。
+    pub fn clear_objects_not_from_save(&mut self) {
+        self.objects_not_from_save.clear();
+    }
+
     pub fn feature_enabled(&self, feature: Feature) -> bool {
         self.features.contains(&feature)
     }
