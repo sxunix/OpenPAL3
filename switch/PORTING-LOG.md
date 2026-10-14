@@ -917,3 +917,39 @@ flower, the flower plays its model while the player is hidden, then the
 player is placed on the tile in parameters 0/1 and flies out from the
 partner flower (parameter 2). The fly's tilt, scale and crouch pose are
 not drawn yet. Plot 41100.
+
+From 41100 to 71800 (蜀山, 雷州, into 神魔之井) the explorer stopped at
+these, each ported from the exe as it came up:
+
+- 蜀山故道 M11/1 pressure plates (node type 33, case 0x21: walk to the
+  centre, sink 5 over 2 s, run the object's proc, call the linked object,
+  one use) — upstream had treated them as item triggers;
+- M11/2 rams (node type 13, case 0xd, `scene/ram.rs`): the swinging
+  `<name>A.pol` part, its box against the player's, knock-back flight
+  and landing on the tile in parameters 0/1 of layer 2, 5 % HP off the
+  whole party with the 1.2 s hurt delay. The gauntlet is a timing test;
+  the agent walks at a steady pace and was teleported to the exit;
+- Tab / pad L cycles the controlled hero in mazes (needed for the
+  per-hero skill gates), and the save now keeps the controlled hero, the
+  layer and the real position;
+- `OpenDoor` finishes the next frame (the original `IsWaiting` is
+  `state == 0`, exe 0x42bee0); waiting for the door animation could leave
+  input locked for good when a parallel script changed scene meanwhile;
+- opcode 124 on a type 23 object posts object event 2 (a gate with
+  parameter 0 = 1 follows its switch);
+- each of the two scene slots keeps its own last-touched trigger, as
+  `Scene::m_lastobj` does, so returning to a STORYB scene does not refire
+  the trigger the player is standing on;
+- `RoleEndAction` / `RoleShowAction` do not wait on an inactive role
+  (`Role::IsWaiting` is false when `!m_active`); 「遇到苍萤」 (plot 70500)
+  turns role 11 off and then waits on it.
+
+神魔之井 M15/2 has two-level elevators (node type 39, case 0x27): no
+event check; the elevator is placed on the centre tile of its trigger
+rect, the player walks there, `wc014` plays, the elevator carries the
+player for 8 s to the floor height of the layer in parameter 0, the
+player changes layer (the elevator does not) and walks 80 forward in z;
+input is held by `ObjLockInput`. The agent's flood treats an elevator as
+a layer link. The route: floor switch #8 opens gate #7, elevator up,
+plate #1 to M15/3, switch (proc 502) there, back in M15/2 the boulder
+(object 15) is gone, elevator down, west exit to M15/c.
