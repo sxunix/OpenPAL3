@@ -177,6 +177,17 @@ impl ObjectBlocking {
         self.register(i, &n, model, (&scene.0, &scene.1));
     }
 
+    /// 物件 `i` 现在绕 Y 的角度（旋转石梁转过以后跟着改，重新登记格子时按它算）。
+    pub fn yaw(&self, i: usize) -> Option<f32> {
+        self.nodes.get(i).map(|n| n.y_deg)
+    }
+
+    pub fn set_yaw(&mut self, i: usize, deg: f32) {
+        if let Some(n) = self.nodes.get_mut(i) {
+            n.y_deg = deg;
+        }
+    }
+
     /// `FUN_0042c280`（神树花换模型）：原来有模型就先清掉压住的格子，换成 `model`、按它重新登记，
     /// 「可通过」= `open`。
     pub fn set_flower(&mut self, i: usize, model: Model, open: bool) {

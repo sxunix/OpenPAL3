@@ -1995,6 +1995,29 @@ impl ScnScene {
         }
     }
 
+    /// 第 `i` 个物件绕 Y 的角度（度）：挡路表里记的那份，没有就取 `.scn` 的。
+    pub fn object_yaw(&self, i: usize) -> f32 {
+        self.object_blocking
+            .borrow()
+            .as_ref()
+            .and_then(|b| b.yaw(i))
+            .or_else(|| self.scn_file.nodes.get(i).map(|n| n.rotation))
+            .unwrap_or(0.)
+    }
+
+    /// 旋转石梁转动：模型绕 Y 转到 `deg`，挡路表记下新角度（格子由调用方重新登记）。
+    pub fn set_object_yaw(&self, i: usize, deg: f32) {
+        let old = self.object_yaw(i);
+        if let Some(e) = self.object_entity_at(i) {
+            e.transform()
+                .borrow_mut()
+                .rotate_axis_angle_local(&Vec3::UP, (deg - old).to_radians());
+        }
+        if let Some(b) = self.object_blocking.borrow_mut().as_mut() {
+            b.set_yaw(i, deg);
+        }
+    }
+
     /// 第 `i` 个物件模型包围盒的 y 边长（`FUN_00429db0` 的 +0xa4）。
     pub fn object_model_height(&self, i: usize) -> f32 {
         self.object_blocking

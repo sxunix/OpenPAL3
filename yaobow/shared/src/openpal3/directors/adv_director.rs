@@ -3885,6 +3885,21 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         });
     }
 
+    fn object_yaw(&self, i: usize) -> f32 {
+        self.scene.object_yaw(i)
+    }
+
+    fn set_object_yaw(&mut self, i: usize, deg: f32) {
+        self.scene.set_object_yaw(i, deg);
+    }
+
+    fn save_yaw(&mut self, i: usize) {
+        let deg = self.scene.object_yaw(i);
+        self.save_override(i, |s, city, scene, id| {
+            s.set_scene_object_rotation(city, scene, id, deg)
+        });
+    }
+
     fn object_tile_walkable(&self, i: usize, p: &Vec3) -> bool {
         self.scene
             .object_tile_walkable(i, self.nav_layer_of_player(), p)

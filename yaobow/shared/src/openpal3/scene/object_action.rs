@@ -10,7 +10,7 @@
 //! 排队的前提都是 `FUN_0042c1a0`：队列空、状态 0。乌龟沉下去（状态 3）、吊桥放下（状态 1）以后就不会再动。
 //!
 //! 这里做了吊桥（0x13）、乌龟重力机关（0x1d）、神树传送点（0x26）、上下传送板（0x28），以及调查键（事件 1）
-//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21），神魔之井的电梯（0x27）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
+//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21），神魔之井的电梯（0x27），灵山仙人洞的旋转石梁（7、8）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
 //! 交给调用方。
 //!
 //! `FUN_00424c20` 开头先看可用次数（+0xae）：不是 0xff（无限）又已经是 0 的，什么事件都不理。
@@ -36,6 +36,9 @@ pub const PORTAL_SECS: f32 = 3.;
 pub const PEDAL_SECS: f32 = 8.;
 /// 神魔之井电梯升降要多久（case 0x27，`0x41000000`）。
 pub const ELEVATOR_SECS: f32 = 8.;
+/// 旋转石梁每秒转多少度、一次转多少（`FUN_00426eb0` case 7 的 `dt × 30`，`FUN_00424c20` case 7 的 `+ 90`）。
+pub const BEAM_DEG_PER_SEC: f32 = 30.;
+pub const BEAM_TURN_DEG: f32 = 90.;
 /// 调查够得着的距离（`FUN_00424c20` case 0xc / 0x17 的 `600.0`，源码 `TOUCH_DIST`）。
 pub const TOUCH_DIST: f32 = 600.;
 /// `ROLE_RADIUS`（12）。特技机关：主角离机关（x、z）不到 3 倍就地施展，否则走到机关另一侧 12 处。
@@ -165,6 +168,8 @@ struct Obj {
     home_y: f32,
     depend: Option<(String, i32)>,
     lift: bool,
+    /// 旋转石梁（7、8）要转到的角度（+0x38）。
+    beam_to: f32,
 }
 
 /// 移动浮板沿路线来回（`FUN_00426eb0` case 5）。物件状态 +0x50：0 停在起点、1 往终点走、2 往起点走、
@@ -384,6 +389,13 @@ pub trait World {
         [0; 4]
     }
     /// 第 `layer` 层在 `p` 这一点（x、z 落的那格）的地面高度（`FUN_00421440(layer, p, 0, 0)`）。
+    /// 物件绕 Y 的角度（`m_info.rotate`，+0xe0），度。
+    fn object_yaw(&self, _i: usize) -> f32 {
+        0.
+    }
+    fn set_object_yaw(&mut self, _i: usize, _deg: f32) {}
+    /// 角度进存档（原版整份 `ObjectInfo` 进存档，石梁转过的角度跟着存）。
+    fn save_yaw(&mut self, _i: usize) {}
     fn floor_at(&self, _layer: usize, _p: &Vec3) -> f32 {
         0.
     }
@@ -427,6 +439,7 @@ impl ObjectActions {
                 home_y: n.home_y,
                 depend: n.depend.clone(),
                 lift: false,
+                beam_to: 0.,
                 plat: (n.kind == 5 && n.p[0] == 0 && n.path.len() >= 2).then(|| Platform {
                     path: PathLine::new(n.path.clone()),
                     dist: 0.,
@@ -806,6 +819,21 @@ impl ObjectActions {
                 self.own_proc(i, w);
             }
             0x5 => self.platform_touch(i, w),
+            // 旋转石梁 / 旋转墙（`FUN_00424c20` case 7、8）：只认被别的机关叫（事件 2），停着（状态 0）才动。
+            // 目标角度 = 现在的角度 + 90，主角站住，清掉压住的格子，放音效，扣一次次数，登记 `ObjLockInput`。
+            // [未做] 镜头空闲时锁到石梁上（`FUN_0041c1b0`）。
+            7 | 8 => {
+                if ev != 2 || self.objs[i].state != 0 {
+                    return;
+                }
+                self.objs[i].state = 1;
+                self.objs[i].beam_to = w.object_yaw(i) + BEAM_TURN_DEG;
+                w.stand();
+                w.object_tiles(i, true, layer);
+                self.sound(i, 0, w);
+                self.use_once(i, w);
+                self.objs[i].locked = true;
+            }
             // 升降平台（`FUN_00424c20` case 0x16）：只认被别的机关叫（事件 2）。停在下面就往参数 0 那么高
             // 升，停在上面就往原位降，别的状态不理；放音效 Wg005，主角站在它上面就载着，扣一次次数，
             // 登记 `ObjLockInput`。不跑自己那条过程（停住时才跑）。
@@ -885,6 +913,28 @@ impl ObjectActions {
     /// 排「等 2 秒」；每帧 `FUN_0042b350` 把参数 2 那个物件的高度带上、层不同就挪过来，开着
     /// `depend` 那个开关时直接摆到上面。停住那一帧：不再载人，叫连着的物件，跑自己那条过程。
     /// [未做] 镜头锁主角（`FUN_0042ea30`）。
+    /// `FUN_00426eb0` case 7、8：状态 1 时每秒转 30 度，过了目标就停在目标、回状态 0、按新角度登记格子，
+    /// 排 2 秒延时（`FUN_0042e870`），接着跑队列（`FUN_0042ebe0`）。连着的不是另一根石梁时原版还排一条
+    /// 镜头回到主角（`FUN_0042ea30`）——[未做]，移植端镜头没锁过去。
+    fn step_beam<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
+        if self.objs[i].state != 1 {
+            return;
+        }
+        let to = self.objs[i].beam_to;
+        let yaw = w.object_yaw(i) + dt * BEAM_DEG_PER_SEC;
+        if yaw <= to {
+            w.set_object_yaw(i, yaw);
+            return;
+        }
+        w.set_object_yaw(i, to);
+        self.objs[i].state = 0;
+        let layer = self.objs[i].layer;
+        w.object_tiles(i, false, layer);
+        w.save_yaw(i);
+        self.push(i, Act::Delay(2.), w);
+        self.run(i, w);
+    }
+
     fn step_lift<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
         let state = self.objs[i].state;
         if state != 1 && state != 3 {
@@ -1303,6 +1353,7 @@ impl ObjectActions {
             self.advance(i, dt, w);
             match self.objs[i].kind {
                 0x5 => self.step_platform(i, dt, w),
+                7 | 8 => self.step_beam(i, dt, w),
                 0x16 => self.step_lift(i, dt, w),
                 0xc => self.step_skill_gate(i, w),
                 0x17 => self.step_switch(i, dt, w),
@@ -1637,6 +1688,7 @@ fn sound_name(kind: u8, p0: i32, p: i32) -> Option<&'static str> {
         0x13 => Some("wg001"),
         0x1d => Some(if p == 0 { "wg005" } else { "we026" }),
         0x27 => Some("wc014"),
+        7 => Some("wg004"),
         0x16 => Some("Wg005"),
         _ => None,
     }
@@ -1680,6 +1732,9 @@ mod tests {
         deactivated: Vec<usize>,
         saved_times: Vec<(usize, u8)>,
         extent: Option<(f32, f32)>,
+        /// 各物件绕 Y 的角度，和存过几次角度。
+        yaw: Vec<f32>,
+        saved_yaws: usize,
     }
 
     impl World for Mock {
@@ -1747,6 +1802,15 @@ mod tests {
         }
         fn object_tiles(&mut self, i: usize, clear: bool, layer: usize) {
             self.tiles.push((i, clear, layer));
+        }
+        fn object_yaw(&self, i: usize) -> f32 {
+            self.yaw[i]
+        }
+        fn set_object_yaw(&mut self, i: usize, deg: f32) {
+            self.yaw[i] = deg;
+        }
+        fn save_yaw(&mut self, _i: usize) {
+            self.saved_yaws += 1;
         }
         fn set_player_layer(&mut self, layer: usize) {
             self.player_layer = layer;
@@ -1872,6 +1936,8 @@ mod tests {
             deactivated: vec![],
             saved_times: vec![],
             extent: None,
+            yaw: vec![0.; 4],
+            saved_yaws: 0,
             flowers: vec![],
         };
         (a, w)
@@ -2164,6 +2230,37 @@ mod tests {
         }
         assert_eq!(w.player_layer, 0);
         assert_eq!(w.pos[0].y, 510.);
+    }
+
+    /// 旋转石梁（7）：只认事件 2；每秒 30 度转 90 度，转的时候格子清掉、停住按新角度登记、角度进存档，
+    /// 再等 2 秒才放开输入；转着的时候再叫不理。
+    #[test]
+    fn beam_turns_ninety_degrees_when_called() {
+        let (mut a, mut w) = single(7, [0; 4], 0);
+        w.yaw[0] = 45.;
+        a.event(0, 0, false, 0.1, &mut w);
+        assert_eq!(a.objs[0].state, 0, "主角碰到不转");
+        a.event(0, 2, false, 0.1, &mut w);
+        assert_eq!(a.objs[0].state, 1);
+        assert_eq!(w.tiles, [(0, true, 0)]);
+        assert_eq!(w.sounds, ["wg004"]);
+        assert!(a.input_locked());
+        a.event(0, 2, false, 0.1, &mut w);
+        let dt = 0.125;
+        for _ in 0..24 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(a.objs[0].state, 1, "3 秒才转到 90 度");
+        w.frame(&mut a, dt);
+        assert_eq!(a.objs[0].state, 0);
+        assert_eq!(w.yaw[0], 135.);
+        assert_eq!(w.tiles, [(0, true, 0), (0, false, 0)]);
+        assert_eq!(w.saved_yaws, 1);
+        assert!(a.input_locked(), "还要等 2 秒");
+        for _ in 0..17 {
+            w.frame(&mut a, dt);
+        }
+        assert!(!a.input_locked());
     }
 
     /// 升降平台（0x16）：只认事件 2；每秒 30 升到参数 0，停住可通过、参数 1 非 0 换到 1 层，等 2 秒才放开

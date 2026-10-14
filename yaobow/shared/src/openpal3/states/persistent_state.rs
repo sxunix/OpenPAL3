@@ -267,6 +267,10 @@ pub struct PersistentState {
     /// move, except in the nine scenes listed at 0x437997–0x437a67.
     #[serde(default)]
     scene_object_positions: BTreeMap<String, [f32; 3]>,
+    /// 旋转石梁（物件类型 7）转到的角度（`ObjectInfo::rotate`，+0xe0）。原版整份 `ObjectInfo` 进存档，
+    /// 读档时 `SceneObj::OnLoad` 按存下的角度重新登记格子（`gamebase/sceneobj.cpp:4102`）。
+    #[serde(default)]
+    scene_object_rotations: BTreeMap<String, f32>,
     /// 大地图上每个目的地的状态——指令 125 写的那张表。原版是
     /// `i32 状态[38] @0xdba014` 加 `u8 可见[38] @0xdba0ac`，后者恒等于
     /// `状态 > 0`；绘制只看可见位，i32 那份只进存档，所以这里只留一份。
@@ -375,6 +379,7 @@ impl PersistentState {
             scene_object_states: BTreeMap::new(),
             objects_not_from_save: BTreeSet::new(),
             scene_object_positions: BTreeMap::new(),
+            scene_object_rotations: BTreeMap::new(),
             scene_object_activations: BTreeMap::new(),
             scene_object_layers: BTreeMap::new(),
             scene_object_times: BTreeMap::new(),
@@ -455,6 +460,17 @@ impl PersistentState {
         );
     }
 
+    pub fn scene_object_rotation(&self, city: &str, scene: &str, object_id: i32) -> Option<f32> {
+        self.scene_object_rotations
+            .get(&scene_object_key(city, scene, object_id))
+            .copied()
+    }
+
+    pub fn set_scene_object_rotation(&mut self, city: &str, scene: &str, object_id: i32, deg: f32) {
+        self.scene_object_rotations
+            .insert(scene_object_key(city, scene, object_id), deg);
+    }
+
     pub fn scene_object_active(&self, city: &str, scene: &str, object_id: i32) -> Option<bool> {
         self.scene_object_activations
             .get(&scene_object_key(city, scene, object_id))
@@ -507,6 +523,7 @@ impl PersistentState {
         self.scene_object_layers.remove(&key);
         self.scene_object_times.remove(&key);
         self.scene_object_positions.remove(&key);
+        self.scene_object_rotations.remove(&key);
     }
 
     pub fn object_loads_from_save(&self, object_id: i32) -> bool {

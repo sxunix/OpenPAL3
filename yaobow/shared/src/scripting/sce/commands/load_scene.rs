@@ -149,6 +149,20 @@ impl SceCommandLoadScene {
                 }
                 continue;
             }
+            if matches!(kind, 7 | 8) {
+                // 旋转石梁：原版整份 `ObjectInfo` 进存档，`SceneObj::OnLoad` case 7（`gamebase/sceneobj.cpp:4102`）
+                // 按存下的角度把格子重新登记一遍。
+                let deg = state
+                    .global_state()
+                    .persistent_state()
+                    .scene_object_rotation(&self.name, &self.sub_name, id);
+                if let (Some(deg), Some(i)) = (deg, scene.object_index_of(id)) {
+                    scene.set_object_yaw(i, deg);
+                    let l = scene.object_layer_at(i).unwrap_or(0);
+                    scene.set_object_tiles(i, false, l);
+                }
+                continue;
+            }
             if kind == 0x5 {
                 // 移动浮板存的是自己的开关标志 +0xaf（开关推它时写的），不是状态；位置是到头时改的原位
                 // `m_info.pos`（上面已经摆好），读档后状态又是 0，格子按新位置重新登记。
