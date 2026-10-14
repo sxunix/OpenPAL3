@@ -985,6 +985,12 @@ From 71800 to 100400 (神树, 锁妖塔, 蜀山 after 雪见's death):
   the panel). The last enemy fleeing during target selection had left
   the battle on a menu with nothing to pick (M11/2).
 
+- 灵山仙人洞 M19/1 rotating beams (node types 7 and 8): only event 2
+  from a linked switch, turn +90 degrees at 30 per second
+  (FUN_00424c20 / FUN_00426eb0 case 7), tiles cleared while turning and
+  registered at the new angle, a 2 s hold; the angle is saved and the
+  tiles re-registered on load (`SceneObj::OnLoad` case 7).
+
 Not done yet: the closed-flower and plate model swaps, the type 21
-eyeball's look, the lift camera lock, the spell-side MISS case in
-FUN_0050a700.
+eyeball's look, the lift and beam camera locks, the spell-side MISS case
+in FUN_0050a700.
