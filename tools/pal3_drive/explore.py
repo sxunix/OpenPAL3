@@ -34,6 +34,7 @@ BACK_OUT_SECONDS = 15.0  # 没对话框、画面不变超过这么久就按 B �
 POKE_DELAY = 1.5
 # 住店会推进剧情的两个值（`yaobow/shared/src/openpal3/states/inn.rs` STORY_ADVANCES）。
 REST_PLOTS = (11101, 120301)
+FF_BATTLES = False  # --ff-battles：战斗中开快进（不走舞台，AI 代打），打完关掉
 CHOICE_TURNS: dict[tuple, int] = {}   # 每个选单（按选项文字）已经选过几次
 SETTLE_LIMIT = 240.0      # 一次收尾最多等多久
 
@@ -87,11 +88,15 @@ def settle(c: Client, issues: list, label: str) -> dict:
                 battles += 1
                 in_battle = True
                 battle_t0 = time.time()
+                if FF_BATTLES:
+                    c.fast_forward(True)
             if cb.get("menu") in ("main", "target"):
                 c.key("Space")
             time.sleep(0.15)
             continue
         if in_battle:
+            if FF_BATTLES:
+                c.fast_forward(False)
             heal(c)
             # 打仗的时间不算进收尾时限（古藤林一场常超过四分钟，打完 agent 还要接着走）。
             t_battles += time.time() - battle_t0
@@ -239,11 +244,15 @@ def main() -> int:
     ap.add_argument("--steps", type=int, default=150)
     ap.add_argument("--save", type=int, default=3, help="剧情推进时存到这个档（0 = 不存）")
     ap.add_argument("--shots", action="store_true", help="每次推进都截图")
+    ap.add_argument("--ff-battles", action="store_true",
+                    help="战斗时开快进（迷宫里明怪太密时用；战斗舞台和界面就不测了）")
     ap.add_argument("--level", type=int, default=0,
                     help="开跑前把队里每人至少提到这一级（prime_level，按游戏自己的成长表涨属性）。"
                          "探路几乎不打野怪，等级远低于正常玩到这里的水平，剧情战和迷宫怪会打不动")
     args = ap.parse_args()
 
+    global FF_BATTLES
+    FF_BATTLES = args.ff_battles
     c = Client(args.base)
     if not c.up(90):
         print("连不上 agent server", file=sys.stderr)
