@@ -88,6 +88,27 @@ pub struct UseContext {
     pub proc_2101_exists: bool,
     /// 场景里有 type 0x18 且激活的对象（搜宝鼠找得到东西）。
     pub treasure_present: bool,
+    /// `FUN_004235b0("Q14", 0)`：当前城市是 Q14（鬼界外围），御剑飞行用。
+    pub city_is_q14: bool,
+}
+
+/// `AssisLang.lang` 第 373 条「迷宫中不可使用」、第 108 条「不可使用」（表基址 0xdc333c、步长 0x100：
+/// `DAT_00dda83c`、`DAT_00dc9f3c`）。
+pub const LANG_MAZE_UNUSABLE: usize = 373;
+pub const LANG_UNUSABLE: usize = 108;
+
+/// 御剑页「御剑飞行」按钮（`0xa00571`，跳转表落到 exe 0x4ae65e）：迷宫里（`DAT_00d8bbec == 2`）弹
+/// 「迷宫中不可使用」，在鬼界外围（`FUN_004235b0("Q14", 0)`）弹「不可使用」，两种都放 `wa003`；
+/// 否则放 `wa001`、主菜单切到页 8（`FUN_004a5010(8)`），页 8 每帧 `FUN_0044f610(0xd)` 进大地图。
+/// 返回要弹的那条的条号，`None` 是可以飞。
+pub fn sword_flight_refusal(ctx: &UseContext) -> Option<usize> {
+    if ctx.in_maze {
+        Some(LANG_MAZE_UNUSABLE)
+    } else if ctx.city_is_q14 {
+        Some(LANG_UNUSABLE)
+    } else {
+        None
+    }
 }
 
 /// [`default_target`] 的结果。
@@ -552,6 +573,20 @@ mod tests {
         state.role_mut(0).unwrap().hp = 400;
         assert!(usable(&item, &state, 0, &db, &ctx));
         assert!(!usable(&item, &state, 1, &db, &ctx), "另一个人还是满的");
+    }
+
+    #[test]
+    fn sword_flight_is_refused_in_mazes_and_the_ghost_outskirts() {
+        let mut ctx = UseContext::default();
+        assert_eq!(sword_flight_refusal(&ctx), None);
+        ctx.city_is_q14 = true;
+        assert_eq!(sword_flight_refusal(&ctx), Some(LANG_UNUSABLE));
+        ctx.in_maze = true;
+        assert_eq!(
+            sword_flight_refusal(&ctx),
+            Some(LANG_MAZE_UNUSABLE),
+            "先看迷宫"
+        );
     }
 
     #[test]

@@ -53,6 +53,22 @@ let RMT_WRAP: float = 180.0;
 let EL_ICON_X: float = 470.0; let EL_ICON_Y: float = 10.0;
 let EL_NAME_X: float = 342.0; let EL_NAME_Y: float = 16.0;
 
+// 御剑飞行 button (`Sword\yjfx`, id 0xa00571, rect (506,28,619,100)). Shown
+// only once opcode 138 has set `DAT_00de625a` (`FUN_004a8260`); clicking it
+// runs exe 0x4ae65e — refused in mazes and in 鬼界外围, otherwise the main UI
+// switches to page 8, which opens the world map.
+let SPR_YJFX: string = "ui/GameMainUI/Sword/yjfx";
+let YJ_X: float = 506.0; let YJ_Y: float = 28.0;
+let YJ_W: float = 113.0; let YJ_H: float = 72.0;
+// The refusal box (+0x61ad0, built at 0x4ac812): `FUN_004a16c0` kind 3 (just
+// the frame, any key closes it), rect (288,200,488,312), text colour
+// RGB(255,251,31), text "\n\n    %s". The `MUIDialog` frame art is not in the
+// package, so the frame is drawn — the same stand-in the 宿营 box uses.
+let MB_X0: float = 288.0; let MB_Y0: float = 200.0;
+let MB_X1: float = 488.0; let MB_Y1: float = 312.0;
+// The page state keeps the open box's AssisLang index above the other fields.
+let MSG_UNIT: int = 100000;
+
 let LJ_X: float = 672.0; let LJ_Y: float = 48.0;
 let LJ_TXT_X: float = 688.0; let LJ_TXT_Y: float = 48.0;
 
@@ -119,20 +135,27 @@ pub let TO_BOOK: int = -8;
 pub fn pack(element: int, tab: int, scroll: int, sel: int) -> int {
     return element * 10000 + tab * 1000 + scroll * 100 + sel;
 }
-pub fn element_of(state: int) -> int { return state / 10000; }
-pub fn tab_of(state: int) -> int { return (state - element_of(state) * 10000) / 1000; }
+pub fn msg_of(state: int) -> int { return state / MSG_UNIT; }
+pub fn element_of(state: int) -> int { return (state - msg_of(state) * MSG_UNIT) / 10000; }
+fn base_of(state: int) -> int { return state - msg_of(state) * MSG_UNIT; }
+pub fn tab_of(state: int) -> int { return (base_of(state) - element_of(state) * 10000) / 1000; }
 pub fn scroll_of(state: int) -> int {
-    return (state - element_of(state) * 10000 - tab_of(state) * 1000) / 100;
+    return (base_of(state) - element_of(state) * 10000 - tab_of(state) * 1000) / 100;
 }
 pub fn sel_of(state: int) -> int {
-    return state - element_of(state) * 10000 - tab_of(state) * 1000 - scroll_of(state) * 100;
+    return base_of(state) - element_of(state) * 10000 - tab_of(state) * 1000 - scroll_of(state) * 100;
 }
 
 pub fn paint_sword_menu(
     ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
     pal3: box<openpal3.IPal3Service>,
-    mx: float, my: float, down: bool, click: bool, state: int,
+    mx: float, my: float, down: bool, click_in: bool, state: int,
 ) -> int {
+    // While the refusal box is up, a click only closes it (kind 3).
+    let mut msg = msg_of(state);
+    let click = click_in && msg == 0;
+    if msg != 0 && click_in { msg = 0; }
+
     let lw = ui.display_size_x() as float;
     let lh = ui.display_size_y() as float;
     if lw <= 0.0 || lh <= 0.0 { return state; }
@@ -171,6 +194,22 @@ pub fn paint_sword_menu(
         ox + EL_ICON_X * s, oy + EL_ICON_Y * s, s);
     chrome.widget_text(ui, ox + EL_NAME_X * s, oy + EL_NAME_Y * s, 0.0, s,
         GRN_R, GRN_G, GRN_B, EL_LABEL[element] + "灵剑");
+
+    if pal3.sword_flight_unlocked() {
+        let yx = ox + YJ_X * s;
+        let yy = oy + YJ_Y * s;
+        let yj_hover = mx >= yx && mx <= yx + YJ_W * s && my >= yy && my <= yy + YJ_H * s;
+        let mut yj_variant = "0";
+        if yj_hover && msg == 0 {
+            if down { yj_variant = "1"; } else { yj_variant = "2"; }
+        }
+        chrome.sprite(ui, atlas, SPR_YJFX + yj_variant + ".tga", yx, yy, s);
+        if yj_hover && click {
+            let refusal = pal3.fly_sword();
+            if refusal == 0 { return CLOSE; }
+            msg = refusal;
+        }
+    }
 
     chrome.sprite(ui, atlas, SPR_LONGJING, ox + LJ_X * s, oy + LJ_Y * s, s);
     chrome.widget_text(ui, ox + LJ_TXT_X * s, oy + LJ_TXT_Y * s, 0.0, s,
@@ -293,7 +332,24 @@ pub fn paint_sword_menu(
     if hit == chrome.PAGE_BOOK { return TO_BOOK; }
     if hit == chrome.PAGE_SYSTEM { return TO_SYSTEM; }
 
-    return pack(element, tab, scroll, sel);
+    if msg != 0 {
+        let bx0 = ox + MB_X0 * s;
+        let by0 = oy + MB_Y0 * s;
+        let bx1 = ox + MB_X1 * s;
+        let by1 = oy + MB_Y1 * s;
+        ui.fill_rect(bx0, by0, bx1, by1, 0.0, 0.0, 0.0, 0.75);
+        ui.fill_rect(bx0, by0, bx1, by0 + s, 0.8, 0.75, 0.5, 1.0);
+        ui.fill_rect(bx0, by1 - s, bx1, by1, 0.8, 0.75, 0.5, 1.0);
+        ui.fill_rect(bx0, by0, bx0 + s, by1, 0.8, 0.75, 0.5, 1.0);
+        ui.fill_rect(bx1 - s, by0, bx1, by1, 0.8, 0.75, 0.5, 1.0);
+        // "\n\n    %s": two empty lines, then four half-width spaces.
+        pal3.draw_lang_text(ui, msg,
+            bx0 + (chrome.TXT_MARGIN + 4.0 * chrome.TXT * 0.5) * s,
+            by0 + (chrome.TXT_MARGIN + 2.0 * chrome.TXT) * s,
+            chrome.TXT * s, 1.0, 251.0 / 255.0, 31.0 / 255.0, 1.0);
+    }
+
+    return pack(element, tab, scroll, sel) + msg * MSG_UNIT;
 }
 
 // The element sword icons are `Sword_Shui.tga` etc — capitalised, unlike

@@ -343,7 +343,8 @@ pub enum Feature {
     SwordPurifying,
     /// 降妖谱 — `DAT_00de5f93`.
     JusticeBook,
-    /// 魔剑技 — `DAT_00de625a`.
+    /// 魔剑技 — `DAT_00de625a`. 它管的是御剑页上「御剑飞行」按钮（`yjfx`，`0xa00571`）显不显示
+    /// （`FUN_004a8260`：标志非 0 才把按钮跟着页面一起显出来）。
     SwordSkill,
 }
 

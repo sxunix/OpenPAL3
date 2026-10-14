@@ -305,6 +305,16 @@ interface IPal3Service: IUnknown {
     // `PersistentState::reread_lineup_for_page`）。
     void lineup_page_opened();
 
+    // ---- 御剑页「御剑飞行」（`yjfx`，0xa00571） ----
+    // 按钮显不显示：opcode 138 开的标志（`DAT_00de625a`）。
+    bool sword_flight_unlocked();
+    // 点了按钮（exe 0x4ae65e）：能飞就放 wa001、记下关菜单后开大地图，返回 0；
+    // 不能飞放 wa003，返回要弹的 AssisLang 条号（迷宫 373、鬼界外围 108）。
+    int fly_sword();
+    // 画 `AssisLang.lang` 第 `index` 条（读法同 `FUN_00457410`）。
+    void draw_lang_text(IUiHost ui, int index, float x, float y, float size,
+        float r, float g, float b, float a);
+
     // Whether this monster has been recorded in the 侠义榜, and the
     // number recorded so far. Nothing marks monsters yet — that happens
     // when combat exists — so today these report an empty book.

@@ -53,7 +53,7 @@ use shared::openpal3::states::game_db::GameDb;
 use shared::openpal3::states::item_use::{
     self, EARTH_PEARL_PROC, TargetPick, UseContext, UseOutcome,
 };
-use shared::openpal3::states::persistent_state::{PAL3_APP_NAME, PersistentState};
+use shared::openpal3::states::persistent_state::{Feature, PAL3_APP_NAME, PersistentState};
 use shared::openpal3::ui_atlas::{AtlasManifest, Pal3UiAtlas};
 use shared::scripting::sce::vm::SceExecutionOptions;
 use shared::ydirs;
@@ -250,6 +250,13 @@ pub struct Pal3Service {
     /// rather than run on the spot for the same reason saves are: the
     /// menu is painting inside the director's own update.
     pending_item_proc: RefCell<Option<PendingItemProc>>,
+    /// 御剑页点了「御剑飞行」：菜单关掉以后进大地图（原版是主菜单切到页 8，页 8 每帧
+    /// `FUN_0044f610(0xd)`）。和道具一样排着，等菜单画完再做。
+    pending_bigmap: Cell<bool>,
+    /// 菜单里放的界面音效（放完前要留着）。
+    ui_sounds: RefCell<Vec<Box<dyn radiance::audio::AudioMemorySource>>>,
+    /// `AssisLang.lang` 的 `sec1`，第一次用到时读。
+    assis_lang: RefCell<Option<Vec<String>>>,
     /// Agent-server bridge. `None` when no `--agent-port` flag was
     /// passed; `Some(_)` enables [`Self::pump_agent`] and makes
     /// every fresh `AdventureDirector` honor pause/step + see
@@ -290,6 +297,9 @@ impl Pal3Service {
             intro_played: Cell::new(false),
             item_use_ctx: Cell::new(UseContext::default()),
             pending_item_proc: RefCell::new(None),
+            pending_bigmap: Cell::new(false),
+            ui_sounds: RefCell::new(Vec::new()),
+            assis_lang: RefCell::new(None),
             agent_bridge: RefCell::new(None),
         })
     }
@@ -453,6 +463,56 @@ impl Pal3Service {
         sounds.push(source);
     }
 
+    /// 菜单里的界面音效（`FUN_0053df70(名字, 1)`），放一遍。
+    fn play_ui_sound(&self, name: &str) {
+        let Some(asset_path) = self.last_asset_path.borrow().clone() else {
+            return;
+        };
+        let asset_mgr = self.asset_manager_for(&asset_path);
+        let data = match asset_mgr.load_snd_data(name) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("界面音效 {name} 读不出来: {e:?}");
+                return;
+            }
+        };
+        let engine_rc = self.app.engine();
+        let audio_engine = engine_rc.borrow().audio_engine();
+        drop(engine_rc);
+        let mut source = audio_engine.create_source();
+        source.set_data(data, AudioCodec::Wav);
+        source.play(false);
+        let mut sounds = self.ui_sounds.borrow_mut();
+        // 只留最近几个，放完的早就该放掉了。
+        if sounds.len() > 8 {
+            sounds.remove(0);
+        }
+        sounds.push(source);
+    }
+
+    /// `AssisLang.lang` 第 `index` 条（`sec1`，按出现顺序编号）。
+    fn assis_lang_text(&self, index: usize) -> Option<String> {
+        if self.assis_lang.borrow().is_none() {
+            let asset_path = self.last_asset_path.borrow().clone()?;
+            let asset_mgr = self.asset_manager_for(&asset_path);
+            use common::store_ext::StoreExt2;
+            use encoding::Encoding;
+            let bytes = asset_mgr
+                .vfs()
+                .read_to_end(PathBuf::from("/basedata/basedata/AssisLang.lang"))
+                .ok()?;
+            let text = encoding::all::GBK
+                .decode(&bytes, encoding::DecoderTrap::Ignore)
+                .ok()?;
+            *self.assis_lang.borrow_mut() =
+                Some(shared::openpal3::assis_lang::parse_section(&text, "sec1"));
+        }
+        self.assis_lang
+            .borrow()
+            .as_ref()
+            .and_then(|t| t.get(index).cloned())
+    }
+
     fn asset_manager_for(&self, asset_path: &str) -> Rc<AssetManager> {
         if let Some(am) = self.asset_managers.borrow().get(asset_path) {
             return am.clone();
@@ -530,6 +590,12 @@ impl Pal3Service {
         }
 
         self.refresh_item_use_context();
+
+        if self.pending_bigmap.replace(false) {
+            if let Some(adv) = self.active_adventure_director_owned() {
+                adv.inner::<AdventureDirector>().start_debug_bigmap();
+            }
+        }
 
         let pending_proc = self.pending_item_proc.borrow_mut().take();
         if let Some(proc) = pending_proc {
@@ -726,6 +792,7 @@ impl Pal3Service {
             // `DAT_00d8bbec == 2`——场景类型 2 是迷宫。
             ctx.in_maze = scene.scene_type() == 2;
             ctx.city_is_m22 = scene.name().eq_ignore_ascii_case("M22");
+            ctx.city_is_q14 = scene.name().eq_ignore_ascii_case("Q14");
             ctx.treasure_present = scene.treasure_object_present();
         }
         ctx.proc_2101_exists = adv
@@ -1853,6 +1920,58 @@ impl IPal3ServiceImpl for Pal3Service {
             return false;
         };
         state.set_lineup_position(actor_id as u32, position as u8)
+    }
+
+    fn sword_flight_unlocked(&self) -> bool {
+        self.with_persistent_state(false, |state| state.feature_enabled(Feature::SwordSkill))
+    }
+
+    fn fly_sword(&self) -> i32 {
+        if !self.sword_flight_unlocked() {
+            return 0;
+        }
+        let ctx = self.item_use_ctx.get();
+        match item_use::sword_flight_refusal(&ctx) {
+            Some(index) => {
+                self.play_ui_sound("wa003");
+                index as i32
+            }
+            None => {
+                self.play_ui_sound("wa001");
+                self.pending_bigmap.set(true);
+                0
+            }
+        }
+    }
+
+    fn draw_lang_text(
+        &self,
+        ui: ComRc<IUiHost>,
+        index: i32,
+        x: f32,
+        y: f32,
+        size: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        if index < 0 {
+            return;
+        }
+        let Some(text) = self.assis_lang_text(index as usize) else {
+            return;
+        };
+        ui.text_at_sized(
+            x,
+            y,
+            size,
+            r,
+            g,
+            b,
+            a,
+            &shared::openpal3::assis_lang::unescape(&text),
+        );
     }
 
     fn lineup_page_opened(&self) -> () {
