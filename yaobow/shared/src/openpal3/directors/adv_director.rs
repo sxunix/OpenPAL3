@@ -3104,17 +3104,19 @@ impl AdventureDirectorProps {
             // 只是场景物件在动（食人花吞吐、开关）的那种打断，接着走不算一次重试——古藤林一条路
             // 要过好几朵花。
             // 被冲撞撞飞不算：人已经被挪走了，再走多半又被撞（蜀山故道的「打回起点」）。
-            // 把人载走的物件（神树传送点、电梯、上下传送板）本身就是目标的：载到了就是走完了，再接着走
+            // 把人载走的物件（神树传送点、电梯、上下传送板、移动浮板——浮板会挪，比它路线上的点）本身就是目标的：载到了就是走完了，再接着走
             // 只会又踩上去。路过的（探路把它当成换层的路）照常接着走。
             let goal = self.agent_walk_goal.as_ref().map(|g| g.point);
             let rode = self.scene_manager.scn_scene().is_some_and(|s| {
                 let s = s.inner::<crate::openpal3::scene::ScnScene>();
                 s.object_lock_report().iter().any(|o| {
                     (o.3 || o.4 > 0)
-                        && matches!(o.1, 0x26 | 0x27 | 0x28)
-                        && goal
-                            .zip(s.object_ride_center(o.0))
-                            .is_some_and(|(g, c)| (g.x - c.x).hypot(g.z - c.z) < 60.)
+                        && matches!(o.1, 0x5 | 0x26 | 0x27 | 0x28)
+                        && goal.is_some_and(|g| {
+                            s.object_ride_points(o.0)
+                                .iter()
+                                .any(|c| (g.x - c.x).hypot(g.z - c.z) < 60.)
+                        })
                 })
             });
             if rode {

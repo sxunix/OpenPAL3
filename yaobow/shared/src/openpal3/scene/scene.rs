@@ -2201,6 +2201,13 @@ impl ScnScene {
     }
 
     /// [调试] 会把人载走的物件（神树传送点、电梯、上下传送板）的位置（x、z）：电梯取触发矩形中间那格。
+    pub fn object_ride_points(&self, i: usize) -> Vec<Vec3> {
+        if let Some(path) = self.object_actions.borrow().platform_path(i) {
+            return path;
+        }
+        self.object_ride_center(i).into_iter().collect()
+    }
+
     pub fn object_ride_center(&self, i: usize) -> Option<Vec3> {
         if self.object_kind_at(i) == Some(0x27) {
             let r = self.object_rect(i);

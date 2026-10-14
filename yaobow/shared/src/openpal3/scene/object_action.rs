@@ -542,6 +542,15 @@ impl ObjectActions {
             .is_some_and(|(o, p)| p.on && o.queue.is_empty() && (o.state == 0 || o.state == 3))
     }
 
+    /// 移动浮板路线上的点（agent 用）。
+    pub fn platform_path(&self, i: usize) -> Option<Vec<Vec3>> {
+        self.objs
+            .get(i)?
+            .plat
+            .as_ref()
+            .map(|p| p.path.points.clone())
+    }
+
     /// 移动浮板这一程的终点（停在起点就是路线终点，反之起点）和到那一头时的方向（agent 用）。
     pub fn platform_far_end(&self, i: usize) -> Option<(Vec3, Vec3)> {
         let o = self.objs.get(i)?;
