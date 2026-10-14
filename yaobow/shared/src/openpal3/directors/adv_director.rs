@@ -732,6 +732,46 @@ impl AdventureDirector {
         true
     }
 
+    /// 主角转向 (x, z)（agent 用：推箱子要从哪一边推，取决于按调查键时朝哪边、站哪边）。
+    pub fn face_controlled_role(&self, x: f32, z: f32) -> bool {
+        let p = self.props.borrow();
+        let Some(role) = p.scene_manager.get_resolved_role(p.sce_vm.state(), -1) else {
+            return false;
+        };
+        let pos = role.transform().borrow().position();
+        role.transform()
+            .borrow_mut()
+            .look_at(&Vec3::new(x, pos.y, z));
+        true
+    }
+
+    /// 找一个朝向，让调查键正好选中物件 `i`（[`ScnScene::select_examine_object`] 比的是最后一个进视野的
+    /// 物件的距离，正对一排箱子时远处那个会把近处这个挤掉），转过去。找不到返回 `false`。
+    pub fn face_to_select(&self, i: usize) -> bool {
+        let p = self.props.borrow();
+        let Some(scene_rc) = p.scene_manager.scn_scene() else {
+            return false;
+        };
+        let Some(role) = p.scene_manager.get_resolved_role(p.sce_vm.state(), -1) else {
+            return false;
+        };
+        let layer = RoleController::get_role_controller(role.clone())
+            .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let pos = role.transform().borrow().position();
+        for k in 0..72 {
+            let a = (k as f32 * 5.).to_radians();
+            let f = Vec3::new(a.sin(), 0., a.cos());
+            if scene.select_examine_object(&pos, &f, layer) == Some(i) {
+                role.transform()
+                    .borrow_mut()
+                    .look_at(&Vec3::new(pos.x + f.x, pos.y, pos.z + f.z));
+                return true;
+            }
+        }
+        false
+    }
+
     pub fn teleport_controlled_role(&self, pos: Vec3) -> bool {
         let p = self.props.borrow();
         if p.scene_manager.scene().is_none() {

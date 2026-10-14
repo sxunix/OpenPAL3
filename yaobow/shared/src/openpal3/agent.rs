@@ -1028,6 +1028,33 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "face" => {
+            // [x, z]：主角转向这一点（之后按调查键，选物件、推箱子的方向都照它来）。
+            let (Some(x), Some(z)) = (
+                params.args.first().and_then(|v| v.as_f64()),
+                params.args.get(1).and_then(|v| v.as_f64()),
+            ) else {
+                return AgentResponse::err(AgentError::bad_request("face needs args: [x, z]"));
+            };
+            let ok = director.face_controlled_role(x as f32, z as f32);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: Some(serde_json::json!({ "ok": ok })),
+            })
+        }
+        "face_select" => {
+            // [物件序号]：转到调查键会选中这个物件的朝向。
+            let Some(i) = int_arg(0) else {
+                return AgentResponse::err(AgentError::bad_request(
+                    "face_select needs args: [object_index]",
+                ));
+            };
+            let ok = director.face_to_select(i.max(0) as usize);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: Some(serde_json::json!({ "ok": ok })),
+            })
+        }
         "start_combat" => {
             // boss 那一支：`[id0..id5, 1]` —— 六个战斗位的 actor id。
             // 普通那一支：`[怪数, m1, m2, m3, _, _, 0]` —— 第一个数是**只数**

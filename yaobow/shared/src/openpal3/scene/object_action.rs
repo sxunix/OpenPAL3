@@ -996,6 +996,37 @@ impl ObjectActions {
             }
             0xc => self.skill_gate(i, ev, w),
             0x17 => self.switch(i, ev, w),
+            // 剑冢的剑桥（`FUN_00424c20` case 0x22）：还有次数、只认别的机关叫（事件 2）、闲着。顺着自己的朝向
+            // 往前伸参数 0 那么远（不大于 0 就是 `ROLE_RADIUS × 10`），4 秒，连原位一起改；伸之前清掉压住的
+            // 格子、伸完按新位置登记，再叫连着的物件（不等）；扣一次次数、放音效。
+            // [原版如此] 朝向是度，exe（`fcos(+0xe0)`）和源码（`cosf(m_info.rotate)`）都直接当弧度取余弦、正弦。
+            0x22 => {
+                if self.objs[i].times == 0 || ev != 2 || !self.idle(i) {
+                    return;
+                }
+                let p0 = self.objs[i].p[0];
+                let dist = if p0 > 0 { p0 as f32 } else { ROLE_RADIUS * 10. };
+                let r = w.object_yaw(i);
+                let p = w.object_pos(i);
+                let to = Vec3::new(p.x + dist * r.cos(), p.y, p.z + dist * r.sin());
+                for a in [
+                    Act::Tiles(true),
+                    Act::Move {
+                        to,
+                        dur: 4.,
+                        carry: false,
+                        home: true,
+                    },
+                    Act::Tiles(false),
+                    Act::Link { wait: false },
+                ] {
+                    self.push(i, a, w);
+                }
+                self.use_once(i, w);
+                self.sound(i, 0, w);
+                self.run(i, w);
+                self.objs[i].locked = true;
+            }
             // 剑冢的剑或锤（`FUN_00424c20` case 0x1c）：只认别的机关叫（事件 2）。参数 0 为 1 的锤翻开关，
             // 「可通过」跟着开关走——开着上下动、能从底下钻过去，关着落在地上挡路。
             0x1c => {
@@ -2273,6 +2304,7 @@ fn sound_name(kind: u8, p0: i32, p: i32) -> Option<&'static str> {
         0xb => Some("We025"),
         0x1e => Some("Wg005"),
         0x16 => Some("Wg005"),
+        0x22 => Some("wg005"),
         _ => None,
     }
 }
@@ -3051,6 +3083,31 @@ mod tests {
         assert!(!a.input_locked());
         a.event(0, 0, false, 0.1, &mut w);
         assert!(a.objs[0].queue.is_empty(), "掉下来以后不再动");
+    }
+
+    /// 剑冢的剑桥（0x22）：只认事件 2；朝向（度，原版直接当弧度）方向伸参数 0 那么远，4 秒，格子先清后登记，
+    /// 叫连着的物件，扣次数；次数用完再叫不理。
+    #[test]
+    fn sword_bridge_extends_along_its_facing() {
+        let (mut a, mut w) = single(0x22, [55, 0, 0, 0], 0);
+        a.objs[0].times = 1;
+        w.yaw[0] = 3.;
+        a.event(0, 0, false, 0.1, &mut w);
+        assert!(a.idle(0), "踩上去不理");
+        a.event(0, 2, false, 0.1, &mut w);
+        assert!(a.input_locked());
+        assert_eq!(w.tiles, [(0, true, 0)]);
+        assert_eq!(w.sounds, ["wg005"]);
+        for _ in 0..41 {
+            w.frame(&mut a, 0.1);
+        }
+        let (x, z) = (100. + 55. * 3f32.cos(), 200. + 55. * 3f32.sin());
+        assert!((w.pos[0].x - x).abs() < 1e-3 && (w.pos[0].z - z).abs() < 1e-3);
+        assert_eq!(w.pos[0].y, 300.);
+        assert_eq!(w.tiles, [(0, true, 0), (0, false, 0)]);
+        assert_eq!(a.objs[0].times, 0);
+        a.event(0, 2, false, 0.1, &mut w);
+        assert!(a.idle(0), "次数用完不再伸");
     }
 
     /// 剑冢的锤（0x1c，参数 0 为 1）：只认事件 2，翻开关、「可通过」跟着走；开着时 y = 原位 + 参数 1 ×

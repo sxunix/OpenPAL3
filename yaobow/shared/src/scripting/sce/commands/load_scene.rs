@@ -149,6 +149,15 @@ impl SceCommandLoadScene {
                 }
                 continue;
             }
+            if kind == 0x22 {
+                // 剑桥：伸出去时原位一起改了，存档里是伸出去的位置（上面已经摆好）；格子按它重新登记
+                // （`SceneObj::OnLoad` case 34，`gamebase/sceneobj.cpp:4237`）。
+                if let (true, Some(i)) = (position.is_some(), scene.object_index_of(id)) {
+                    let l = scene.object_layer_at(i).unwrap_or(0);
+                    scene.set_object_tiles(i, false, l);
+                }
+                continue;
+            }
             if kind == 0xb {
                 // 推箱子：位置是推完记的原位（上面已经摆好），格子按它重新登记；三态箱子的状态存在状态那一格。
                 if let Some(i) = scene.object_index_of(id) {
