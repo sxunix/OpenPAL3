@@ -426,6 +426,8 @@ pub trait World {
     fn save_times(&mut self, _i: usize, _times: u8) {}
     /// 神树花总开关翻了：记下花开没开（`DAT_00d8bc38`），把场上的花都换过去。
     fn switch_flowers(&mut self, _open: bool) {}
+    /// `FUN_0042c730`：神树花总开关的模型照花开没开换（`4\\_c.cvd` / `4\\_c1.cvd`），停在第一帧。
+    fn flower_master_model(&mut self, _i: usize) {}
     /// 当前城里 `scene` 那个子场景的 `id` 号物件，开关标志开着没有（`Archive::FindObj`，存档里那条）。
     fn depend_switch_on(&self, _scene: &str, _id: i32) -> bool {
         false
@@ -1980,8 +1982,6 @@ impl ObjectActions {
         }
     }
 
-    /// `FUN_0042c810`（`SceneObj::OpenSwitch`）：扣次数、翻开关。[未做] 参数 2 为 1（神树花的总开关）时
-    /// 还要把场景里所有类型 0x25 的花一起开合。
     /// `FUN_0042c810`：扣一次次数、翻开关；参数 2 为 1 的是神树花总开关，花开没开 = 开关是不是 0，
     /// 场上的花跟着换（`FUN_0042c280`）。
     fn open_switch<W: World>(&mut self, i: usize, w: &mut W) {
@@ -2355,6 +2355,9 @@ impl ObjectActions {
                 self.objs[i].state = 0;
                 self.own_proc(i, w);
                 let p = self.objs[i].p;
+                if p[2] == 1 {
+                    w.flower_master_model(i);
+                }
                 if p[0] == 1 {
                     // `+0xd1 = +0xaf`：开关这时已经翻过。
                     let on = w.switch_on(i);

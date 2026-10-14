@@ -4007,6 +4007,11 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
             .object_tile_walkable(i, self.nav_layer_of_player(), p)
     }
 
+    fn flower_master_model(&mut self, i: usize) {
+        let open = self.state.global_state().divine_tree_flower();
+        self.scene.flower_master_model(i, open);
+    }
+
     fn switch_flowers(&mut self, open: bool) {
         log::debug!("场景物件：神树花 {}", if open { "开" } else { "关" });
         self.state.global_state_mut().set_divine_tree_flower(open);

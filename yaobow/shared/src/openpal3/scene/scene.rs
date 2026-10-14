@@ -2289,24 +2289,69 @@ impl ScnScene {
     /// `FUN_00429af0(路径)`：物件 `i` 换成 `object\<name>` 那个模型，摆在原来的位置、朝向上，显不显示照旧。
     /// 挡路表里的盒子不动（原版这里也只换 `m_mdl`）。
     pub fn replace_object_model(&self, i: usize, name: &str) {
+        self.swap_object_entity(i, name, |id, visible| {
+            self.asset_mgr.load_object_item_cvd(name, id, visible)
+        });
+    }
+
+    /// 同 [`Self::replace_object_model`]，模型取场景目录 `folder` 底下的 `name`（`.pol` 或 `.cvd`），
+    /// 神树花和花的总开关用（`OpenSceneFile` 开的是当前城，路径「块\名字」）。
+    pub fn replace_object_model_scn(&self, i: usize, folder: &str, name: &str) {
+        self.swap_object_entity(i, name, |id, _visible| {
+            let night = self.scn_file.is_night;
+            if name.to_lowercase().ends_with(".cvd") {
+                self.asset_mgr
+                    .load_scn_cvd(&self.cpk_name, folder, name, night, id)
+            } else {
+                self.asset_mgr
+                    .load_scn_pol(&self.cpk_name, folder, name, night, id)
+            }
+        });
+    }
+
+    fn swap_object_entity(
+        &self,
+        i: usize,
+        name: &str,
+        load: impl FnOnce(u16, bool) -> Option<ComRc<IEntity>>,
+    ) {
         let Some(id) = self.scn_file.nodes.get(i).map(|n| n.object_id()) else {
             return;
         };
         let old = self.get_root_object(id);
         let visible = old.as_ref().is_none_or(|e| e.visible());
-        let Some(new) = self
-            .asset_mgr
-            .load_object_item_cvd(name, id as u16, visible)
-        else {
+        let Some(new) = load(id as u16, visible) else {
             log::warn!("场景物件：#{i} 换模型，没有 {name}");
             return;
         };
+        new.set_visible(visible);
         if let Some(old) = &old {
             let m = *old.transform().borrow().matrix();
             new.transform().borrow_mut().set_matrix(m);
         }
         self.scene.remove_entities_by_name(&format!("OBJECT_{id}"));
         self.scene.add_entity(new);
+    }
+
+    /// `FUN_0042c730`（`SceneObj::FlowerSwitch_Mdl`）：神树花总开关的模型跟着花开没开换——开着是第 4 块的
+    /// `_c.cvd`，关着是 `_c1.cvd`——停在第一帧（`[vtbl+0x18](0)` + `SetTimeScale(0)`）。
+    pub fn flower_master_model(&self, i: usize, open: bool) {
+        self.replace_object_model_scn(i, "4", if open { "_c.cvd" } else { "_c1.cvd" });
+        if let Some(e) = self.object_entity_at(i) {
+            let mut cvds = vec![];
+            cvd_components(&e, &mut cvds);
+            for c in cvds {
+                c.inner::<CvdModelComponent>().rewind();
+            }
+        }
+    }
+
+    /// 神树花总开关在 `.scn` 里的序号。
+    pub fn flower_master_index(&self) -> Option<usize> {
+        self.scn_file
+            .nodes
+            .iter()
+            .position(|n| (n.node_type & 0xff) == 0x17 && n.ladder_nav_coord2.0 == 1)
     }
 
     /// 把物件的动画停在最后一帧（放下的吊桥读档回来就是放下的）。
@@ -2420,7 +2465,7 @@ impl ScnScene {
 
     /// 把这个场景的神树花（类型 0x25）都摆成开 / 关（`FUN_0042c280`，按 `.scn` 顺序）：关着的模型是名字
     /// 末尾 5 个字符换成 `2.pol`（`_a1.pol` → `_a2.pol`），按那个模型重新登记格子，「可通过」= `open`。
-    /// [未做] 场上的模型不换，只换挡路。
+    /// 场上的模型也换（`FUN_00429af0`，模型取当前块目录底下的那个名字）。
     pub fn switch_flowers(&self, open: bool) {
         // 物件类型直接看 `.scn`：总开关被拨时物件动作正借着（`ObjectActions`），不能再借。
         for i in 0..self.scn_file.nodes.len() {
@@ -2435,6 +2480,8 @@ impl ScnScene {
             };
             let model = self.object_model_box(&name);
             log::debug!("神树花：#{i} {} {name}", if open { "开" } else { "关" });
+            let block = self.scn_file.scn_base_name.clone();
+            self.replace_object_model_scn(i, &block, &name);
             if let Some(b) = self.object_blocking.borrow_mut().as_mut() {
                 b.set_flower(i, model, open);
             }

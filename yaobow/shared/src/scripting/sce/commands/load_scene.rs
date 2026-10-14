@@ -327,6 +327,10 @@ impl SceCommandLoadScene {
             state.global_state_mut().set_divine_tree_flower(!on);
         }
         scene.switch_flowers(state.global_state().divine_tree_flower());
+        // 总开关自己的模型也照花开没开换（`FUN_0042b5b0` 读档时参数 2 为 1 那一支调 `FUN_0042c730`）。
+        if let Some(i) = scene.flower_master_index() {
+            scene.flower_master_model(i, state.global_state().divine_tree_flower());
+        }
     }
 
     /// 新场景把 `ROLE_2` 一律建成蓝龙葵（`ScnScene::map_role_id` 把 2 映到
