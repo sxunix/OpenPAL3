@@ -1021,3 +1021,39 @@ explorer cannot survive.
 Not done yet: the closed-flower and plate model swaps, the type 21
 eyeball's look, the lift and beam camera locks, the spell-side MISS case
 in FUN_0050a700.
+
+## 2026-10-15 — 海底城 to the ending
+
+- 海底城 M23/5 hop platforms (node type 5, parameter 0 = 1): touching
+  one walks it along its path with the player riding (states 11/12 in
+  FUN_00426eb0); load restores where it stopped.
+
+- 剑冢 M24 swords and hammers (node type 0x1c): parameter 0 = 0 swings
+  24·sin t degrees about its own Z axis (the first rotation in
+  FUN_00429ee0); parameter 0 = 1 is a hammer that only answers event 2,
+  flipping its switch and passability — running, it moves to
+  home_y + p1·(sin t + 1)/2, never below the floor; stopped, it rests on
+  the floor and blocks. Touching either costs the team 10 % / 15 % of
+  max 精 behind the shared 1.2 s hurt timer (PlayerMgr::Obj_Hurt). The
+  M24/2 weight turtle runs proc 506, which starts the five hammers.
+
+- 剑冢 sword bridges (0x22): event 2 with uses left extends the bridge
+  p0 (default ROLE_RADIUS·10) along its facing over 4 s and re-registers
+  its tiles, then calls the linked object. The facing is in degrees but
+  the exe (fcos +0xe0) and the source (cosf(m_info.rotate)) both feed it
+  to cos/sin as radians; kept.
+
+- Opcode 124 is FUN_00424c20(player, 2) for every node type; the port
+  had forwarded only a hand-picked list, so 0x1c hammers and 0x22
+  bridges never moved. Types 1/2 still only play their animation.
+
+- The examine picker compares the distance of the *last* in-view object
+  (as the exe does), so facing a row of 剑冢 boxes can select nothing.
+  The agent gained `face` / `face_select` to aim the examine key; the
+  M24/6 and M24/5 box puzzles were solved with 2 + 1 and 2 pushes.
+
+Story 140300 → 151100 and the ending: 剑冢 (140600–140900, 龙葵 branch),
+蜀山 (150100–150900), 新仙界 and the 重楼 duel (lost → 1006 → END1 /
+END movies → main menu). Story fights were won with the debug
+`combat_win` after 60 s; the party is level 99 with early gear, so
+real fights are not representative.
