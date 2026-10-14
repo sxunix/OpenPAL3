@@ -78,6 +78,7 @@ impl AdventureDirector {
                 hurt_time: 0.,
                 ram_fly: None,
                 last_nav_trigger: None,
+                scene_slots: Default::default(),
                 input_lock: false,
                 agent_walk: None,
                 agent_walk_goal: None,
@@ -225,6 +226,7 @@ impl AdventureDirector {
                 hurt_time: 0.,
                 ram_fly: None,
                 last_nav_trigger: None,
+                scene_slots: Default::default(),
                 input_lock: false,
                 agent_walk: None,
                 agent_walk_goal: None,
@@ -799,6 +801,15 @@ struct AdventureDirectorProps {
     /// 上一帧主角站着的导航触发区的过程号。原版类型 0 触发点（`FUN_00424c20` case 0）只在「上一帧不在同一个物件上」
     /// 时跑过程，站着不动不会每帧重跑。
     last_nav_trigger: Option<u32>,
+    /// 原版场景按类型分两槽放（`SceneMgr::s_scene`，`SceneIndex`：城镇 0 和战斗关 2 共用一槽、建筑内部 1
+    /// 一槽）。换进来的场景和这一槽里放着的是同一个时只 `LoadData(file, TRUE)`，不 `Destroy()`，
+    /// 「上一次站的物件」`m_lastobj` 留着（`scenemgr.cpp:134`、`scene.cpp` `LoadData`）——从城镇进房间
+    /// 再出来，落脚点在进门的那扇门里也不会立刻又进去。这里每槽记（场景，那时的
+    /// [`Self::last_nav_trigger`]），第三项是现在所在的场景和槽。
+    scene_slots: (
+        [Option<((String, String), Option<u32>)>; 2],
+        Option<((String, String), usize)>,
+    ),
     /// 主角碰出来的过程还在跑（原版 `ObjLockInput`：物件、对话、调查起的脚本连同它 `Call` 出去的
     /// 都登记进去，`RoleCtrl::Update` 见它非空就不处理主角操作，`SceneMgr::Update` 也不查脚下物件，
     /// `rolectrl.cpp` / `scenemgr.cpp:315`）。移植端的脚本机只有一条调用栈，碰出来的过程跑着时
@@ -3213,6 +3224,28 @@ impl AdventureDirectorProps {
         };
 
         let scene_rc = self.scene_manager.scn_scene().unwrap();
+        // 换了场景：原来那一槽记下离开时的「上一次站的」，新场景要是还是它那一槽里放着的那个，接着用。
+        {
+            let key = {
+                let s = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+                (s.name().to_lowercase(), s.sub_name().to_lowercase())
+            };
+            let slot = {
+                let s = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+                if s.scene_type() == 1 { 1 } else { 0 }
+            };
+            let (slots, cur) = &mut self.scene_slots;
+            if cur.as_ref().is_none_or(|(k, _)| *k != key) {
+                if let Some((old, old_slot)) = cur.take() {
+                    slots[old_slot] = Some((old, self.last_nav_trigger));
+                }
+                self.last_nav_trigger = match &slots[slot] {
+                    Some((k, last)) if *k == key => *last,
+                    _ => None,
+                };
+                *cur = Some((key, slot));
+            }
+        }
         // 锁着的时候原版整段 `Scene::InterActRole` 不跑，「上一次站的物件」也不更新。
         if !locked {
             let proc_id_opt = {
