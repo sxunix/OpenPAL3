@@ -25,6 +25,13 @@ impl SceCommand for SceCommandRoleEndAction {
     ) -> bool {
         scene_manager
             .resolve_role_mut_do(state, self.role_id, |_, rc| {
+                // 原版把角色登记成等待对象（`cmd_RoleEndAction`，`script/scriptcmd.cpp:408`），
+                // `Role::IsWaiting()` 第一句就是 `if(!m_active) return FALSE;`（`role.cpp:1887`）：
+                // 不在场的角色不用等。脚本常先 `RoleActive x 0` 再 `RoleEndAction x`（第七章
+                // 「遇到苍萤」），不在场的角色动画不再推进，先前在这里永远等不到结束。
+                if !rc.is_active() {
+                    return true;
+                }
                 // A looping action (`RoleShowAction` mode `-1`) wraps forever and
                 // never reaches `Idle`/`AnimationFinished`, so blocking on it here
                 // would stall the script permanently. Mirror `RoleShowAction`'s

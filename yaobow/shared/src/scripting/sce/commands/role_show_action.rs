@@ -64,6 +64,11 @@ impl SceCommand for SceCommandRoleShowAction {
         // used to panic here. Treat a missing role as "done".
         scene_manager
             .resolve_role_do(state, self.role_id, |_, r| {
+                // `Role::IsWaiting()`：不在场的角色不用等（`role.cpp:1887`）。并行模式下动作播到一半
+                // 被 `RoleActive x 0` 撤下，它的动画就不再往前走了。
+                if !r.is_active() {
+                    return true;
+                }
                 let s = r.state();
                 s == RoleState::Idle
                     || s == RoleState::AnimationFinished
