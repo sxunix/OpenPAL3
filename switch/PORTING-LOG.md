@@ -1000,6 +1000,24 @@ From 71800 to 100400 (神树, 锁妖塔, 蜀山 after 雪见's death):
   map (exe 0x4ae65e). From chapter 11 this is the only way out of 蜀山
   to 酆都; without it the story stopped at 120100.
 
+- 黄泉路 M21 push boxes (node type 0xb) and lift gates (0x1e): examine
+  key only; four push points around the box, the nearest one within 600;
+  one push moves 50 at WalkSpeed; CanGoTo checks the box's four corner
+  tiles and OBB overlap against blocking objects and other boxes (a
+  standard separating-axis test stands in for the unreversed
+  gbOBBox::IsColOBB); the three-state box (parameter 0 = 2) only moves
+  along z and opens the gate in parameter 1 or 2. Upstream treated node
+  type 11 as an item trigger and ran its proc on examine; that is gone;
+- 冰风谷 M22 slides (0x23): stepping on carries the player along the
+  node's polyline at 600 per second with a cosine ease, then runs the
+  proc and waits for it; opcode 124 on a lift (type 22) now posts the
+  object's event 2 instead of moving it directly, so the snowballs land
+  and become walkable bridges.
+
+Story 100102 → 140300 (chapters 10–14). The agent gained `combat_win`
+(debug) for the 20-round 邪剑仙 fight in M22/5 that the attack-only
+explorer cannot survive.
+
 Not done yet: the closed-flower and plate model swaps, the type 21
 eyeball's look, the lift and beam camera locks, the spell-side MISS case
 in FUN_0050a700.
