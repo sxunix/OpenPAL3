@@ -1064,6 +1064,8 @@ impl ObjectActions {
                 let lift = plat.lift;
                 self.objs[i].state = 5;
                 w.set_object_pos(i, &p);
+                // 原位 +0xd4 改成这一头（存档里记的就是它，读档后板子停在这一头、状态又是 0）。
+                w.save_pos(i);
                 w.object_tiles(i, false, layer);
                 if !lift {
                     return;

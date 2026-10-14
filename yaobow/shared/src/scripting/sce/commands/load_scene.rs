@@ -125,9 +125,15 @@ impl SceCommandLoadScene {
                 continue;
             }
             if kind == 0x5 {
-                // 移动浮板存的是自己的开关标志 +0xaf（开关推它时写的），不是状态。[未做] 板子停在哪头
-                // （原版存的是 `m_info.pos`，读档后状态又是 0）。
+                // 移动浮板存的是自己的开关标志 +0xaf（开关推它时写的），不是状态；位置是到头时改的原位
+                // `m_info.pos`（上面已经摆好），读档后状态又是 0，格子按新位置重新登记。
                 scene.set_platform_switch(id, object_state != 0);
+                if position.is_some() {
+                    if let Some(i) = scene.object_index_of(id) {
+                        let l = scene.object_layer_at(i).unwrap_or(0);
+                        scene.set_object_tiles(i, false, l);
+                    }
+                }
                 continue;
             }
             if object_state != 0 {
