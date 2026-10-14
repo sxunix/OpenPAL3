@@ -13,7 +13,7 @@
 //! |---|---|
 //! | 1 | 动画播一遍（时间缩放 1.0），状态置 4 |
 //! | 2 | 动画循环播（时间缩放 1.0），状态置 1 |
-//! | 22 | 把物件抬到 `+0xf8` 给的高度，再按一次放回 |
+//! | 22 | 升降平台：交给物件动作（停在下面就升到 `+0xf8` 的高度，停在上面就降回原位） |
 //! | 23 | 翻转开关标志 `+0xaf`；动画型物件重播一遍，时间缩放 2.0；参数 0 为 1 时「可通过」跟着开关走（交给物件动作） |
 //! | 28 | 只翻转开关标志（`+0xf8 == 1` 时） |
 //! | 19（0x13，吊桥） | 放下来：交给场景物件的动作队列（[`crate::openpal3::scene::object_action`]） |
@@ -24,13 +24,9 @@
 //! that counter was not identified, so it is not reproduced — objects
 //! here can be used any number of times.
 //!
-//! Type 22's target height is `obj+0xf8`, which the object constructor
-//! fills from record offset `0x4c` — the same slot a ladder node keeps
-//! its first nav coordinate in. The arm sets the object's y to it on the
-//! first press and puts it back on the second. The original slides the
-//! object there over time (its per-frame update owns the motion, keyed on
-//! the state byte); here it moves in one step, so the end position is
-//! right and the travel is not.
+//! Type 22's motion (rise to `obj+0xf8`, the record's offset `0x4c`, or
+//! fall back home at 30 per second, then turn passable) is the scene
+//! object's own per-frame update, so the opcode only posts event 2.
 //!
 //! The switch flag is the same one 126 `GetSwitch` reads, so a mechanism
 //! toggled here is visible to the scripts that gate on it.
@@ -125,7 +121,10 @@ impl SceCommand for SceCommandInteractWithObject {
             28 => {
                 let _ = self.toggle_switch(&scene, state);
             }
-            22 => self.lift(&scene, state),
+            // 升降平台（`FUN_00424c20` case 0x16 事件 2）交给物件动作：停在下面就往参数 0 的高度升、停在上面就
+            // 降回原位，停住后「可通过」、按参数 1 换层。冰风谷的小雪球（参数 0 为 0）就是这样落到地上搭成
+            // 路的；先前这里直接改高度，格子不跟着变，路搭不起来。
+            22 => scene.post_object_event(self.object_id, 2),
             // 吊桥（`FUN_00424c20` case 0x13）排的动作要带着主角做，交给冒险循环。
             19 => scene.post_object_event(self.object_id, 2),
             other => log::debug!(
@@ -141,32 +140,6 @@ impl SceCommand for SceCommandInteractWithObject {
 impl SceCommandInteractWithObject {
     pub fn new(object_id: i32) -> Self {
         Self { object_id }
-    }
-
-    /// Type 22: up to the parameter height, or back down. The original
-    /// tracks four states (idle / rising / up / falling); with no motion
-    /// to be in the middle of, the switch flag carries the same
-    /// information — off means down, on means up.
-    fn lift(&self, scene: &ScnScene, state: &mut SceState) {
-        let Some(target) = scene.object_parameter(self.object_id) else {
-            return;
-        };
-        let Some((home, _)) = scene.object_placement(self.object_id) else {
-            return;
-        };
-        let raised = self.toggle_switch(scene, state) == 1;
-        let y = if raised { target as f32 } else { home.y };
-        let Some(entity) = scene.get_root_object(self.object_id) else {
-            return;
-        };
-        let mut position = entity.transform().borrow().position();
-        position.y = y;
-        entity.transform().borrow_mut().set_position(&position);
-        log::debug!(
-            "Trigger: 升降物件 {} -> y {y} ({})",
-            self.object_id,
-            if raised { "升起" } else { "落回" }
-        );
     }
 
     /// `+0xaf = !+0xaf`, the byte 126 `GetSwitch` reads back. Returns the

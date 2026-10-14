@@ -1935,7 +1935,7 @@ impl ScnScene {
     /// 导航格的原始地面高度，不算物件；出界是 0（`FUN_0042ebe0` case 0xd）。
     pub fn nav_floor(&self, layer: usize, p: &Vec3) -> f32 {
         use super::field_monster::Layers as _;
-        use super::nav_path::{FieldNav as _, NavGrid as _};
+        use super::nav_path::FieldNav as _;
         let nav = FieldNavView { scene: self, layer };
         let (x, z) = nav.tile_of(p);
         let (w, h) = self.nav.size(layer);
