@@ -122,6 +122,8 @@ pub struct ParticleGroup {
     stopped: RefCell<bool>,
     /// 整组的缩放，见 [`ParticleEffect::set_scale`]。
     scale: RefCell<f32>,
+    /// 发射器不再循环（`gbPartEmitter::SetLoopEmit(false)`）：到这一轮末尾就不发了。
+    stop_at: RefCell<Option<f32>>,
 }
 
 impl ParticleGroup {
@@ -139,11 +141,25 @@ impl ParticleGroup {
             rand: RefCell::new(Rand(seed | 1)),
             stopped: RefCell::new(false),
             scale: RefCell::new(1.),
+            stop_at: RefCell::new(None),
         }
     }
 
     pub fn def(&self) -> &ParGroupDef {
         &self.def
+    }
+
+    /// `gbPartEmitter::SetLoopEmit(false)`：这一轮发完就停。
+    /// [推断] gbengine 的发射器循环没逆，按「当前这一轮的末尾」停。
+    pub fn finish_cycle(&self) {
+        let period = self.def.emitter.period;
+        let elapsed = *self.elapsed.borrow();
+        let end = if period > 0. {
+            ((elapsed / period).floor() + 1.) * period
+        } else {
+            elapsed
+        };
+        *self.stop_at.borrow_mut() = Some(end);
     }
 
     pub fn blend(&self) -> ParBlend {
@@ -164,6 +180,9 @@ impl ParticleGroup {
     /// `ComputeEmitterData` plus the `CreateOneParticle` loop.
     fn emit(&self, elapsed: f32, delta_sec: f32) {
         if *self.stopped.borrow() {
+            return;
+        }
+        if self.stop_at.borrow().is_some_and(|t| elapsed >= t) {
             return;
         }
         let emitter = &self.def.emitter;

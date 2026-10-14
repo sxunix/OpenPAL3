@@ -51,6 +51,8 @@ pub struct ScnScene {
     rams: RefCell<Vec<(super::ram::Ram, ComRc<IEntity>)>>,
     /// 存盘点的特效（[`super::save_point`]）。
     save_points: RefCell<Vec<super::save_point::SavePointFx>>,
+    /// 瘴气（MeshFx 第 0 类 `MXPoisonFog`）：（`.scn` 序号, 粒子, 每组一个实体, 状态 0 / 1 / −1）。
+    poison_fogs: RefCell<Vec<(usize, super::ParticleEffect, Vec<ComRc<IEntity>>, i32)>>,
     /// 野外怪物的 AI（`FUN_00417420`），第一次推的时候按角色建。
     field_monsters: RefCell<Vec<super::field_monster::FieldMonster>>,
     /// 场景物件挡路的格子表（`FUN_00420940`），载入物件后建。
@@ -105,6 +107,7 @@ impl ScnScene {
             player_object: RefCell::new(None),
             rams: RefCell::new(vec![]),
             save_points: RefCell::new(vec![]),
+            poison_fogs: RefCell::new(vec![]),
             object_rng: RefCell::new(CrtRand::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1821,6 +1824,13 @@ impl ScnScene {
                     entity = self.build_scene_effect(obj);
                     // 存盘点（MeshFx 第 2 类）、传送点（第 1 类）：物件本身是个空实体（调查、走过去要它的位置），
                     // 特效另建。
+                    if entity.is_none() && obj.name == "+0" {
+                        entity = Some(radiance::scene::CoreEntity::create(
+                            format!("OBJECT_{}", obj.object_id()),
+                            visible,
+                        ));
+                        self.load_poison_fog(node_index, &mut entities);
+                    }
                     if entity.is_none() && (obj.name == "+2" || obj.name == "+1") {
                         entity = Some(radiance::scene::CoreEntity::create(
                             format!("OBJECT_{}", obj.object_id()),
@@ -3019,8 +3029,111 @@ impl ScnScene {
         self.save_points.borrow_mut().push(fx);
     }
 
+    /// 瘴气（`MXPoisonFog::Create`，exe 0x4bd880）：`effect\gbParticle\poisonfog.par`，整个放大 32 倍
+    /// （`SetSpaceScale(32)`，写在粒子特效的 +0x118）。粒子在物件原点那里发。
+    fn load_poison_fog(&self, node_index: usize, entities: &mut Vec<ComRc<IEntity>>) {
+        use fileformats::pal3::par::{ParEffect, read_par};
+        let path = self.asset_mgr.particle_root().join("poisonfog.par");
+        let Some(def) = common::store_ext::StoreExt2::read_to_end(self.asset_mgr.vfs(), &path)
+            .ok()
+            .and_then(|d| read_par(&mut d.as_slice()).ok())
+            .map(|f| ParEffect::decode(&f))
+        else {
+            log::warn!("瘴气：读不到 {}", path.display());
+            return;
+        };
+        let factory = self.asset_mgr.component_factory();
+        let mut groups = vec![];
+        for (k, g) in def.groups.iter().enumerate() {
+            let tex = self
+                .asset_mgr
+                .particle_root()
+                .join(g.param.texture.replace('\\', "/"));
+            let Some(image) = self.asset_mgr.read_picture(&tex) else {
+                log::warn!("瘴气：读不到贴图 {}", tex.display());
+                return;
+            };
+            let e = super::build_particle_entity(
+                &factory,
+                node_index * 16 + k,
+                tex.to_str().unwrap_or("poisonfog"),
+                image,
+            );
+            entities.push(e.clone());
+            groups.push(e);
+        }
+        let effect = super::ParticleEffect::with_shapes(&def, |n| {
+            crate::openpal3::directors::load_par_shape(&self.asset_mgr, n)
+        });
+        effect.set_scale(32.);
+        self.poison_fogs
+            .borrow_mut()
+            .push((node_index, effect, groups, 0));
+    }
+
+    /// 瘴气每帧（`MXPoisonFog::Update` 0x4bd900 / `Attach`）：状态 0、1 都走粒子；1 时第 0 组一个活的都没有
+    /// 就转 −1、不再画。物件不在场也不画。
+    fn step_poison_fogs(&self, dt: f32) {
+        use radiance::comdef::ISceneExt;
+        let (right, up) = {
+            let camera = self.scene.camera();
+            let f = camera.transform().matrix().floats();
+            (
+                Vec3::new(f[0][0], f[1][0], f[2][0]),
+                Vec3::new(f[0][1], f[1][1], f[2][1]),
+            )
+        };
+        for (node, effect, entities, state) in self.poison_fogs.borrow_mut().iter_mut() {
+            if *state == 0 || *state == 1 {
+                effect.step(dt);
+                if *state == 1 && effect.groups().first().is_none_or(|g| g.alive_count() == 0) {
+                    *state = -1;
+                }
+            }
+            let shown = *state != -1 && self.node_present(*node);
+            let base = self.scn_file.nodes[*node].position;
+            for (e, g) in entities.iter().zip(effect.groups()) {
+                e.set_visible(shown);
+                if shown {
+                    let ps: Vec<_> = g
+                        .particles()
+                        .into_iter()
+                        .map(|mut p| {
+                            p.position = Vec3::add(&base, &p.position);
+                            p
+                        })
+                        .collect();
+                    super::write_particle_mesh(e, &ps, g.def().param.frames, &right, &up);
+                }
+            }
+        }
+    }
+
+    /// MeshFx 的状态（`FUN_004b7020`，`GetCurrentState`）：瘴气才有；不是 MeshFx 是 `None`。
+    pub fn mesh_fx_state(&self, i: usize) -> Option<i32> {
+        if let Some((_, _, _, s)) = self.poison_fogs.borrow().iter().find(|f| f.0 == i) {
+            return Some(*s);
+        }
+        self.save_points
+            .borrow()
+            .iter()
+            .any(|f| f.node == i)
+            .then_some(0)
+    }
+
+    /// `ChangeState(1)`：瘴气散开——第 0 组的发射器不再循环，状态 1。
+    pub fn mesh_fx_clear_off(&self, i: usize) {
+        if let Some(f) = self.poison_fogs.borrow_mut().iter_mut().find(|f| f.0 == i) {
+            if let Some(g) = f.1.groups().first() {
+                g.finish_cycle();
+            }
+            f.3 = 1;
+        }
+    }
+
     /// 存盘点特效每帧（`MXSavePoint::Update` + 摆位置）；物件不在场就不画。
     pub fn step_save_points(&self, dt: f32) {
+        self.step_poison_fogs(dt);
         for fx in self.save_points.borrow_mut().iter_mut() {
             let present = self.node_present(fx.node);
             fx.set_visible(present);

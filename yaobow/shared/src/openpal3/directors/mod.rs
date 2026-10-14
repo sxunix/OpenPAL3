@@ -1,6 +1,7 @@
 mod adv_director;
 
 pub use adv_director::AdventureDirector;
+pub(crate) use adv_director::load_par_shape;
 use crosscom::ComRc;
 use radiance::comdef::{IEntity, ISceneManager};
 

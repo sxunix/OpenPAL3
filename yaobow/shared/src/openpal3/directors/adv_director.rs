@@ -4135,6 +4135,15 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         }
     }
 
+    fn mesh_fx_state(&self, i: usize) -> Option<i32> {
+        self.scene.mesh_fx_state(i)
+    }
+
+    fn mesh_fx_clear_off(&mut self, i: usize) {
+        log::debug!("场景物件：#{i} 瘴气散开");
+        self.scene.mesh_fx_clear_off(i);
+    }
+
     fn object_name(&self, i: usize) -> String {
         self.scene.object_name_at(i).unwrap_or_default()
     }
@@ -4164,7 +4173,7 @@ impl ObjWorld<'_> {
 
 /// 读 `.par` 里形状 2 的发射器指的那份 `.csf` 点云。名字是相对
 /// `effect\gbParticle` 目录的反斜杠写法。
-fn load_par_shape(
+pub(crate) fn load_par_shape(
     asset_mgr: &std::rc::Rc<crate::openpal3::asset_manager::AssetManager>,
     name: &str,
 ) -> Option<Vec<[f32; 3]>> {

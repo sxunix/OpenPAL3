@@ -528,6 +528,12 @@ pub trait World {
     fn swap_model(&mut self, _i: usize, _name: &str) {}
     /// 物件模型停在最后一帧、不再播（`[vtbl+0x18](-1)` + `SetTimeScale(0)`）。
     fn hold_anim_end(&mut self, _i: usize) {}
+    /// 物件模型是 MeshFx（模型类型 4）时它的状态（`GetCurrentState`）；不是 MeshFx 是 `None`。
+    fn mesh_fx_state(&self, _i: usize) -> Option<i32> {
+        None
+    }
+    /// MeshFx 的 `ChangeState(1)`（瘴气散开）。
+    fn mesh_fx_clear_off(&mut self, _i: usize) {}
     /// 物件的名字（`.scn` 记录 +4，物件 +0xb0）。
     fn object_name(&self, _i: usize) -> String {
         String::new()
@@ -2087,12 +2093,21 @@ impl ObjectActions {
                     self.objs[i].state = 3;
                     if w.object_animated(i) {
                         w.play_anim(i, ANIM_SPEED);
+                    } else if w.mesh_fx_state(i).is_some() {
+                        // 模型类型 4（MeshFx，瘴气）：`ChangeState(1)`（虚表 +0x34）。
+                        w.mesh_fx_clear_off(i);
                     }
                     self.sound(i, 0, w);
                 }
             }
             3 => {
-                if !w.object_animated(i) || w.anim_done(i) {
+                // 模型类型 3 等动画播完、4（MeshFx）等它的状态到 −1（`FUN_0042b1f0`），别的当场算完。
+                let over = if w.object_animated(i) {
+                    w.anim_done(i)
+                } else {
+                    w.mesh_fx_state(i).is_none_or(|s| s == -1)
+                };
+                if over {
                     self.objs[i].state = 0;
                     let layer = self.objs[i].layer;
                     w.object_tiles(i, true, layer);
