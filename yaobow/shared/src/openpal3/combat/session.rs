@@ -825,6 +825,18 @@ impl CombatSession {
         self.notice("逃跑失败");
     }
 
+    /// 调试：场上的敌人全部倒下，下一帧按「敌全倒」判胜、照常结算。
+    pub fn debug_win(&mut self) {
+        for slot in 0..crate::openpal3::combat::state::SLOTS {
+            if let Some(c) = self.battle.get_mut(slot) {
+                if c.side == Side::Enemy && c.alive {
+                    c.die();
+                }
+            }
+        }
+        self.battle.pending_spawns.clear();
+    }
+
     /// 舞台不演了、这一次行动作废：不结算，直接回蓄力段（我方普攻开演时目标全倒下）。
     pub fn abandon(&mut self) {
         let Some(st) = self.staging.take() else {

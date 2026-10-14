@@ -899,6 +899,14 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "combat_win" => {
+            // [] —— 调试：正在打的战斗按「敌人全倒」收场，结算照常（剧情战撑不过去时推进度用）。
+            director.request_combat_win();
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "lineup_set" => {
             // [角色号, 站位, 角色号, 站位…] —— 排阵法站位（0..4），测五灵盘用。
             let mut i = 0;

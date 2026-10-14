@@ -557,6 +557,15 @@ impl AdventureDirector {
             .add_item(id, count);
     }
 
+    /// 调试：正在打的战斗直接判胜。
+    pub fn request_combat_win(&self) {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .state_mut()
+            .request_combat_win();
+    }
+
     /// Put characters into the party — a test aid for the shop's compare panel.
     pub fn add_to_team(&self, actor_id: u32) {
         self.props

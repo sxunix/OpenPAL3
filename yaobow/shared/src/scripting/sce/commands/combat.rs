@@ -3674,6 +3674,11 @@ impl SceCommand for SceCommandCombat {
                 }
             }
         }
+        if state.take_combat_win_request() {
+            if let Some(session) = self.session.as_mut() {
+                session.debug_win();
+            }
+        }
         if let Some([amp, decay, freq]) = state.take_combat_shake_request() {
             self.shake = Some(crate::openpal3::combat::camera::Shake::new(
                 amp, decay, freq,

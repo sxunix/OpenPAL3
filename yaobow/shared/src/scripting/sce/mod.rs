@@ -134,6 +134,8 @@ pub struct SceState {
     combat_shake_request: Option<[f32; 3]>,
     /// 调试口要战斗里直接放的合击技 id（agent `combat_combo`）。
     combat_combo_request: Option<u32>,
+    /// 调试：下一帧把场上的敌人全部打倒（`combat_win`）。
+    combat_win_request: bool,
     /// 特效 `bink` 类要播的 2D 动画（`movie/2DEFFECT` 下的名字，如 `t102`）。
     combat_movie_requests: Vec<String>,
 }
@@ -227,6 +229,7 @@ impl SceState {
             combat_action_requests: vec![],
             combat_shake_request: None,
             combat_combo_request: None,
+            combat_win_request: false,
             combat_movie_requests: vec![],
         }
     }
@@ -447,6 +450,15 @@ impl SceState {
 
     pub fn take_combat_combo_request(&mut self) -> Option<u32> {
         self.combat_combo_request.take()
+    }
+
+    /// 调试：让正在打的战斗按「敌人全倒」收场（结算照常走）。
+    pub fn request_combat_win(&mut self) {
+        self.combat_win_request = true;
+    }
+
+    pub fn take_combat_win_request(&mut self) -> bool {
+        std::mem::take(&mut self.combat_win_request)
     }
 
     pub fn request_combat_shake(&mut self, amplitude: f32, decay: f32, frequency: f32) {
