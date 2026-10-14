@@ -130,6 +130,20 @@ impl SceCommandLoadScene {
                 }
             }
         }
+
+        // 神树花：场上有总开关（类型 0x17、参数 2 为 1）就照它的开关定花开没开（`FUN_00424f20` 建物件时，
+        // exe 0x425300：`DAT_00d8bc38 = 开关 == 0`），再把这个场景的花按它换模型、登记格子
+        // （`FUN_0042ad40` case 0x25 → `FUN_0042c280`）。[移植] 原版花在建表时按 `.scn` 顺序和别的物件一起
+        // 登记，这里是建完表、套完存档以后补登记，和别的物件压同一格时谁盖谁可能不一样。
+        if let Some(id) = scene.flower_master_switch() {
+            let on = state.global_state().persistent_state().scene_object_state(
+                &self.name,
+                &self.sub_name,
+                id,
+            ) != 0;
+            state.global_state_mut().set_divine_tree_flower(!on);
+        }
+        scene.switch_flowers(state.global_state().divine_tree_flower());
     }
 
     /// 新场景把 `ROLE_2` 一律建成蓝龙葵（`ScnScene::map_role_id` 把 2 映到

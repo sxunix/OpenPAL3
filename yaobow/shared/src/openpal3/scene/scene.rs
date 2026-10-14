@@ -2163,6 +2163,37 @@ impl ScnScene {
             .map(|e| e.transform().borrow().position())
     }
 
+    /// 神树花总开关（类型 0x17、参数 2 为 1）的脚本编号。
+    pub fn flower_master_switch(&self) -> Option<i32> {
+        (0..self.scn_file.nodes.len()).find_map(|i| {
+            (self.object_kind_at(i) == Some(0x17)
+                && self.object_params(i).is_some_and(|p| p[2] == 1))
+            .then(|| self.scn_file.nodes[i].object_id())
+        })
+    }
+
+    /// 把这个场景的神树花（类型 0x25）都摆成开 / 关（`FUN_0042c280`，按 `.scn` 顺序）：关着的模型是名字
+    /// 末尾 5 个字符换成 `2.pol`（`_a1.pol` → `_a2.pol`），按那个模型重新登记格子，「可通过」= `open`。
+    /// [未做] 场上的模型不换，只换挡路。
+    pub fn switch_flowers(&self, open: bool) {
+        for i in 0..self.scn_file.nodes.len() {
+            if self.object_kind_at(i) != Some(0x25) {
+                continue;
+            }
+            let name = &self.scn_file.nodes[i].name;
+            let name = if open {
+                name.clone()
+            } else {
+                flower_closed_name(name)
+            };
+            let model = self.object_model_box(&name);
+            log::debug!("神树花：#{i} {} {name}", if open { "开" } else { "关" });
+            if let Some(b) = self.object_blocking.borrow_mut().as_mut() {
+                b.set_flower(i, model, open);
+            }
+        }
+    }
+
     /// 第 `i` 个物件的触发矩形（格子坐标 x0 z0 x1 z1）。
     pub fn object_rect(&self, i: usize) -> [i32; 4] {
         self.scn_file.nodes.get(i).map_or([0; 4], |n| {
@@ -3152,5 +3183,20 @@ impl super::nav_path::FieldNav for FieldNavView<'_> {
             0.,
             (z as f32 + 0.5) * block.1 + min.z,
         )
+    }
+}
+
+/// 神树花关着时的模型名：名字末尾 5 个字符换成 `2.pol`（`FUN_0042c280` 里的 `strcpy(path + l - 5, "2.pol")`）。
+fn flower_closed_name(name: &str) -> String {
+    let keep = name.len().saturating_sub(5);
+    format!("{}2.pol", &name[..keep])
+}
+
+#[cfg(test)]
+mod flower_tests {
+    #[test]
+    fn closed_flower_model_replaces_the_last_five_characters() {
+        assert_eq!(super::flower_closed_name("_a1.pol"), "_a2.pol");
+        assert_eq!(super::flower_closed_name("_B1.POL"), "_B2.pol");
     }
 }

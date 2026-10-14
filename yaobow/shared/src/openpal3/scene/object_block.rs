@@ -177,6 +177,22 @@ impl ObjectBlocking {
         self.register(i, &n, model, (&scene.0, &scene.1));
     }
 
+    /// `FUN_0042c280`（神树花换模型）：原来有模型就先清掉压住的格子，换成 `model`、按它重新登记，
+    /// 「可通过」= `open`。
+    pub fn set_flower(&mut self, i: usize, model: Model, open: bool) {
+        if i >= self.nodes.len() || i >= NONE as usize {
+            return;
+        }
+        if !matches!(self.models[i], Model::None) {
+            self.clear(i);
+        }
+        self.models[i] = model;
+        let n = self.nodes[i].clone();
+        let scene = self.scene.clone();
+        self.register(i, &n, model, (&scene.0, &scene.1));
+        self.objs[i].non_blocking = open;
+    }
+
     /// `FUN_00429db0` 给的包围盒 y 边长（模型类型 2/3 的 +0xa4）；没有模型是 0。
     pub fn model_height(&self, i: usize) -> f32 {
         match self.models.get(i) {
@@ -338,7 +354,8 @@ impl ObjectBlocking {
                 nb(self, true);
                 false
             }
-            // 0x18、0x19（参数 0 非 0）、0x1f、0x25（[未做] `FUN_0042c280`）：不登记。
+            // 0x18、0x19（参数 0 非 0）、0x1f、0x25：建表时不登记。神树花（0x25）原版这里按花开没开换模型、
+            // 登记（`FUN_0042c280`），移植端由载入场景的命令套完存档后补（`ScnScene::switch_flowers`）。
             0x18 | 0x19 | 0x1f | 0x25 => false,
             _ => true,
         }

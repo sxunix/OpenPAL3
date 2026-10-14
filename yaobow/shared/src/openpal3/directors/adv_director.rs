@@ -3853,6 +3853,12 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         self.scene.object_rect(i)
     }
 
+    fn switch_flowers(&mut self, open: bool) {
+        log::debug!("场景物件：神树花 {}", if open { "开" } else { "关" });
+        self.state.global_state_mut().set_divine_tree_flower(open);
+        self.scene.switch_flowers(open);
+    }
+
     fn floor_at(&self, layer: usize, p: &Vec3) -> f32 {
         self.scene.floor_height(layer, p)
     }

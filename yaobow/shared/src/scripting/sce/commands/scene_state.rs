@@ -112,10 +112,10 @@ const FLOWER_OBJECT: i32 = 0x16;
 
 /// 159 初始化神树之花 — `LAB_00438f50`.
 ///
-/// Toggles that one object's switch state and then latches
-/// `DAT_00d8bc38` so it cannot run twice. The guard is a plain global,
-/// not part of the save, so it resets when the game restarts — which is
-/// why the latch lives on [`GlobalState`] here rather than in the save.
+/// 花是关着的（`DAT_00d8bc38` 为 0）才动：把 m16 区块 4 的 22 号物件（神树花总开关）的开关状态翻过来——
+/// 当前就在那个场景就翻场上那个物件的，否则翻存着的那份；再把花记成开着。花开着就什么都不做。
+/// 移植端开关状态都在 [`crate::openpal3::states::persistent_state::PersistentState`] 里，两种情况是同一个地方。不在这里重新摆场上的花
+/// （原版这里也不调 `FUN_0042c280`）。
 #[derive(Debug, Clone)]
 pub struct SceCommandInitFlower {}
 
@@ -127,16 +127,20 @@ impl SceCommand for SceCommandInitFlower {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
-        if state.global_state().divine_tree_flower_initialized() {
+        if state.global_state().divine_tree_flower() {
             return true;
         }
-        state
-            .global_state_mut()
-            .set_divine_tree_flower_initialized(true);
-
-        let mut p_state = state.global_state_mut().persistent_state_mut();
-        let was = p_state.scene_object_state(FLOWER_CITY, FLOWER_SCENE, FLOWER_OBJECT);
-        p_state.set_scene_object_state(FLOWER_CITY, FLOWER_SCENE, FLOWER_OBJECT, (was == 0) as i32);
+        {
+            let mut p_state = state.global_state_mut().persistent_state_mut();
+            let was = p_state.scene_object_state(FLOWER_CITY, FLOWER_SCENE, FLOWER_OBJECT);
+            p_state.set_scene_object_state(
+                FLOWER_CITY,
+                FLOWER_SCENE,
+                FLOWER_OBJECT,
+                (was == 0) as i32,
+            );
+        }
+        state.global_state_mut().set_divine_tree_flower(true);
         true
     }
 }

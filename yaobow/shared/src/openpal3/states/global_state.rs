@@ -45,7 +45,9 @@ pub struct GlobalState {
     monster_constants: MonsterConstants,
 
     pass_through_wall: bool,
-    divine_tree_flower_initialized: bool,
+    /// 神树花开没开（`g_wishPool.flower`，`DAT_00d8bc38`）。不进存档：新游戏、读档都重置成开（`0x5642` 附近和
+    /// 读档函数里的 `_DAT_00d8bc38 = 1`）。
+    divine_tree_flower: bool,
     /// Where the next VFX would play — the original's `DAT_00d8e478/47c/
     /// 480`, plain globals set by opcode 142 or 144 and consumed by 143.
     /// Nothing renders it yet; it is kept so the position half of those
@@ -105,7 +107,7 @@ impl GlobalState {
             role_constants,
             monster_constants,
             pass_through_wall: false,
-            divine_tree_flower_initialized: false,
+            divine_tree_flower: true,
             effect_position: Vec3::new(0., 0., 0.),
             camera: Pal3Camera::default(),
             appraise_result: 0,
@@ -310,15 +312,13 @@ impl GlobalState {
             .retain(|s| s.borrow().state() != AudioSourceState::Stopped);
     }
 
-    /// 159 InitFlower's one-shot latch — the original's `DAT_00d8bc38`,
-    /// a plain global that is not part of the save file, so it resets
-    /// when the game restarts.
-    pub fn divine_tree_flower_initialized(&self) -> bool {
-        self.divine_tree_flower_initialized
+    /// 神树花开没开（`DAT_00d8bc38`）。
+    pub fn divine_tree_flower(&self) -> bool {
+        self.divine_tree_flower
     }
 
-    pub fn set_divine_tree_flower_initialized(&mut self, done: bool) {
-        self.divine_tree_flower_initialized = done;
+    pub fn set_divine_tree_flower(&mut self, open: bool) {
+        self.divine_tree_flower = open;
     }
 
     pub fn camera(&self) -> &Pal3Camera {

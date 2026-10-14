@@ -246,6 +246,8 @@ pub trait World {
     /// 可用次数（+0xae）变了，记进存档。[推断] 原版存档里那条物件记录就是 `ObjectInfo` 本身
     /// （源码 `SceneObj::OnLoad(ObjectInfo &info, …)`，`gamebase/sceneobj.cpp:4002`），次数在里面。
     fn save_times(&mut self, _i: usize, _times: u8) {}
+    /// 神树花总开关翻了：记下花开没开（`DAT_00d8bc38`），把场上的花都换过去。
+    fn switch_flowers(&mut self, _open: bool) {}
     /// 物件的触发矩形（`.scn` +0x38，格子坐标 x0 z0 x1 z1，物件 +0xe4..+0xf0）。
     fn object_rect(&self, _i: usize) -> [i32; 4] {
         [0; 4]
@@ -824,9 +826,14 @@ impl ObjectActions {
 
     /// `FUN_0042c810`（`SceneObj::OpenSwitch`）：扣次数、翻开关。[未做] 参数 2 为 1（神树花的总开关）时
     /// 还要把场景里所有类型 0x25 的花一起开合。
+    /// `FUN_0042c810`：扣一次次数、翻开关；参数 2 为 1 的是神树花总开关，花开没开 = 开关是不是 0，
+    /// 场上的花跟着换（`FUN_0042c280`）。
     fn open_switch<W: World>(&mut self, i: usize, w: &mut W) {
         self.use_once(i, w);
-        w.toggle_switch(i);
+        let on = w.toggle_switch(i);
+        if self.objs[i].p[2] == 1 {
+            w.switch_flowers(!on);
+        }
     }
 
     fn sound<W: World>(&self, i: usize, p: i32, w: &mut W) {
@@ -1204,6 +1211,8 @@ mod tests {
     use super::*;
 
     struct Mock {
+        /// `switch_flowers` 收到的花开没开。
+        flowers: Vec<bool>,
         pos: Vec<Vec3>,
         player: Vec3,
         party: usize,
@@ -1310,6 +1319,9 @@ mod tests {
                 500. + layer as f32,
             )
         }
+        fn switch_flowers(&mut self, open: bool) {
+            self.flowers.push(open);
+        }
         fn object_rect(&self, _: usize) -> [i32; 4] {
             [44, 88, 46, 92]
         }
@@ -1411,6 +1423,7 @@ mod tests {
             deactivated: vec![],
             saved_times: vec![],
             extent: None,
+            flowers: vec![],
         };
         (a, w)
     }
@@ -1770,6 +1783,29 @@ mod tests {
         assert!(a.idle(0));
         assert!(w.switches[0]);
         assert!(!a.examinable(0));
+    }
+
+    /// 参数 2 为 1 的是神树花总开关：翻成开（1）花就关，再翻回 0 花就开。普通开关不碰花。
+    #[test]
+    fn flower_master_switch_closes_and_opens_the_flowers() {
+        let (mut a, mut w) = m08_switch();
+        a.objs[0].p[2] = 1;
+        a.objs[0].times = 0xff;
+        w.player = Vec3::new(411.86 + 43., 0., -300.55);
+        a.event(0, 1, false, 0.001, &mut w);
+        assert_eq!(w.flowers, [false]);
+        for _ in 0..20 {
+            w.frame(&mut a, 0.1);
+        }
+        assert!(a.idle(0));
+        a.event(0, 1, false, 0.001, &mut w);
+        assert_eq!(w.flowers, [false, true]);
+
+        let (mut a, mut w) = m08_switch();
+        w.player = Vec3::new(411.86 + 43., 0., -300.55);
+        a.event(0, 1, false, 0.001, &mut w);
+        assert!(w.switches[0]);
+        assert!(w.flowers.is_empty());
     }
 
     #[test]
