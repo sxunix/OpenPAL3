@@ -457,6 +457,24 @@ impl ScnScene {
                     }
                 }
             }
+            // 移动浮板（0x5）：坐得上的话，载到另一头、再沿路线方向往外 96。
+            if let Some((o, 0x5)) = self.tile_object(l, x, z) {
+                let a = self.object_actions.borrow();
+                if self.object_active_at(o) && a.platform_ready(o) {
+                    if let Some((end, n)) = a.platform_far_end(o) {
+                        let out = Vec3::add(
+                            &end,
+                            &Vec3::scalar_mul(super::object_action::PLATFORM_STEP_OFF, &n),
+                        );
+                        let (tx, tz) = FieldNavView {
+                            scene: self,
+                            layer: l,
+                        }
+                        .tile_of(&out);
+                        next.push((l, tx, tz, true));
+                    }
+                }
+            }
             // 上下传送板（0x28）：站上去就被载到另一层，0 层落在参数 (0, 1) 那格、1 层落在 (2, 3)。
             if let Some((o, 0x28)) = self.tile_object(l, x, z) {
                 if layers > 1 && self.object_active_at(o) {
@@ -818,7 +836,7 @@ impl ScnScene {
         // 乌龟重力机关（0x1d，还没沉下去的）——它放下的吊桥探路泛洪看不出来；神魔之井的电梯（0x27，没有模型，
         // 位置取触发矩形中间那格）、上下传送板（0x28）和神树传送点（0x26）。`index` 是 `.scn` 序号。
         for i in 0..self.scn_file.nodes.len() {
-            let Some(kind @ (0xc | 0xd | 0x17 | 0x1d | 0x21 | 0x26 | 0x27 | 0x28)) =
+            let Some(kind @ (0x5 | 0xc | 0xd | 0x17 | 0x1d | 0x21 | 0x26 | 0x27 | 0x28)) =
                 self.object_kind_at(i)
             else {
                 continue;
@@ -833,6 +851,9 @@ impl ScnScene {
                     self.rams.borrow().iter().any(|(r, _)| r.node == i)
                 } else if matches!(kind, 0x1d | 0x27 | 0x28) {
                     a.idle(i)
+                } else if kind == 0x5 {
+                    // 移动浮板：开关开着、停在两头才坐得上。
+                    a.platform_ready(i)
                 } else if kind == 0x26 {
                     // 神树传送点：站上去满 4 秒才动，参数 0 是 0 的站上去不动（只能跳下来落上去）。
                     a.idle(i) && a.params(i).is_some_and(|p| p[0] != 0)
@@ -1863,6 +1884,16 @@ impl ScnScene {
                 proc: n.sce_proc_id as i32,
                 times: (n.w2 & 0xff) as u8,
                 examinable: n.w24 & 2 != 0,
+                // `PolyLine path`（记录 +0x84：点数，+0x88 起 16 个点）。
+                path: (0..(n.d84 as usize).min(16))
+                    .map(|k| {
+                        let f = |o: usize| {
+                            let b = &n.b88[k * 12 + o..k * 12 + o + 4];
+                            f32::from_le_bytes([b[0], b[1], b[2], b[3]])
+                        };
+                        Vec3::new(f(0), f(4), f(8))
+                    })
+                    .collect(),
             })
             .collect();
         *self.object_actions.borrow_mut() = super::object_action::ObjectActions::new(&nodes);
@@ -2264,6 +2295,26 @@ impl ScnScene {
             me: i,
         };
         super::nav_path::line_clear(&grid, a, b)
+    }
+
+    /// `FUN_00421150(i, 层, x, z)`：物件 `i` 眼里 `p` 落的那一格能不能走。
+    pub fn object_tile_walkable(&self, i: usize, layer: usize, p: &Vec3) -> bool {
+        use super::nav_path::{FieldNav as _, NavGrid as _};
+        let (x, z) = FieldNavView { scene: self, layer }.tile_of(p);
+        ObjNavView {
+            scene: self,
+            layer,
+            me: i,
+        }
+        .walkable(x, z)
+    }
+
+    /// 读档：移动浮板的开关标志照存档。
+    pub fn set_platform_switch(&self, object_id: i32, on: bool) {
+        let mut a = self.object_actions.borrow_mut();
+        if let Some(i) = a.index_of(object_id) {
+            a.set_platform_switch(i, on);
+        }
     }
 
     /// 有物件的动作队列没做完。

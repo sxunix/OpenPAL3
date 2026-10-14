@@ -3854,6 +3854,18 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         self.scene.object_rect(i)
     }
 
+    fn set_switch(&mut self, i: usize, on: bool) {
+        log::debug!("场景物件：#{i} 开关标志 -> {}", on as i32);
+        self.save_override(i, |s, city, scene, id| {
+            s.set_scene_object_state(city, scene, id, on as i32)
+        });
+    }
+
+    fn object_tile_walkable(&self, i: usize, p: &Vec3) -> bool {
+        self.scene
+            .object_tile_walkable(i, self.nav_layer_of_player(), p)
+    }
+
     fn switch_flowers(&mut self, open: bool) {
         log::debug!("场景物件：神树花 {}", if open { "开" } else { "关" });
         self.state.global_state_mut().set_divine_tree_flower(open);

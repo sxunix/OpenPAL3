@@ -127,6 +127,8 @@ pub struct ObjNode {
     pub times: u8,
     /// 调查键能不能选中它（`TriggerType` +0xd0 的位 1，`.scn` 记录 +0x24）。
     pub examinable: bool,
+    /// 移动浮板（0x5）的路线（`.scn` 记录 +0x84 起的 `PolyLine`：点数 + 16 个点）。别的类型是空的。
+    pub path: Vec<Vec3>,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +150,106 @@ struct Obj {
     /// 登记在 `ObjLockInput` 里（`FUN_0053d1a0(物件, 0)`）：物件闲下来（不在场，或队列空、状态 0，
     /// 即 `IsStatic`）之前主角不听输入。
     locked: bool,
+    /// 移动浮板（0x5、参数 0 为 0 的那种）。
+    plat: Option<Platform>,
+}
+
+/// 移动浮板沿路线来回（`FUN_00426eb0` case 5）。物件状态 +0x50：0 停在起点、1 往终点走、2 往起点走、
+/// 3 停在终点、4 主角正走上板、5 主角正走下板。
+#[derive(Debug, Clone)]
+struct Platform {
+    path: PathLine,
+    /// 走过的路程（+0x38）。
+    dist: f32,
+    /// 走上 / 走下板以后转到的状态（+0x324）。
+    next: u8,
+    /// 载着主角（+0x338）。开关推动时是 false，板子自己跑。
+    lift: bool,
+    /// 板子自己的开关标志（+0xaf）：连着的开关拨开了才能坐。
+    on: bool,
+}
+
+/// 浮板每秒走多远（`FUN_00426eb0` case 5 的 `dt × 100`）。
+pub const PLATFORM_SPEED: f32 = 100.;
+/// 到头以后主角沿路线方向往外走多远（`ROLE_RADIUS × 8` = 96）。
+pub const PLATFORM_STEP_OFF: f32 = ROLE_RADIUS * 8.;
+/// 板子比主角高过这么多不理（`40.0`）。
+pub const PLATFORM_MAX_RISE: f32 = 40.;
+
+/// `PathObj`（`gamebase/roledef.h`、`pathfinder.cpp` 的 `CachePathStats` / `MapPathDistance2Point`；
+/// exe `FUN_0041f120`）：折线，按路程取点，方向取那一段的单位向量。
+#[derive(Debug, Clone)]
+pub struct PathLine {
+    points: Vec<Vec3>,
+    lengths: Vec<f32>,
+    normals: Vec<Vec3>,
+    total: f32,
+}
+
+impl PathLine {
+    pub fn new(points: Vec<Vec3>) -> Self {
+        let n = points.len();
+        let mut lengths = vec![0.; n];
+        let mut normals = vec![Vec3::new(0., 0., 0.); n];
+        let mut total = 0.;
+        for i in 1..n {
+            let d = Vec3::sub(&points[i], &points[i - 1]);
+            let len = d.norm();
+            lengths[i] = len;
+            normals[i] = if len > 0. {
+                Vec3::scalar_mul(1. / len, &d)
+            } else {
+                d
+            };
+            total += len;
+        }
+        if n > 1 {
+            normals[0] = normals[1];
+            lengths[0] = lengths[1];
+        }
+        Self {
+            points,
+            lengths,
+            normals,
+            total,
+        }
+    }
+
+    pub fn total(&self) -> f32 {
+        self.total
+    }
+
+    /// 路程 `d` 上的点和那一段的方向。小于 0 取起点，超长取终点。
+    pub fn at(&self, d: f32) -> (Vec3, Vec3) {
+        let n = self.points.len();
+        if n == 0 {
+            return (Vec3::new(0., 0., 0.), Vec3::new(0., 0., 1.));
+        }
+        if d < 0. {
+            return (self.points[0], self.normals[n.min(2) - 1]);
+        }
+        let mut rest = d;
+        for i in 1..n {
+            let seg = self.lengths[i];
+            if seg < rest {
+                rest -= seg;
+            } else {
+                let r = if seg > 0. { rest / seg } else { 0. };
+                let (a, b) = (self.points[i - 1], self.points[i]);
+                let p = Vec3::new(
+                    a.x + (b.x - a.x) * r,
+                    a.y + (b.y - a.y) * r,
+                    a.z + (b.z - a.z) * r,
+                );
+                return (p, self.normals[i]);
+            }
+        }
+        (self.points[n - 1], self.normals[n - 1])
+    }
+
+    pub fn last(&self) -> Option<Vec3> {
+        self.points.last().copied()
+    }
 }
 
 /// 动作要碰的外部东西。`i` 都是物件在 `.scn` 里的序号。
@@ -248,6 +350,12 @@ pub trait World {
     fn save_times(&mut self, _i: usize, _times: u8) {}
     /// 神树花总开关翻了：记下花开没开（`DAT_00d8bc38`），把场上的花都换过去。
     fn switch_flowers(&mut self, _open: bool) {}
+    /// 物件 `i` 自己的开关标志 +0xaf 改成 `on`（开关推动移动浮板时写浮板的）。
+    fn set_switch(&mut self, _i: usize, _on: bool) {}
+    /// `FUN_00421150(i, 层, x, z)`：物件 `i` 眼里 `p` 那一格能不能走（它自己压住的格子只看格子本身）。
+    fn object_tile_walkable(&self, _i: usize, _p: &Vec3) -> bool {
+        true
+    }
     /// 物件的触发矩形（`.scn` +0x38，格子坐标 x0 z0 x1 z1，物件 +0xe4..+0xf0）。
     fn object_rect(&self, _i: usize) -> [i32; 4] {
         [0; 4]
@@ -292,6 +400,14 @@ impl ObjectActions {
                 times: n.times,
                 examinable: n.examinable,
                 locked: false,
+                // `SceneObj::Create` case 5（`sceneobj.cpp:197`）：有路线就建 `PathObj`，状态 0。
+                plat: (n.kind == 5 && n.p[0] == 0 && n.path.len() >= 2).then(|| Platform {
+                    path: PathLine::new(n.path.clone()),
+                    dist: 0.,
+                    next: 0,
+                    lift: false,
+                    on: false,
+                }),
             })
             .collect();
         Self { ids, objs }
@@ -375,6 +491,42 @@ impl ObjectActions {
         self.objs
             .get(i)
             .is_some_and(|o| o.queue.is_empty() && o.state == 0)
+    }
+
+    /// `SceneObj::IsStatic`（`sceneobj.cpp:4391`）：移动浮板停在两头（状态 0 / 3）都算静止，别的看
+    /// [`Self::idle`]。`ObjLockInput` 按它放人。
+    pub fn is_static(&self, i: usize) -> bool {
+        match self.objs.get(i) {
+            Some(o) if o.kind == 5 => o.queue.is_empty() && (o.state == 0 || o.state == 3),
+            _ => self.idle(i),
+        }
+    }
+
+    /// 移动浮板的开关标志（读档时照存档套）。
+    pub fn set_platform_switch(&mut self, i: usize, on: bool) {
+        if let Some(p) = self.objs.get_mut(i).and_then(|o| o.plat.as_mut()) {
+            p.on = on;
+        }
+    }
+
+    /// 移动浮板：开关开着、停在两头（agent 用）。
+    pub fn platform_ready(&self, i: usize) -> bool {
+        self.objs
+            .get(i)
+            .and_then(|o| o.plat.as_ref().map(|p| (o, p)))
+            .is_some_and(|(o, p)| p.on && o.queue.is_empty() && (o.state == 0 || o.state == 3))
+    }
+
+    /// 移动浮板这一程的终点（停在起点就是路线终点，反之起点）和到那一头时的方向（agent 用）。
+    pub fn platform_far_end(&self, i: usize) -> Option<(Vec3, Vec3)> {
+        let o = self.objs.get(i)?;
+        let p = o.plat.as_ref()?;
+        if o.state == 3 {
+            let (a, n) = p.path.at(0.);
+            Some((a, Vec3::scalar_mul(-1., &n)))
+        } else {
+            Some(p.path.at(p.path.total()))
+        }
     }
 
     /// 队列里还有没有东西（主角被动作牵着走时冒险输入要让开）。
@@ -617,6 +769,7 @@ impl ObjectActions {
                 self.objs[i].locked = true;
                 self.own_proc(i, w);
             }
+            0x5 => self.platform_touch(i, w),
             0xc => self.skill_gate(i, ev, w),
             0x17 => self.switch(i, ev, w),
             // 踏板开关（`FUN_00424c20` case 0x21）：只认刚踩上来（事件 0、上一帧不在上面）、闲着。主角走到
@@ -668,6 +821,145 @@ impl ObjectActions {
                 w.fly_player(&p, 1);
                 self.sound(i, 0, w);
                 self.own_proc(i, w);
+            }
+            _ => {}
+        }
+    }
+
+    /// `FUN_00424c20` case 5，参数 0 为 0 的移动浮板（不看事件）：开关标志开着、板停在两头（状态 0 / 3）、
+    /// 板比主角高不过 40 时，记下要往哪头走（在起点就往终点、反之亦然），载人，主角走到板中心（状态 4），
+    /// 扣一次次数、登记 `ObjLockInput`。[未做] 参数 0 为 1 的那种（站上去按主角来的方向推着走）。
+    fn platform_touch<W: World>(&mut self, i: usize, w: &mut W) {
+        let state = self.objs[i].state;
+        let Some(plat) = self.objs[i].plat.as_mut() else {
+            if self.objs[i].p[0] == 1 {
+                log::warn!("场景物件：#{i} 是参数 0 为 1 的移动浮板，没做");
+            }
+            return;
+        };
+        if !plat.on || !(state == 0 || state == 3) {
+            return;
+        }
+        let at = w.object_pos(i);
+        if at.y - w.player_pos().y > PLATFORM_MAX_RISE {
+            return;
+        }
+        if state == 0 {
+            plat.next = 1;
+            plat.dist = 0.;
+        } else {
+            plat.next = 2;
+            plat.dist = plat.path.total();
+        }
+        plat.lift = true;
+        self.objs[i].state = 4;
+        w.walk_begin(&at);
+        self.use_once(i, w);
+        self.objs[i].locked = true;
+    }
+
+    /// 开关拨完、连着的是移动浮板（`FUN_00426eb0` case 0x17 末尾）：浮板的开关标志跟着开关走；开了就清掉
+    /// 它压住的格子、不载人地自己往另一头跑（停在起点往终点，否则往起点）。
+    fn platform_push<W: World>(&mut self, l: usize, on: bool, w: &mut W) {
+        w.set_switch(l, on);
+        let state = self.objs[l].state;
+        let layer = self.objs[l].layer;
+        let Some(plat) = self.objs[l].plat.as_mut() else {
+            return;
+        };
+        plat.on = on;
+        if !on {
+            return;
+        }
+        plat.lift = false;
+        if state == 0 {
+            plat.next = 1;
+            plat.dist = 0.;
+            self.objs[l].state = 1;
+        } else {
+            plat.next = 2;
+            plat.dist = plat.path.total();
+            self.objs[l].state = 2;
+        }
+        w.object_tiles(l, true, layer);
+    }
+
+    /// `FUN_00426eb0` case 5。
+    fn step_platform<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
+        let layer = self.objs[i].layer;
+        let state = self.objs[i].state;
+        let Some(plat) = self.objs[i].plat.as_mut() else {
+            return;
+        };
+        match state {
+            1 | 2 => {
+                let forward = state == 1;
+                plat.dist += if forward { dt } else { -dt } * PLATFORM_SPEED;
+                let total = plat.path.total();
+                let arrived = if forward {
+                    plat.dist > total
+                } else {
+                    plat.dist < 0.
+                };
+                if !arrived {
+                    let (p, n) = plat.path.at(plat.dist);
+                    w.set_object_pos(i, &p);
+                    if plat.lift {
+                        let n = if forward {
+                            n
+                        } else {
+                            Vec3::scalar_mul(-1., &n)
+                        };
+                        w.carry_player(&p);
+                        w.face_player(&Vec3::add(&p, &n));
+                    }
+                    return;
+                }
+                plat.dist = if forward { total } else { 0. };
+                plat.next = if forward { 3 } else { 0 };
+                let (p, n) = plat.path.at(plat.dist);
+                let lift = plat.lift;
+                self.objs[i].state = 5;
+                w.set_object_pos(i, &p);
+                w.object_tiles(i, false, layer);
+                if !lift {
+                    return;
+                }
+                // 下板：主角沿路线方向（回程反过来）往外 96；那一格走不了就原路载回去。
+                let out = Vec3::scalar_mul(
+                    if forward {
+                        PLATFORM_STEP_OFF
+                    } else {
+                        -PLATFORM_STEP_OFF
+                    },
+                    &n,
+                );
+                let out = Vec3::add(&w.player_pos(), &out);
+                if w.object_tile_walkable(i, &out) {
+                    w.walk_begin(&out);
+                } else {
+                    let plat = self.objs[i].plat.as_mut().unwrap();
+                    plat.next = if forward { 2 } else { 1 };
+                    self.objs[i].state = plat.next;
+                }
+            }
+            3 => {
+                if let Some(p) = plat.path.last() {
+                    w.set_object_pos(i, &p);
+                }
+            }
+            4 | 5 => {
+                if !w.walk_step(dt, false, true) {
+                    return;
+                }
+                let next = plat.next;
+                w.stand();
+                if state == 4 {
+                    w.object_tiles(i, true, layer);
+                    let at = w.object_pos(i);
+                    w.carry_player(&at);
+                }
+                self.objs[i].state = next;
             }
             _ => {}
         }
@@ -863,6 +1155,7 @@ impl ObjectActions {
             }
             self.advance(i, dt, w);
             match self.objs[i].kind {
+                0x5 => self.step_platform(i, dt, w),
                 0xc => self.step_skill_gate(i, w),
                 0x17 => self.step_switch(i, dt, w),
                 0x20 => self.step_flower(i, w),
@@ -889,7 +1182,7 @@ impl ObjectActions {
         }
         // `ObjLockInput::Update`：不在场、或者闲下来的物件除名。
         for i in 0..self.objs.len() {
-            if self.objs[i].locked && (!w.active(i) || self.idle(i)) {
+            if self.objs[i].locked && (!w.active(i) || self.is_static(i)) {
                 self.objs[i].locked = false;
             }
         }
@@ -1003,9 +1296,6 @@ impl ObjectActions {
                 self.objs[i].state = 0;
                 self.own_proc(i, w);
                 let p = self.objs[i].p;
-                if p[2] == 1 {
-                    log::warn!("场景物件：#{i} 是神树花总开关，花的开合没做");
-                }
                 if p[0] == 1 {
                     // `+0xd1 = +0xaf`：开关这时已经翻过。
                     let on = w.switch_on(i);
@@ -1016,7 +1306,8 @@ impl ObjectActions {
                 }
                 if let Some(l) = self.objs[i].link {
                     if self.objs[l].kind == 5 {
-                        log::warn!("场景物件：#{i} 连着移动浮板 #{l}，浮板开动没做");
+                        let on = w.switch_on(i);
+                        self.platform_push(l, on, w);
                     } else {
                         self.event(l, 2, false, 0.001, w);
                     }
@@ -1385,6 +1676,7 @@ mod tests {
                 proc: 0,
                 times: 0xff,
                 examinable: false,
+                path: vec![],
             },
             ObjNode {
                 object_id: 11,
@@ -1396,6 +1688,7 @@ mod tests {
                 proc: 0,
                 times: 0xff,
                 examinable: false,
+                path: vec![],
             },
         ]);
         let w = Mock {
@@ -1525,6 +1818,7 @@ mod tests {
             proc: 506,
             times: 0xff,
             examinable: false,
+            path: vec![],
         }]);
         let (_, mut w) = m01();
         w.pos = vec![Vec3::new(0., 100., 0.)];
@@ -1566,6 +1860,7 @@ mod tests {
                 proc: 0,
                 times: 0xff,
                 examinable: false,
+                path: vec![],
             },
             ObjNode {
                 object_id: 5,
@@ -1577,6 +1872,7 @@ mod tests {
                 proc: 0,
                 times: 0xff,
                 examinable: false,
+                path: vec![],
             },
             // 高字节非零：`cmp bx, di` 配不上任何物件（实机数据里没有这种）。
             ObjNode {
@@ -1589,6 +1885,7 @@ mod tests {
                 proc: 0,
                 times: 0xff,
                 examinable: false,
+                path: vec![],
             },
         ]);
         assert_eq!(a.objs[0].link, Some(1));
@@ -1614,6 +1911,7 @@ mod tests {
             proc: 0,
             times: 0xff,
             examinable: false,
+            path: vec![],
         }]);
         (a, w)
     }
@@ -1697,6 +1995,73 @@ mod tests {
         assert_eq!(w.pos[0].y, 510.);
     }
 
+    #[test]
+    fn path_line_maps_distance_to_a_point_and_its_segment() {
+        let l = PathLine::new(vec![
+            Vec3::new(0., 0., 0.),
+            Vec3::new(100., 0., 0.),
+            Vec3::new(100., 0., 50.),
+        ]);
+        assert_eq!(l.total(), 150.);
+        let (p, n) = l.at(50.);
+        assert_eq!((p.x, p.z, n.x, n.z), (50., 0., 1., 0.));
+        let (p, n) = l.at(120.);
+        assert_eq!((p.x, p.z, n.x, n.z), (100., 20., 0., 1.));
+        let (p, _) = l.at(-1.);
+        assert_eq!((p.x, p.z), (0., 0.));
+        let (p, _) = l.at(999.);
+        assert_eq!((p.x, p.z), (100., 50.));
+    }
+
+    /// 移动浮板：开关没开站上去不动；开关一开板子自己跑到终点（停在 3）；站上去载着主角回起点，
+    /// 到了主角往外走 96 下板，板停在 0；载人期间锁输入，停下放开。
+    #[test]
+    fn platform_runs_on_its_switch_and_carries_the_player_back() {
+        let (mut a, mut w) = single(5, [0, 0, 0, 0], 0);
+        a.objs[0].plat = Some(Platform {
+            path: PathLine::new(vec![
+                Vec3::new(100., 300., 200.),
+                Vec3::new(300., 300., 200.),
+            ]),
+            dist: 0.,
+            next: 0,
+            lift: false,
+            on: false,
+        });
+        a.event(0, 0, false, 0.1, &mut w);
+        assert_eq!(a.state(0), Some(0));
+
+        a.platform_push(0, true, &mut w);
+        assert_eq!(a.state(0), Some(1));
+        for _ in 0..25 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(a.state(0), Some(3));
+        assert_eq!(w.pos[0].x, 300.);
+        assert!(a.is_static(0));
+
+        // 主角走上板（在终点那头）。
+        w.player = Vec3::new(290., 300., 200.);
+        a.event(0, 0, false, 0.1, &mut w);
+        assert_eq!(a.state(0), Some(4));
+        assert!(a.input_locked());
+        for _ in 0..5 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(a.state(0), Some(2));
+        for _ in 0..25 {
+            w.frame(&mut a, 0.1);
+        }
+        // 回到起点：主角跟着板子，再往 −x 走 96 下板。
+        assert_eq!(w.pos[0].x, 100.);
+        for _ in 0..6 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(a.state(0), Some(0));
+        assert!((w.player.x - 4.).abs() < 1e-3, "{:?}", w.player);
+        assert!(!a.input_locked());
+    }
+
     /// M15/2 的 #9（类型 0x27，1 层，矩形 (44, 88)-(46, 92)，参数 0 = 0）：站上去电梯先摆到矩形中间那格，
     /// 主角走过去，电梯连主角 8 秒降到 0 层的地面，主角换层、再往 +z 走 80；电梯自己的层不变。
     #[test]
@@ -1742,6 +2107,7 @@ mod tests {
             proc: 500,
             times: 1,
             examinable: true,
+            path: vec![],
         }]);
         w.pos = vec![Vec3::new(411.86, 0., -300.55)];
         w.passable = vec![false];
@@ -1849,6 +2215,7 @@ mod tests {
             proc: 0,
             times: 1,
             examinable: true,
+            path: vec![],
         }]);
         w.pos = vec![Vec3::new(732.85, 0., -531.69)];
         w.player = Vec3::new(732.85 + 30., 0., -531.69);
@@ -1885,6 +2252,7 @@ mod tests {
             proc: 0,
             times: 1,
             examinable: true,
+            path: vec![],
         }]);
         w.pos = vec![Vec3::new(0., 0., 0.)];
         w.player = Vec3::new(100., 0., 0.);
@@ -1915,6 +2283,7 @@ mod tests {
                 proc: 0,
                 times: 0xff,
                 examinable: false,
+                path: vec![],
             },
             ObjNode {
                 object_id: 33,
@@ -1926,6 +2295,7 @@ mod tests {
                 proc: 0,
                 times: 0xff,
                 examinable: false,
+                path: vec![],
             },
         ]);
         w.pos = vec![
@@ -1960,6 +2330,7 @@ mod tests {
             proc: 502,
             times: 1,
             examinable: false,
+            path: vec![],
         }]);
         w.pos = vec![Vec3::new(-54.8, -634., 3540.4)];
         w.player = Vec3::new(-54.8 + 20., -634., 3540.4);

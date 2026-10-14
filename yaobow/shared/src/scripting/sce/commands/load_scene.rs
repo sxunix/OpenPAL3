@@ -124,6 +124,12 @@ impl SceCommandLoadScene {
                 }
                 continue;
             }
+            if kind == 0x5 {
+                // 移动浮板存的是自己的开关标志 +0xaf（开关推它时写的），不是状态。[未做] 板子停在哪头
+                // （原版存的是 `m_info.pos`，读档后状态又是 0）。
+                scene.set_platform_switch(id, object_state != 0);
+                continue;
+            }
             if object_state != 0 {
                 scene.set_object_state(id, object_state as u8);
                 if matches!(kind, 0x13 | 0x1d) {
