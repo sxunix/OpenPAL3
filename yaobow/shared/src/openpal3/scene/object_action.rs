@@ -470,6 +470,24 @@ pub trait World {
     fn floor_at(&self, _layer: usize, _p: &Vec3) -> f32 {
         0.
     }
+    /// 只挪模型（渲染位置 +0x28），不进存档：剑冢的锤上下动时原版改的是 `m_renderpos`，存档里的
+    /// `m_info.pos` 不动。
+    fn set_render_pos(&mut self, i: usize, p: &Vec3) {
+        self.set_object_pos(i, p);
+    }
+    /// 左右摆的剑：模型绕自己的 Z 轴转到 `deg`（+0x38，`FUN_00429ee0`）。
+    fn set_object_roll(&mut self, _i: usize, _deg: f32) {}
+    /// 离上次被机关打到超过 1.2 秒（`_DAT_0058de64`，源码 `SceneMgr::m_fHurtTime > HURT_DELAY`）。
+    fn hurt_ready(&self) -> bool {
+        false
+    }
+    /// 物件 `i` 现在的碰撞盒碰到主角没有（`FUN_00429ee0` + `FUN_00418170`）。
+    fn player_hit_by(&self, _i: usize) -> bool {
+        false
+    }
+    /// `FUN_004101f0(frac, 1, 0)`（`PlayerMgr::Obj_Hurt`）：全队每人扣最大精的 `frac`，最少剩 1；
+    /// 受伤计时清零。
+    fn obj_hurt(&mut self, _frac: f32) {}
 }
 
 /// 场景里所有物件的队列和状态，按 `.scn` 序号排。
@@ -978,6 +996,14 @@ impl ObjectActions {
             }
             0xc => self.skill_gate(i, ev, w),
             0x17 => self.switch(i, ev, w),
+            // 剑冢的剑或锤（`FUN_00424c20` case 0x1c）：只认别的机关叫（事件 2）。参数 0 为 1 的锤翻开关，
+            // 「可通过」跟着开关走——开着上下动、能从底下钻过去，关着落在地上挡路。
+            0x1c => {
+                if ev == 2 && self.objs[i].p[0] == 1 {
+                    let on = w.toggle_switch(i);
+                    w.set_passable(i, on);
+                }
+            }
             // 踏板开关（`FUN_00424c20` case 0x21）：只认刚踩上来（事件 0、上一帧不在上面）、闲着。主角走到
             // 踏板中心，踏板 2 秒沉下 5（最后一次用时连原位一起改），跑自己那条过程（不等），叫连着的物件，
             // 扣一次次数；登记 `ObjLockInput`。
@@ -1833,6 +1859,7 @@ impl ObjectActions {
                 0x16 => self.step_lift(i, dt, w),
                 0xc => self.step_skill_gate(i, w),
                 0x17 => self.step_switch(i, dt, w),
+                0x1c => self.step_hammer(i, dt, w),
                 0x20 => self.step_flower(i, w),
                 _ => {}
             }
@@ -1926,6 +1953,32 @@ impl ObjectActions {
                 w.fly_player(&center, 2);
             }
             _ => {}
+        }
+    }
+
+    /// `FUN_00426eb0` case 0x1c（剑冢的剑或锤）。计时 +0x54 加 dt。参数 0 为 0 的剑左右摆：绕 Z 转
+    /// 24·sin t 度。别的参数、开关开着的上下动：y = 原位 + 参数 1 ×（sin t + 1）/ 2，不低于脚下地面
+    /// （`FUN_00421440`）。参数 0 不为 1、或者开着的，离上次受伤超过 1.2 秒、碰撞盒碰到主角：全队扣最大精的
+    /// 15%（参数 0 为 1）/ 10%（别的）。
+    fn step_hammer<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
+        self.objs[i].timer += dt;
+        let t = self.objs[i].timer;
+        let p0 = self.objs[i].p[0];
+        let on = w.switch_on(i);
+        if p0 == 0 {
+            w.set_object_roll(i, 24. * t.sin());
+        } else if on {
+            let o = &self.objs[i];
+            let mut p = w.object_pos(i);
+            p.y = o.p[1] as f32 * (t.sin() + 1.) * 0.5 + o.home_y;
+            let floor = w.floor_at(o.layer, &p);
+            if p.y < floor {
+                p.y = floor;
+            }
+            w.set_render_pos(i, &p);
+        }
+        if (p0 != 1 || on) && w.hurt_ready() && w.player_hit_by(i) {
+            w.obj_hurt(if p0 == 1 { 0.15 } else { 0.1 });
         }
     }
 
@@ -2269,6 +2322,11 @@ mod tests {
         trigger_clears: usize,
         /// `walkable_at`：x 不到这个值才算能走。
         walkable_max_x: f32,
+        /// 各物件绕 Z 的角度；离上次受伤够不够久、碰撞盒碰没碰到主角、扣过的比例。
+        roll: Vec<f32>,
+        hurt_ready: bool,
+        hit: bool,
+        hurts: Vec<f32>,
     }
 
     impl World for Mock {
@@ -2405,6 +2463,19 @@ mod tests {
         fn set_switch(&mut self, i: usize, on: bool) {
             self.switches[i] = on;
         }
+        fn set_object_roll(&mut self, i: usize, deg: f32) {
+            self.roll[i] = deg;
+        }
+        fn hurt_ready(&self) -> bool {
+            self.hurt_ready
+        }
+        fn player_hit_by(&self, _: usize) -> bool {
+            self.hit
+        }
+        fn obj_hurt(&mut self, frac: f32) {
+            self.hurts.push(frac);
+            self.hurt_ready = false;
+        }
         fn deactivate(&mut self, i: usize) {
             self.deactivated.push(i);
         }
@@ -2486,6 +2557,10 @@ mod tests {
             saved_yaws: 0,
             trigger_clears: 0,
             walkable_max_x: f32::MAX,
+            roll: vec![0.; 2],
+            hurt_ready: true,
+            hit: false,
+            hurts: vec![],
             flowers: vec![],
         };
         (a, w)
@@ -2976,6 +3051,48 @@ mod tests {
         assert!(!a.input_locked());
         a.event(0, 0, false, 0.1, &mut w);
         assert!(a.objs[0].queue.is_empty(), "掉下来以后不再动");
+    }
+
+    /// 剑冢的锤（0x1c，参数 0 为 1）：只认事件 2，翻开关、「可通过」跟着走；开着时 y = 原位 + 参数 1 ×
+    /// （sin t + 1）/ 2、不低于地面；碰到主角扣 15%，受伤计时没过不扣；关着不动、不伤人。
+    #[test]
+    fn hammer_starts_moving_when_called_and_hurts_on_touch() {
+        let (mut a, mut w) = single(0x1c, [1, 145, 0, 0], 0);
+        w.switches = vec![false];
+        w.passable = vec![false];
+        a.objs[0].home_y = 118.;
+        w.hit = true;
+        a.event(0, 0, false, 0.1, &mut w);
+        a.event(0, 1, false, 0.1, &mut w);
+        assert!(!w.switches[0] && !w.passable[0], "主角碰、调查都不理");
+        w.frame(&mut a, 0.1);
+        assert_eq!(w.pos[0].y, 300., "关着不动");
+        assert!(w.hurts.is_empty(), "关着不伤人");
+        a.event(0, 2, false, 0.1, &mut w);
+        assert!(w.switches[0] && w.passable[0]);
+        assert!(!a.input_locked(), "不登记 ObjLockInput");
+        w.frame(&mut a, 0.1);
+        let t = a.objs[0].timer;
+        assert!((w.pos[0].y - (118. + 145. * (t.sin() + 1.) * 0.5)).abs() < 1e-3);
+        assert_eq!(w.hurts, [0.15]);
+        w.frame(&mut a, 0.1);
+        assert_eq!(w.hurts, [0.15], "受伤计时没过不再扣");
+        a.event(0, 2, false, 0.1, &mut w);
+        assert!(!w.switches[0] && !w.passable[0], "再叫一次停下、挡路");
+    }
+
+    /// 剑冢的剑（0x1c，参数 0 为 0）：绕 Z 左右摆 24·sin t 度，碰到主角扣 10%；事件 2 不理。
+    #[test]
+    fn sword_swings_and_hurts_without_a_switch() {
+        let (mut a, mut w) = single(0x1c, [0; 4], 0);
+        w.switches = vec![false];
+        w.hit = true;
+        a.event(0, 2, false, 0.1, &mut w);
+        assert!(!w.switches[0]);
+        w.frame(&mut a, 0.5);
+        assert!((w.roll[0] - 24. * 0.5f32.sin()).abs() < 1e-4);
+        assert_eq!(w.pos[0].y, 300.);
+        assert_eq!(w.hurts, [0.1]);
     }
 
     /// 旋转石梁（7）：只认事件 2；每秒 30 度转 90 度，转的时候格子清掉、停住按新角度登记、角度进存档，

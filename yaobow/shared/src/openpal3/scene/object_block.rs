@@ -40,6 +40,8 @@ pub struct BlockNode {
     /// 绕 Y（+0x34）、绕 X（+0x184）转的角度。
     pub y_deg: f32,
     pub x_deg: f32,
+    /// 绕 Z 转的角度（+0x38）：只有左右摆的剑（0x1c、参数 0 为 0）用，`FUN_00429ee0` 里最先转。
+    pub z_deg: f32,
 }
 
 /// 物件模型的包围盒：盒上一点 = `m · d`，`d` 在 ±`ext`/2 里（原版 `gbOBBox`，`m` 这里写成列向量形式）。
@@ -299,6 +301,16 @@ impl ObjectBlocking {
     pub fn set_yaw(&mut self, i: usize, deg: f32) {
         if let Some(n) = self.nodes.get_mut(i) {
             n.y_deg = deg;
+        }
+    }
+
+    pub fn roll(&self, i: usize) -> Option<f32> {
+        self.nodes.get(i).map(|n| n.z_deg)
+    }
+
+    pub fn set_roll(&mut self, i: usize, deg: f32) {
+        if let Some(n) = self.nodes.get_mut(i) {
+            n.z_deg = deg;
         }
     }
 
@@ -798,6 +810,8 @@ fn object_point(n: &BlockNode, m: &Mat44, d: [f32; 3]) -> Vec3 {
         f[1][0] * d[0] + f[1][1] * d[1] + f[1][2] * d[2] + f[1][3],
         f[2][0] * d[0] + f[2][1] * d[1] + f[2][2] * d[2] + f[2][3],
     ];
+    let (sz, cz) = (n.z_deg * DEG).sin_cos();
+    let p = [p[0] * cz - p[1] * sz, p[0] * sz + p[1] * cz, p[2]];
     let (sx, cx) = (n.x_deg * DEG).sin_cos();
     let (x, y, z) = (p[0], p[1] * cx - p[2] * sx, p[1] * sx + p[2] * cx);
     let (sy, cy) = (n.y_deg * DEG).sin_cos();
@@ -862,6 +876,7 @@ mod tests {
             position: Vec3::new(240., 0., 240.),
             y_deg: 0.,
             x_deg: 0.,
+            z_deg: 0.,
         }
     }
 

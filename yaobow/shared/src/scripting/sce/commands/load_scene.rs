@@ -183,6 +183,28 @@ impl SceCommandLoadScene {
                 }
                 continue;
             }
+            if kind == 0x1c {
+                // 剑冢的锤（`FUN_0042ad40` case 0x1c，参数 0 为 1）：「可通过」= 开关标志；关着的落在脚下地面上
+                // （`FUN_00421440`），开着的由每帧上下动摆位置。
+                if let Some(i) = scene.object_index_of(id) {
+                    if scene.object_parameter(id) == Some(1) {
+                        let on = state
+                            .global_state()
+                            .persistent_state()
+                            .scene_object_state_saved(&self.name, &self.sub_name, id)
+                            .map_or(scene.object_switch_init(i), |v| v != 0);
+                        scene.set_object_passable(i, on);
+                        if let (false, Some(mut p), Some(entity)) =
+                            (on, scene.object_scn_position(i), scene.get_root_object(id))
+                        {
+                            let l = scene.object_layer_at(i).unwrap_or(0);
+                            p.y = scene.floor_height(l, &p);
+                            entity.transform().borrow_mut().set_position(&p);
+                        }
+                    }
+                }
+                continue;
+            }
             if kind == 0x24 {
                 // 坠落的障碍物：掉下来了（状态 2）就停在落下的位置（上面已按存档摆好）、不可通过、触发区清空、
                 // 按位置登记格子（`SceneObj::OnLoad` case 36，`gamebase/sceneobj.cpp:4242`）。

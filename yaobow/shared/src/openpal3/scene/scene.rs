@@ -2093,6 +2093,49 @@ impl ScnScene {
         }
     }
 
+    /// 左右摆的剑（0x1c）：模型绕自己的 Z 轴摆到 `deg`（`FUN_00429ee0` 里最先转），挡路表记下角度
+    /// （碰撞盒跟着转）。
+    pub fn set_object_roll(&self, i: usize, deg: f32) {
+        let old = self
+            .object_blocking
+            .borrow()
+            .as_ref()
+            .and_then(|b| b.roll(i))
+            .unwrap_or(0.);
+        if let Some(e) = self.object_entity_at(i) {
+            e.transform()
+                .borrow_mut()
+                .rotate_axis_angle_local(&Vec3::new(0., 0., 1.), (deg - old).to_radians());
+        }
+        if let Some(b) = self.object_blocking.borrow_mut().as_mut() {
+            b.set_roll(i, deg);
+        }
+    }
+
+    /// `IsCollideOBB`：物件 `i` 放在 `at` 的碰撞盒和主角的盒子相交没有。主角的盒子同冲撞
+    /// （[`super::ram`]）：以 `player` 为底面中心，半宽 = 模型半径 × 0.6（x）/ 模型半径（z），高 = 模型高，
+    /// 朝向不转。
+    pub fn object_hits_player(&self, i: usize, at: &Vec3, player: &Vec3, r: f32, h: f32) -> bool {
+        let Some(me) = self
+            .object_blocking
+            .borrow()
+            .as_ref()
+            .and_then(|b| b.collide_obb(i, Some(*at)))
+        else {
+            return false;
+        };
+        let pl = super::object_block::WorldObb {
+            c: Vec3::new(player.x, player.y + h * 0.5, player.z),
+            axes: [
+                Vec3::new(1., 0., 0.),
+                Vec3::new(0., 1., 0.),
+                Vec3::new(0., 0., 1.),
+            ],
+            half: [r * 0.6, h * 0.5, r],
+        };
+        me.overlaps(&pl)
+    }
+
     /// 第 `i` 个物件模型包围盒的 y 边长（`FUN_00429db0` 的 +0xa4）。
     pub fn object_model_height(&self, i: usize) -> f32 {
         self.object_blocking
@@ -2547,6 +2590,7 @@ impl ScnScene {
                     position: n.position,
                     y_deg: n.rotation,
                     x_deg: f32::from_bits(n.dw184.first().copied().unwrap_or(0)),
+                    z_deg: 0.,
                 }
             })
             .collect();

@@ -2256,6 +2256,7 @@ impl AdventureDirectorProps {
             state: self.sce_vm.state_mut(),
             walk: &mut self.object_walk,
             fly: &mut self.player_fly,
+            hurt_time: &mut self.hurt_time,
             procs: vec![],
         };
         let done = scene.examine_object(i, &mut w);
@@ -2350,15 +2351,7 @@ impl AdventureDirectorProps {
             if let Some(rc) = player.and_then(RoleController::get_role_controller) {
                 rc.inner::<RoleController>().idle();
             }
-            // `PlayerMgr::Obj_Hurt(0.05)`：队里每人扣最大精的 5%，最少剩 1。
-            let mut p = self.sce_vm.global_state_mut().persistent_state_mut();
-            let team: Vec<u32> = p.team().to_vec();
-            for id in team {
-                if let Some(r) = p.role_mut(id) {
-                    let hp = (r.hp as f32 - r.max_hp as f32 * ram::HURT_PERCENT) as i32;
-                    r.hp = hp.max(1);
-                }
-            }
+            obj_hurt(self.sce_vm.state_mut(), ram::HURT_PERCENT);
         }
     }
 
@@ -2379,6 +2372,7 @@ impl AdventureDirectorProps {
             state: self.sce_vm.state_mut(),
             walk: &mut self.object_walk,
             fly: &mut self.player_fly,
+            hurt_time: &mut self.hurt_time,
             procs: vec![],
         };
         scene.step_object_actions(dt, &mut w);
@@ -2651,6 +2645,7 @@ impl AdventureDirectorProps {
             state: self.sce_vm.state_mut(),
             walk: &mut self.object_walk,
             fly: &mut self.player_fly,
+            hurt_time: &mut self.hurt_time,
             procs: vec![],
         };
         scene.player_landed(layer, &pos, dt, &mut w);
@@ -2726,6 +2721,7 @@ impl AdventureDirectorProps {
             state: self.sce_vm.state_mut(),
             walk: &mut self.object_walk,
             fly: &mut self.player_fly,
+            hurt_time: &mut self.hurt_time,
             procs: vec![],
         };
         scene.player_on_object(layer, &pos, dt, &mut w);
@@ -3423,12 +3419,26 @@ struct PlayerFly {
 const FLY_SECS: f32 = 0.5;
 
 /// 场景物件的动作要碰的主角、模型、音效、冻结计数。
+/// `PlayerMgr::Obj_Hurt(frac)`（`FUN_004101f0(frac, 1, 0)`）：队里每人扣最大精的 `frac`，最少剩 1。
+fn obj_hurt(state: &mut crate::scripting::sce::SceState, frac: f32) {
+    let mut p = state.global_state_mut().persistent_state_mut();
+    let team: Vec<u32> = p.team().to_vec();
+    for id in team {
+        if let Some(r) = p.role_mut(id) {
+            let hp = (r.hp as f32 - r.max_hp as f32 * frac) as i32;
+            r.hp = hp.max(1);
+        }
+    }
+}
+
 struct ObjWorld<'a> {
     scene: &'a crate::openpal3::scene::ScnScene,
     player: Option<ComRc<radiance::comdef::IEntity>>,
     state: &'a mut crate::scripting::sce::SceState,
     walk: &'a mut Option<ObjectWalk>,
     fly: &'a mut Option<PlayerFly>,
+    /// 离上次被机关打到过了多久（`_DAT_0058de64`，冲撞和剑冢的剑、锤共用）。
+    hurt_time: &'a mut f32,
     /// 动作 4 要跑的过程，推完一帧再交给 SCE 虚拟机。
     procs: Vec<i32>,
 }
@@ -3964,6 +3974,40 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
 
     fn floor_at(&self, layer: usize, p: &Vec3) -> f32 {
         self.scene.floor_height(layer, p)
+    }
+
+    fn set_render_pos(&mut self, i: usize, p: &Vec3) {
+        if let Some(e) = self.scene.object_entity_at(i) {
+            e.transform().borrow_mut().set_position(p);
+        }
+    }
+
+    fn set_object_roll(&mut self, i: usize, deg: f32) {
+        self.scene.set_object_roll(i, deg);
+    }
+
+    fn hurt_ready(&self) -> bool {
+        *self.hurt_time > crate::openpal3::scene::ram::HURT_DELAY
+    }
+
+    fn player_hit_by(&self, i: usize) -> bool {
+        let Some(e) = &self.player else {
+            return false;
+        };
+        let Some(rc) = RoleController::get_role_controller(e.clone()) else {
+            return false;
+        };
+        let rc = rc.inner::<RoleController>();
+        let pl = e.transform().borrow().position();
+        let at = self.object_pos(i);
+        self.scene
+            .object_hits_player(i, &at, &pl, rc.model_radius(), rc.model_height())
+    }
+
+    fn obj_hurt(&mut self, frac: f32) {
+        log::debug!("场景物件：主角被机关打到，全队扣 {frac}");
+        obj_hurt(self.state, frac);
+        *self.hurt_time = 0.;
     }
 }
 

@@ -91,7 +91,7 @@ impl SceCommand for SceCommandInteractWithObject {
         &mut self,
         scene_manager: ComRc<ISceneManager>,
         _ui: &Ui,
-        state: &mut SceState,
+        _state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
         let Some(scene) = scene_manager.scn_scene() else {
@@ -118,9 +118,9 @@ impl SceCommand for SceCommandInteractWithObject {
             // 开关（`FUN_00424c20` case 0x17 事件 2）交给物件动作：翻开关、播动画、扣次数，参数 0 为 1 的
             // 「可通过」跟着开关走（蜀山故道最上方的石门就是这种）。先前这里只翻开关、播动画，门开了格子还挡着。
             23 => scene.post_object_event(self.object_id, 2),
-            28 => {
-                let _ = self.toggle_switch(&scene, state);
-            }
+            // 剑冢的锤（`FUN_00424c20` case 0x1c 事件 2）交给物件动作：参数 0 为 1 的翻开关、「可通过」跟着
+            // 开关走，开着就上下动。先前这里只翻存档里的开关，锤还落在地上挡路。
+            28 => scene.post_object_event(self.object_id, 2),
             // 升降平台（`FUN_00424c20` case 0x16 事件 2）交给物件动作：停在下面就往参数 0 的高度升、停在上面就
             // 降回原位，停住后「可通过」、按参数 1 换层。冰风谷的小雪球（参数 0 为 0）就是这样落到地上搭成
             // 路的；先前这里直接改高度，格子不跟着变，路搭不起来。
@@ -140,19 +140,6 @@ impl SceCommand for SceCommandInteractWithObject {
 impl SceCommandInteractWithObject {
     pub fn new(object_id: i32) -> Self {
         Self { object_id }
-    }
-
-    /// `+0xaf = !+0xaf`, the byte 126 `GetSwitch` reads back. Returns the
-    /// new value.
-    fn toggle_switch(&self, scene: &ScnScene, state: &mut SceState) -> i32 {
-        let city = scene.name().to_string();
-        let sub = scene.sub_name().to_string();
-        let mut persistent = state.global_state_mut().persistent_state_mut();
-        let now = persistent.scene_object_state(&city, &sub, self.object_id);
-        let next = if now == 0 { 1 } else { 0 };
-        persistent.set_scene_object_state(&city, &sub, self.object_id, next);
-        log::debug!("Trigger: 物件 {} 开关 {now} -> {next}", self.object_id);
-        next
     }
 }
 
