@@ -439,6 +439,24 @@ impl ScnScene {
                     }
                 }
             }
+            // 神魔之井电梯（0x27）：踩上矩形就被载到参数 0 那层、矩形中间那格往 +z 80 的地方。
+            if let Some((o, 0x27)) = self.tile_object(l, x, z) {
+                if self.object_active_at(o) {
+                    if let Some(p) = self.object_actions.borrow().params(o) {
+                        let to = p[0].max(0) as usize;
+                        if to < layers {
+                            let r = self.object_rect(o);
+                            let (c, _) = self.tile_point(l, (r[0] + r[2]) / 2, (r[1] + r[3]) / 2);
+                            let (tx, tz) = FieldNavView {
+                                scene: self,
+                                layer: to,
+                            }
+                            .tile_of(&Vec3::new(c.x, c.y, c.z + 80.));
+                            next.push((to, tx, tz, true));
+                        }
+                    }
+                }
+            }
             if maze && matches!(self.tile_object(l, x, z), Some((_, 0x2c | 0x26))) {
                 let (bx, bz) = self.nav_block_size(l);
                 let rx = (super::player_jump::MAX_DIST / bx).ceil() as i32;
@@ -2121,6 +2139,17 @@ impl ScnScene {
             .borrow()
             .as_ref()
             .and_then(|b| b.model_extent(i))
+    }
+
+    /// [调试] 会把人载走的物件（神树传送点、电梯、上下传送板）的位置（x、z）：电梯取触发矩形中间那格。
+    pub fn object_ride_center(&self, i: usize) -> Option<Vec3> {
+        if self.object_kind_at(i) == Some(0x27) {
+            let r = self.object_rect(i);
+            let l = self.object_layer_at(i).unwrap_or(0);
+            return Some(self.tile_point(l, (r[0] + r[2]) / 2, (r[1] + r[3]) / 2).0);
+        }
+        self.object_entity_at(i)
+            .map(|e| e.transform().borrow().position())
     }
 
     /// 第 `i` 个物件的触发矩形（格子坐标 x0 z0 x1 z1）。
