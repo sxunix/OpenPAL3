@@ -953,3 +953,38 @@ input is held by `ObjLockInput`. The agent's flood treats an elevator as
 a layer link. The route: floor switch #8 opens gate #7, elevator up,
 plate #1 to M15/3, switch (proc 502) there, back in M15/2 the boulder
 (object 15) is gone, elevator down, west exit to M15/c.
+
+From 71800 to 100400 (神树, 锁妖塔, 蜀山 after 雪见's death):
+
+- 神树 M16 flowers (node type 0x25) and the master switch: the flowers
+  follow one global open/closed flag kept in the save; opcode 159
+  (`InitFlower`) sets it once; the master switch's own `.scn` node type
+  decides which objects follow it. The closed model (`…2.pol`) is not
+  swapped in yet;
+- opcode 158's skip list is cleared on every scene load (FUN_00538d60),
+  and objects on it drop their persistent records, so a gate rebuilt
+  from the `.scn` is not left open by an old save entry;
+- a switch flag with no save record reads the `.scn` initial value
+  (锁妖塔 floor 7 plates start on);
+- 锁妖塔 M17 moving plates (node type 5): a polyline path from the `.scn`
+  (+0x84 count, +0x88 points), speed 100, the player steps off 96 past
+  the end; a plate can only be boarded at the end it is parked at; its
+  position is saved on arrival and restored on load;
+- 锁妖塔 lifts (node type 0x16): event 2 toggles up/down at 30/s with
+  `Wg005`, the raised lift is a hole on layer 0 and a bridge on layer 1,
+  the depend scene/id at +0x14a/+0x16a selects the switch that powers it;
+- the space key asks for a role before an object (`rolectrl.cpp:405`):
+  a bed's box was taking the key from 龙葵 standing beside it;
+- combat: damage / heal / MISS popups over the hit role
+  (FUN_004f2c70 always posts one while the stage role is alive; colours
+  from the DisplayChain table), the selected role's HP text over the
+  target marker (`???/???` for bosses), and a party attack whose
+  targets are all down is dropped instead of walking to an empty spot;
+- combat: the outcome is judged every frame even while the control panel
+  is open (FUN_004f7910 from FUN_004ecb00; ProcControl force-releases
+  the panel). The last enemy fleeing during target selection had left
+  the battle on a menu with nothing to pick (M11/2).
+
+Not done yet: the closed-flower and plate model swaps, the type 21
+eyeball's look, the lift camera lock, the spell-side MISS case in
+FUN_0050a700.
