@@ -3786,6 +3786,7 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         next
     }
 
+    /// 存档里记了就用记的，没记就是 `.scn` 里的初值。
     fn switch_on(&self, i: usize) -> bool {
         let Some(id) = self.scene.object_id_at(i) else {
             return false;
@@ -3793,8 +3794,8 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         self.state
             .global_state()
             .persistent_state()
-            .scene_object_state(self.scene.name(), self.scene.sub_name(), id)
-            != 0
+            .scene_object_state_saved(self.scene.name(), self.scene.sub_name(), id)
+            .map_or(self.scene.object_switch_init(i), |v| v != 0)
     }
 
     fn deactivate(&mut self, i: usize) {

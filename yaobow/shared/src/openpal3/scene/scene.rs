@@ -1894,6 +1894,7 @@ impl ScnScene {
                         Vec3::new(f(0), f(4), f(8))
                     })
                     .collect(),
+                switch_init: (n.w2 >> 8) != 0,
                 home_y: n.position.y,
                 // `depend_scenename`（记录 +0x14a，32 字节）/ `depend_id`（+0x16a）：名字空或 id 0xff 是没有。
                 depend: {
@@ -2248,6 +2249,11 @@ impl ScnScene {
                 b.set_flower(i, model, open);
             }
         }
+    }
+
+    /// `.scn` 里第 `i` 个物件开关标志的初值（记录 +3，`w2` 高字节）。
+    pub fn object_switch_init(&self, i: usize) -> bool {
+        self.scn_file.nodes.get(i).is_some_and(|n| (n.w2 >> 8) != 0)
     }
 
     /// 第 `i` 个物件的触发矩形（格子坐标 x0 z0 x1 z1）。

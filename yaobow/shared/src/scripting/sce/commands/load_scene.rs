@@ -128,7 +128,17 @@ impl SceCommandLoadScene {
                 // `SceneObj::OnLoad` case 23（`gamebase/sceneobj.cpp:4188`）：用完了（次数 0）、
                 // 或者参数 0 非 0 且开着的，模型停在最后一帧；参数 0 为 1 的「可通过」跟着开关走。
                 let p0 = scene.object_parameter(id).unwrap_or(0);
-                let on = object_state != 0;
+                // 存档里没记的取 `.scn` 里的初值。
+                let on = match state
+                    .global_state()
+                    .persistent_state()
+                    .scene_object_state_saved(&self.name, &self.sub_name, id)
+                {
+                    Some(v) => v != 0,
+                    None => scene
+                        .object_index_of(id)
+                        .is_some_and(|i| scene.object_switch_init(i)),
+                };
                 if times == Some(0) || (p0 != 0 && on) {
                     scene.hold_object_anim_end(id);
                 }
@@ -142,7 +152,15 @@ impl SceCommandLoadScene {
             if kind == 0x5 {
                 // 移动浮板存的是自己的开关标志 +0xaf（开关推它时写的），不是状态；位置是到头时改的原位
                 // `m_info.pos`（上面已经摆好），读档后状态又是 0，格子按新位置重新登记。
-                scene.set_platform_switch(id, object_state != 0);
+                // 存档里没记就保持 `.scn` 里的初值。
+                if state
+                    .global_state()
+                    .persistent_state()
+                    .scene_object_state_saved(&self.name, &self.sub_name, id)
+                    .is_some()
+                {
+                    scene.set_platform_switch(id, object_state != 0);
+                }
                 if position.is_some() {
                     if let Some(i) = scene.object_index_of(id) {
                         let l = scene.object_layer_at(i).unwrap_or(0);

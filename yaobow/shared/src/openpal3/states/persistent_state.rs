@@ -424,6 +424,13 @@ impl PersistentState {
             .unwrap_or(0)
     }
 
+    /// 存档里有没有这一条（没有时开关标志该取 `.scn` 里的初值）。
+    pub fn scene_object_state_saved(&self, city: &str, scene: &str, object_id: i32) -> Option<i32> {
+        self.scene_object_states
+            .get(&scene_object_key(city, scene, object_id))
+            .copied()
+    }
+
     pub fn set_scene_object_state(&mut self, city: &str, scene: &str, object_id: i32, state: i32) {
         self.scene_object_states
             .insert(scene_object_key(city, scene, object_id), state);

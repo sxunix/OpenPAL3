@@ -136,6 +136,8 @@ pub struct ObjNode {
     /// 升降平台（0x16）跟着哪个场景的哪个开关（`depend_scenename` / `depend_id`，`.scn` 记录 +0x14a /
     /// +0x16a）：那个开关开着就直接停在上面。
     pub depend: Option<(String, i32)>,
+    /// 开关标志 +0xaf 的初值（`.scn` 记录 +3）。移动浮板从它开始（锁妖塔七层的浮板一开始就是开的）。
+    pub switch_init: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -430,7 +432,7 @@ impl ObjectActions {
                     dist: 0.,
                     next: 0,
                     lift: false,
-                    on: false,
+                    on: n.switch_init,
                 }),
             })
             .collect();
@@ -1827,6 +1829,7 @@ mod tests {
                 path: vec![],
                 home_y: 0.,
                 depend: None,
+                switch_init: false,
             },
             ObjNode {
                 object_id: 11,
@@ -1841,6 +1844,7 @@ mod tests {
                 path: vec![],
                 home_y: 0.,
                 depend: None,
+                switch_init: false,
             },
         ]);
         let w = Mock {
@@ -1973,6 +1977,7 @@ mod tests {
             path: vec![],
             home_y: 0.,
             depend: None,
+            switch_init: false,
         }]);
         let (_, mut w) = m01();
         w.pos = vec![Vec3::new(0., 100., 0.)];
@@ -2017,6 +2022,7 @@ mod tests {
                 path: vec![],
                 home_y: 0.,
                 depend: None,
+                switch_init: false,
             },
             ObjNode {
                 object_id: 5,
@@ -2031,6 +2037,7 @@ mod tests {
                 path: vec![],
                 home_y: 0.,
                 depend: None,
+                switch_init: false,
             },
             // 高字节非零：`cmp bx, di` 配不上任何物件（实机数据里没有这种）。
             ObjNode {
@@ -2046,6 +2053,7 @@ mod tests {
                 path: vec![],
                 home_y: 0.,
                 depend: None,
+                switch_init: false,
             },
         ]);
         assert_eq!(a.objs[0].link, Some(1));
@@ -2074,6 +2082,7 @@ mod tests {
             path: vec![],
             home_y: 0.,
             depend: None,
+            switch_init: false,
         }]);
         (a, w)
     }
@@ -2309,6 +2318,7 @@ mod tests {
             path: vec![],
             home_y: 0.,
             depend: None,
+            switch_init: false,
         }]);
         w.pos = vec![Vec3::new(411.86, 0., -300.55)];
         w.passable = vec![false];
@@ -2419,6 +2429,7 @@ mod tests {
             path: vec![],
             home_y: 0.,
             depend: None,
+            switch_init: false,
         }]);
         w.pos = vec![Vec3::new(732.85, 0., -531.69)];
         w.player = Vec3::new(732.85 + 30., 0., -531.69);
@@ -2458,6 +2469,7 @@ mod tests {
             path: vec![],
             home_y: 0.,
             depend: None,
+            switch_init: false,
         }]);
         w.pos = vec![Vec3::new(0., 0., 0.)];
         w.player = Vec3::new(100., 0., 0.);
@@ -2491,6 +2503,7 @@ mod tests {
                 path: vec![],
                 home_y: 0.,
                 depend: None,
+                switch_init: false,
             },
             ObjNode {
                 object_id: 33,
@@ -2505,6 +2518,7 @@ mod tests {
                 path: vec![],
                 home_y: 0.,
                 depend: None,
+                switch_init: false,
             },
         ]);
         w.pos = vec![
@@ -2542,6 +2556,7 @@ mod tests {
             path: vec![],
             home_y: 0.,
             depend: None,
+            switch_init: false,
         }]);
         w.pos = vec![Vec3::new(-54.8, -634., 3540.4)];
         w.player = Vec3::new(-54.8 + 20., -634., 3540.4);
