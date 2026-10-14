@@ -819,6 +819,15 @@ impl CombatSession {
         self.notice("逃跑失败");
     }
 
+    /// 舞台不演了、这一次行动作废：不结算，直接回蓄力段（我方普攻开演时目标全倒下）。
+    pub fn abandon(&mut self) {
+        let Some(st) = self.staging.take() else {
+            return;
+        };
+        self.pending_actions.retain(|p| p.slot() != st.slot);
+        self.battle.finish_turn(st.slot);
+    }
+
     /// 舞台演完（人走回去了）：放开时钟。没结算过的先结算。
     pub fn release(&mut self) {
         self.strike();

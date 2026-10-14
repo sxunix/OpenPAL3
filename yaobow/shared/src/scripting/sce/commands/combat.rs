@@ -237,7 +237,37 @@ pub struct SceCommandCombat {
     /// 特效 `bink` 类排着的 2D 动画，和正在播的那一段（源尺寸、贴图）。
     movies: Vec<String>,
     movie: Option<((u32, u32), Option<imgui::TextureId>)>,
+    /// 舞台上正在飘的字（伤害数、MISS）。
+    floats: Vec<FloatText>,
+    /// 每个战斗位伤害数的叠高（`CCBStage::m_fDamageNumPosY`）。
+    float_stack: [f32; SLOTS],
 }
+
+/// 舞台上正在飘的一个字：`ProcShowDamage`（`FUN_004fdb10`）/ `ProcShowMiss`（`FUN_004fdd90`）那一步
+/// 第一次跑时定下的东西。
+#[derive(Debug, Clone)]
+struct FloatText {
+    kind: crate::openpal3::combat::state::PopupKind,
+    secs: f32,
+    t: f32,
+    /// 世界坐标：数 = (那一刻的位置 x, 50, z)，MISS = 站位 + (0, 80, 0)。
+    anchor: Vec3,
+    /// 横向 0..31（`rand() & 0x1f`，和战斗共用一条随机序列）。
+    jitter: i32,
+    /// 数：开始那一刻这个人的叠高（取整）。
+    stack: i32,
+}
+
+/// 伤害数往上飘的速度（像素 / 秒，`CB_DAMAGE_TXT_Y_SPEED`）、MISS 整段飘的高度（`CB_DAMAGE_TXT_MAX_PY`）。
+const FLOAT_RISE: f32 = 30.;
+const MISS_RISE: f32 = 32.;
+/// 叠高每来一个数加 10，超过 160 就压回 160（`UpdateDamageNumPosY`）。
+const FLOAT_STACK_STEP: f32 = 10.;
+const FLOAT_STACK_MAX: f32 = 160.;
+/// 字号：`GB_FONT_UNICODE20`，`SetCurFontScale(40 / 屏宽, 40 / 屏高)` → 800×600 下 20 像素一格。
+const FLOAT_FONT_PX: f32 = 20.;
+/// [推断] 原版给的是基线（`ProcShowMiss` 注「引擎为基线位置」），imgui 从字格顶上画，往上挪这么多。
+const FLOAT_ASCENT_PX: f32 = 16.;
 
 /// 结算面板上的一个人。
 #[derive(Clone)]
@@ -685,6 +715,8 @@ impl SceCommandCombat {
             result_panels: Vec::new(),
             result_tex: None,
             settled: false,
+            floats: Vec::new(),
+            float_stack: [0.; SLOTS],
         }
     }
 
@@ -2084,6 +2116,25 @@ impl SceCommandCombat {
             .and_then(|t| self.actors.get(t))
             .and_then(|a| a.as_ref())
             .map(|a| a.home);
+        // 我方普攻，开演时目标已经全倒下了：不跑过去、不出手，这一次行动就这样完了
+        // （`CCBStage::ProcNormalAttack` 的「对于我方来说，如果目标人物已经全部死亡，则不执行跑步动作」、
+        // `CCBStageRole::ProcRun` / `ProcAttack` 同样的判断，`cbstage.cpp:2434`、`cbstagerole.cpp:2339 / 2876`）。
+        // [推断] exe 的走位任务 0x50da90 本身只查出手者在不在场，这一步在 exe 里的位置没找到，按源码做。
+        if let (Some(ActKind::Attack), Some(t)) = (self.run.map(|r| r.kind), target) {
+            let all_down = slot < PARTY_SLOTS
+                && matches!(self.run.map(|r| r.step), Some(StageStep::Begin))
+                && session
+                    .battle
+                    .attack_targets(slot, t)
+                    .iter()
+                    .all(|&s| !session.battle.get(s).is_some_and(|c| c.in_play()));
+            if all_down {
+                log::debug!("Combat: 位 {slot} 的目标已经倒下，不出手");
+                session.abandon();
+                self.run = None;
+                return;
+            }
+        }
         let Some(run) = self.run.as_mut() else { return };
         let Some(actor) = self.actors.get_mut(slot).and_then(|a| a.as_mut()) else {
             // 台上没这个人：直接结算、放开。
@@ -2539,6 +2590,114 @@ impl SceCommandCombat {
             pointer.transform().borrow_mut().set_matrix(*t.matrix());
             pointer.set_visible(true);
         }
+    }
+
+    /// 飘字每帧（`CCBStage` 每帧先 `UpdateDamageNumPosY`，再跑各个显示任务）：叠高按飘的速度往回落、
+    /// 超过 160 压回 160；把规则层新记的飘字领走，第一次跑时定锚点、横向随机和叠高；到时候的去掉。
+    fn step_floats(&mut self, delta_sec: f32) {
+        use crate::openpal3::combat::state::PopupKind;
+        for y in self.float_stack.iter_mut() {
+            if *y > 0. {
+                if *y > FLOAT_STACK_MAX {
+                    *y = FLOAT_STACK_MAX;
+                } else {
+                    *y -= FLOAT_RISE * delta_sec;
+                }
+            }
+            if *y < 0. {
+                *y = 0.;
+            }
+        }
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        for p in std::mem::take(&mut session.battle.popups) {
+            let Some(actor) = self.actors.get(p.slot).and_then(|a| a.as_ref()) else {
+                continue;
+            };
+            let (anchor, stack) = match p.kind {
+                PopupKind::Number { .. } => {
+                    self.float_stack[p.slot] += FLOAT_STACK_STEP;
+                    let at = actor.entity.transform().borrow().position();
+                    (
+                        Vec3::new(at.x, 50., at.z),
+                        self.float_stack[p.slot].round() as i32,
+                    )
+                }
+                PopupKind::Miss => (Vec3::new(actor.home.x, actor.home.y + 80., actor.home.z), 0),
+            };
+            let jitter = session.battle.rng.rand15() & 0x1f;
+            self.floats.push(FloatText {
+                kind: p.kind,
+                secs: p.secs,
+                t: 0.,
+                anchor,
+                jitter,
+                stack,
+            });
+        }
+        for f in self.floats.iter_mut() {
+            f.t += delta_sec;
+        }
+        self.floats.retain(|f| f.t <= f.secs);
+    }
+
+    /// 画飘字（`CCBDisplayChain` 的文字项：`GB_FONT_UNICODE20`、颜色带透明）。数：横 = 投影 − 16 + 随机，
+    /// 基线 = 投影 − 30·t + 叠高，透明从 255 线性降到 0；MISS：横同上，基线 = 投影 − 32·进度 + 16。
+    /// 像素量都是 800×600 下的，按界面比例放大。
+    fn draw_floats(ui: &Ui, floats: &[FloatText], stage: &ComRc<IScene>) {
+        use crate::openpal3::combat::state::PopupKind;
+        if floats.is_empty() {
+            return;
+        }
+        let m = {
+            let cam = stage.camera();
+            radiance::math::Mat44::multiplied(cam.projection_matrix(), &cam.view_matrix())
+        };
+        let r = m.floats();
+        overlay(ui, "CombatFloats", |ui, _at, scale| {
+            let list = ui.get_window_draw_list();
+            let [w, h] = ui.io().display_size;
+            let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
+            let base_px = ui.current_font_size();
+            ui.set_window_font_scale(FLOAT_FONT_PX * scale / base_px);
+            for f in floats {
+                let v = [f.anchor.x, f.anchor.y, f.anchor.z, 1.];
+                let clip: Vec<f32> = (0..4)
+                    .map(|i| (0..4).map(|j| r[i][j] * v[j]).sum())
+                    .collect();
+                if clip[3] <= 0. {
+                    continue;
+                }
+                let (px, py) = (
+                    (clip[0] / clip[3] + 1.) * 0.5 * w,
+                    (1. - clip[1] / clip[3]) * 0.5 * h,
+                );
+                let ratio = (f.t / f.secs).min(1.);
+                let alpha = 1. - ratio;
+                let (text, rgb, baseline) = match f.kind {
+                    PopupKind::Number { value, rgb } => (
+                        value.to_string(),
+                        rgb,
+                        py + (-(FLOAT_RISE * f.t).round() + f.stack as f32) * scale,
+                    ),
+                    PopupKind::Miss => (
+                        "MISS".to_string(),
+                        0xffff32,
+                        py + (-(ratio * MISS_RISE).round() + 16.) * scale,
+                    ),
+                };
+                let x = px + (f.jitter - 16) as f32 * scale;
+                let color = [
+                    ((rgb >> 16) & 0xff) as f32 / 255.,
+                    ((rgb >> 8) & 0xff) as f32 / 255.,
+                    (rgb & 0xff) as f32 / 255.,
+                    alpha,
+                ];
+                list.add_text([x, baseline - FLOAT_ASCENT_PX * scale], color, text);
+            }
+            ui.set_window_font_scale(1.);
+        });
     }
 
     fn animate_stage(&mut self, delta_sec: f32) {
@@ -3398,6 +3557,7 @@ impl SceCommand for SceCommandCombat {
                 }
             }
         }
+        self.step_floats(delta_sec);
         self.cues.extend(state.take_combat_action_requests());
         self.drive_cues(delta_sec);
         self.animate_stage(delta_sec);
@@ -3484,6 +3644,9 @@ impl SceCommand for SceCommandCombat {
             // 结算期间战斗界面收起来（`FUN_00518b30(0)` / `FUN_004db940(0)`）。
             Self::draw_result(ui, player, &self.result_panels, self.result_tex.as_ref());
         } else if let (Some(session), Some(hud)) = (self.session.as_ref(), self.hud.as_ref()) {
+            if let Some(stage) = self.stage.as_ref() {
+                Self::draw_floats(ui, &self.floats, stage);
+            }
             Self::draw(ui, session, hud, self.battle_clock);
             if let Some(text) = self.sneak_text.as_deref() {
                 Self::draw_sneak_banner(ui, hud, self.sneak, text, self.battle_clock);

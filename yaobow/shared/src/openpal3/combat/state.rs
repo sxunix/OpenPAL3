@@ -297,6 +297,38 @@ pub enum HitPattern {
 /// 武器附加状态只看前 0x17 个（`FUN_004f2560` 的循环 `700 .. 0x2ea`）。
 pub const WEAPON_STATES: usize = 0x17;
 
+/// 战场上飘的字（`CCBStage::ProcShowDamage` = `FUN_004fdb10`、`ProcShowMiss` = `FUN_004fdd90`）：
+/// 规则层在改精气神、普攻没打着的地方记下，舞台每帧领走去画。
+#[derive(Debug, Clone, PartialEq)]
+pub struct Popup {
+    pub slot: usize,
+    pub kind: PopupKind,
+    /// 显示多久（秒）。
+    pub secs: f32,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PopupKind {
+    /// `%d` 写的数，`rgb` 是屏幕上的颜色 0xRRGGBB。
+    Number { value: i32, rgb: u32 },
+    /// 「MISS」。
+    Miss,
+}
+
+/// 掉精：红（`FUN_004fdb10` 第 3 参为 0 时的 0x3232ff；屏幕上按低字节当红，Steam 截图里掉精是红字）。
+pub const POPUP_HURT: u32 = 0xff3232;
+/// 加精：绿（`ChangeHP` 的 0xff00ff00）。
+pub const POPUP_HEAL: u32 = 0x00ff00;
+/// 气：淡蓝（`ChangeGP` 的 0xffFBE0A2，低字节当红 → (0xa2, 0xe0, 0xfb)）。
+pub const POPUP_GP: u32 = 0xa2e0fb;
+/// 神：淡紫（`ChangeMP` 的 0xffFAA8D5 → (0xd5, 0xa8, 0xfa)）。
+pub const POPUP_MP: u32 = 0xd5a8fa;
+/// 掉精的数显示 2 秒，加精、气、神 2.5 秒（`FUN_004fc7d0` 末参 0x40000000 / 0x40200000）。
+pub const POPUP_HURT_SECS: f32 = 2.;
+pub const POPUP_GAIN_SECS: f32 = 2.5;
+/// 普攻没打着的「MISS」、打在避上的「0」显示 1 秒（0x3f800000）。
+pub const POPUP_MISS_SECS: f32 = 1.;
+
 /// 普攻打一个目标的结果（[`Battle::normal_attack`]）。
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Blow {
@@ -620,6 +652,8 @@ pub struct Battle {
     /// 什么行动，所以只记下位号，由 [`CombatSession`](super::session::CombatSession)
     /// 领走、把那一次逃跑作废。
     pub flee_broken: Option<usize>,
+    /// 等着舞台去画的飘字（[`Popup`]）。
+    pub popups: Vec<Popup>,
     pub rng: CombatRng,
 }
 
@@ -640,6 +674,7 @@ impl Battle {
             spent_gu: 0,
             pending_spawns: Vec::new(),
             flee_broken: None,
+            popups: Vec::new(),
             rng: CombatRng::new(seed),
         }
     }
@@ -813,6 +848,23 @@ impl Battle {
         }
 
         let moved = self.get_mut(slot).map(|c| c.apply_hp(delta)).unwrap_or(0);
+        let chonglou_down = self
+            .get(slot)
+            .is_some_and(|c| c.actor_id == MONSTER_CHONGLOU && !c.alive);
+        // 弹数（`FUN_004f2c70` 末尾，0x4f2ec0 起）：掉精（含 0）弹折半、扣钱之后的 delta，不按剩下的精
+        // 截；加精弹「上限 − 原来的精」以内的那一截。重楼见底换身那一下在前面就返回了，不弹。
+        if !chonglou_down {
+            let (value, rgb, secs) = if delta < 1 {
+                (delta, POPUP_HURT, POPUP_HURT_SECS)
+            } else {
+                (moved, POPUP_HEAL, POPUP_GAIN_SECS)
+            };
+            self.popups.push(Popup {
+                slot,
+                kind: PopupKind::Number { value, rgb },
+                secs,
+            });
+        }
 
         // 逃跑等待被打掉（`cbrolestate.cpp:5209`）。
         if delta < 0 && self.get(slot).is_some_and(|c| c.waiting_to_flee) {
@@ -1650,6 +1702,26 @@ impl Battle {
             .is_some_and(|t| t.in_play() && !t.has_state(K_WALL))
         {
             blow.missed = true;
+            // 0x4f0f2b 起：目标还站着（`FUN_004ed010`）或有避才弹，有避弹「0」、否则「MISS」，1 秒；
+            // 倒下了什么都不弹。
+            if let Some(t) = self
+                .get(target)
+                .filter(|t| t.in_play() || t.has_state(K_WALL))
+            {
+                let kind = if t.has_state(K_WALL) {
+                    PopupKind::Number {
+                        value: 0,
+                        rgb: POPUP_HURT,
+                    }
+                } else {
+                    PopupKind::Miss
+                };
+                self.popups.push(Popup {
+                    slot: target,
+                    kind,
+                    secs: POPUP_MISS_SECS,
+                });
+            }
             return blow;
         }
 
@@ -1670,6 +1742,12 @@ impl Battle {
         let mut delta = self.physical_hit(attacker, target);
         if dodge || delta >= 0 {
             blow.dodged = true;
+            // 回避那一支（0x4f0e9c）：目标播回避，再弹 1 秒「MISS」。
+            self.popups.push(Popup {
+                slot: target,
+                kind: PopupKind::Miss,
+                secs: POPUP_MISS_SECS,
+            });
             return blow;
         }
         if crit {
@@ -1812,12 +1890,36 @@ impl Battle {
     /// 攻击方式 0xb：从 `from` 吸 `amount` 神、再吸 `amount` 气给 `to`，每样不超过
     /// `from` 现有的（`FUN_004f3380` / `FUN_004f33d0`）。数据里没有怪物用这一种。
     fn attack_drain(&mut self, from: usize, to: usize, amount: i32) {
+        // 这两个转移调的是带弹数的那一版（`FUN_004f31c0(…, 1)` / `FUN_004f3020(…, 1)`）。
         let n = self.get(from).map(|c| c.mp.min(amount)).unwrap_or(0);
-        self.shift_mp(from, -n);
-        self.shift_mp(to, n);
+        self.shown(from, POPUP_MP, |b| b.shift_mp(from, -n), |c| c.mp);
+        self.shown(to, POPUP_MP, |b| b.shift_mp(to, n), |c| c.mp);
         let n = self.get(from).map(|c| c.sp.min(amount)).unwrap_or(0);
-        self.hit_sp(from, -n);
-        self.hit_sp(to, n);
+        self.shown(from, POPUP_GP, |b| b.hit_sp(from, -n), |c| c.sp);
+        self.shown(to, POPUP_GP, |b| b.hit_sp(to, n), |c| c.sp);
+    }
+
+    /// 改气 / 改神带弹数（`ChangeGP` / `ChangeMP` 第 3 参为真）：弹的是真正变了的量，没变（0、倒下、
+    /// 隐形时加）就不弹，2.5 秒。
+    fn shown(
+        &mut self,
+        slot: usize,
+        rgb: u32,
+        change: impl FnOnce(&mut Self),
+        read: impl Fn(&Combatant) -> i32,
+    ) {
+        let before = self.get(slot).map(&read);
+        change(self);
+        let after = self.get(slot).map(&read);
+        if let (Some(b), Some(a)) = (before, after) {
+            if a != b {
+                self.popups.push(Popup {
+                    slot,
+                    kind: PopupKind::Number { value: a - b, rgb },
+                    secs: POPUP_GAIN_SECS,
+                });
+            }
+        }
     }
 
     /// `FUN_004f31c0(slot, v, 0)`：改神，不弹数字。倒下的不改，隐形时不加；掉神时先按
@@ -1932,6 +2034,78 @@ mod tests {
         let mut b = Battle::new(1);
         b.place(0, c);
         b
+    }
+
+    /// 掉精弹红字（不按剩下的精截）、加精弹绿字（只弹补上的那截）；倒下的不弹。
+    #[test]
+    fn hp_changes_leave_a_popup_like_change_hp() {
+        let mut b = two_sided_battle();
+        b.change_hp(5, -150);
+        b.change_hp(0, 30);
+        let hp0 = b.get(0).unwrap().hp;
+        b.change_hp(0, 1000);
+        let max0 = b.get(0).unwrap().max_hp;
+        assert_eq!(
+            b.popups,
+            vec![
+                Popup {
+                    slot: 5,
+                    kind: PopupKind::Number {
+                        value: -150,
+                        rgb: POPUP_HURT
+                    },
+                    secs: POPUP_HURT_SECS
+                },
+                Popup {
+                    slot: 0,
+                    kind: PopupKind::Number {
+                        value: 0,
+                        rgb: POPUP_HEAL
+                    },
+                    secs: POPUP_GAIN_SECS
+                },
+                Popup {
+                    slot: 0,
+                    kind: PopupKind::Number {
+                        value: max0 - hp0,
+                        rgb: POPUP_HEAL
+                    },
+                    secs: POPUP_GAIN_SECS
+                },
+            ]
+        );
+        b.popups.clear();
+        // 5 号位已经被打倒了：再改不弹。
+        assert!(!b.get(5).unwrap().alive);
+        b.change_hp(5, -5);
+        assert!(b.popups.is_empty());
+    }
+
+    /// 普攻：目标倒下了不弹；有避弹 1 秒「0」。
+    #[test]
+    fn attacks_on_the_fallen_pop_nothing_and_a_wall_pops_zero() {
+        let mut b = two_sided_battle();
+        b.change_hp(5, -150);
+        b.popups.clear();
+        let blow = b.normal_attack(0, 5, false);
+        assert!(blow.missed);
+        assert!(b.popups.is_empty());
+
+        let mut b = two_sided_battle();
+        b.set_state(5, K_WALL, true);
+        let blow = b.normal_attack(0, 5, false);
+        assert!(blow.missed);
+        assert_eq!(
+            b.popups,
+            vec![Popup {
+                slot: 5,
+                kind: PopupKind::Number {
+                    value: 0,
+                    rgb: POPUP_HURT
+                },
+                secs: POPUP_MISS_SECS
+            }]
+        );
     }
 
     fn two_sided_battle() -> Battle {
