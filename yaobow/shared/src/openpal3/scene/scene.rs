@@ -787,9 +787,11 @@ impl ScnScene {
             });
         }
         // 调查键才动的物件（特技机关 0xc、开关 0x17）：在场、调查得了、次数没用完的；还有站上去才动的
-        // 乌龟重力机关（0x1d，还没沉下去的）——它放下的吊桥探路泛洪看不出来。`index` 是 `.scn` 序号。
+        // 乌龟重力机关（0x1d，还没沉下去的）——它放下的吊桥探路泛洪看不出来；神魔之井的电梯（0x27，没有模型，
+        // 位置取触发矩形中间那格）。`index` 是 `.scn` 序号。
         for i in 0..self.scn_file.nodes.len() {
-            let Some(kind @ (0xc | 0xd | 0x17 | 0x1d | 0x21)) = self.object_kind_at(i) else {
+            let Some(kind @ (0xc | 0xd | 0x17 | 0x1d | 0x21 | 0x27)) = self.object_kind_at(i)
+            else {
                 continue;
             };
             if !self.object_active_at(i) {
@@ -800,7 +802,7 @@ impl ScnScene {
                 if kind == 0xd {
                     // 冲撞：站到它扫过的地方等着被撞飞（撞到哪看参数）。
                     self.rams.borrow().iter().any(|(r, _)| r.node == i)
-                } else if kind == 0x1d {
+                } else if kind == 0x1d || kind == 0x27 {
                     a.idle(i)
                 } else if kind == 0x21 {
                     a.idle(i) && a.times(i) != Some(0)
@@ -811,16 +813,24 @@ impl ScnScene {
             if !ok {
                 continue;
             }
-            let Some(e) = self.object_entity_at(i) else {
-                continue;
+            let layer = self.object_layer_at(i).map_or(-1, |l| l as i32);
+            let center = if kind == 0x27 {
+                let r = self.object_rect(i);
+                self.tile_point(layer.max(0) as usize, (r[0] + r[2]) / 2, (r[1] + r[3]) / 2)
+                    .0
+            } else {
+                let Some(e) = self.object_entity_at(i) else {
+                    continue;
+                };
+                e.transform().borrow().position()
             };
             out.push(AgentTrigger {
                 kind: "obj",
                 index: i,
                 proc_id: self.scn_file.nodes[i].sce_proc_id,
-                center: e.transform().borrow().position(),
+                center,
                 half: Vec3::new(0., 0., 0.),
-                layer: self.object_layer_at(i).map_or(-1, |l| l as i32),
+                layer,
                 node_type: kind as u16,
             });
         }
@@ -2111,6 +2121,18 @@ impl ScnScene {
             .borrow()
             .as_ref()
             .and_then(|b| b.model_extent(i))
+    }
+
+    /// 第 `i` 个物件的触发矩形（格子坐标 x0 z0 x1 z1）。
+    pub fn object_rect(&self, i: usize) -> [i32; 4] {
+        self.scn_file.nodes.get(i).map_or([0; 4], |n| {
+            [
+                n.nav_trigger_coord_min.0,
+                n.nav_trigger_coord_min.1,
+                n.nav_trigger_coord_max.0,
+                n.nav_trigger_coord_max.1,
+            ]
+        })
     }
 
     /// 第 `i` 个物件在第几层（物件动作里的那份，传送板会改）。

@@ -10,7 +10,7 @@
 //! 排队的前提都是 `FUN_0042c1a0`：队列空、状态 0。乌龟沉下去（状态 3）、吊桥放下（状态 1）以后就不会再动。
 //!
 //! 这里做了吊桥（0x13）、乌龟重力机关（0x1d）、神树传送点（0x26）、上下传送板（0x28），以及调查键（事件 1）
-//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
+//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21），神魔之井的电梯（0x27）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
 //! 交给调用方。
 //!
 //! `FUN_00424c20` 开头先看可用次数（+0xae）：不是 0xff（无限）又已经是 0 的，什么事件都不理。
@@ -34,6 +34,8 @@ pub const PORTAL_RISE: f32 = 200.;
 pub const PORTAL_SECS: f32 = 3.;
 /// 上下传送板挪到另一层要多久（case 0x28，`0x41000000`）。
 pub const PEDAL_SECS: f32 = 8.;
+/// 神魔之井电梯升降要多久（case 0x27，`0x41000000`）。
+pub const ELEVATOR_SECS: f32 = 8.;
 /// 调查够得着的距离（`FUN_00424c20` case 0xc / 0x17 的 `600.0`，源码 `TOUCH_DIST`）。
 pub const TOUCH_DIST: f32 = 600.;
 /// `ROLE_RADIUS`（12）。特技机关：主角离机关（x、z）不到 3 倍就地施展，否则走到机关另一侧 12 处。
@@ -244,6 +246,14 @@ pub trait World {
     /// 可用次数（+0xae）变了，记进存档。[推断] 原版存档里那条物件记录就是 `ObjectInfo` 本身
     /// （源码 `SceneObj::OnLoad(ObjectInfo &info, …)`，`gamebase/sceneobj.cpp:4002`），次数在里面。
     fn save_times(&mut self, _i: usize, _times: u8) {}
+    /// 物件的触发矩形（`.scn` +0x38，格子坐标 x0 z0 x1 z1，物件 +0xe4..+0xf0）。
+    fn object_rect(&self, _i: usize) -> [i32; 4] {
+        [0; 4]
+    }
+    /// 第 `layer` 层在 `p` 这一点（x、z 落的那格）的地面高度（`FUN_00421440(layer, p, 0, 0)`）。
+    fn floor_at(&self, _layer: usize, _p: &Vec3) -> f32 {
+        0.
+    }
 }
 
 /// 场景里所有物件的队列和状态，按 `.scn` 序号排。
@@ -560,6 +570,49 @@ impl ObjectActions {
                     self.push(i, a, w);
                 }
                 self.run(i, w);
+                self.own_proc(i, w);
+            }
+            // 神魔之井电梯（`FUN_00424c20` case 0x27）：不看事件、闲着就动。电梯先挪到触发矩形中间那格的中心
+            // （高度取那格的地面），主角走过去，放音效，电梯连主角 8 秒挪到参数 0 那一层在这一点的地面高度，
+            // 主角换到那一层（电梯自己不换），再往 +z 走 80；登记 `ObjLockInput`，末尾跑自己那条过程。
+            0x27 => {
+                if !self.idle(i) {
+                    return;
+                }
+                let r = w.object_rect(i);
+                let (cx, cz) = ((r[0] + r[2]) / 2, (r[1] + r[3]) / 2);
+                let (at, _) = w.tile_point(layer, cx, cz);
+                w.set_object_pos(i, &at);
+                let to_layer = p0.max(0) as usize;
+                let to = Vec3::new(at.x, w.floor_at(to_layer, &at), at.z);
+                let next = Vec3::new(to.x, to.y, to.z + 80.);
+                for a in [
+                    Act::Walk {
+                        to: at,
+                        check: false,
+                        fix: true,
+                    },
+                    Act::Sound(0),
+                    Act::Move {
+                        to,
+                        dur: ELEVATOR_SECS,
+                        carry: true,
+                        home: false,
+                    },
+                    Act::Layer {
+                        layer: to_layer,
+                        object: false,
+                    },
+                    Act::Walk {
+                        to: next,
+                        check: false,
+                        fix: true,
+                    },
+                ] {
+                    self.push(i, a, w);
+                }
+                self.run(i, w);
+                self.objs[i].locked = true;
                 self.own_proc(i, w);
             }
             0xc => self.skill_gate(i, ev, w),
@@ -1136,6 +1189,7 @@ fn sound_name(kind: u8, p0: i32, p: i32) -> Option<&'static str> {
         },
         0x13 => Some("wg001"),
         0x1d => Some(if p == 0 { "wg005" } else { "we026" }),
+        0x27 => Some("wc014"),
         _ => None,
     }
 }
@@ -1255,6 +1309,12 @@ mod tests {
                 Vec3::new(x as f32 * 12. + 6., 50. + layer as f32, z as f32 * 12. + 6.),
                 500. + layer as f32,
             )
+        }
+        fn object_rect(&self, _: usize) -> [i32; 4] {
+            [44, 88, 46, 92]
+        }
+        fn floor_at(&self, layer: usize, _: &Vec3) -> f32 {
+            layer as f32 * 1700. - 1670.
         }
         fn hint(&mut self, key: &str) {
             self.hints.push(key.into());
@@ -1622,6 +1682,37 @@ mod tests {
         }
         assert_eq!(w.player_layer, 0);
         assert_eq!(w.pos[0].y, 510.);
+    }
+
+    /// M15/2 的 #9（类型 0x27，1 层，矩形 (44, 88)-(46, 92)，参数 0 = 0）：站上去电梯先摆到矩形中间那格，
+    /// 主角走过去，电梯连主角 8 秒降到 0 层的地面，主角换层、再往 +z 走 80；电梯自己的层不变。
+    #[test]
+    fn elevator_carries_the_player_to_the_layer_in_param_0() {
+        let (mut a, mut w) = single(0x27, [0, 0, 0, 0], 1);
+        a.event(0, 0, true, 0.1, &mut w);
+        // 中间那格 (45, 90) 的中心，高度取那格的地面。
+        let p = w.pos[0];
+        assert_eq!((p.x, p.y, p.z), (546., 51., 1086.));
+        assert!(a.input_locked());
+        let dt = 0.125;
+        for _ in 0..3 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(w.sounds, ["wc014"]);
+        for _ in 0..64 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(w.pos[0].y, -1670.);
+        assert_eq!(w.player.y, -1670.);
+        assert_eq!(w.player_layer, 0);
+        assert_eq!(a.layer(0), Some(1));
+        let (to, _) = w.walking.unwrap();
+        assert_eq!((to.x, to.y, to.z), (546., -1670., 1166.));
+        for _ in 0..3 {
+            w.frame(&mut a, dt);
+        }
+        assert!(a.idle(0));
+        assert!(!a.input_locked());
     }
 
     /// M08/3 的 OBJECT_13（类型 0x17，过程 500，次数 1，参数全 0）：离得远先走过去，走到了翻开关、播「调查」，

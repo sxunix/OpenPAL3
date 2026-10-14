@@ -3104,7 +3104,16 @@ impl AdventureDirectorProps {
             // 只是场景物件在动（食人花吞吐、开关）的那种打断，接着走不算一次重试——古藤林一条路
             // 要过好几朵花。
             // 被冲撞撞飞不算：人已经被挪走了，再走多半又被撞（蜀山故道的「打回起点」）。
-            if !self.input_lock && !frozen && self.ram_fly.is_none() {
+            // 把人载走的物件（神树传送点、电梯、上下传送板）：载到了就是走完了，再接着走只会又踩上去。
+            let rode = self.scene_manager.scn_scene().is_some_and(|s| {
+                s.inner::<crate::openpal3::scene::ScnScene>()
+                    .object_lock_report()
+                    .iter()
+                    .any(|o| (o.3 || o.4 > 0) && matches!(o.1, 0x26 | 0x27 | 0x28))
+            });
+            if rode {
+                self.agent_walk_goal = None;
+            } else if !self.input_lock && !frozen && self.ram_fly.is_none() {
                 if let Some(g) = self.agent_walk_goal.as_mut() {
                     g.free_resume = true;
                 }
@@ -3832,6 +3841,14 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         self.save_override(i, |s, city, scene, id| {
             s.set_scene_object_times(city, scene, id, times)
         });
+    }
+
+    fn object_rect(&self, i: usize) -> [i32; 4] {
+        self.scene.object_rect(i)
+    }
+
+    fn floor_at(&self, layer: usize, p: &Vec3) -> f32 {
+        self.scene.floor_height(layer, p)
     }
 }
 
