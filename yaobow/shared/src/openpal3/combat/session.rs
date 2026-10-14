@@ -660,11 +660,17 @@ impl CombatSession {
             }
         }
         self.drop_broken_escape();
-        if self.turn.is_some() || self.staging.is_some() {
+        if self.staging.is_some() {
             return None;
         }
+        // 胜负判定 `FUN_004f7910` 每帧都跑（`FUN_004ecb00`），不管控制面板开没开；分出来了
+        // `ProcControl`（`cbsystem.cpp:920`）就把面板强收回去。玩家正选目标时最后一个敌人
+        // 跑出场，面板不收的话就停在一个没有目标可选的菜单上。
         if self.settle_outcome() {
             return self.finished;
+        }
+        if self.turn.is_some() {
+            return None;
         }
 
         self.elapsed += dt;
@@ -2148,6 +2154,22 @@ mod tests {
         }
         assert!(s.battle.get(5).unwrap().retired, "快进 / 测试里当场跑完");
         assert_eq!(outcome, Some(crate::openpal3::combat::state::Outcome::Win));
+    }
+
+    #[test]
+    fn the_last_enemy_running_off_closes_an_open_menu() {
+        let mut s = session();
+        assert_eq!(run_until_turn(&mut s), 0);
+        s.stage_driven = true;
+        s.input(Input::Confirm);
+        assert!(s.turn.is_some(), "选目标");
+        // 舞台把逃的人演到场外（`finish_fleeing`）时，玩家正开着面板。
+        s.battle.finish_fleeing(5);
+        assert_eq!(
+            s.tick(0.05),
+            Some(crate::openpal3::combat::state::Outcome::Win)
+        );
+        assert!(s.turn.is_none(), "面板收回");
     }
 
     #[test]
