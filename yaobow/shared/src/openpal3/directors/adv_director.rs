@@ -3889,6 +3889,14 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         self.scene.object_yaw(i)
     }
 
+    fn nav_floor(&self, layer: usize, p: &Vec3) -> f32 {
+        self.scene.nav_floor(layer, p)
+    }
+
+    fn clear_trigger_rect(&mut self, i: usize) {
+        self.scene.clear_object_trigger_rect(i);
+    }
+
     fn set_object_yaw(&mut self, i: usize, deg: f32) {
         self.scene.set_object_yaw(i, deg);
     }

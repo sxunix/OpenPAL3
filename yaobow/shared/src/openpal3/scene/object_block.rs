@@ -177,6 +177,17 @@ impl ObjectBlocking {
         self.register(i, &n, model, (&scene.0, &scene.1));
     }
 
+    /// `FUN_00420320(+0xe4, 0xff)`：物件 `i` 所在层上它的触发矩形整块清空（不管格子原来记的是谁）。
+    pub fn clear_trigger_rect(&mut self, i: usize) {
+        let Some(n) = self.nodes.get(i) else {
+            return;
+        };
+        let (layer, r) = (n.layer, n.trigger_rect);
+        if layer < self.grids.len() {
+            self.fill_rect(layer, r, NONE);
+        }
+    }
+
     /// 物件 `i` 现在绕 Y 的角度（旋转石梁转过以后跟着改，重新登记格子时按它算）。
     pub fn yaw(&self, i: usize) -> Option<f32> {
         self.nodes.get(i).map(|n| n.y_deg)

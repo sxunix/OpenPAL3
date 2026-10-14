@@ -1917,6 +1917,26 @@ impl ScnScene {
     /// `FUN_00421230`：一格的地面高度。格子上登记了在场的物件时按类型换成物件的高度（物件 +0x2c）：
     /// 5/7/0x13/0x21/0x26/0x28 取物件高度，0x1d（乌龟）再加 24，0x16/0x22/0x25 格子能走时取两者大的、不能走
     /// 时取物件高度。越界是 0。[未做] 0xb 且参数 0 为 1 的按模型矩阵取（`FUN_00429db0`），这里还按格子。
+    /// 导航格的原始地面高度，不算物件；出界是 0（`FUN_0042ebe0` case 0xd）。
+    pub fn nav_floor(&self, layer: usize, p: &Vec3) -> f32 {
+        use super::field_monster::Layers as _;
+        use super::nav_path::{FieldNav as _, NavGrid as _};
+        let nav = FieldNavView { scene: self, layer };
+        let (x, z) = nav.tile_of(p);
+        let (w, h) = self.nav.size(layer);
+        if x < 0 || z < 0 || x >= w as i32 || z >= h as i32 {
+            return 0.;
+        }
+        SceneLayers { scene: self }.height(layer, x, z)
+    }
+
+    /// 物件 `i` 的触发矩形清空（坠落的障碍物落下以后）。
+    pub fn clear_object_trigger_rect(&self, i: usize) {
+        if let Some(b) = self.object_blocking.borrow_mut().as_mut() {
+            b.clear_trigger_rect(i);
+        }
+    }
+
     pub fn floor_height(&self, layer: usize, p: &Vec3) -> f32 {
         use super::field_monster::Layers as _;
         use super::nav_path::{FieldNav as _, NavGrid as _};

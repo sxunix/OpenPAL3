@@ -149,6 +149,20 @@ impl SceCommandLoadScene {
                 }
                 continue;
             }
+            if kind == 0x24 {
+                // 坠落的障碍物：掉下来了（状态 2）就停在落下的位置（上面已按存档摆好）、不可通过、触发区清空、
+                // 按位置登记格子（`SceneObj::OnLoad` case 36，`gamebase/sceneobj.cpp:4242`）。
+                if object_state == 2 {
+                    if let Some(i) = scene.object_index_of(id) {
+                        scene.set_object_state(id, 2);
+                        scene.set_object_passable(i, false);
+                        scene.clear_object_trigger_rect(i);
+                        let l = scene.object_layer_at(i).unwrap_or(0);
+                        scene.set_object_tiles(i, false, l);
+                    }
+                }
+                continue;
+            }
             if matches!(kind, 7 | 8) {
                 // 旋转石梁：原版整份 `ObjectInfo` 进存档，`SceneObj::OnLoad` case 7（`gamebase/sceneobj.cpp:4102`）
                 // 按存下的角度把格子重新登记一遍。

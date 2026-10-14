@@ -10,7 +10,7 @@
 //! 排队的前提都是 `FUN_0042c1a0`：队列空、状态 0。乌龟沉下去（状态 3）、吊桥放下（状态 1）以后就不会再动。
 //!
 //! 这里做了吊桥（0x13）、乌龟重力机关（0x1d）、神树传送点（0x26）、上下传送板（0x28），以及调查键（事件 1）
-//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21），神魔之井的电梯（0x27），灵山仙人洞的旋转石梁（7、8）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
+//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21），神魔之井的电梯（0x27），灵山仙人洞的旋转石梁（7、8），草海的坠落障碍物（0x24）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
 //! 交给调用方。
 //!
 //! `FUN_00424c20` 开头先看可用次数（+0xae）：不是 0xff（无限）又已经是 0 的，什么事件都不理。
@@ -39,6 +39,9 @@ pub const ELEVATOR_SECS: f32 = 8.;
 /// 旋转石梁每秒转多少度、一次转多少（`FUN_00426eb0` case 7 的 `dt × 30`，`FUN_00424c20` case 7 的 `+ 90`）。
 pub const BEAM_DEG_PER_SEC: f32 = 30.;
 pub const BEAM_TURN_DEG: f32 = 90.;
+/// 动作 0xd（落下）的重力加速度（`FUN_0042f460` case 0xd 的 `dt × 490`），落到所在格地面下这么多停。
+pub const FALL_GRAVITY: f32 = 490.;
+pub const FALL_BELOW_FLOOR: f32 = 4.;
 /// 调查够得着的距离（`FUN_00424c20` case 0xc / 0x17 的 `600.0`，源码 `TOUCH_DIST`）。
 pub const TOUCH_DIST: f32 = 600.;
 /// `ROLE_RADIUS`（12）。特技机关：主角离机关（x、z）不到 3 倍就地施展，否则走到机关另一侧 12 处。
@@ -96,6 +99,10 @@ pub enum Act {
     Sound(i32),
     /// 0x14（`FUN_0042e870(秒)`）：等这么久。
     Delay(f32),
+    /// 0xd（`FUN_0042dd80` 排）：物件竖直往下掉。开始时（`FUN_0042ebe0`）取物件所在格（按它的层）的地面
+    /// 高度减 4 当落点 `to_y`；每帧（`FUN_0042f460`）速度减 `490 × dt`、位置加速度 × dt，掉到落点停住，
+    /// 原位 +0xd4 改成现在的位置。
+    Fall { to_y: f32, vy: f32 },
     /// 0x13（`FUN_0042e6c0` 排、`FUN_0042ebe0` 做）：主角离物件（x、z）减去半边长超过 [`DIST_RESTRICT`]
     /// 就清空整个队列、提示「outdist」，否则接着做下一条。
     DistRestrict,
@@ -396,6 +403,12 @@ pub trait World {
     fn set_object_yaw(&mut self, _i: usize, _deg: f32) {}
     /// 角度进存档（原版整份 `ObjectInfo` 进存档，石梁转过的角度跟着存）。
     fn save_yaw(&mut self, _i: usize) {}
+    /// 导航格的原始地面高度（`FUN_00420f30` 那一层格子记录的 +0），不算物件；格子出界是 0。
+    fn nav_floor(&self, _layer: usize, _p: &Vec3) -> f32 {
+        0.
+    }
+    /// `FUN_00420320(物件触发矩形, 0xff)`：物件所在层上它的触发矩形清空。
+    fn clear_trigger_rect(&mut self, _i: usize) {}
     fn floor_at(&self, _layer: usize, _p: &Vec3) -> f32 {
         0.
     }
@@ -538,6 +551,8 @@ impl ObjectActions {
         match self.objs.get(i) {
             Some(o) if o.kind == 5 => o.queue.is_empty() && (o.state == 0 || o.state == 3),
             Some(o) if o.kind == 0x16 => o.queue.is_empty() && (o.state == 0 || o.state == 2),
+            // 坠落的障碍物只看队列空（`sceneobj.cpp:4404`），掉下来以后停在状态 2。
+            Some(o) if o.kind == 0x24 => o.queue.is_empty(),
             _ => self.idle(i),
         }
     }
@@ -819,6 +834,31 @@ impl ObjectActions {
                 self.own_proc(i, w);
             }
             0x5 => self.platform_touch(i, w),
+            // 坠落的障碍物（`FUN_00424c20` case 0x24）：主角走进触发区（事件 0）或被别的机关叫（事件 2），
+            // 闲着才动。主角站住；排「落下」、状态 1（等每帧那边清掉触发区、转 2）、按落下后的位置登记格子、
+            // 不可通过、跑自己那条过程（不等）；放音效，开始跑队列，登记 `ObjLockInput`。
+            0x24 => {
+                if (ev != 0 && ev != 2) || !self.idle(i) {
+                    return;
+                }
+                w.stand();
+                let proc = self.objs[i].proc;
+                for a in [
+                    Act::Fall { to_y: 0., vy: 0. },
+                    Act::State { state: 1, wait: 1 },
+                    Act::Tiles(false),
+                    Act::Passable(false),
+                    Act::Proc {
+                        id: proc,
+                        wait: false,
+                    },
+                ] {
+                    self.push(i, a, w);
+                }
+                self.sound(i, 0, w);
+                self.run(i, w);
+                self.objs[i].locked = true;
+            }
             // 旋转石梁 / 旋转墙（`FUN_00424c20` case 7、8）：只认被别的机关叫（事件 2），停着（状态 0）才动。
             // 目标角度 = 现在的角度 + 90，主角站住，清掉压住的格子，放音效，扣一次次数，登记 `ObjLockInput`。
             // [未做] 镜头空闲时锁到石梁上（`FUN_0041c1b0`）。
@@ -1354,6 +1394,12 @@ impl ObjectActions {
             match self.objs[i].kind {
                 0x5 => self.step_platform(i, dt, w),
                 7 | 8 => self.step_beam(i, dt, w),
+                // `FUN_00426eb0` case 0x24：状态 1 时清掉触发区、转 2。
+                0x24 if self.objs[i].state == 1 => {
+                    w.clear_trigger_rect(i);
+                    self.objs[i].state = 2;
+                    w.save_state(i, 2);
+                }
                 0x16 => self.step_lift(i, dt, w),
                 0xc => self.step_skill_gate(i, w),
                 0x17 => self.step_switch(i, dt, w),
@@ -1537,6 +1583,17 @@ impl ObjectActions {
         while let Some(e) = self.objs[i].queue.front() {
             match e.act.clone() {
                 Act::Move { .. } | Act::Delay(_) => return,
+                Act::Fall { .. } => {
+                    let layer = self.objs[i].layer;
+                    let floor = w.nav_floor(layer, &w.object_pos(i)) - FALL_BELOW_FLOOR;
+                    if let Some(e) = self.objs[i].queue.front_mut() {
+                        e.act = Act::Fall {
+                            to_y: floor,
+                            vy: 0.,
+                        };
+                    }
+                    return;
+                }
                 Act::Walk { to, .. } => {
                     w.walk_begin(&to);
                     return;
@@ -1642,6 +1699,20 @@ impl ObjectActions {
                     w.fix_player_height();
                 }
             }
+            Act::Fall { to_y, vy } => {
+                let vy = vy - dt * FALL_GRAVITY;
+                let mut p = w.object_pos(i);
+                p.y += vy * dt;
+                if to_y < p.y {
+                    e.act = Act::Fall { to_y, vy };
+                    w.set_object_pos(i, &p);
+                    return;
+                }
+                p.y = to_y;
+                w.set_object_pos(i, &p);
+                w.save_pos(i);
+                done = true;
+            }
             Act::Walk { check, fix, .. } => {
                 if !w.walk_step(dt, check, fix) {
                     return;
@@ -1735,6 +1806,8 @@ mod tests {
         /// 各物件绕 Y 的角度，和存过几次角度。
         yaw: Vec<f32>,
         saved_yaws: usize,
+        /// 清过几次触发区。
+        trigger_clears: usize,
     }
 
     impl World for Mock {
@@ -1811,6 +1884,12 @@ mod tests {
         }
         fn save_yaw(&mut self, _i: usize) {
             self.saved_yaws += 1;
+        }
+        fn nav_floor(&self, _layer: usize, _p: &Vec3) -> f32 {
+            100.
+        }
+        fn clear_trigger_rect(&mut self, _i: usize) {
+            self.trigger_clears += 1;
         }
         fn set_player_layer(&mut self, layer: usize) {
             self.player_layer = layer;
@@ -1938,6 +2017,7 @@ mod tests {
             extent: None,
             yaw: vec![0.; 4],
             saved_yaws: 0,
+            trigger_clears: 0,
             flowers: vec![],
         };
         (a, w)
@@ -2230,6 +2310,37 @@ mod tests {
         }
         assert_eq!(w.player_layer, 0);
         assert_eq!(w.pos[0].y, 510.);
+    }
+
+    /// 坠落的障碍物（0x24）：主角走进来就掉到所在格地面下 4（重力 490），触发区清掉，按落下的位置登记格子、
+    /// 不可通过，跑自己那条过程；之后停在状态 2，再走进来不理。
+    #[test]
+    fn falling_obstacle_drops_and_blocks_the_way_back() {
+        let (mut a, mut w) = single(0x24, [0; 4], 0);
+        a.objs[0].proc = 500;
+        a.event(0, 1, false, 0.1, &mut w);
+        assert!(a.idle(0), "调查键不理");
+        a.event(0, 0, false, 0.1, &mut w);
+        assert!(a.input_locked());
+        let dt = 0.05;
+        // 从 300 掉到 96：每帧先减速度再挪，n 帧掉 490 × dt² × n(n+1)/2，第 18 帧到。
+        for _ in 0..17 {
+            w.frame(&mut a, dt);
+        }
+        assert!(w.pos[0].y > 96.);
+        assert!(w.tiles.is_empty());
+        for _ in 0..3 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(w.pos[0].y, 96.);
+        assert_eq!(a.objs[0].state, 2);
+        assert_eq!(w.trigger_clears, 1);
+        assert_eq!(w.tiles, [(0, false, 0)]);
+        assert!(!w.passable[0]);
+        assert_eq!(w.procs, [500]);
+        assert!(!a.input_locked());
+        a.event(0, 0, false, 0.1, &mut w);
+        assert!(a.objs[0].queue.is_empty(), "掉下来以后不再动");
     }
 
     /// 旋转石梁（7）：只认事件 2；每秒 30 度转 90 度，转的时候格子清掉、停住按新角度登记、角度进存档，
