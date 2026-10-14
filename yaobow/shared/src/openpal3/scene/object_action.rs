@@ -75,6 +75,16 @@ pub const DIST_RESTRICT: f32 = ROLE_RADIUS * 9.;
 pub const ROTATE_SECS: f32 = 5.;
 /// 主角动作编号（`ACTION_KIND`，名字见 [`crate::openpal3::combat::motion::ACTION_NAMES`]）：技能、调查。
 pub const ACT_SKILL: usize = 8;
+/// 存盘点：主角走到离它这么远停下（`FUN_00424c20` case 0x2a 的 48）。
+pub const SAVE_POINT_GAP: f32 = 48.;
+/// 迷宫大宝箱打开的机会（%，`DAT_0059050c`，`[五灵 × 5 + 正操作的主角]`）。
+pub const CHEST_OPEN: [u8; 25] = [
+    50, 50, 50, 80, 30, 50, 50, 30, 50, 80, 80, 30, 50, 50, 50, 30, 50, 80, 50, 50, 50, 80, 50, 30,
+    50,
+];
+/// 开箱经验：`CHEST_EXP × CHEST_EXP_PERCENT[失败次数 % 3] / 100`（`DAT_00590534` / `DAT_00590528`）。
+pub const CHEST_EXP: i32 = 55;
+pub const CHEST_EXP_PERCENT: [i32; 3] = [100, 60, 20];
 pub const ACT_CHECK: usize = 0xb;
 /// 开关拨到一半的状态（`FUN_00424c20` 排的动作 3 参数 `0x4d`）：下一帧 `FUN_0042c810` 翻开关、转状态 1。
 const SWITCH_PENDING: u8 = 0x4d;
@@ -160,7 +170,7 @@ pub struct ObjNode {
     pub proc: i32,
     /// 可用次数（+0xae，`.scn` 记录 +2）：0xff 无限。
     pub times: u8,
-    /// 调查键能不能选中它（`TriggerType` +0xd0 的位 1，`.scn` 记录 +0x24）。
+    /// 调查键能不能选中它（`ctype` +0xd0 的位 1，按类型算，见 [`super::object_block::collide_type`]）。
     pub examinable: bool,
     /// 移动浮板（0x5）的路线（`.scn` 记录 +0x84 起的 `PolyLine`：点数 + 16 个点）。别的类型是空的。
     pub path: Vec<Vec3>,
@@ -171,6 +181,10 @@ pub struct ObjNode {
     pub depend: Option<(String, i32)>,
     /// 开关标志 +0xaf 的初值（`.scn` 记录 +3）。移动浮板从它开始（锁妖塔七层的浮板一开始就是开的）。
     pub switch_init: bool,
+    /// 参数 4、5（+0x108 / +0x10c，`.scn` 记录 +0x5c / +0x60）：大宝箱的 6 件东西用到。
+    pub p45: [i32; 2],
+    /// 五灵属性（+0xf7，`.scn` 记录 +0x4b，`m_info.wuling`）：大宝箱打开的机会按它查表。
+    pub wuling: u8,
 }
 
 #[derive(Debug, Clone)]
@@ -209,6 +223,11 @@ struct Obj {
     push_dir: usize,
     push_from: Vec3,
     push_vel: Vec3,
+    /// 参数 4、5 和五灵属性（大宝箱）。
+    p45: [i32; 2],
+    wuling: u8,
+    /// 拣东西（0x18）：调查时起了自己那条过程（+0x374 非空），要等它跑完才给东西。
+    script: bool,
 }
 
 /// 移动浮板沿路线来回（`FUN_00426eb0` case 5）。物件状态 +0x50：0 停在起点、1 往终点走、2 往起点走、
@@ -488,6 +507,29 @@ pub trait World {
     /// `FUN_004101f0(frac, 1, 0)`（`PlayerMgr::Obj_Hurt`）：全队每人扣最大精的 `frac`，最少剩 1；
     /// 受伤计时清零。
     fn obj_hurt(&mut self, _frac: f32) {}
+    /// `FUN_0042bef0`：数据库里有这件东西就加一件进背包、消息栏报「getitem」、放 wa006。
+    fn give_item(&mut self, _id: i32) {}
+    /// `FUN_0040fc90`（`PlayerMgr::AddMoney`）：加钱（不低于 0），消息栏报「getmoney」并放 wa006。
+    fn give_money(&mut self, _amount: i32) {}
+    /// 正操作的主角加经验（`DAT_00c04684 + 主角 × 0x160`），消息栏报「getexp」。
+    fn give_exp(&mut self, _amount: i32) {}
+    /// `FUN_0040eb10(主角, delta)`：正操作的主角好感加减（减时放 wa048）。
+    fn favor_add(&mut self, _role: i32, _delta: i32) {}
+    /// `FUN_005541f8`：C 运行库的 `rand()`。
+    fn rand(&mut self) -> i32 {
+        0
+    }
+    /// 存盘点（`FUN_00426eb0` case 0x2a 状态 1）：主角站住、停脚步声、主界面切到系统页的存档
+    /// （`FUN_0044f610(5)` + `FUN_004a4fc0`，这时迷宫里也能存）。
+    fn open_save_menu(&mut self) {}
+    /// `FUN_00429af0(路径)`：物件换一个模型（大宝箱彻底打不开时换成碎掉的 `object\wz20_N.cvd`）。
+    fn swap_model(&mut self, _i: usize, _name: &str) {}
+    /// 物件模型停在最后一帧、不再播（`[vtbl+0x18](-1)` + `SetTimeScale(0)`）。
+    fn hold_anim_end(&mut self, _i: usize) {}
+    /// 物件的名字（`.scn` 记录 +4，物件 +0xb0）。
+    fn object_name(&self, _i: usize) -> String {
+        String::new()
+    }
 }
 
 /// 场景里所有物件的队列和状态，按 `.scn` 序号排。
@@ -534,6 +576,9 @@ impl ObjectActions {
                 push_dir: 0,
                 push_from: Vec3::new(0., 0., 0.),
                 push_vel: Vec3::new(0., 0., 0.),
+                p45: n.p45,
+                wuling: n.wuling,
+                script: false,
                 plat: (n.kind == 5 && n.p[0] == 0 && n.path.len() >= 2).then(|| Platform {
                     path: PathLine::new(n.path.clone()),
                     dist: 0.,
@@ -634,6 +679,8 @@ impl ObjectActions {
             Some(o) if o.kind == 0x16 => o.queue.is_empty() && (o.state == 0 || o.state == 2),
             // 坠落的障碍物只看队列空（`sceneobj.cpp:4404`），掉下来以后停在状态 2。
             Some(o) if o.kind == 0x24 => o.queue.is_empty(),
+            // 迷宫大宝箱关着（0）、开过了（1）都算闲着（`sceneobj.cpp:4402`）。
+            Some(o) if o.kind == 0x1a => o.state == 0 || o.state == 1,
             _ => self.idle(i),
         }
     }
@@ -996,6 +1043,102 @@ impl ObjectActions {
             }
             0xc => self.skill_gate(i, ev, w),
             0x17 => self.switch(i, ev, w),
+            // 可以拣起的道具（`FUN_00424c20` case 0x18）：只认调查（事件 1）、状态 0。先起自己那条过程，起得来
+            // 就转状态 1（等它跑完再给东西）；没有过程就走过去（`DistRestrict`）再转状态 1，登记 `ObjLockInput`。
+            // 事件 0xb（搜宝鼠）[未做]。
+            // [原版如此] 起了过程转状态 1 以后 `break` 出来，末尾 `FUN_00432170(过程)` 又起一遍。
+            0x18 => {
+                if ev != 1 || self.objs[i].state != 0 {
+                    return;
+                }
+                let proc = self.objs[i].proc;
+                if proc != 0 {
+                    w.call_proc(proc);
+                    self.objs[i].script = true;
+                    self.objs[i].state = 1;
+                    self.own_proc(i, w);
+                    return;
+                }
+                let p = w.object_pos(i);
+                self.walk_up_and_settle(i, p, false, w);
+            }
+            // 小宝箱（`FUN_00424c20` case 0x29）：闲着才理；事件 0xa（船）直接转状态 1，别的事件都走过去、
+            // `DistRestrict`、放音效、播开箱动画（停在最后一帧）、转状态 1，登记 `ObjLockInput`；末尾跑自己那条过程。
+            0x29 => {
+                if !self.idle(i) {
+                    return;
+                }
+                if ev == 10 {
+                    self.objs[i].state = 1;
+                } else {
+                    let p = w.object_pos(i);
+                    self.walk_up_and_settle(i, p, true, w);
+                    return;
+                }
+                self.own_proc(i, w);
+            }
+            // 存盘点（`FUN_00424c20` case 0x2a）：只认调查、闲着、和主角同层。主角（渲染位置）离它 600 以上
+            // 提示「outdist」；否则走到主角→存盘点连线上离存盘点 48 的那一点（只量 x、z，主角那头取 y 0），
+            // `DistRestrict`，转状态 1，登记 `ObjLockInput`；末尾跑自己那条过程。
+            0x2a => {
+                if ev != 1 || !self.idle(i) || layer != w.player_layer() {
+                    return;
+                }
+                let o = w.object_pos(i);
+                let pl = w.player_pos();
+                if Vec3::sub(&o, &pl).norm() >= TOUCH_DIST {
+                    w.hint("outdist");
+                    self.own_proc(i, w);
+                    return;
+                }
+                // 主角那头取的是 +8（离地相对高度，站在地上恒 0），所以只剩 x、z。
+                let (dx, dz) = (o.x - pl.x, o.z - pl.z);
+                let len = (dx * dx + dz * dz).sqrt().max(1e-6);
+                let f = len - SAVE_POINT_GAP;
+                let to = Vec3::new(pl.x + f * dx / len, pl.y, pl.z + f * dz / len);
+                self.walk_up_and_settle(i, to, false, w);
+            }
+            // 迷宫大宝箱（`FUN_00424c20` case 0x1a）：只认调查、状态 0。站点在箱子正面（朝向 (−cos, 0, sin)）
+            // 离箱子「模型 x 边长一半 + 24」处；主角（渲染位置）离箱子 600 以上、或站点走不到，提示「outdist」。
+            // 主角（x、z）离箱子减半边长再减 24 还不到 0，当场转状态 2、转向箱子、播「调查」；否则走过去，
+            // 到了转状态 2，登记 `ObjLockInput`。两条路末尾都跑自己那条过程。之后见 [`Self::step_chest`]。
+            0x1a => {
+                if ev != 1 || self.objs[i].state != 0 {
+                    return;
+                }
+                let half = w.object_extent(i).map_or(0., |(x, _)| x * 0.5);
+                let c = w.object_pos(i);
+                let r = w.object_yaw(i).to_radians();
+                let k = ROLE_RADIUS * 2. + half;
+                let dest = Vec3::new(c.x - r.cos() * k, c.y, c.z + r.sin() * k);
+                let pl = w.player_pos();
+                if Vec3::sub(&c, &pl).norm() >= TOUCH_DIST || !w.can_role_goto(i, layer, &pl, &dest)
+                {
+                    w.hint("outdist");
+                } else {
+                    self.objs[i].timer = 0.;
+                    let (dx, dz) = (pl.x - c.x, pl.z - c.z);
+                    if (dx * dx + dz * dz).sqrt() - half - ROLE_RADIUS * 2. >= 0. {
+                        for a in [
+                            Act::Walk {
+                                to: dest,
+                                check: true,
+                                fix: true,
+                            },
+                            Act::State { state: 2, wait: 0 },
+                        ] {
+                            self.push(i, a, w);
+                        }
+                        self.run(i, w);
+                        self.objs[i].locked = true;
+                    } else {
+                        self.objs[i].state = 2;
+                        w.face_player(&c);
+                        w.show_act(ACT_CHECK);
+                    }
+                }
+                self.own_proc(i, w);
+            }
             // 剑冢的剑桥（`FUN_00424c20` case 0x22）：还有次数、只认别的机关叫（事件 2）、闲着。顺着自己的朝向
             // 往前伸参数 0 那么远（不大于 0 就是 `ROLE_RADIUS × 10`），4 秒，连原位一起改；伸之前清掉压住的
             // 格子、伸完按新位置登记，再叫连着的物件（不等）；扣一次次数、放音效。
@@ -1891,6 +2034,10 @@ impl ObjectActions {
                 0xc => self.step_skill_gate(i, w),
                 0x17 => self.step_switch(i, dt, w),
                 0x1c => self.step_hammer(i, dt, w),
+                0x18 => self.step_pickup(i, w),
+                0x29 => self.step_small_chest(i, w),
+                0x1a => self.step_chest(i, w),
+                0x2a => self.step_save_point(i, w),
                 0x20 => self.step_flower(i, w),
                 _ => {}
             }
@@ -1985,6 +2132,159 @@ impl ObjectActions {
             }
             _ => {}
         }
+    }
+
+    /// 拣东西、小宝箱、存盘点共用的那一段（`LAB_00426d37`）：主角走到 `to`（每步查能不能走、按地面重算高度），
+    /// `DistRestrict`；小宝箱还放音效、播开箱动画（停在最后一帧）；转状态 1，登记 `ObjLockInput`。
+    fn walk_up_and_settle<W: World>(&mut self, i: usize, to: Vec3, chest: bool, w: &mut W) {
+        self.push(
+            i,
+            Act::Walk {
+                to,
+                check: true,
+                fix: true,
+            },
+            w,
+        );
+        self.push(i, Act::DistRestrict, w);
+        if chest {
+            self.push(i, Act::Sound(0), w);
+            self.push(i, Act::Anim { hold: true }, w);
+        }
+        self.push(i, Act::State { state: 1, wait: 0 }, w);
+        self.run(i, w);
+        self.objs[i].locked = true;
+        self.own_proc(i, w);
+    }
+
+    /// `FUN_00426eb0` case 0x18（拣东西）状态 1：调查时起的过程还在跑就等着；然后给参数 0 那件东西，
+    /// 参数 1 不是 0、1 就给参数 1 那么多钱，否则参数 2 非 0 给参数 2 那么多钱；不在场。
+    fn step_pickup<W: World>(&mut self, i: usize, w: &mut W) {
+        if self.objs[i].state != 1 {
+            return;
+        }
+        // [移植] 原版看的是调查时起的那一条（+0x374，`FUN_004324b0`），这里看有没有过程在跑。
+        if self.objs[i].script && w.proc_running() {
+            return;
+        }
+        let p = self.objs[i].p;
+        if p[0] != 0 {
+            w.give_item(p[0]);
+        }
+        let money = if p[1] != 0 && p[1] != 1 { p[1] } else { p[2] };
+        if money != 0 {
+            w.give_money(money);
+        }
+        self.objs[i].script = false;
+        w.deactivate(i);
+    }
+
+    /// `FUN_00426eb0` case 0x29（小宝箱）状态 1：给参数 0 那件东西、参数 2 那么多钱，转状态 2，不在场，
+    /// 清掉压住的格子。
+    fn step_small_chest<W: World>(&mut self, i: usize, w: &mut W) {
+        if self.objs[i].state != 1 {
+            return;
+        }
+        let p = self.objs[i].p;
+        if p[0] != 0 {
+            w.give_item(p[0]);
+        }
+        if p[2] != 0 {
+            w.give_money(p[2]);
+        }
+        self.objs[i].state = 2;
+        w.save_state(i, 2);
+        w.deactivate(i);
+        let layer = self.objs[i].layer;
+        w.object_tiles(i, true, layer);
+    }
+
+    /// `FUN_00426eb0` case 0x1a（迷宫大宝箱）。2（走到了）：站住、计时清零、转向箱子、播「施法」（动作 8），转 3。
+    /// 3：主角动作播完，`rand() % 100` 不大于开箱机会（[`CHEST_OPEN`]，按五灵属性和正操作的主角查）就开：
+    /// 模型按 2 倍速播、放开箱音效，转 4；否则放失败音效、失败次数 +1——到 3 次换成碎箱子模型
+    /// （`object\wz20_N.cvd`，N 是原名倒数第 5 个字符）照样播完、提示「chest_failed」，不到 3 次提示
+    /// 「chest_notopen」回 0。4：模型播完：没碎就给参数 0..5 里的东西，正操作的主角加经验
+    /// （55 × [`CHEST_EXP_PERCENT`]\[失败次数 % 3\] / 100）；碎了就正操作的主角（不是景天时）好感 −2。
+    /// 模型停在最后一帧，转 1（开过了）。
+    fn step_chest<W: World>(&mut self, i: usize, w: &mut W) {
+        match self.objs[i].state {
+            2 => {
+                w.stand();
+                self.objs[i].timer = 0.;
+                self.objs[i].state = 3;
+                let c = w.object_pos(i);
+                w.face_player(&c);
+                w.show_act(ACT_SKILL);
+            }
+            3 => {
+                if w.player_acting() {
+                    return;
+                }
+                let ctrl = w.controlled_role().clamp(0, 4) as usize;
+                let wuling = (self.objs[i].wuling as usize).min(4);
+                let chance = CHEST_OPEN[wuling * 5 + ctrl] as i32;
+                if w.rand() % 100 <= chance {
+                    self.objs[i].state = 4;
+                    w.play_anim(i, ANIM_SPEED);
+                    self.sound(i, 1, w);
+                    return;
+                }
+                self.sound(i, 0, w);
+                self.objs[i].box_state += 1;
+                if self.objs[i].box_state > 2 {
+                    let name = w.object_name(i);
+                    let digit = name
+                        .len()
+                        .checked_sub(5)
+                        .and_then(|k| name.as_bytes().get(k))
+                        .map_or(0, |b| b.wrapping_sub(b'0'));
+                    w.swap_model(i, &format!("wz20_{digit}.cvd"));
+                    w.play_anim(i, ANIM_SPEED);
+                    self.objs[i].state = 4;
+                    self.sound(i, 0, w);
+                    w.hint("chest_failed");
+                    return;
+                }
+                w.hint("chest_notopen");
+                self.objs[i].state = 0;
+            }
+            4 => {
+                if w.object_animated(i) && !w.anim_done(i) {
+                    return;
+                }
+                let broken = self.objs[i].box_state;
+                if broken < 3 {
+                    let o = &self.objs[i];
+                    let items = [o.p[0], o.p[1], o.p[2], o.p[3], o.p45[0], o.p45[1]];
+                    for id in items {
+                        if id != 0 {
+                            w.give_item(id);
+                        }
+                    }
+                    let exp = CHEST_EXP_PERCENT[(broken % 3) as usize] * CHEST_EXP / 100;
+                    w.give_exp(exp);
+                } else {
+                    let ctrl = w.controlled_role();
+                    if ctrl != 0 {
+                        w.favor_add(ctrl, -2);
+                    }
+                }
+                w.hold_anim_end(i);
+                self.objs[i].state = 1;
+                w.save_state(i, 1 | (broken << 4));
+            }
+            _ => {}
+        }
+    }
+
+    /// `FUN_00426eb0` case 0x2a（存盘点）状态 1：打开存档页，回 0。
+    fn step_save_point<W: World>(&mut self, i: usize, w: &mut W) {
+        if self.objs[i].state != 1 {
+            return;
+        }
+        w.stand();
+        w.open_save_menu();
+        self.objs[i].state = 0;
     }
 
     /// `FUN_00426eb0` case 0x1c（剑冢的剑或锤）。计时 +0x54 加 dt。参数 0 为 0 的剑左右摆：绕 Z 转
@@ -2133,7 +2433,8 @@ impl ObjectActions {
                     // 开关（0x17）在存档里那一格存的是开关标志（126 `GetSwitch` 读它），不能拿状态盖掉——
                     // 走过去再拨时排的「状态 0x4d」先写进去，紧接着翻开关就读成了「开着」、翻成了关。
                     // 特技机关、食人花、踏板这几种的状态只是过场，读档回来不用。
-                    if !matches!(o.kind, 0xc | 0x17 | 0x20 | 0x21) {
+                    // 拣东西、宝箱、存盘点的状态在它们自己的步进里定了才记。
+                    if !matches!(o.kind, 0xc | 0x17 | 0x20 | 0x21 | 0x18 | 0x1a | 0x29 | 0x2a) {
                         w.save_state(i, state);
                     }
                     if wait != 0 {
@@ -2305,6 +2606,8 @@ fn sound_name(kind: u8, p0: i32, p: i32) -> Option<&'static str> {
         0x1e => Some("Wg005"),
         0x16 => Some("Wg005"),
         0x22 => Some("wg005"),
+        0x1a => Some(if p == 0 { "wa004" } else { "wg011" }),
+        0x29 => Some("wg011"),
         _ => None,
     }
 }
@@ -2359,11 +2662,20 @@ mod tests {
         hurt_ready: bool,
         hit: bool,
         hurts: Vec<f32>,
+        /// 给出去的东西、钱、经验、好感；`rand()` 的返回值；打开过几次存档页；换过的模型。
+        items: Vec<i32>,
+        money: Vec<i32>,
+        exp: Vec<i32>,
+        favor: Vec<(i32, i32)>,
+        dice: i32,
+        save_menus: usize,
+        swapped: Vec<(usize, String)>,
+        name: String,
     }
 
     impl World for Mock {
-        fn active(&self, _: usize) -> bool {
-            true
+        fn active(&self, i: usize) -> bool {
+            !self.deactivated.contains(&i)
         }
         fn object_pos(&self, i: usize) -> Vec3 {
             self.pos[i]
@@ -2508,6 +2820,30 @@ mod tests {
             self.hurts.push(frac);
             self.hurt_ready = false;
         }
+        fn give_item(&mut self, id: i32) {
+            self.items.push(id);
+        }
+        fn give_money(&mut self, amount: i32) {
+            self.money.push(amount);
+        }
+        fn give_exp(&mut self, amount: i32) {
+            self.exp.push(amount);
+        }
+        fn favor_add(&mut self, role: i32, delta: i32) {
+            self.favor.push((role, delta));
+        }
+        fn rand(&mut self) -> i32 {
+            self.dice
+        }
+        fn open_save_menu(&mut self) {
+            self.save_menus += 1;
+        }
+        fn swap_model(&mut self, i: usize, name: &str) {
+            self.swapped.push((i, name.to_string()));
+        }
+        fn object_name(&self, _: usize) -> String {
+            self.name.clone()
+        }
         fn deactivate(&mut self, i: usize) {
             self.deactivated.push(i);
         }
@@ -2543,6 +2879,8 @@ mod tests {
                 home_y: 0.,
                 depend: None,
                 switch_init: false,
+                p45: [0; 2],
+                wuling: 0,
             },
             ObjNode {
                 object_id: 11,
@@ -2558,6 +2896,8 @@ mod tests {
                 home_y: 0.,
                 depend: None,
                 switch_init: false,
+                p45: [0; 2],
+                wuling: 0,
             },
         ]);
         let w = Mock {
@@ -2593,6 +2933,14 @@ mod tests {
             hurt_ready: true,
             hit: false,
             hurts: vec![],
+            items: vec![],
+            money: vec![],
+            exp: vec![],
+            favor: vec![],
+            dice: 0,
+            save_menus: 0,
+            swapped: vec![],
+            name: String::new(),
             flowers: vec![],
         };
         (a, w)
@@ -2699,6 +3047,8 @@ mod tests {
             home_y: 0.,
             depend: None,
             switch_init: false,
+            p45: [0; 2],
+            wuling: 0,
         }]);
         let (_, mut w) = m01();
         w.pos = vec![Vec3::new(0., 100., 0.)];
@@ -2744,6 +3094,8 @@ mod tests {
                 home_y: 0.,
                 depend: None,
                 switch_init: false,
+                p45: [0; 2],
+                wuling: 0,
             },
             ObjNode {
                 object_id: 5,
@@ -2759,6 +3111,8 @@ mod tests {
                 home_y: 0.,
                 depend: None,
                 switch_init: false,
+                p45: [0; 2],
+                wuling: 0,
             },
             // 高字节非零：`cmp bx, di` 配不上任何物件（实机数据里没有这种）。
             ObjNode {
@@ -2775,6 +3129,8 @@ mod tests {
                 home_y: 0.,
                 depend: None,
                 switch_init: false,
+                p45: [0; 2],
+                wuling: 0,
             },
         ]);
         assert_eq!(a.objs[0].link, Some(1));
@@ -2804,6 +3160,8 @@ mod tests {
             home_y: 0.,
             depend: None,
             switch_init: false,
+            p45: [0; 2],
+            wuling: 0,
         }]);
         (a, w)
     }
@@ -2902,6 +3260,8 @@ mod tests {
             home_y: 0.,
             depend: None,
             switch_init: false,
+            p45: [0; 2],
+            wuling: 0,
         }
     }
 
@@ -3083,6 +3443,117 @@ mod tests {
         assert!(!a.input_locked());
         a.event(0, 0, false, 0.1, &mut w);
         assert!(a.objs[0].queue.is_empty(), "掉下来以后不再动");
+    }
+
+    /// 小宝箱（0x29）：调查后走过去、放音效、播开箱动画，播完给参数 0 那件和参数 2 那么多钱，不在场、
+    /// 清格子、状态 2 进存档；之后再调查不理。
+    #[test]
+    fn small_chest_gives_item_and_money_then_goes_away() {
+        let (mut a, mut w) = single(0x29, [6201, 0, 300, 0], 0);
+        w.player = Vec3::new(140., 300., 200.);
+        a.event(0, 1, false, 0.1, &mut w);
+        assert!(a.input_locked());
+        for _ in 0..10 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(w.sounds, ["wg011"]);
+        assert_eq!(w.items, [6201]);
+        assert_eq!(w.money, [300]);
+        assert_eq!(w.deactivated, [0]);
+        assert_eq!(a.objs[0].state, 2);
+        assert!(w.saved_states.contains(&(0, 2)));
+        assert_eq!(w.tiles.last(), Some(&(0, true, 0)));
+        a.event(0, 1, false, 0.1, &mut w);
+        assert!(a.objs[0].queue.is_empty(), "开过的不再理");
+    }
+
+    /// 拣东西（0x18）：没挂过程的走过去拣；参数 1 是 0 或 1 时给参数 2 的钱。挂了过程的先起过程（原版末尾
+    /// 再起一遍），过程跑完才给东西。
+    #[test]
+    fn pickup_waits_for_its_script() {
+        let (mut a, mut w) = single(0x18, [6202, 1, 50, 0], 0);
+        a.event(0, 1, false, 0.1, &mut w);
+        for _ in 0..10 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!((w.items.clone(), w.money.clone()), (vec![6202], vec![50]));
+        assert_eq!(w.deactivated, [0]);
+
+        let (mut a, mut w) = single(0x18, [0, 120, 0, 0], 0);
+        a.objs[0].proc = 600;
+        a.event(0, 1, false, 0.1, &mut w);
+        assert_eq!(w.procs, [600, 600]);
+        w.proc_busy = true;
+        w.frame(&mut a, 0.1);
+        assert!(w.money.is_empty(), "过程还在跑");
+        w.proc_busy = false;
+        w.frame(&mut a, 0.1);
+        assert_eq!(w.money, [120], "参数 1 不是 0、1 就给参数 1 的钱");
+    }
+
+    /// 迷宫大宝箱（0x1a）：贴着的当场转 2；施法动作播完掷骰，不大于机会就开，播完给参数 0..5、经验 55，
+    /// 记状态 1。掷不中 3 次换碎箱子模型，正操作的不是景天就好感 −2，什么也不给。
+    #[test]
+    fn maze_chest_opens_on_a_good_roll_and_breaks_after_three_misses() {
+        let (mut a, mut w) = single(0x1a, [6001, 0, 6002, 0], 0);
+        a.objs[0].p45 = [0, 6003];
+        w.extent = Some((40., 40.));
+        a.event(0, 1, false, 0.1, &mut w);
+        assert_eq!(a.objs[0].state, 2, "贴着的不用走");
+        w.frame(&mut a, 0.1);
+        assert_eq!(a.objs[0].state, 3);
+        assert_eq!(w.acts.last(), Some(&ACT_SKILL));
+        w.dice = 50; // 五灵 0、景天：机会 50。
+        for _ in 0..8 {
+            w.frame(&mut a, 0.1);
+        }
+        assert_eq!(w.items, [6001, 6002, 6003]);
+        assert_eq!(w.exp, [55]);
+        assert_eq!(a.objs[0].state, 1);
+        assert!(w.saved_states.contains(&(0, 1)));
+        assert!(a.is_static(0));
+
+        let (mut a, mut w) = single(0x1a, [6001, 0, 0, 0], 0);
+        w.extent = Some((40., 40.));
+        w.controlled = 1;
+        w.name = "wz02_4.cvd".into();
+        w.dice = 99; // 五灵 0、雪见：机会 50。
+        for k in 0..3 {
+            a.event(0, 1, false, 0.1, &mut w);
+            for _ in 0..8 {
+                w.frame(&mut a, 0.1);
+            }
+            if k < 2 {
+                assert_eq!(a.objs[0].state, 0);
+            }
+        }
+        assert_eq!(w.hints, ["chest_notopen", "chest_notopen", "chest_failed"]);
+        assert_eq!(w.swapped, [(0, "wz20_4.cvd".to_string())]);
+        assert!(w.items.is_empty() && w.exp.is_empty());
+        assert_eq!(w.favor, [(1, -2)]);
+        assert!(w.saved_states.contains(&(0, 1 | 3 << 4)));
+    }
+
+    /// 存盘点（0x2a）：离 600 以上提示「outdist」；否则走到离它 48 处，打开存档页，回 0。
+    #[test]
+    fn save_point_walks_up_and_opens_the_save_page() {
+        let (mut a, mut w) = single(0x2a, [0; 4], 0);
+        w.player = Vec3::new(800., 300., 200.);
+        a.event(0, 1, false, 0.1, &mut w);
+        assert_eq!(w.hints, ["outdist"]);
+        w.player = Vec3::new(300., 300., 200.);
+        a.event(0, 1, false, 0.1, &mut w);
+        assert_eq!(a.objs[0].queue.len(), 3);
+        for _ in 0..10 {
+            w.frame(&mut a, 0.1);
+        }
+        assert!(
+            (w.player.x - 148.).abs() < 1e-3,
+            "停在离它 48 处：{:?}",
+            w.player
+        );
+        assert_eq!(w.save_menus, 1);
+        assert_eq!(a.objs[0].state, 0);
     }
 
     /// 剑冢的剑桥（0x22）：只认事件 2；朝向（度，原版直接当弧度）方向伸参数 0 那么远，4 秒，格子先清后登记，
@@ -3336,6 +3807,8 @@ mod tests {
             home_y: 0.,
             depend: None,
             switch_init: false,
+            p45: [0; 2],
+            wuling: 0,
         }]);
         w.pos = vec![Vec3::new(411.86, 0., -300.55)];
         w.passable = vec![false];
@@ -3447,6 +3920,8 @@ mod tests {
             home_y: 0.,
             depend: None,
             switch_init: false,
+            p45: [0; 2],
+            wuling: 0,
         }]);
         w.pos = vec![Vec3::new(732.85, 0., -531.69)];
         w.player = Vec3::new(732.85 + 30., 0., -531.69);
@@ -3487,6 +3962,8 @@ mod tests {
             home_y: 0.,
             depend: None,
             switch_init: false,
+            p45: [0; 2],
+            wuling: 0,
         }]);
         w.pos = vec![Vec3::new(0., 0., 0.)];
         w.player = Vec3::new(100., 0., 0.);
@@ -3521,6 +3998,8 @@ mod tests {
                 home_y: 0.,
                 depend: None,
                 switch_init: false,
+                p45: [0; 2],
+                wuling: 0,
             },
             ObjNode {
                 object_id: 33,
@@ -3536,6 +4015,8 @@ mod tests {
                 home_y: 0.,
                 depend: None,
                 switch_init: false,
+                p45: [0; 2],
+                wuling: 0,
             },
         ]);
         w.pos = vec![
@@ -3574,6 +4055,8 @@ mod tests {
             home_y: 0.,
             depend: None,
             switch_init: false,
+            p45: [0; 2],
+            wuling: 0,
         }]);
         w.pos = vec![Vec3::new(-54.8, -634., 3540.4)];
         w.player = Vec3::new(-54.8 + 20., -634., 3540.4);

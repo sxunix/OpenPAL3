@@ -94,6 +94,8 @@ pub struct SceState {
     /// 68 Note's toast: the text and how long it still has to live. The
     /// command does not block, so the vm draws and ages it.
     note: Option<(String, f32)>,
+    /// 排着等提示框的消息（[`Self::push_note`]）。
+    note_queue: std::collections::VecDeque<String>,
     /// 提示框的九宫格外框 `ui\flex\note0..8.tga`，第一次显示时读。
     note_frame: Vec<Option<std::rc::Rc<radiance::rendering::Sprite>>>,
     /// 主角头上「跳」的图标：左上角在屏幕上的归一化坐标（x、y ∈ −1..1，y 朝上）；`None` 收起。
@@ -136,6 +138,8 @@ pub struct SceState {
     combat_combo_request: Option<u32>,
     /// 调试：下一帧把场上的敌人全部打倒（`combat_win`）。
     combat_win_request: bool,
+    /// 存盘点要打开系统页的存档（`FUN_00426eb0` case 0x2a），界面那边取走。
+    save_menu_request: bool,
     /// 特效 `bink` 类要播的 2D 动画（`movie/2DEFFECT` 下的名字，如 `t102`）。
     combat_movie_requests: Vec<String>,
 }
@@ -214,6 +218,7 @@ impl SceState {
             dialog_renderer,
             status_renderer,
             note: None,
+            note_queue: std::collections::VecDeque::new(),
             note_frame: Vec::new(),
             jump_icon: None,
             jump_icon_frames: None,
@@ -230,6 +235,7 @@ impl SceState {
             combat_shake_request: None,
             combat_combo_request: None,
             combat_win_request: false,
+            save_menu_request: false,
             combat_movie_requests: vec![],
         }
     }
@@ -461,6 +467,14 @@ impl SceState {
         std::mem::take(&mut self.combat_win_request)
     }
 
+    pub fn request_save_menu(&mut self) {
+        self.save_menu_request = true;
+    }
+
+    pub fn take_save_menu_request(&mut self) -> bool {
+        std::mem::take(&mut self.save_menu_request)
+    }
+
     pub fn request_combat_shake(&mut self, amplitude: f32, decay: f32, frequency: f32) {
         self.combat_shake_request = Some([amplitude, decay, frequency]);
     }
@@ -489,6 +503,15 @@ impl SceState {
 
     pub fn show_note(&mut self, text: String) {
         self.note = Some((text, NOTE_SECONDS));
+    }
+
+    /// 消息栏（`FUN_00410360`）：提示框正开着就排在后面，等它收起再出。
+    pub fn push_note(&mut self, text: String) {
+        if self.note.is_some() {
+            self.note_queue.push_back(text);
+        } else {
+            self.show_note(text);
+        }
     }
 
     /// 设主角头上「跳」的图标（`FUN_0041d9a0` → `FUN_00445e70` 开关、`FUN_00445d20` 挪位置）。
@@ -539,6 +562,11 @@ impl SceState {
     /// `ui\flex\note` 九宫格，角块边长取 min(32, 半宽, 半高)；字是字号档 2、居中，
     /// 颜色是控件默认的 0xff000505（近黑）。
     pub fn render_note(&mut self, ui: &imgui::Ui, delta_sec: f32) {
+        if self.note.is_none() {
+            if let Some(t) = self.note_queue.pop_front() {
+                self.show_note(t);
+            }
+        }
         let Some((text, remaining)) = self.note.as_mut() else {
             return;
         };

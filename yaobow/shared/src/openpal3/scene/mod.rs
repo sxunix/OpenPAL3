@@ -17,6 +17,7 @@ mod object_block;
 mod particles;
 pub mod player_jump;
 pub mod ram;
+pub mod save_point;
 mod role_controller;
 mod scene;
 mod shadow;

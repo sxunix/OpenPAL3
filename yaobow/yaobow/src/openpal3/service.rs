@@ -224,6 +224,12 @@ pub struct Pal3Service {
     /// and `pump_pre_update` performs them outside the director borrow.
     pending_save_slot: Cell<i32>,
     pending_load_slot: Cell<i32>,
+    /// 按场景算的「能存」（`DAT_005cefa9`：进场景时 = 不是迷宫，m02 再清成 0）。
+    can_save_here: Cell<bool>,
+    /// 存盘点打开的存档页还开着（这时迷宫里也能存）。
+    at_save_point: Cell<bool>,
+    /// 存盘点要打开存档页，等状态界面取走。
+    save_point_request: Cell<bool>,
     /// The active adventure's save state. Held as its own handle (not
     /// reached through the director) so the status screens can read party
     /// stats while painting from inside the director's update.
@@ -289,6 +295,9 @@ impl Pal3Service {
             pending_debug_install: Cell::new(false),
             pending_save_slot: Cell::new(-1),
             pending_load_slot: Cell::new(-1),
+            can_save_here: Cell::new(true),
+            at_save_point: Cell::new(false),
+            save_point_request: Cell::new(false),
             active_persistent_state: RefCell::new(None),
             active_game_db: RefCell::new(None),
             scene_name_table: RefCell::new(None),
@@ -789,11 +798,24 @@ impl Pal3Service {
         let mut ctx = UseContext::default();
         if let Some(scene) = sm.scn_scene() {
             let scene = scene.inner::<ScnScene>();
+            // 进场景时（`FUN_00423xxx`，0x424039 起）：`DAT_005cefa9 = 场景类型 != 2`，当前城是 `m02`
+            // （`DAT_0058de68`）再清成 0。
+            self.can_save_here
+                .set(scene.scene_type() != 2 && !scene.name().eq_ignore_ascii_case("m02"));
             // `DAT_00d8bbec == 2`——场景类型 2 是迷宫。
             ctx.in_maze = scene.scene_type() == 2;
             ctx.city_is_m22 = scene.name().eq_ignore_ascii_case("M22");
             ctx.city_is_q14 = scene.name().eq_ignore_ascii_case("Q14");
             ctx.treasure_present = scene.treasure_object_present();
+        }
+        if adv
+            .inner::<AdventureDirector>()
+            .sce_vm_mut()
+            .state_mut()
+            .take_save_menu_request()
+        {
+            self.at_save_point.set(true);
+            self.save_point_request.set(true);
         }
         ctx.proc_2101_exists = adv
             .inner::<AdventureDirector>()
@@ -1168,6 +1190,18 @@ impl IPal3ServiceImpl for Pal3Service {
         }
         self.pending_load_slot.set(slot);
         true
+    }
+
+    fn can_save(&self) -> bool {
+        self.can_save_here.get() || self.at_save_point.get()
+    }
+
+    fn take_save_point_request(&self) -> bool {
+        self.save_point_request.replace(false)
+    }
+
+    fn leave_save_point(&self) {
+        self.at_save_point.set(false);
     }
 
     fn save_slot_count(&self) -> i32 {

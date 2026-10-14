@@ -151,6 +151,17 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
         // The full-screen menus, painted on top of the HUD. The system
         // menu (save/load/exit) replaces the state menu when the toolbar's
         // System button switches to it.
+        // 存盘点（物件 0x2a）要打开存档：整个菜单换成系统页的「储存」。
+        if self.pal3.take_save_point_request() {
+            self.menu_open = false;
+            self.prop_state = -1;
+            self.equip_state = -1;
+            self.magic_state = -1;
+            self.array_state = -1;
+            self.sword_state = -1;
+            self.book_state = -1;
+            self.sys_mode = 1;
+        }
         let sys_was_open = self.sys_mode >= 0;
         let prop_was_open = self.prop_state >= 0;
         let equip_was_open = self.equip_state >= 0;
@@ -371,6 +382,8 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
             self.menu_open = true;
         }
         self.prev_down = down;
+        // 系统页关着就把存盘点给的「能存」收回。
+        if self.sys_mode < 0 { self.pal3.leave_save_point(); }
         0
     }
 

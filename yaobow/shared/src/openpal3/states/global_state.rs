@@ -45,6 +45,8 @@ pub struct GlobalState {
     monster_constants: MonsterConstants,
 
     pass_through_wall: bool,
+    /// C 运行库 `rand()`（`FUN_005541f8`）那一颗种子，大宝箱开箱用；启动时按时间播种。
+    crt_rand: crate::openpal3::combat::encounter::CrtRand,
     /// 神树花开没开（`g_wishPool.flower`，`DAT_00d8bc38`）。不进存档：新游戏、读档都重置成开（`0x5642` 附近和
     /// 读档函数里的 `_DAT_00d8bc38 = 1`）。
     divine_tree_flower: bool,
@@ -107,6 +109,12 @@ impl GlobalState {
             role_constants,
             monster_constants,
             pass_through_wall: false,
+            crt_rand: crate::openpal3::combat::encounter::CrtRand::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos() ^ (d.as_secs() as u32))
+                    .unwrap_or(1),
+            ),
             divine_tree_flower: true,
             effect_position: Vec3::new(0., 0., 0.),
             camera: Pal3Camera::default(),
@@ -135,6 +143,11 @@ impl GlobalState {
 
     pub fn set_appraise_result(&mut self, result: i32) {
         self.appraise_result = result;
+    }
+
+    /// `rand()`：0..=0x7fff。
+    pub fn crt_rand(&mut self) -> i32 {
+        self.crt_rand.rand()
     }
 
     /// The shipped item/skill/actor tables and experience curve.

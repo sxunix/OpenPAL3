@@ -489,6 +489,22 @@ impl AssetManager {
         }
     }
 
+    /// `basedata\effect` 底下的一个 `.pol` 模型（存盘点的石头 `effect\stone.pol`），实体叫 `name`。
+    pub fn load_effect_pol(&self, file: &str, name: String) -> Option<ComRc<IEntity>> {
+        let path = self.effect_root().join(file);
+        if self.vfs.open(&path).is_err() {
+            log::warn!("读不到 {}", path.display());
+            return None;
+        }
+        Some(create_entity_from_pol_model(
+            &self.factory,
+            &self.vfs,
+            &path,
+            name,
+            true,
+        ))
+    }
+
     pub fn load_object_item_cvd(
         &self,
         obj_name: &str,

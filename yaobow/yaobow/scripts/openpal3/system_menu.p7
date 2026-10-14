@@ -16,7 +16,8 @@
 // extracted — the packed PAL3.exe hides the originals.
 //
 // The `mode` parameter threads page + sub-mode in one int: mode%10 is
-// 0 browse / 1 save / 2 load, mode/10 is the 0-based page. Return value
+// 0 browse / 1 save / 2 load / 3 the 「迷宫中不可随时存盘」 box, mode/10 is
+// the 0-based page. Return value
 // is the next encoded mode; -1 closes the page. Slot rows act on click
 // per sub-mode (save: any slot; load: populated slots only; browse:
 // inert). Clicking outside backs out of a sub-mode first, then closes.
@@ -57,10 +58,19 @@ let SIDE_EXIT_Y: float  = 440.0;
 
 let SYS: string = "ui/GameMainUI/System/";
 
+// 「储存进度」在迷宫里（不是从存盘点打开的）按下去：系统页自己的提示框弹 AssisLang 343
+// 「迷宫中不可随时存盘」（exe 0x4b2fd8 起：`"\n%s"` 排版，`FUN_004a1530(1)` 弹出）。
+// [推断] 框的位置、字色没逆，借御剑页那个框 (288,200)-(488,312)、RGB(255,251,31)。
+let LANG_NO_SAVE: int = 343;
+let MB_X0: float = 288.0; let MB_Y0: float = 200.0;
+let MB_X1: float = 488.0; let MB_Y1: float = 312.0;
+let TXT: float = 16.0;
+let TXT_MARGIN: float = 8.0;
+
 pub fn paint_system_menu(
     ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
     pal3: box<openpal3.IPal3Service>,
-    mx: float, my: float, down: bool, click: bool, mode: int,
+    mx: float, my: float, down: bool, click_in: bool, mode: int,
 ) -> int {
     let lw = ui.display_size_x() as float;
     let lh = ui.display_size_y() as float;
@@ -68,6 +78,9 @@ pub fn paint_system_menu(
 
     let mut page = mode / 10;
     let mut m = mode - page * 10;
+    // 提示框开着时，点一下只是关掉它。
+    let click = click_in && m != 3;
+    if m == 3 && click_in { m = 0; }
     let count = pal3.save_slot_count();
     let mut pages = count / ROWS_PER_PAGE;
     if pages * ROWS_PER_PAGE < count { pages = pages + 1; }
@@ -180,7 +193,8 @@ pub fn paint_system_menu(
     // active-mode latch, like the original's stuck-down button.
     if plaque_button(ui, atlas, SYS + "Save", side_cx, oy + SIDE_SAVE_Y * s, s,
         mx, my, down, click, m == 1) {
-        m = if m == 1 { 0 } else { 1 };
+        if !pal3.can_save() { m = 3; }
+        else { m = if m == 1 { 0 } else { 1 }; }
     }
     if plaque_button(ui, atlas, SYS + "Load", side_cx, oy + SIDE_LOAD_Y * s, s,
         mx, my, down, click, m == 2) {
@@ -209,6 +223,22 @@ pub fn paint_system_menu(
     if click && !on_list && !on_side {
         if m != 0 { m = 0; }
         else { return -1; }
+    }
+
+    if m == 3 {
+        let bx0 = ox + MB_X0 * s;
+        let by0 = oy + MB_Y0 * s;
+        let bx1 = ox + MB_X1 * s;
+        let by1 = oy + MB_Y1 * s;
+        ui.fill_rect(bx0, by0, bx1, by1, 0.0, 0.0, 0.0, 0.75);
+        ui.fill_rect(bx0, by0, bx1, by0 + s, 0.8, 0.75, 0.5, 1.0);
+        ui.fill_rect(bx0, by1 - s, bx1, by1, 0.8, 0.75, 0.5, 1.0);
+        ui.fill_rect(bx0, by0, bx0 + s, by1, 0.8, 0.75, 0.5, 1.0);
+        ui.fill_rect(bx1 - s, by0, bx1, by1, 0.8, 0.75, 0.5, 1.0);
+        // "\n%s"：空一行再写。
+        pal3.draw_lang_text(ui, LANG_NO_SAVE,
+            bx0 + TXT_MARGIN * s, by0 + (TXT_MARGIN + TXT) * s,
+            TXT * s, 1.0, 251.0 / 255.0, 31.0 / 255.0, 1.0);
     }
 
     return page * 10 + m;

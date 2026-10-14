@@ -22,7 +22,7 @@ pub struct BlockNode {
     pub name: String,
     /// 物件类型（文件 +0x48）。
     pub kind: u8,
-    /// `TriggerType`（+0x24）。
+    /// 触发方式 `ctype`（+0xd0，[`collide_type`] 按类型算的）。
     pub trigger_type: u8,
     /// `IsNonBlocking`（+0x25），非 0 可通过。
     pub non_blocking: u8,
@@ -754,6 +754,42 @@ fn edge_z(x: i32, a: (i32, i32), b: (i32, i32)) -> Option<i32> {
     let slope = (b.1 - a.1) as f64 / (b.0 - a.0) as f64;
     let z = (a.1 as f64 - a.0 as f64 * slope + x as f64 * slope + 0.5) as i32;
     (a.1.min(b.1) <= z && z <= a.1.max(b.1)).then_some(z)
+}
+
+/// `FUN_00422430`（源码 `_ObjCollideType`，`gamebase/scenedata.cpp:149`）：物件的触发方式 `ctype`（+0xd0）
+/// 建物件时按类型算，不读 `.scn` 记录 +0x24。位 0 是踩在触发矩形上触发，位 1 是调查键能选（模型 OBB）。
+/// `.scn` 里存的那一格和它只在存盘点（0x2a）上不一样：68 个存盘点文件里都是 0，算出来是 2。
+pub fn collide_type(kind: u8) -> u8 {
+    let mut r = 0;
+    if matches!(
+        kind,
+        0 | 1
+            | 2
+            | 3
+            | 4
+            | 5
+            | 6
+            | 0xd
+            | 0xe
+            | 0x1d
+            | 0x20
+            | 0x21
+            | 0x23
+            | 0x24
+            | 0x25
+            | 0x26
+            | 0x27
+            | 0x2c
+    ) {
+        r = 1;
+    }
+    if matches!(
+        kind,
+        0xb | 0xc | 0xe | 0xf | 0x10 | 0x13 | 0x14 | 0x17 | 0x18 | 0x1a | 0x1b | 0x29 | 0x2a
+    ) {
+        r |= 2;
+    }
+    r
 }
 
 /// 世界坐标里的碰撞盒：中心、三根单位轴、三个半边长。

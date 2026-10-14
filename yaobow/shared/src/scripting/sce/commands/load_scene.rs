@@ -149,6 +149,38 @@ impl SceCommandLoadScene {
                 }
                 continue;
             }
+            if kind == 0x1a || kind == 0x29 {
+                // 迷宫大宝箱开过了（状态 1，高 4 位是失败次数）/ 小宝箱开过了（状态 2）：模型停在最后一帧、
+                // 不再挡路；大宝箱失败满 3 次的是碎箱子模型（`SceneObj::OnLoad` case 26 / 41，
+                // `gamebase/sceneobj.cpp:4160`）。
+                let opened = if kind == 0x1a {
+                    object_state & 0xf == 1
+                } else {
+                    object_state == 2
+                };
+                if let (true, Some(i)) = (opened, scene.object_index_of(id)) {
+                    let broken = (object_state >> 4) as u8;
+                    if kind == 0x1a {
+                        scene.set_object_state(id, 1);
+                        scene.set_box_state(i, broken);
+                        if broken >= 3 {
+                            let name = scene.object_name_at(i).unwrap_or_default();
+                            let digit = name
+                                .len()
+                                .checked_sub(5)
+                                .and_then(|k| name.as_bytes().get(k))
+                                .map_or(0, |b| b.wrapping_sub(b'0'));
+                            scene.replace_object_model(i, &format!("wz20_{digit}.cvd"));
+                        }
+                    } else {
+                        scene.set_object_state(id, 2);
+                    }
+                    scene.hold_object_anim_end(id);
+                    let l = scene.object_layer_at(i).unwrap_or(0);
+                    scene.set_object_tiles(i, true, l);
+                }
+                continue;
+            }
             if kind == 0x22 {
                 // 剑桥：伸出去时原位一起改了，存档里是伸出去的位置（上面已经摆好）；格子按它重新登记
                 // （`SceneObj::OnLoad` case 34，`gamebase/sceneobj.cpp:4237`）。

@@ -95,6 +95,16 @@ interface IPal3Service: IUnknown {
     // no PAL3 launch happened yet. Backs the system menu's 读取 page.
     bool request_load_slot(int slot);
 
+    // 现在能不能存：不在迷宫（场景类型 2）、不在 m02，或者正从存盘点打开着存档页
+    // （原版的 `DAT_005cefa9`）。系统页的「储存进度」按它放行。
+    bool can_save();
+
+    // 存盘点刚要打开系统页的存档（取走即清）。状态界面每帧问一次，是就开到存档。
+    bool take_save_point_request();
+
+    // 系统页关上：存盘点给的「能存」收回（原版关页时 `DAT_005cefa9` 换回打开前的值）。
+    void leave_save_point();
+
     // Load the start-menu BGM from this asset path's game vfs and return
     // it as a generic `IAudioSource` the p7 menu holds and drives
     // (play/update/stop). PAL3 uses `PI01`, PAL3A uses `P01` (selected by

@@ -49,6 +49,8 @@ pub struct ScnScene {
     object_rng: RefCell<CrtRand>,
     /// 冲撞（类型 13）：摆的部件和它的实体。
     rams: RefCell<Vec<(super::ram::Ram, ComRc<IEntity>)>>,
+    /// 存盘点的特效（[`super::save_point`]）。
+    save_points: RefCell<Vec<super::save_point::SavePointFx>>,
     /// 野外怪物的 AI（`FUN_00417420`），第一次推的时候按角色建。
     field_monsters: RefCell<Vec<super::field_monster::FieldMonster>>,
     /// 场景物件挡路的格子表（`FUN_00420940`），载入物件后建。
@@ -102,6 +104,7 @@ impl ScnScene {
             object_events: RefCell::new(vec![]),
             player_object: RefCell::new(None),
             rams: RefCell::new(vec![]),
+            save_points: RefCell::new(vec![]),
             object_rng: RefCell::new(CrtRand::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -848,10 +851,13 @@ impl ScnScene {
         // 调查键才动的物件（特技机关 0xc、开关 0x17）：在场、调查得了、次数没用完的；还有站上去才动的
         // 乌龟重力机关（0x1d，还没沉下去的）——它放下的吊桥探路泛洪看不出来；神魔之井的电梯（0x27，没有模型，
         // 位置取触发矩形中间那格）、上下传送板（0x28）、神树传送点（0x26）和推箱子（0xb，推哪个方向看
-        // 主角从哪边走过去）。`index` 是 `.scn` 序号。
+        // 主角从哪边走过去），以及拣东西（0x18）、大小宝箱（0x1a、0x29）。存盘点（0x2a）不列：调查它只会打开存档页。
+        // `index` 是 `.scn` 序号。
         for i in 0..self.scn_file.nodes.len() {
-            let Some(kind @ (0x5 | 0xb | 0xc | 0xd | 0x17 | 0x1d | 0x21 | 0x26 | 0x27 | 0x28)) =
-                self.object_kind_at(i)
+            let Some(
+                kind @ (0x5 | 0xb | 0xc | 0xd | 0x17 | 0x18 | 0x1a | 0x1d | 0x21 | 0x26 | 0x27
+                | 0x28 | 0x29),
+            ) = self.object_kind_at(i)
             else {
                 continue;
             };
@@ -873,6 +879,8 @@ impl ScnScene {
                     a.idle(i) && a.params(i).is_some_and(|p| p[0] != 0)
                 } else if kind == 0x21 {
                     a.idle(i) && a.times(i) != Some(0)
+                } else if matches!(kind, 0x18 | 0x1a | 0x29) {
+                    a.examinable(i) && a.idle(i)
                 } else {
                     a.examinable(i)
                 }
@@ -1811,6 +1819,14 @@ impl ScnScene {
                     );
                 } else if obj.name.as_bytes()[0] as char == '+' {
                     entity = self.build_scene_effect(obj);
+                    // 存盘点（MeshFx 第 2 类）：物件本身是个空实体（调查、走过去要它的位置），特效另建。
+                    if entity.is_none() && obj.name == "+2" {
+                        entity = Some(radiance::scene::CoreEntity::create(
+                            format!("OBJECT_{}", obj.object_id()),
+                            visible,
+                        ));
+                        self.load_save_point(node_index, obj, &mut entities);
+                    }
                 } else {
                     entity = Some(
                         self.asset_mgr
@@ -1898,7 +1914,7 @@ impl ScnScene {
                 sound: n.sound_name(),
                 proc: n.sce_proc_id as i32,
                 times: (n.w2 & 0xff) as u8,
-                examinable: n.w24 & 2 != 0,
+                examinable: super::object_block::collide_type((n.node_type & 0xff) as u8) & 2 != 0,
                 // `PolyLine path`（记录 +0x84：点数，+0x88 起 16 个点）。
                 path: (0..(n.d84 as usize).min(16))
                     .map(|k| {
@@ -1910,6 +1926,11 @@ impl ScnScene {
                     })
                     .collect(),
                 switch_init: (n.w2 >> 8) != 0,
+                p45: [
+                    n.ladder_switch_layer,
+                    i32::from_le_bytes([n.b49[0], n.b49[1], n.b49[2], n.b49[3]]),
+                ],
+                wuling: (n.nav_layer >> 8) as u8,
                 home_y: n.position.y,
                 // `depend_scenename`（记录 +0x14a，32 字节）/ `depend_id`（+0x16a）：名字空或 id 0xff 是没有。
                 depend: {
@@ -2260,6 +2281,34 @@ impl ScnScene {
         }
     }
 
+    /// 物件 `i` 的名字（`.scn` 记录 +4）。
+    pub fn object_name_at(&self, i: usize) -> Option<String> {
+        self.scn_file.nodes.get(i).map(|n| n.name.clone())
+    }
+
+    /// `FUN_00429af0(路径)`：物件 `i` 换成 `object\<name>` 那个模型，摆在原来的位置、朝向上，显不显示照旧。
+    /// 挡路表里的盒子不动（原版这里也只换 `m_mdl`）。
+    pub fn replace_object_model(&self, i: usize, name: &str) {
+        let Some(id) = self.scn_file.nodes.get(i).map(|n| n.object_id()) else {
+            return;
+        };
+        let old = self.get_root_object(id);
+        let visible = old.as_ref().is_none_or(|e| e.visible());
+        let Some(new) = self
+            .asset_mgr
+            .load_object_item_cvd(name, id as u16, visible)
+        else {
+            log::warn!("场景物件：#{i} 换模型，没有 {name}");
+            return;
+        };
+        if let Some(old) = &old {
+            let m = *old.transform().borrow().matrix();
+            new.transform().borrow_mut().set_matrix(m);
+        }
+        self.scene.remove_entities_by_name(&format!("OBJECT_{id}"));
+        self.scene.add_entity(new);
+    }
+
     /// 把物件的动画停在最后一帧（放下的吊桥读档回来就是放下的）。
     pub fn hold_object_anim_end(&self, object_id: i32) {
         let Some(e) = self.get_root_object(object_id) else {
@@ -2427,7 +2476,10 @@ impl ScnScene {
     /// 调查键选中了物件 `i`（`Role::Check` → `InterActRole(role, 1, 0, 0.001)`）。返回这种物件有没有做。
     pub fn examine_object<W: super::object_action::World>(&self, i: usize, w: &mut W) -> bool {
         let mut a = self.object_actions.borrow_mut();
-        if !matches!(a.kind(i), Some(0xb | 0xc | 0x17)) {
+        if !matches!(
+            a.kind(i),
+            Some(0xb | 0xc | 0x17 | 0x18 | 0x1a | 0x29 | 0x2a)
+        ) {
             return false;
         }
         a.event(i, 1, false, 0.001, w);
@@ -2573,7 +2625,7 @@ impl ScnScene {
                     object_id: n.object_id(),
                     name: n.name.clone(),
                     kind: (n.node_type & 0xff) as u8,
-                    trigger_type: (n.w24 & 0xff) as u8,
+                    trigger_type: super::object_block::collide_type((n.node_type & 0xff) as u8),
                     non_blocking: (n.w24 >> 8) as u8,
                     init_active: (n.index >> 8) != 0,
                     switch_state: (n.w2 >> 8) as u8,
@@ -2848,6 +2900,70 @@ impl ScnScene {
         let effect_id = obj.dw184.get(3).copied().unwrap_or(0);
         self.asset_mgr
             .load_scene_effect(effect_id, obj.object_id() as u16)
+    }
+
+    /// 存盘点特效（`MXSavePoint::Create`，exe 0x4b7d30）：石头 `effect\stone.pol`、地上 `save.tga` 一块、
+    /// `ray.tga` 一圈光柱。
+    fn load_save_point(
+        &self,
+        node_index: usize,
+        obj: &ScnNode,
+        entities: &mut Vec<ComRc<IEntity>>,
+    ) {
+        use super::save_point as sp;
+        let factory = self.asset_mgr.component_factory();
+        let effect = self.asset_mgr.effect_root();
+        let id = obj.object_id();
+        let mut quads = |tex: &str, count: usize, tag: &str| {
+            let path = effect.join(tex);
+            let Some(image) = self.asset_mgr.read_picture(&path) else {
+                log::warn!("存盘点：读不到 {}", path.display());
+                return None;
+            };
+            let e = sp::build_quads_entity(
+                &factory,
+                format!("SAVEPOINT_{tag}_{id}"),
+                path.to_str().unwrap_or(tex),
+                image,
+                count,
+            );
+            entities.push(e.clone());
+            Some(e)
+        };
+        let (Some(ground), Some(cone)) = (
+            quads("save.tga", 1, "GROUND"),
+            quads("ray.tga", sp::SIDES, "RAY"),
+        ) else {
+            return;
+        };
+        let stone = self
+            .asset_mgr
+            .load_effect_pol("stone.pol", format!("SAVEPOINT_STONE_{id}"));
+        if let Some(e) = &stone {
+            entities.push(e.clone());
+        }
+        let mut fx = sp::SavePointFx {
+            node: node_index,
+            base: obj.position,
+            rotate: obj.rotation,
+            t: 0.,
+            stone,
+            ground,
+            cone,
+        };
+        fx.step(0.);
+        self.save_points.borrow_mut().push(fx);
+    }
+
+    /// 存盘点特效每帧（`MXSavePoint::Update` + 摆位置）；物件不在场就不画。
+    pub fn step_save_points(&self, dt: f32) {
+        for fx in self.save_points.borrow_mut().iter_mut() {
+            let present = self.node_present(fx.node);
+            fx.set_visible(present);
+            if present {
+                fx.step(dt);
+            }
+        }
     }
 
     /// 冲撞物件的摆动部件：加载子模型、量它的包围盒、起始计时取 `rand() % 300 / 100`。

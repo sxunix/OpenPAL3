@@ -2340,6 +2340,7 @@ impl AdventureDirectorProps {
             return;
         };
         let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        scene.step_save_points(dt);
         let player = self
             .scene_manager
             .get_resolved_role(self.sce_vm.state(), -1);
@@ -4048,6 +4049,111 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         log::debug!("场景物件：主角被机关打到，全队扣 {frac}");
         obj_hurt(self.state, frac);
         *self.hurt_time = 0.;
+    }
+
+    fn give_item(&mut self, id: i32) {
+        let name = self.state.global_state().game_db().and_then(|db| {
+            db.item(id as u32)
+                .map(|it| it.name.as_str().unwrap_or_default())
+        });
+        let Some(name) = name else {
+            log::warn!("场景物件：数据库里没有物品 {id}");
+            return;
+        };
+        log::debug!("场景物件：得到 {id} {name}");
+        self.state
+            .global_state_mut()
+            .persistent_state_mut()
+            .add_item(id as u32, 1);
+        self.push_msg("getitem", &name);
+        crate::scripting::sce::commands::play_sfx(self.state, "wa006");
+    }
+
+    fn give_money(&mut self, amount: i32) {
+        let before = self.state.global_state().persistent_state().money();
+        self.state
+            .global_state_mut()
+            .persistent_state_mut()
+            .add_money(amount);
+        let now = self.state.global_state().persistent_state().money();
+        let delta = now - before;
+        if now == 0 {
+            self.push_msg("lossallmoney", "");
+        } else if delta < 0 {
+            self.push_msg("lossmoney", &(-delta).to_string());
+        } else {
+            self.push_msg("getmoney", &delta.to_string());
+            crate::scripting::sce::commands::play_sfx(self.state, "wa006");
+        }
+    }
+
+    fn give_exp(&mut self, amount: i32) {
+        let ctrl = self.state.global_state().role_controlled().max(0) as u32;
+        if let Some(r) = self
+            .state
+            .global_state_mut()
+            .persistent_state_mut()
+            .role_mut(ctrl)
+        {
+            r.exp += amount;
+        }
+        self.push_msg("getexp", &amount.to_string());
+    }
+
+    fn favor_add(&mut self, role: i32, delta: i32) {
+        self.state
+            .global_state_mut()
+            .persistent_state_mut()
+            .add_favor(role.max(0) as u32, delta);
+        if delta < 0 {
+            crate::scripting::sce::commands::play_sfx(self.state, "wa048");
+        }
+    }
+
+    fn rand(&mut self) -> i32 {
+        self.state.global_state_mut().crt_rand()
+    }
+
+    fn open_save_menu(&mut self) {
+        log::debug!("场景物件：存盘点，打开存档页");
+        self.state.request_save_menu();
+    }
+
+    fn swap_model(&mut self, i: usize, name: &str) {
+        log::debug!("场景物件：#{i} 换模型 {name}");
+        self.scene.replace_object_model(i, name);
+    }
+
+    fn hold_anim_end(&mut self, i: usize) {
+        if let Some(id) = self.scene.object_id_at(i) {
+            self.scene.hold_object_anim_end(id);
+        }
+    }
+
+    fn object_name(&self, i: usize) -> String {
+        self.scene.object_name_at(i).unwrap_or_default()
+    }
+}
+
+impl ObjWorld<'_> {
+    /// `FUN_00410360`（消息栏）：`lang.txt` 里 `key` 那条，`%s` / `%d` 换成 `arg`。
+    /// [移植] 原版是一栏叠着放的消息（`DAT_00bfdb80` 那张表，屏幕上方居中，一条一行），这里先排进提示框。
+    fn push_msg(&mut self, key: &str, arg: &str) {
+        let text = common::store_ext::StoreExt2::read_to_end_from_gbk(
+            self.state.asset_mgr().vfs(),
+            crate::openpal3::combat::result::LANG_PATH,
+        )
+        .ok()
+        .and_then(|t| crate::openpal3::combat::result::lang_value(&t, key));
+        let Some(t) = text else {
+            log::warn!("场景物件：lang.txt 里没有 {key}");
+            return;
+        };
+        let t = match (t.find("%s"), t.find("%d")) {
+            (Some(k), _) | (None, Some(k)) => format!("{}{}{}", &t[..k], arg, &t[k + 2..]),
+            _ => t,
+        };
+        self.state.push_note(t);
     }
 }
 
