@@ -47,6 +47,8 @@ pub struct ScnScene {
     object_motions: RefCell<Vec<ObjectMotion>>,
     /// 原版这里用的是 CRT 的 `rand()`，和别处共用一条序列；移植端单开一条，按时间播种。
     object_rng: RefCell<CrtRand>,
+    /// 冲撞（类型 13）：摆的部件和它的实体。
+    rams: RefCell<Vec<(super::ram::Ram, ComRc<IEntity>)>>,
     /// 野外怪物的 AI（`FUN_00417420`），第一次推的时候按角色建。
     field_monsters: RefCell<Vec<super::field_monster::FieldMonster>>,
     /// 场景物件挡路的格子表（`FUN_00420940`），载入物件后建。
@@ -99,6 +101,7 @@ impl ScnScene {
             object_actions: RefCell::new(Default::default()),
             object_events: RefCell::new(vec![]),
             player_object: RefCell::new(None),
+            rams: RefCell::new(vec![]),
             object_rng: RefCell::new(CrtRand::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -777,7 +780,7 @@ impl ScnScene {
         // 调查键才动的物件（特技机关 0xc、开关 0x17）：在场、调查得了、次数没用完的；还有站上去才动的
         // 乌龟重力机关（0x1d，还没沉下去的）——它放下的吊桥探路泛洪看不出来。`index` 是 `.scn` 序号。
         for i in 0..self.scn_file.nodes.len() {
-            let Some(kind @ (0xc | 0x17 | 0x1d | 0x21)) = self.object_kind_at(i) else {
+            let Some(kind @ (0xc | 0xd | 0x17 | 0x1d | 0x21)) = self.object_kind_at(i) else {
                 continue;
             };
             if !self.object_active_at(i) {
@@ -785,7 +788,10 @@ impl ScnScene {
             }
             let ok = {
                 let a = self.object_actions.borrow();
-                if kind == 0x1d {
+                if kind == 0xd {
+                    // 冲撞：站到它扫过的地方等着被撞飞（撞到哪看参数）。
+                    self.rams.borrow().iter().any(|(r, _)| r.node == i)
+                } else if kind == 0x1d {
                     a.idle(i)
                 } else if kind == 0x21 {
                     a.idle(i) && a.times(i) != Some(0)
@@ -1759,6 +1765,13 @@ impl ScnScene {
                 _ => {}
             }
 
+            // 冲撞：架子之外还有一个摆的部件（名字后加 `A.pol`，`SceneObj::Create`）。
+            if (obj.node_type & 0xff) == 13
+                && obj.name.to_lowercase().ends_with(".pol")
+                && obj.name.starts_with('_')
+            {
+                self.load_ram(node_index, obj, &mut entities);
+            }
             if let Some(p) = entity {
                 Self::apply_position_rotation(p.clone(), &obj.position, obj.rotation.to_radians());
                 if let Some((mode, speed)) =
@@ -2499,6 +2512,106 @@ impl ScnScene {
         let effect_id = obj.dw184.get(3).copied().unwrap_or(0);
         self.asset_mgr
             .load_scene_effect(effect_id, obj.object_id() as u16)
+    }
+
+    /// 冲撞物件的摆动部件：加载子模型、量它的包围盒、起始计时取 `rand() % 300 / 100`。
+    fn load_ram(&self, node_index: usize, obj: &ScnNode, entities: &mut Vec<ComRc<IEntity>>) {
+        let sub = format!("{}A.pol", &obj.name[..obj.name.len() - 4]);
+        let Some(e) = self.asset_mgr.load_scn_pol(
+            &self.cpk_name,
+            &self.scn_file.scn_base_name,
+            &sub,
+            self.scn_file.is_night,
+            0x8000 | obj.object_id() as u16,
+        ) else {
+            log::warn!("冲撞：没有子模型 {sub}");
+            return;
+        };
+        Self::apply_position_rotation(e.clone(), &obj.position, obj.rotation.to_radians());
+        entities.push(e.clone());
+        let part = match self.object_model_box(&sub) {
+            super::object_block::Model::Box(b) => {
+                let f = b.m.floats();
+                super::ram::PartBox {
+                    center: [f[0][3], f[1][3], f[2][3]],
+                    ext: b.ext,
+                }
+            }
+            _ => super::ram::PartBox {
+                center: [0.; 3],
+                ext: [0.; 3],
+            },
+        };
+        let time = (self.object_rng.borrow_mut().rand() % 300) as f32 / 100.;
+        let layer =
+            (obj.ladder_nav_coord2.0.max(0) as usize).min(self.nav.layer_count().saturating_sub(1));
+        let ram = super::ram::Ram::new(
+            node_index,
+            obj.position,
+            obj.rotation,
+            time,
+            (layer, obj.ladder_nav_coord1.0, obj.ladder_nav_coord1.1),
+            part,
+        );
+        self.rams.borrow_mut().push((ram, e));
+    }
+
+    /// 冲撞每帧（`FUN_00426eb0` case 0xd）。`player` 是主角位置、模型半径、模型高；`hurt_ready` 是离上次
+    /// 受伤超过 [`super::ram::HURT_DELAY`]。返回这一帧撞上主角的那个：（撞飞速度，落地的层和格）。
+    pub fn step_rams(
+        &self,
+        dt: f32,
+        player: Option<(Vec3, f32, f32)>,
+        hurt_ready: bool,
+    ) -> Option<(Vec3, (usize, i32, i32))> {
+        let mut hit = None;
+        for (ram, e) in self.rams.borrow_mut().iter_mut() {
+            if !self.node_present(ram.node) {
+                continue;
+            }
+            let (pos, col) = ram.swing(dt);
+            e.transform().borrow_mut().set_position(&pos);
+            if hit.is_some() || !col || !hurt_ready {
+                continue;
+            }
+            if let Some((p, r, h)) = player {
+                if ram.hits(&pos, &p, r * 0.6, r, h) {
+                    hit = Some((ram.knock_velocity(), ram.target));
+                }
+            }
+        }
+        hit
+    }
+
+    /// 探路用：冲撞的部件扫过的那一段（原位往方向上 −30 到 +90）附近一格以内的格子，和落地的层、格。
+    pub fn ram_zones(&self) -> Vec<(Vec<(usize, i32, i32)>, (usize, i32, i32))> {
+        use super::nav_path::FieldNav as _;
+        let mut out = vec![];
+        for (ram, _) in self.rams.borrow().iter() {
+            if !self.node_present(ram.node) {
+                continue;
+            }
+            let d = ram.dir();
+            let layer = self.object_actions.borrow().layer(ram.node).unwrap_or(0);
+            let view = FieldNavView { scene: self, layer };
+            let mut tiles = vec![];
+            let mut k = -30.;
+            while k <= 90. {
+                let p = Vec3::new(ram.base.x + d.x * k, ram.base.y, ram.base.z + d.z * k);
+                let (x, z) = view.tile_of(&p);
+                for dz in -1..=1 {
+                    for dx in -1..=1 {
+                        let t = (layer, x + dx, z + dz);
+                        if !tiles.contains(&t) {
+                            tiles.push(t);
+                        }
+                    }
+                }
+                k += 6.;
+            }
+            out.push((tiles, ram.target));
+        }
+        out
     }
 
     fn apply_position_rotation(entity: ComRc<IEntity>, position: &Vec3, rotation: f32) {

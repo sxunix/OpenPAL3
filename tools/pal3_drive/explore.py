@@ -318,6 +318,14 @@ def main() -> int:
             print(f"  [{step}] {key[0]}/{key[1]} {name} → 触发不了：{e}", flush=True)
             continue
         time.sleep(0.6)
+        if ":t13l" in name:
+            # 冲撞：走到它扫过的地方以后要等它摆过来撞（一个来回不到 5 秒）。
+            p0 = c.state().get("leader_pos")
+            for _ in range(20):
+                time.sleep(0.5)
+                s = c.state()
+                if s.get("current_script_fn") == "<object>" or s.get("leader_pos") != p0:
+                    break
         result = settle(c, issues, f"{key[0]}/{key[1]} {name}")
         if result.get("lost"):
             print(f"  [{step}] {key[0]}/{key[1]} {name} → 打输了（野怪战），回主菜单", flush=True)

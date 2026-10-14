@@ -75,6 +75,8 @@ impl AdventureDirector {
                 player_slide_dir: None,
                 object_walk: None,
                 player_fly: None,
+                hurt_time: 0.,
+                ram_fly: None,
                 last_nav_trigger: None,
                 input_lock: false,
                 agent_walk: None,
@@ -220,6 +222,8 @@ impl AdventureDirector {
                 player_slide_dir: None,
                 object_walk: None,
                 player_fly: None,
+                hurt_time: 0.,
+                ram_fly: None,
                 last_nav_trigger: None,
                 input_lock: false,
                 agent_walk: None,
@@ -678,10 +682,12 @@ impl AdventureDirector {
     /// 特技机关拨到一半）。这时主角不听输入。
     pub fn object_busy(&self) -> bool {
         let p = self.props.borrow();
-        p.scene_manager.scn_scene().is_some_and(|s| {
-            let s = s.inner::<crate::openpal3::scene::ScnScene>();
-            s.object_input_locked() || s.object_actions_busy()
-        })
+        p.player_fly.is_some()
+            || p.ram_fly.is_some()
+            || p.scene_manager.scn_scene().is_some_and(|s| {
+                let s = s.inner::<crate::openpal3::scene::ScnScene>();
+                s.object_input_locked() || s.object_actions_busy()
+            })
     }
 
     /// 调试用：主角现在这层上能不能走到 `to`（见 [`ScnScene::agent_reachable`]）。
@@ -786,6 +792,10 @@ struct AdventureDirectorProps {
     object_walk: Option<ObjectWalk>,
     /// 主角在「旋转飞」（`Role::RotateFly`，食人花吞进去、吐出来）。
     player_fly: Option<PlayerFly>,
+    /// `SceneMgr::m_fHurtTime`：每帧加，被场景机关伤到时清零（冲撞要它超过 1.2 才撞）。
+    hurt_time: f32,
+    /// 被冲撞撞飞：（速度，已飞的秒数，落地的层和格）。
+    ram_fly: Option<(Vec3, f32, (usize, i32, i32))>,
     /// 上一帧主角站着的导航触发区的过程号。原版类型 0 触发点（`FUN_00424c20` case 0）只在「上一帧不在同一个物件上」
     /// 时跑过程，站着不动不会每帧重跑。
     last_nav_trigger: Option<u32>,
@@ -2261,9 +2271,81 @@ impl AdventureDirectorProps {
         }
     }
 
+    /// 冲撞（见 [`crate::openpal3::scene::ram`]）：摆动、撞主角、撞飞后落地。
+    fn step_rams(&mut self, dt: f32) {
+        use crate::openpal3::scene::ram;
+        self.hurt_time += dt;
+        let Some(scene_rc) = self.scene_manager.scn_scene() else {
+            return;
+        };
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let player = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1);
+        if let Some((vel, t, target)) = self.ram_fly.as_mut() {
+            *t += dt;
+            if let Some(e) = &player {
+                let p = e.transform().borrow().position();
+                let q = Vec3::new(p.x + vel.x * dt, p.y + vel.y * dt, p.z + vel.z * dt);
+                e.transform().borrow_mut().set_position(&q);
+            }
+            if *t >= ram::FLY_SECS {
+                let (layer, x, z) = *target;
+                let (c, _) = scene.tile_point(layer, x, z);
+                if let Some(e) = &player {
+                    e.transform().borrow_mut().set_position(&c);
+                    if let Some(rc) = RoleController::get_role_controller(e.clone()) {
+                        let rc = rc.inner::<RoleController>();
+                        rc.set_nav_layer(layer);
+                        rc.idle();
+                    }
+                }
+                self.sce_vm
+                    .global_state_mut()
+                    .persistent_state_mut()
+                    .set_position(c);
+                log::debug!("冲撞：落到层 {layer} ({x}, {z})");
+                self.ram_fly = None;
+            }
+        }
+        let info = player.as_ref().and_then(|e| {
+            let rc = RoleController::get_role_controller(e.clone())?;
+            let rc = rc.inner::<RoleController>();
+            Some((
+                e.transform().borrow().position(),
+                rc.model_radius(),
+                rc.model_height(),
+            ))
+        });
+        let ready = self.ram_fly.is_none() && self.hurt_time > ram::HURT_DELAY;
+        if let Some((vel, target)) = scene.step_rams(dt, info, ready) {
+            log::debug!(
+                "冲撞：撞上主角，飞向层 {} ({}, {})",
+                target.0,
+                target.1,
+                target.2
+            );
+            self.hurt_time = 0.;
+            self.ram_fly = Some((vel, 0., target));
+            if let Some(rc) = player.and_then(RoleController::get_role_controller) {
+                rc.inner::<RoleController>().idle();
+            }
+            // `PlayerMgr::Obj_Hurt(0.05)`：队里每人扣最大精的 5%，最少剩 1。
+            let mut p = self.sce_vm.global_state_mut().persistent_state_mut();
+            let team: Vec<u32> = p.team().to_vec();
+            for id in team {
+                if let Some(r) = p.role_mut(id) {
+                    let hp = (r.hp as f32 - r.max_hp as f32 * ram::HURT_PERCENT) as i32;
+                    r.hp = hp.max(1);
+                }
+            }
+        }
+    }
+
     /// 场景物件的动作队列和状态（`FUN_00426eb0` 里 `FUN_0042f460` 和状态机那部分）。
     fn step_object_actions(&mut self, dt: f32) {
         self.step_player_fly(dt);
+        self.step_rams(dt);
         let Some(scene_rc) = self.scene_manager.scn_scene() else {
             return;
         };
@@ -2919,6 +3001,7 @@ impl AdventureDirectorProps {
         // 物件那半个 `ObjLockInput`（开关、特技机关拨到一半）同样锁。
         let locked = self.input_lock
             || self.player_fly.is_some()
+            || self.ram_fly.is_some()
             || self.scene_manager.scn_scene().is_some_and(|s| {
                 s.inner::<crate::openpal3::scene::ScnScene>()
                     .object_input_locked()
