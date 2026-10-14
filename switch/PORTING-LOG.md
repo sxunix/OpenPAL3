@@ -1057,3 +1057,28 @@ Story 140300 → 151100 and the ending: 剑冢 (140600–140900, 龙葵 branch),
 END movies → main menu). Story fights were won with the debug
 `combat_win` after 60 s; the party is level 99 with early gear, so
 real fights are not representative.
+
+## 2026-10-15 — chests, save points, MeshFx
+
+- Pickups (0x18), small chests (0x29), maze chests (0x1a), save points
+  (0x2a) per FUN_00424c20 / FUN_00426eb0. Maze chests roll
+  `rand()%100` against the element × hero table at 0x59050c; a hit
+  gives params 0..5 and 55 × [100,60,20]% exp, three misses swap in
+  `object\wz20_N.cvd` and cost the girl 2 favour. A save point walks the
+  hero to 48 short of it and opens the system page in save mode; saving
+  elsewhere follows `DAT_005cefa9` (not in mazes, not in m02) and is
+  refused with AssisLang 343. Item / money / exp lines go through the
+  note box one after another (the original stacks them in a list at the
+  top — not done).
+- `ctype` (+0xd0) comes from the type (FUN_00422430), not from `.scn`
+  +0x24; the two only differ on the 68 save points, which is why they
+  could never be examined.
+- MeshFx: save points (+2, MXSavePoint: stone, save.tga, ray.tga cone),
+  transport points (+1, MXTransport: trans.tga, two cones; the
+  teleporting state 1 not done), poison fog (+0, MXPoisonFog:
+  poisonfog.par ×32, cleared by the skill gate via ChangeState(1)).
+  Torches (+3) were already drawn by upstream's effect code. +4
+  (MXCEft, a combat effect group re-run in place) is not done: the
+  effect player has no per-launch handle to ask "still running".
+- 神树 flowers and their master switch swap the visible model
+  (FUN_0042c280 / FUN_0042c730), not just the blocking box.
