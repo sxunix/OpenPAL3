@@ -834,9 +834,10 @@ impl ScnScene {
         }
         // 调查键才动的物件（特技机关 0xc、开关 0x17）：在场、调查得了、次数没用完的；还有站上去才动的
         // 乌龟重力机关（0x1d，还没沉下去的）——它放下的吊桥探路泛洪看不出来；神魔之井的电梯（0x27，没有模型，
-        // 位置取触发矩形中间那格）、上下传送板（0x28）和神树传送点（0x26）。`index` 是 `.scn` 序号。
+        // 位置取触发矩形中间那格）、上下传送板（0x28）、神树传送点（0x26）和推箱子（0xb，推哪个方向看
+        // 主角从哪边走过去）。`index` 是 `.scn` 序号。
         for i in 0..self.scn_file.nodes.len() {
-            let Some(kind @ (0x5 | 0xc | 0xd | 0x17 | 0x1d | 0x21 | 0x26 | 0x27 | 0x28)) =
+            let Some(kind @ (0x5 | 0xb | 0xc | 0xd | 0x17 | 0x1d | 0x21 | 0x26 | 0x27 | 0x28)) =
                 self.object_kind_at(i)
             else {
                 continue;
@@ -1819,8 +1820,9 @@ impl ScnScene {
                     })
                 }
                 // 开关（23）不在这里：它走调查键选物件那条路（`examine_object`），拨了要翻开关状态，
-                // 不是直接跑过程。踏板开关（33）也不在：原版是踩上去触发（物件动作 0x21）。
-                ScnNodeTypes::ITEM_TRIGGER | ScnNodeTypes::ITEM_TRIGGER2 => {
+                // 不是直接跑过程。踏板开关（33）也不在：原版是踩上去触发（物件动作 0x21）。推箱子（11）
+                // 也一样走调查键选物件（物件动作 0xb），过程是推完才跑。
+                ScnNodeTypes::ITEM_TRIGGER => {
                     self.item_triggers.borrow_mut().push(SceItemTrigger {
                         coord: obj.position,
                         sce_proc_id: obj.sce_proc_id,
@@ -1928,6 +1930,46 @@ impl ScnScene {
             return 0.;
         }
         SceneLayers { scene: self }.height(layer, x, z)
+    }
+
+    /// 推箱子 `FUN_0042a950`：箱子 `i` 挪到 `at` 行不行（见 [`super::object_block::ObjectBlocking::box_can_go`]）。
+    pub fn object_box_can_go(&self, i: usize, at: &Vec3) -> bool {
+        // 物件动作这时正被借着（推箱子每帧问的），层号取挡路表里那份。
+        let blocking = self.object_blocking.borrow();
+        let Some(b) = blocking.as_ref() else {
+            return false;
+        };
+        let layer = b.layer_of(i).unwrap_or(0);
+        let base = |x: i32, z: i32| {
+            self.nav
+                .get(layer, x, z)
+                .is_some_and(|t| (t.distance_to_border & 0xff) > 1)
+        };
+        b.box_can_go(i, *at, base)
+    }
+
+    /// 读档：三态箱子的状态。
+    pub fn set_box_state(&self, i: usize, state: u8) {
+        self.object_actions.borrow_mut().set_box_state(i, state);
+    }
+
+    /// 物件 `i` 在 `.scn` 里的位置（`m_info.pos` 的初值）。
+    pub fn object_scn_position(&self, i: usize) -> Option<Vec3> {
+        self.scn_file.nodes.get(i).map(|n| n.position)
+    }
+
+    /// 物件 `i` 在第 `layer` 层压住的格子的外接矩形（`m_maprect`）。
+    pub fn object_owned_rect(&self, i: usize, layer: usize) -> Option<[i32; 4]> {
+        self.object_blocking
+            .borrow()
+            .as_ref()
+            .and_then(|b| b.owned_rect(i, layer))
+    }
+
+    /// 场景坐标落在第 `layer` 层的哪一格（截断）。
+    pub fn tile_of(&self, layer: usize, p: &Vec3) -> (i32, i32) {
+        let (x, z) = self.scene_coord_to_nav_coord(layer, p);
+        (x as i32, z as i32)
     }
 
     /// 物件 `i` 的触发矩形清空（坠落的障碍物落下以后）。
@@ -2329,7 +2371,7 @@ impl ScnScene {
     /// 调查键选中了物件 `i`（`Role::Check` → `InterActRole(role, 1, 0, 0.001)`）。返回这种物件有没有做。
     pub fn examine_object<W: super::object_action::World>(&self, i: usize, w: &mut W) -> bool {
         let mut a = self.object_actions.borrow_mut();
-        if !matches!(a.kind(i), Some(0xc | 0x17)) {
+        if !matches!(a.kind(i), Some(0xb | 0xc | 0x17)) {
             return false;
         }
         a.event(i, 1, false, 0.001, w);
@@ -2951,7 +2993,6 @@ impl ScnScene {
 struct ScnNodeTypes;
 impl ScnNodeTypes {
     pub const LADDER: u16 = 15;
-    pub const ITEM_TRIGGER2: u16 = 11;
     pub const ITEM_TRIGGER: u16 = 16;
     pub const AABB_TRIGGER: u16 = 20;
     pub const TRIGGER_TARGET: u16 = 22;

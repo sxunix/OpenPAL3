@@ -149,6 +149,40 @@ impl SceCommandLoadScene {
                 }
                 continue;
             }
+            if kind == 0xb {
+                // 推箱子：位置是推完记的原位（上面已经摆好），格子按它重新登记；三态箱子的状态存在状态那一格。
+                if let Some(i) = scene.object_index_of(id) {
+                    scene.set_box_state(i, object_state as u8);
+                    if position.is_some() {
+                        let l = scene.object_layer_at(i).unwrap_or(0);
+                        scene.set_object_tiles(i, false, l);
+                    }
+                }
+                continue;
+            }
+            if kind == 0x1e {
+                // 升降机关门（`SceneObj::OnLoad` case 30，`gamebase/sceneobj.cpp:4217`）：位置回到原位，
+                // 沉下去了（状态 3）的再往下一个模型高；「可通过」= 开关标志。存档里存的是开关标志，开着就是
+                // 沉下去停住的那个状态。
+                if let Some(i) = scene.object_index_of(id) {
+                    let on = state
+                        .global_state()
+                        .persistent_state()
+                        .scene_object_state_saved(&self.name, &self.sub_name, id)
+                        .map_or(scene.object_switch_init(i), |v| v != 0);
+                    if let (Some(mut p), Some(entity)) =
+                        (scene.object_scn_position(i), scene.get_root_object(id))
+                    {
+                        if on {
+                            p.y -= scene.object_model_height(i);
+                        }
+                        entity.transform().borrow_mut().set_position(&p);
+                    }
+                    scene.set_object_passable(i, on);
+                    scene.set_object_state(id, if on { 3 } else { 0 });
+                }
+                continue;
+            }
             if kind == 0x24 {
                 // 坠落的障碍物：掉下来了（状态 2）就停在落下的位置（上面已按存档摆好）、不可通过、触发区清空、
                 // 按位置登记格子（`SceneObj::OnLoad` case 36，`gamebase/sceneobj.cpp:4242`）。

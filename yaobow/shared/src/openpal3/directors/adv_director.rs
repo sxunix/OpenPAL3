@@ -2223,8 +2223,8 @@ impl AdventureDirectorProps {
     }
 
     /// 调查键没找到人（`SceneMgr::GetSelRole_RoleCtrl`）时选物件（`FUN_00420cd0`）、交给它
-    /// （`Role::Check` → `InterActRole(主角, 1, 0, 0.001)`）。只接移植端做了的物件类型（特技机关 0xc、
-    /// 开关 0x17），做了返回 `true`；别的类型照旧走后面的老路子（梯子 / 藤等）。
+    /// （`Role::Check` → `InterActRole(主角, 1, 0, 0.001)`）。只接移植端做了的物件类型（推箱子 0xb、
+    /// 特技机关 0xc、开关 0x17），做了返回 `true`；别的类型照旧走后面的老路子（梯子 / 藤等）。
     fn examine_object(&mut self, position: &Vec3, layer: usize) -> bool {
         let Some(scene_rc) = self.scene_manager.scn_scene() else {
             return false;
@@ -3891,6 +3891,32 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
 
     fn nav_floor(&self, layer: usize, p: &Vec3) -> f32 {
         self.scene.nav_floor(layer, p)
+    }
+
+    fn box_can_go(&self, i: usize, at: &Vec3) -> bool {
+        self.scene.object_box_can_go(i, at)
+    }
+
+    fn object_owned_rect(&self, i: usize, layer: usize) -> Option<[i32; 4]> {
+        self.scene.object_owned_rect(i, layer)
+    }
+
+    fn player_tile(&self, layer: usize) -> (i32, i32) {
+        self.scene.tile_of(layer, &self.player_pos())
+    }
+
+    fn npc_walk_speed(&self) -> f32 {
+        self.state.global_state().role_constants().walk_speed
+    }
+
+    fn set_act(&mut self, act: usize) {
+        let Some(name) = crate::openpal3::combat::motion::ACTION_NAMES.get(act) else {
+            return;
+        };
+        if let Some(rc) = self.player_rc() {
+            rc.inner::<RoleController>()
+                .play_anim(name, crate::openpal3::scene::RoleAnimationRepeatMode::Loop);
+        }
     }
 
     fn clear_trigger_rect(&mut self, i: usize) {

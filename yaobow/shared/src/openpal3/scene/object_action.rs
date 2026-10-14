@@ -10,7 +10,7 @@
 //! 排队的前提都是 `FUN_0042c1a0`：队列空、状态 0。乌龟沉下去（状态 3）、吊桥放下（状态 1）以后就不会再动。
 //!
 //! 这里做了吊桥（0x13）、乌龟重力机关（0x1d）、神树传送点（0x26）、上下传送板（0x28），以及调查键（事件 1）
-//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21），神魔之井的电梯（0x27），灵山仙人洞的旋转石梁（7、8），草海的坠落障碍物（0x24）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
+//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21），神魔之井的电梯（0x27），灵山仙人洞的旋转石梁（7、8），草海的坠落障碍物（0x24），黄泉路的推箱子（0xb）和升降机关门（0x1e）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
 //! 交给调用方。
 //!
 //! `FUN_00424c20` 开头先看可用次数（+0xae）：不是 0xff（无限）又已经是 0 的，什么事件都不理。
@@ -39,6 +39,18 @@ pub const ELEVATOR_SECS: f32 = 8.;
 /// 旋转石梁每秒转多少度、一次转多少（`FUN_00426eb0` case 7 的 `dt × 30`，`FUN_00424c20` case 7 的 `+ 90`）。
 pub const BEAM_DEG_PER_SEC: f32 = 30.;
 pub const BEAM_TURN_DEG: f32 = 90.;
+/// 推箱子：按正操作的主角（景天、雪见、龙葵、紫萱、长卿）往外再让多少（`FUN_00424c20` case 0xb 的
+/// `{-12, 4, 4, 9, 12}`），推一格的路程、推多久封顶（`50 / WalkSpeed`）。
+pub const BOX_ROLE_OFFSET: [f32; 5] = [-12., 4., 4., 9., 12.];
+pub const BOX_STEP: f32 = 50.;
+/// 主角推箱子的动作（`ACT_PUSH`，`+0x504 = 7`）。
+pub const ACT_PUSH: usize = 7;
+/// 三态箱子推完（第 `推的方向 − 2` 行、现在的状态那一列）换成的状态，`0xff` 是推不动的那一格
+/// （`FUN_0042afa0` 栈上 `{2, 0, 0xff, 1, 0xff, 0}`）。
+const BOX_NEXT_STATE: [[u8; 3]; 2] = [[2, 0, 0xff], [1, 0xff, 0]];
+/// 升降机关门升 / 降多久（`FUN_00426eb0` case 0x1e 的 `2.0`）。
+pub const DOOR_SECS: f32 = 2.;
+
 /// 动作 0xd（落下）的重力加速度（`FUN_0042f460` case 0xd 的 `dt × 490`），落到所在格地面下这么多停。
 pub const FALL_GRAVITY: f32 = 490.;
 pub const FALL_BELOW_FLOOR: f32 = 4.;
@@ -177,6 +189,13 @@ struct Obj {
     lift: bool,
     /// 旋转石梁（7、8）要转到的角度（+0x38）。
     beam_to: f32,
+    /// 推箱子：三态箱子的状态（+0x51）、推的方向（+0x324，0 往 +x、1 往 −x、2 往 +z、3 往 −z）、
+    /// 开推时箱子的位置（+0x38）、每秒挪多少（+0x44）。升降机关门：开动时的位置（+0x38）、
+    /// 升降多高（+0x44，模型高 − 2）。
+    box_state: u8,
+    push_dir: usize,
+    push_from: Vec3,
+    push_vel: Vec3,
 }
 
 /// 移动浮板沿路线来回（`FUN_00426eb0` case 5）。物件状态 +0x50：0 停在起点、1 往终点走、2 往起点走、
@@ -409,6 +428,24 @@ pub trait World {
     }
     /// `FUN_00420320(物件触发矩形, 0xff)`：物件所在层上它的触发矩形清空。
     fn clear_trigger_rect(&mut self, _i: usize) {}
+    /// 推箱子 `FUN_0042a950`：箱子 `i` 挪到 `at` 行不行。
+    fn box_can_go(&self, _i: usize, _at: &Vec3) -> bool {
+        true
+    }
+    /// 物件 `i` 在第 `layer` 层压住的格子的外接矩形（`m_maprect`）。
+    fn object_owned_rect(&self, _i: usize, _layer: usize) -> Option<[i32; 4]> {
+        None
+    }
+    /// 主角在第 `layer` 层的哪一格。
+    fn player_tile(&self, _layer: usize) -> (i32, i32) {
+        (0, 0)
+    }
+    /// NPC 走路速度 `WalkSpeed`（`DAT_0058b38c`，`datascript\scene.txt` 出厂 80）。
+    fn npc_walk_speed(&self) -> f32 {
+        80.
+    }
+    /// 主角换成动作 `act` 一直播（`m_curact = act; OnChangeAct()`）。
+    fn set_act(&mut self, _act: usize) {}
     fn floor_at(&self, _layer: usize, _p: &Vec3) -> f32 {
         0.
     }
@@ -453,6 +490,10 @@ impl ObjectActions {
                 depend: n.depend.clone(),
                 lift: false,
                 beam_to: 0.,
+                box_state: 0,
+                push_dir: 0,
+                push_from: Vec3::new(0., 0., 0.),
+                push_vel: Vec3::new(0., 0., 0.),
                 plat: (n.kind == 5 && n.p[0] == 0 && n.path.len() >= 2).then(|| Platform {
                     path: PathLine::new(n.path.clone()),
                     dist: 0.,
@@ -834,6 +875,7 @@ impl ObjectActions {
                 self.own_proc(i, w);
             }
             0x5 => self.platform_touch(i, w),
+            0xb => self.push_box_touch(i, ev, w),
             // 坠落的障碍物（`FUN_00424c20` case 0x24）：主角走进触发区（事件 0）或被别的机关叫（事件 2），
             // 闲着才动。主角站住；排「落下」、状态 1（等每帧那边清掉触发区、转 2）、按落下后的位置登记格子、
             // 不可通过、跑自己那条过程（不等）；放音效，开始跑队列，登记 `ObjLockInput`。
@@ -973,6 +1015,220 @@ impl ObjectActions {
         w.save_yaw(i);
         self.push(i, Act::Delay(2.), w);
         self.run(i, w);
+    }
+
+    /// `FUN_00424c20` case 0xb（`SceneObj::InterActRole` 推箱子）：只认调查（事件 1）、停着才动。箱子四边各
+    /// 一个推点：x、z 方向离箱子位置「模型盒子那一边的长 + 按主角让的那点」，取离主角（x、z）最近的；
+    /// 不到 [`TOUCH_DIST`] 且走得过去才推，否则提示「outdist」。推的方向是推点指向箱子、乘 `WalkSpeed`；
+    /// 主角走到推点，清掉箱子压住的格子，转状态 1，扣一次次数，登记 `ObjLockInput`。
+    fn push_box_touch<W: World>(&mut self, i: usize, ev: u8, w: &mut W) {
+        if ev != 1 || self.objs[i].state != 0 {
+            return;
+        }
+        let Some((xlen, zlen)) = w.object_extent(i) else {
+            return;
+        };
+        let c = w.object_pos(i);
+        let off = BOX_ROLE_OFFSET[w.controlled_role().clamp(0, 4) as usize];
+        let points = [
+            (c.x - (xlen + off), c.z),
+            (c.x + (xlen + off), c.z),
+            (c.x, c.z - (zlen + off)),
+            (c.x, c.z + (zlen + off)),
+        ];
+        let pl = w.player_pos();
+        let (mut best, mut dir) = (100000_f32, 0);
+        for (k, (x, z)) in points.iter().enumerate() {
+            let d = (pl.x - x).hypot(pl.z - z);
+            if d < best {
+                (best, dir) = (d, k);
+            }
+        }
+        let (x, z) = points[dir];
+        let to = Vec3::new(x, pl.y, z);
+        let layer = self.objs[i].layer;
+        if best >= TOUCH_DIST || !w.can_role_goto(i, layer, &pl, &to) {
+            w.hint("outdist");
+            return;
+        }
+        let (dx, dz) = (c.x - x, c.z - z);
+        let len = dx.hypot(dz).max(1e-6);
+        let speed = w.npc_walk_speed();
+        let o = &mut self.objs[i];
+        o.push_dir = dir;
+        o.push_vel = Vec3::new(dx / len * speed, 0., dz / len * speed);
+        self.push(
+            i,
+            Act::Walk {
+                to,
+                check: false,
+                fix: true,
+            },
+            w,
+        );
+        self.run(i, w);
+        w.object_tiles(i, true, layer);
+        self.objs[i].state = 1;
+        self.use_once(i, w);
+        self.objs[i].locked = true;
+    }
+
+    /// `FUN_0042bfe0`（`IsPushAllow`）：三态箱子状态 0 时只能沿 z 推（方向 2、3），状态 1 只能往 +z、
+    /// 状态 2 只能往 −z。
+    fn push_allowed(&self, i: usize) -> bool {
+        let o = &self.objs[i];
+        match o.box_state {
+            0 => o.push_dir == 2 || o.push_dir == 3,
+            1 => o.push_dir == 2,
+            2 => o.push_dir == 3,
+            _ => true,
+        }
+    }
+
+    /// `FUN_00426eb0` case 0xb。状态 1：主角还在往推点走就等着；走到了转状态 2、站住、换成推的动作、
+    /// 朝推的方向，记下箱子这时的位置、计时清零，放音效。状态 2：三态箱子（参数 0 为 2）这个方向推不动的，
+    /// 推满 1 秒就收尾；否则按经过的时间挪（最多 `50 / WalkSpeed` 秒，即一格 50），主角跟着平移；挪不过去
+    /// 收尾；推满收尾并跑自己那条过程。
+    fn step_push_box<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
+        match self.objs[i].state {
+            1 if self.objs[i].queue.is_empty() => {
+                let o = &mut self.objs[i];
+                o.state = 2;
+                o.timer = 0.;
+                let vel = o.push_vel;
+                w.stand();
+                w.set_act(ACT_PUSH);
+                let pl = w.player_pos();
+                w.face_player(&Vec3::new(pl.x + vel.x, pl.y, pl.z + vel.z));
+                self.objs[i].push_from = w.object_pos(i);
+                self.sound(i, 0, w);
+            }
+            2 => {
+                self.objs[i].timer += dt;
+                let t = self.objs[i].timer;
+                if self.objs[i].p[0] == 2 && !self.push_allowed(i) {
+                    if t > 1. {
+                        self.finish_box(i, w);
+                    }
+                    return;
+                }
+                let dur = BOX_STEP / w.npc_walk_speed();
+                let over = dur < t;
+                let t = if over { dur } else { t };
+                self.objs[i].timer = t;
+                let (from, vel) = (self.objs[i].push_from, self.objs[i].push_vel);
+                let at = w.object_pos(i);
+                let pl = w.player_pos();
+                let (ox, oz) = (pl.x - at.x, pl.z - at.z);
+                let next = Vec3::new(from.x + vel.x * t, from.y + vel.y * t, from.z + vel.z * t);
+                if !w.box_can_go(i, &next) {
+                    self.finish_box(i, w);
+                    return;
+                }
+                w.set_object_pos(i, &next);
+                w.carry_player(&Vec3::new(next.x + ox, pl.y, next.z + oz));
+                if over {
+                    self.finish_box(i, w);
+                    self.own_proc(i, w);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// `FUN_0042afa0`（`FinishBox`）：按箱子现在的位置登记格子；主角站在箱子压住的格子里的，按推的方向
+    /// 挪到那块格子外头紧挨着的一格；回状态 0、主角站住。三态箱子这一推推得动的，按 [`BOX_NEXT_STATE`]
+    /// 换状态，参数 1、2 那两扇升降机关门照新状态开关（0 两扇都关，1 开参数 1 那扇，2 开参数 2 那扇）。
+    /// 原位 +0xd4 改成现在的位置（移植端挪箱子时已经记进存档）。
+    fn finish_box<W: World>(&mut self, i: usize, w: &mut W) {
+        let layer = self.objs[i].layer;
+        w.object_tiles(i, false, layer);
+        let pl_layer = w.player_layer();
+        if let Some([x0, z0, x1, z1]) = w.object_owned_rect(i, pl_layer) {
+            let (mut x, mut z) = w.player_tile(pl_layer);
+            if x0 <= x && x <= x1 && z0 <= z && z <= z1 {
+                match self.objs[i].push_dir {
+                    0 => x = x0 - 1,
+                    1 => x = x1 + 1,
+                    2 => z = z0 - 1,
+                    _ => z = z1 + 1,
+                }
+                let (p, _) = w.tile_point(pl_layer, x, z);
+                w.carry_player(&p);
+            }
+        }
+        self.objs[i].state = 0;
+        w.stand();
+        if self.objs[i].p[0] == 2 && self.push_allowed(i) {
+            let o = &mut self.objs[i];
+            let next = BOX_NEXT_STATE[o.push_dir - 2][o.box_state.min(2) as usize];
+            o.box_state = next;
+            w.save_state(i, next);
+            let (pz, pnz) = (o.p[1], o.p[2]);
+            let (z, nz) = (self.index_of(pz), self.index_of(pnz));
+            match next {
+                0 => {
+                    if let Some(z) = z {
+                        self.door_switch(z, false, w);
+                    }
+                    if let Some(nz) = nz {
+                        self.door_switch(nz, false, w);
+                    }
+                }
+                1 => {
+                    if let Some(z) = z {
+                        self.door_switch(z, true, w);
+                    }
+                }
+                2 => {
+                    if let Some(nz) = nz {
+                        self.door_switch(nz, true, w);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// `FUN_0042c030`（`Door_Switch`）：升降机关门的开关标志（+0xaf）换了才动：开了转状态 1（往下沉）、
+    /// 关了转状态 2（升回来），计时清零，记下现在的位置，升降高度取模型高 − 2，「可通过」跟着标志，放音效。
+    fn door_switch<W: World>(&mut self, i: usize, on: bool, w: &mut W) {
+        if w.switch_on(i) == on {
+            return;
+        }
+        w.set_switch(i, on);
+        let o = &mut self.objs[i];
+        o.state = if on { 1 } else { 2 };
+        o.timer = 0.;
+        o.push_from = w.object_pos(i);
+        o.push_vel = Vec3::new(w.object_model_height(i) - 2., 0., 0.);
+        w.set_passable(i, on);
+        self.sound(i, 0, w);
+    }
+
+    /// `FUN_00426eb0` case 0x1e：状态 1 两秒沉下「升降高度」、到了转 3；状态 2 两秒升回、到了转 0。
+    fn step_door<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
+        let state = self.objs[i].state;
+        if state != 1 && state != 2 {
+            return;
+        }
+        let o = &mut self.objs[i];
+        o.timer += dt;
+        if DOOR_SECS <= o.timer {
+            o.timer = DOOR_SECS;
+            o.state = if state == 1 { 3 } else { 0 };
+        }
+        let k = o.push_vel.x * o.timer * 0.5;
+        let mut p = o.push_from;
+        p.y += if state == 1 { -k } else { k };
+        w.set_object_pos(i, &p);
+    }
+
+    /// 读档：三态箱子的状态。
+    pub fn set_box_state(&mut self, i: usize, state: u8) {
+        if let Some(o) = self.objs.get_mut(i) {
+            o.box_state = state;
+        }
     }
 
     fn step_lift<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
@@ -1394,6 +1650,8 @@ impl ObjectActions {
             match self.objs[i].kind {
                 0x5 => self.step_platform(i, dt, w),
                 7 | 8 => self.step_beam(i, dt, w),
+                0xb => self.step_push_box(i, dt, w),
+                0x1e => self.step_door(i, dt, w),
                 // `FUN_00426eb0` case 0x24：状态 1 时清掉触发区、转 2。
                 0x24 if self.objs[i].state == 1 => {
                     w.clear_trigger_rect(i);
@@ -1760,6 +2018,8 @@ fn sound_name(kind: u8, p0: i32, p: i32) -> Option<&'static str> {
         0x1d => Some(if p == 0 { "wg005" } else { "we026" }),
         0x27 => Some("wc014"),
         7 => Some("wg004"),
+        0xb => Some("We025"),
+        0x1e => Some("Wg005"),
         0x16 => Some("Wg005"),
         _ => None,
     }
@@ -1937,6 +2197,9 @@ mod tests {
         }
         fn switch_on(&self, i: usize) -> bool {
             self.switches[i]
+        }
+        fn set_switch(&mut self, i: usize, on: bool) {
+            self.switches[i] = on;
         }
         fn deactivate(&mut self, i: usize) {
             self.deactivated.push(i);
@@ -2310,6 +2573,102 @@ mod tests {
         }
         assert_eq!(w.player_layer, 0);
         assert_eq!(w.pos[0].y, 510.);
+    }
+
+    fn push_node(object_id: i32, kind: u8, p: [i32; 4]) -> ObjNode {
+        ObjNode {
+            object_id,
+            kind,
+            layer: 0,
+            p,
+            link_id: 0xffff,
+            sound: None,
+            proc: 77,
+            times: 0xff,
+            examinable: true,
+            path: vec![],
+            home_y: 0.,
+            depend: None,
+            switch_init: false,
+        }
+    }
+
+    /// 推箱子（0xb）：调查键才推；主角从 −z 那边走到推点（箱子边长 30、景天往里收 12，离箱子 18），
+    /// 推 50 / 80 秒挪一格 50，主角跟着挪；推完按新位置登记格子、跑自己那条过程。
+    #[test]
+    fn push_box_moves_one_step_away_from_the_player() {
+        let (mut a, mut w) = single(0xb, [0; 4], 0);
+        a.objs[0].proc = 77;
+        w.extent = Some((30., 30.));
+        w.player = Vec3::new(100., 300., 140.);
+        a.event(0, 0, false, 0.1, &mut w);
+        assert_eq!(a.objs[0].state, 0, "只认调查");
+        a.event(0, 1, false, 0.1, &mut w);
+        assert_eq!(a.objs[0].state, 1);
+        assert_eq!(w.tiles, [(0, true, 0)]);
+        let dt = 0.125;
+        for _ in 0..3 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!((w.player.x, w.player.z), (100., 182.), "走到推点");
+        assert_eq!(a.objs[0].state, 2);
+        assert_eq!(w.sounds, ["We025"]);
+        for _ in 0..6 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(a.objs[0].state, 0);
+        assert_eq!(w.pos[0].z, 250.);
+        assert_eq!(w.player.z, 232.);
+        assert_eq!(w.tiles, [(0, true, 0), (0, false, 0)]);
+        assert_eq!(w.procs, [77]);
+    }
+
+    /// 三态箱子（参数 0 为 2）：状态 0 时横着推不动（推满 1 秒收尾，箱子不挪）；从 −z 往 +z 推完转状态 2，
+    /// 参数 2 那扇升降机关门打开、两秒沉下「模型高 − 2」，可通过。
+    #[test]
+    fn three_state_box_opens_the_matching_door() {
+        let mut a = ObjectActions::new(&[
+            push_node(11, 0xb, [2, 12, 13, 0]),
+            push_node(12, 0x1e, [0; 4]),
+            push_node(13, 0x1e, [0; 4]),
+        ]);
+        let (_, mut w) = single(0xb, [0; 4], 0);
+        w.pos = vec![
+            Vec3::new(100., 300., 200.),
+            Vec3::new(0., 0., 0.),
+            Vec3::new(500., 40., 0.),
+        ];
+        w.passable = vec![false; 3];
+        w.anim_left = vec![0; 3];
+        w.switches = vec![false; 3];
+        w.extent = Some((30., 30.));
+        let dt = 0.125;
+        // 从 −x 那边推：方向 0，推不动。
+        w.player = Vec3::new(40., 300., 200.);
+        a.event(0, 1, false, 0.1, &mut w);
+        for _ in 0..14 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(a.objs[0].state, 0);
+        assert_eq!((w.pos[0].x, w.pos[0].z), (100., 200.));
+        assert_eq!(a.objs[0].box_state, 0);
+        // 从 −z 那边推：方向 2，状态 0 → 2，开参数 2 那扇。
+        w.player = Vec3::new(100., 300., 140.);
+        a.event(0, 1, false, 0.1, &mut w);
+        for _ in 0..10 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(a.objs[0].box_state, 2);
+        assert!(w.saved_states.contains(&(0, 2)));
+        assert_eq!(w.switches, [false, false, true]);
+        assert!(w.passable[2]);
+        assert_eq!(a.objs[2].state, 1);
+        for _ in 0..16 {
+            w.frame(&mut a, dt);
+        }
+        assert_eq!(a.objs[2].state, 3);
+        assert_eq!(w.pos[2].y, 32.);
+        assert_eq!(w.pos[1].y, 0., "参数 1 那扇不动");
     }
 
     /// 坠落的障碍物（0x24）：主角走进来就掉到所在格地面下 4（重力 490），触发区清掉，按落下的位置登记格子、

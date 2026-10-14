@@ -177,6 +177,109 @@ impl ObjectBlocking {
         self.register(i, &n, model, (&scene.0, &scene.1));
     }
 
+    /// 物件 `i` 现在登记在第几层。
+    pub fn layer_of(&self, i: usize) -> Option<usize> {
+        self.nodes.get(i).map(|n| n.layer)
+    }
+
+    /// 物件 `i` 在第 `layer` 层压住的格子的外接矩形（`m_maprect`，`FillMapRect` 登记时记的那块）。
+    pub fn owned_rect(&self, i: usize, layer: usize) -> Option<[i32; 4]> {
+        let g = self.grids.get(layer)?;
+        let mut r: Option<[i32; 4]> = None;
+        for (k, v) in self.maps[layer].iter().enumerate() {
+            if *v as usize != i {
+                continue;
+            }
+            let (x, z) = ((k as i32) % g.w, (k as i32) / g.w);
+            r = Some(match r {
+                None => [x, z, x, z],
+                Some([x0, z0, x1, z1]) => [x0.min(x), z0.min(z), x1.max(x), z1.max(z)],
+            });
+        }
+        r
+    }
+
+    /// `FUN_00429ee0` / `FUN_00429f90`：物件 `i` 的碰撞盒（模型盒子过绕 X、绕 Y 转，平移到 `at`；
+    /// `at` 为 `None` 时用它现在登记的位置）。没有模型盒子是 `None`。
+    pub fn collide_obb(&self, i: usize, at: Option<Vec3>) -> Option<WorldObb> {
+        let Some(Model::Box(obb)) = self.models.get(i).copied() else {
+            return None;
+        };
+        let mut n = self.nodes.get(i)?.clone();
+        if let Some(p) = at {
+            n.position = p;
+        }
+        let c = object_point(&n, &obb.m, [0.; 3]);
+        let mut axes = [
+            Vec3::new(1., 0., 0.),
+            Vec3::new(0., 1., 0.),
+            Vec3::new(0., 0., 1.),
+        ];
+        let mut half = [0.; 3];
+        for k in 0..3 {
+            let mut d = [0.; 3];
+            d[k] = obb.ext[k] * 0.5;
+            let q = object_point(&n, &obb.m, d);
+            let v = Vec3::new(q.x - c.x, q.y - c.y, q.z - c.z);
+            let len = (v.x * v.x + v.y * v.y + v.z * v.z).sqrt();
+            if len > 1e-6 {
+                axes[k] = Vec3::new(v.x / len, v.y / len, v.z / len);
+                half[k] = len;
+            }
+        }
+        Some(WorldObb { c, axes, half })
+    }
+
+    /// 推箱子 `FUN_0042a950`（`SceneObj::CanGoTo`）：箱子 `i` 挪到 `at` 行不行。模型的轴对齐盒子（不转）
+    /// 平移到 `at`，取最大、最小两角所在的格子，四个角格（`FUN_0042aae0`）都要：格子本身能走（`base`）；
+    /// 格子上登记着别的物件、它不可通过且 `TriggerType` 位 1 置着时，两个碰撞盒不相交；箱子（0xb）还要和
+    /// 场上别的箱子的碰撞盒都不相交。
+    pub fn box_can_go(&self, i: usize, at: Vec3, base: impl Fn(i32, i32) -> bool) -> bool {
+        let Some(n) = self.nodes.get(i) else {
+            return false;
+        };
+        let layer = n.layer;
+        let (Some(g), Some(Model::Box(obb))) = (self.grids.get(layer), self.models.get(i).copied())
+        else {
+            return false;
+        };
+        let f = obb.m.floats();
+        let (cx, cz) = (f[0][3], f[2][3]);
+        let (hx, hz) = (obb.ext[0] * 0.5, obb.ext[2] * 0.5);
+        let (x1, z1) = g.tile(&Vec3::new(at.x + cx + hx, 0., at.z + cz + hz));
+        let (x2, z2) = g.tile(&Vec3::new(at.x + cx - hx, 0., at.z + cz - hz));
+        let me = self.collide_obb(i, Some(at));
+        let hits = |j: usize| match (&me, self.collide_obb(j, None)) {
+            (Some(a), Some(b)) => a.overlaps(&b),
+            _ => false,
+        };
+        for (x, z) in [(x1, z1), (x2, z2), (x1, z2), (x2, z1)] {
+            if !base(x, z) {
+                return false;
+            }
+            if x < 0 || z < 0 || x >= g.w || z >= g.h {
+                return false;
+            }
+            let id = self.maps[layer][(z * g.w + x) as usize];
+            if id != NONE {
+                let j = id as usize;
+                let blocking = self.objs.get(j).is_some_and(|o| !o.non_blocking)
+                    && self.nodes.get(j).is_some_and(|o| o.trigger_type & 2 != 0);
+                if blocking && hits(j) {
+                    return false;
+                }
+            }
+        }
+        if n.kind == 0xb {
+            for (j, o) in self.objs.iter().enumerate() {
+                if j != i && o.kind == 0xb && hits(j) {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// `FUN_00420320(+0xe4, 0xff)`：物件 `i` 所在层上它的触发矩形整块清空（不管格子原来记的是谁）。
     pub fn clear_trigger_rect(&mut self, i: usize) {
         let Some(n) = self.nodes.get(i) else {
@@ -641,6 +744,50 @@ fn edge_z(x: i32, a: (i32, i32), b: (i32, i32)) -> Option<i32> {
     (a.1.min(b.1) <= z && z <= a.1.max(b.1)).then_some(z)
 }
 
+/// 世界坐标里的碰撞盒：中心、三根单位轴、三个半边长。
+#[derive(Debug, Clone, Copy)]
+pub struct WorldObb {
+    pub c: Vec3,
+    pub axes: [Vec3; 3],
+    pub half: [f32; 3],
+}
+
+impl WorldObb {
+    /// `gbOBBox::IsColOBB`。[推断] gbengine 这个函数没逆，按标准的分离轴测试（两盒各三根轴、
+    /// 两两叉乘九根，共十五根）判相交；贴边算相交。
+    pub fn overlaps(&self, o: &WorldObb) -> bool {
+        let dot = |a: &Vec3, b: &Vec3| a.x * b.x + a.y * b.y + a.z * b.z;
+        let cross = |a: &Vec3, b: &Vec3| {
+            Vec3::new(
+                a.y * b.z - a.z * b.y,
+                a.z * b.x - a.x * b.z,
+                a.x * b.y - a.y * b.x,
+            )
+        };
+        let t = Vec3::new(o.c.x - self.c.x, o.c.y - self.c.y, o.c.z - self.c.z);
+        let separated = |l: &Vec3| {
+            let len2 = dot(l, l);
+            if len2 < 1e-10 {
+                return false;
+            }
+            let ra: f32 = (0..3)
+                .map(|k| self.half[k] * dot(&self.axes[k], l).abs())
+                .sum();
+            let rb: f32 = (0..3).map(|k| o.half[k] * dot(&o.axes[k], l).abs()).sum();
+            dot(&t, l).abs() > ra + rb
+        };
+        let mut axes: Vec<Vec3> = Vec::with_capacity(15);
+        axes.extend(self.axes.iter().copied());
+        axes.extend(o.axes.iter().copied());
+        for a in &self.axes {
+            for b in &o.axes {
+                axes.push(cross(a, b));
+            }
+        }
+        !axes.iter().any(|l| separated(l))
+    }
+}
+
 /// `FUN_00429ee0`：包围盒上一点到世界——先过模型包围盒矩阵，再绕 X 转、绕 Y 转（gbengine 的
 /// `SetAxisAngle`：绕 X y' = y cos − z sin、z' = y sin + z cos；绕 Y x' = x cos + z sin、
 /// z' = −x sin + z cos），最后平移到物件位置。
@@ -664,6 +811,31 @@ fn object_point(n: &BlockNode, m: &Mat44, d: [f32; 3]) -> Vec3 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn cube(c: Vec3, deg: f32) -> WorldObb {
+        let (s, k) = (deg * DEG).sin_cos();
+        WorldObb {
+            c,
+            axes: [
+                Vec3::new(k, 0., -s),
+                Vec3::new(0., 1., 0.),
+                Vec3::new(s, 0., k),
+            ],
+            half: [10., 10., 10.],
+        }
+    }
+
+    #[test]
+    fn obb_overlap_uses_every_separating_axis() {
+        let a = cube(Vec3::new(0., 0., 0.), 0.);
+        assert!(a.overlaps(&cube(Vec3::new(15., 0., 0.), 0.)));
+        assert!(!a.overlaps(&cube(Vec3::new(21., 0., 0.), 0.)));
+        // 转 45° 的那个对角伸出 14.1：中心隔 23 时两盒的投影还叠着，隔 25 就分开了。
+        assert!(a.overlaps(&cube(Vec3::new(23., 0., 0.), 45.)));
+        assert!(!a.overlaps(&cube(Vec3::new(25., 0., 0.), 45.)));
+        // 斜着错开（两个方向都只差一点）：只有盒子自己的轴能把它们分开。
+        assert!(!a.overlaps(&cube(Vec3::new(20.5, 0., 20.5), 0.)));
+    }
 
     fn grid() -> LayerGrid {
         LayerGrid {
