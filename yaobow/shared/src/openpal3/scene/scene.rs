@@ -457,6 +457,16 @@ impl ScnScene {
                     }
                 }
             }
+            // 上下传送板（0x28）：站上去就被载到另一层，0 层落在参数 (0, 1) 那格、1 层落在 (2, 3)。
+            if let Some((o, 0x28)) = self.tile_object(l, x, z) {
+                if layers > 1 && self.object_active_at(o) {
+                    if let Some(p) = self.object_actions.borrow().params(o) {
+                        let to = (l + 1) % 2;
+                        let (tx, tz) = if to == 0 { (p[0], p[1]) } else { (p[2], p[3]) };
+                        next.push((to, tx, tz, true));
+                    }
+                }
+            }
             if maze && matches!(self.tile_object(l, x, z), Some((_, 0x2c | 0x26))) {
                 let (bx, bz) = self.nav_block_size(l);
                 let rx = (super::player_jump::MAX_DIST / bx).ceil() as i32;
@@ -806,9 +816,10 @@ impl ScnScene {
         }
         // 调查键才动的物件（特技机关 0xc、开关 0x17）：在场、调查得了、次数没用完的；还有站上去才动的
         // 乌龟重力机关（0x1d，还没沉下去的）——它放下的吊桥探路泛洪看不出来；神魔之井的电梯（0x27，没有模型，
-        // 位置取触发矩形中间那格）。`index` 是 `.scn` 序号。
+        // 位置取触发矩形中间那格）和上下传送板（0x28）。`index` 是 `.scn` 序号。
         for i in 0..self.scn_file.nodes.len() {
-            let Some(kind @ (0xc | 0xd | 0x17 | 0x1d | 0x21 | 0x27)) = self.object_kind_at(i)
+            let Some(kind @ (0xc | 0xd | 0x17 | 0x1d | 0x21 | 0x27 | 0x28)) =
+                self.object_kind_at(i)
             else {
                 continue;
             };
@@ -820,7 +831,7 @@ impl ScnScene {
                 if kind == 0xd {
                     // 冲撞：站到它扫过的地方等着被撞飞（撞到哪看参数）。
                     self.rams.borrow().iter().any(|(r, _)| r.node == i)
-                } else if kind == 0x1d || kind == 0x27 {
+                } else if matches!(kind, 0x1d | 0x27 | 0x28) {
                     a.idle(i)
                 } else if kind == 0x21 {
                     a.idle(i) && a.times(i) != Some(0)
