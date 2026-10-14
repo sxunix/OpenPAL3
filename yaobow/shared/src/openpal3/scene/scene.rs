@@ -2168,19 +2168,20 @@ impl ScnScene {
 
     /// 神树花总开关（类型 0x17、参数 2 为 1）的脚本编号。
     pub fn flower_master_switch(&self) -> Option<i32> {
-        (0..self.scn_file.nodes.len()).find_map(|i| {
-            (self.object_kind_at(i) == Some(0x17)
-                && self.object_params(i).is_some_and(|p| p[2] == 1))
-            .then(|| self.scn_file.nodes[i].object_id())
-        })
+        self.scn_file
+            .nodes
+            .iter()
+            .find(|n| (n.node_type & 0xff) == 0x17 && n.ladder_nav_coord2.0 == 1)
+            .map(|n| n.object_id())
     }
 
     /// 把这个场景的神树花（类型 0x25）都摆成开 / 关（`FUN_0042c280`，按 `.scn` 顺序）：关着的模型是名字
     /// 末尾 5 个字符换成 `2.pol`（`_a1.pol` → `_a2.pol`），按那个模型重新登记格子，「可通过」= `open`。
     /// [未做] 场上的模型不换，只换挡路。
     pub fn switch_flowers(&self, open: bool) {
+        // 物件类型直接看 `.scn`：总开关被拨时物件动作正借着（`ObjectActions`），不能再借。
         for i in 0..self.scn_file.nodes.len() {
-            if self.object_kind_at(i) != Some(0x25) {
+            if (self.scn_file.nodes[i].node_type & 0xff) != 0x25 {
                 continue;
             }
             let name = &self.scn_file.nodes[i].name;
