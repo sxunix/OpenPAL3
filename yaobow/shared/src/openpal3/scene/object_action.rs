@@ -10,7 +10,7 @@
 //! 排队的前提都是 `FUN_0042c1a0`：队列空、状态 0。乌龟沉下去（状态 3）、吊桥放下（状态 1）以后就不会再动。
 //!
 //! 这里做了吊桥（0x13）、乌龟重力机关（0x1d）、神树传送点（0x26）、上下传送板（0x28），以及调查键（事件 1）
-//! 触发的主角特技机关（0xc）和开关（0x17），以及古藤林的食人花（0x20）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
+//! 触发的主角特技机关（0xc）和开关（0x17），古藤林的食人花（0x20），蜀山故道的踏板开关（0x21）。动作里用到主角、模型、音效、脚本、冻结计数的地方都经 [`World`]
 //! 交给调用方。
 //!
 //! `FUN_00424c20` 开头先看可用次数（+0xae）：不是 0xff（无限）又已经是 0 的，什么事件都不理。
@@ -564,6 +564,41 @@ impl ObjectActions {
             }
             0xc => self.skill_gate(i, ev, w),
             0x17 => self.switch(i, ev, w),
+            // 踏板开关（`FUN_00424c20` case 0x21）：只认刚踩上来（事件 0、上一帧不在上面）、闲着。主角走到
+            // 踏板中心，踏板 2 秒沉下 5（最后一次用时连原位一起改），跑自己那条过程（不等），叫连着的物件，
+            // 扣一次次数；登记 `ObjLockInput`。
+            0x21 => {
+                if ev != 0 || same || !self.idle(i) {
+                    return;
+                }
+                let p = w.object_pos(i);
+                let down = Vec3::new(p.x, p.y - 5., p.z);
+                let last = self.objs[i].times == 1;
+                let proc = self.objs[i].proc;
+                for a in [
+                    Act::Walk {
+                        to: p,
+                        check: true,
+                        fix: true,
+                    },
+                    Act::Move {
+                        to: down,
+                        dur: 2.,
+                        carry: false,
+                        home: last,
+                    },
+                    Act::Proc {
+                        id: proc,
+                        wait: false,
+                    },
+                    Act::Link { wait: false },
+                ] {
+                    self.push(i, a, w);
+                }
+                self.use_once(i, w);
+                self.run(i, w);
+                self.objs[i].locked = true;
+            }
             // 食人花（`FUN_00424c20` case 0x20）：只认踩上来（事件 0）、状态 0。转状态 1、主角飞进花心、
             // 放音效；`break` 出来，末尾照样跑自己那条过程。之后见 [`Self::step_flower`]。
             0x20 => {
@@ -979,7 +1014,10 @@ impl ObjectActions {
                     return;
                 }
                 Act::Proc { id, wait } => {
-                    w.call_proc(id);
+                    // 过程号 0 是没挂过程（`FUN_00432170(0, 0)` 找不到，什么也不跑）。
+                    if id != 0 {
+                        w.call_proc(id);
+                    }
                     if wait {
                         return;
                     }
@@ -1772,5 +1810,43 @@ mod tests {
         assert_eq!(w.played, [0]);
         assert_eq!(a.state(0), Some(0));
         assert!(!a.input_locked());
+    }
+
+    #[test]
+    fn pressure_plate_sinks_runs_its_proc_and_is_used_up() {
+        let (_, mut w) = m01();
+        // M11/1 的 9 号踏板（过程 502，次数 1）。
+        let mut a = ObjectActions::new(&[ObjNode {
+            object_id: 9,
+            kind: 0x21,
+            layer: 1,
+            p: [0, 0, 0, 0],
+            link_id: 0xffff,
+            sound: None,
+            proc: 502,
+            times: 1,
+            examinable: false,
+        }]);
+        w.pos = vec![Vec3::new(-54.8, -634., 3540.4)];
+        w.player = Vec3::new(-54.8 + 20., -634., 3540.4);
+        w.passable = vec![true];
+        w.anim_left = vec![0];
+        // 站着不动的那一帧（上一帧也在上面）不理。
+        a.event(0, 0, true, 0.1, &mut w);
+        assert!(a.idle(0));
+        a.event(0, 0, false, 0.1, &mut w);
+        assert!(a.input_locked());
+        assert_eq!(w.saved_times, [(0, 0)]);
+        for _ in 0..30 {
+            w.frame(&mut a, 0.1);
+        }
+        assert!((w.pos[0].y - (-639.)).abs() < 1e-3, "{:?}", w.pos[0]);
+        assert_eq!(w.procs, [502]);
+        assert!(a.idle(0));
+        assert!(!a.input_locked());
+        // 用完了：再踩不动。
+        a.event(0, 0, false, 0.1, &mut w);
+        assert!(a.idle(0));
+        assert_eq!(w.procs, [502]);
     }
 }

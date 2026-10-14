@@ -565,12 +565,34 @@ impl ScnScene {
         // 物件压着自己周围的格子（宝箱、开关的包围盒再外扩一格半），点本身常常走不上去：
         // 12 格以内取最近的走得到的格子（蜀山故道龙葵的特技机关模型大，中心离能站的地方七八格；
         // 原版选物件时距离要减去模型半径，站得远也选得中）。
-        let (gx, gz) = FieldNavView { scene: self, layer }.tile_of(p);
-        (-12..=12)
-            .flat_map(|dz| (-12..=12).map(move |dx| (gx + dx, gz + dz)))
-            .filter(|&(x, z)| flood.reached(layer, x, z))
-            .min_by_key(|&(x, z)| (x - gx) * (x - gx) + (z - gz) * (z - gz))
-            .map(|(x, z)| (layer, x, z))
+        // 点不一定在主角现在这一层上（蜀山故道的踏板开关一半在 0 层）：各层都找，先找主角这层，
+        // 其余按格子高度离点的 y 近的先。
+        let mut layers: Vec<usize> = (0..self.nav.layer_count()).collect();
+        layers.sort_by(|a, b| {
+            let h = |l: usize| {
+                let (x, z) = FieldNavView {
+                    scene: self,
+                    layer: l,
+                }
+                .tile_of(p);
+                (self.tile_point(l, x, z).0.y - p.y).abs()
+            };
+            (*a != layer)
+                .cmp(&(*b != layer))
+                .then(h(*a).total_cmp(&h(*b)))
+        });
+        layers.into_iter().find_map(|l| {
+            let (gx, gz) = FieldNavView {
+                scene: self,
+                layer: l,
+            }
+            .tile_of(p);
+            (-12..=12)
+                .flat_map(|dz| (-12..=12).map(move |dx| (gx + dx, gz + dz)))
+                .filter(|&(x, z)| flood.reached(l, x, z))
+                .min_by_key(|&(x, z)| (x - gx) * (x - gx) + (z - gz) * (z - gz))
+                .map(|(x, z)| (l, x, z))
+        })
     }
 
     /// 返回（每个点到得了没有，连通的格子数，到得了的走格触发点名字，挡在连通区边上的物件——格子本身
@@ -755,7 +777,7 @@ impl ScnScene {
         // 调查键才动的物件（特技机关 0xc、开关 0x17）：在场、调查得了、次数没用完的；还有站上去才动的
         // 乌龟重力机关（0x1d，还没沉下去的）——它放下的吊桥探路泛洪看不出来。`index` 是 `.scn` 序号。
         for i in 0..self.scn_file.nodes.len() {
-            let Some(kind @ (0xc | 0x17 | 0x1d)) = self.object_kind_at(i) else {
+            let Some(kind @ (0xc | 0x17 | 0x1d | 0x21)) = self.object_kind_at(i) else {
                 continue;
             };
             if !self.object_active_at(i) {
@@ -765,6 +787,8 @@ impl ScnScene {
                 let a = self.object_actions.borrow();
                 if kind == 0x1d {
                     a.idle(i)
+                } else if kind == 0x21 {
+                    a.idle(i) && a.times(i) != Some(0)
                 } else {
                     a.examinable(i)
                 }
@@ -1717,10 +1741,8 @@ impl ScnScene {
                     })
                 }
                 // 开关（23）不在这里：它走调查键选物件那条路（`examine_object`），拨了要翻开关状态，
-                // 不是直接跑过程。
-                ScnNodeTypes::ITEM_TRIGGER
-                | ScnNodeTypes::ITEM_TRIGGER2
-                | ScnNodeTypes::ITEM_TRIGGER3 => {
+                // 不是直接跑过程。踏板开关（33）也不在：原版是踩上去触发（物件动作 0x21）。
+                ScnNodeTypes::ITEM_TRIGGER | ScnNodeTypes::ITEM_TRIGGER2 => {
                     self.item_triggers.borrow_mut().push(SceItemTrigger {
                         coord: obj.position,
                         sce_proc_id: obj.sce_proc_id,
@@ -2583,7 +2605,6 @@ impl ScnNodeTypes {
     pub const ITEM_TRIGGER: u16 = 16;
     pub const AABB_TRIGGER: u16 = 20;
     pub const TRIGGER_TARGET: u16 = 22;
-    pub const ITEM_TRIGGER3: u16 = 33;
 
     // Elevators
     pub const LADDER2: u16 = 40;

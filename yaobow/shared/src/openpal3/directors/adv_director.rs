@@ -1975,18 +1975,25 @@ impl AdventureDirectorProps {
             .save(save_slot);
     }
 
-    /// 存档前把存档里要有、平时不随时写进去的东西补上：主角所在层。
+    /// 存档前把存档里要有、平时不随时写进去的东西补上：主角现在的位置和所在层（原版存的是主角
+    /// 当前的位置；移植端有几处挪主角的地方只挪了实体，存档位置会落后）。
     fn record_for_save(&self) {
-        let layer = self
+        let Some(role) = self
             .scene_manager
             .get_resolved_role(self.sce_vm.state(), -1)
-            .and_then(RoleController::get_role_controller)
+        else {
+            return;
+        };
+        let layer = RoleController::get_role_controller(role.clone())
             .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
-        self.sce_vm
+        let pos = role.transform().borrow().position();
+        let mut p = self
+            .sce_vm
             .global_state()
             .persistent_state_shared()
-            .borrow_mut()
-            .set_player_layer(layer as u8);
+            .borrow_mut();
+        p.set_player_layer(layer as u8);
+        p.set_position(pos);
     }
 
     /// 山洞之狼（SCE 112）。原版把它做成主循环的游戏状态 7
