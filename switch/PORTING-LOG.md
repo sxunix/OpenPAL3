@@ -1114,3 +1114,33 @@ real fights are not representative.
   end, switch layer when parameter 4 is set (Role::Climb 0x4189c0,
   special action 7). Objects are only selectable on the hero's layer and
   every vine sits on layer 0, so layer-switching vines go up only.
+- Walkable push-box tops (kind 0xb, p0 = 1): the floor is the box top
+  (height + collide OBB ylen), keeping the original's row-index slip
+  (FUN_00421230 indexes the tile table with (int)top as the row).
+- Camera: +0x1ec is the camera position and +0x1e0 the look-at
+  (gbCamera::SetLookAt(pfrom, pto)); the model had them swapped, so the
+  490 CameraSet (36) shots stood at their own target looking back. 34
+  CameraMove is a timed slide of the camera position (task type 3) the
+  script waits for; 38/39 push/pop the look-at; 155 holds the look-at.
+- 搜宝鼠 (item special 5): the mouse DXD appears at the first hidden
+  pickup (0x18, p1 = 1), the camera slides there (distance x 0.02 s) and
+  snaps back, then the mouse leaves; otherwise XMouse. Role animations
+  are also looked up through the role's .ini (DXD, DXA).
+- 引路蜂 (opcode 154, the 75 _YLF_ procs): the bee DXA flies from the
+  hero to the tile at NPC walk speed, 80 above the floor, shadow on the
+  ground, and disappears on arrival.
+- 食人花 rotate-fly: crouch (j03), spin about (start - end) x Y by a whole
+  number of radians up to 90 (gbQuaternion takes radians, so ~14 turns),
+  scale 1 -> 0.7 in / 0.7 -> 1 out.
+- 重楼's transformation switches the battlefield to z39 (old stage model
+  hidden, z39 model and lights added).
+- Poison floors (水浸 6 / 沼泽 10 / 熔岩 13 -> 水 / 风 / 火毒) and walking
+  poison outside combat: first hit by kind, then every 4 s, cured after
+  1200 walked; carried over on hero switch.
+- Footsteps (we021/we022 by floor) were written in September but never
+  called; now they play.
+
+Still open: the battle time-scale effect class (one effect group, 156),
+the number floating over the hero when hurt outside combat (HeadMsg), the
+HUD face swap on hero switch, footsteps for scripted walking, the screen
+trail effect, the ski slope and fly-swatting textures.
