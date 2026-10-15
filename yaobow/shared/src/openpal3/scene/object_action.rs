@@ -86,6 +86,13 @@ pub const CHEST_OPEN: [u8; 25] = [
 pub const CHEST_EXP: i32 = 55;
 pub const CHEST_EXP_PERCENT: [i32; 3] = [100, 60, 20];
 pub const ACT_CHECK: usize = 0xb;
+/// 爬藤：上、下两个动作（动作表 0x56a7ac 第 5、6 项 `c05` / `c052`）。
+pub const ACT_CLIMB_UP: usize = 5;
+pub const ACT_CLIMB_DOWN: usize = 6;
+/// 爬的速度（0x415582 那里的 `× 40.0`）。
+pub const CLIMB_SPEED: f32 = 40.;
+/// 走到藤下那一段，地面高度一步变化超过这么多就不跟（0x415xxx `20.0 < |旧 − 新|`）。
+pub const CLIMB_HEIGHT_JUMP: f32 = 20.;
 /// 开关拨到一半的状态（`FUN_00424c20` 排的动作 3 参数 `0x4d`）：下一帧 `FUN_0042c810` 翻开关、转状态 1。
 const SWITCH_PENDING: u8 = 0x4d;
 
@@ -351,6 +358,10 @@ pub trait World {
     fn walk_begin(&mut self, to: &Vec3);
     /// `FUN_0042f460` case 2 推一帧，走完（到了、被挡住、或者一开始就离目标不到 12）返回 `true`。
     fn walk_step(&mut self, dt: f32, check: bool, fix: bool) -> bool;
+    /// 同 [`Self::walk_step`]（不查能不能走），但走到了只站住：不挪到终点、不按地面重算高度（爬藤时）。
+    fn walk_step_keep(&mut self, dt: f32, fix: bool) -> bool {
+        self.walk_step(dt, false, fix)
+    }
     fn sound(&mut self, name: &str);
     /// `FUN_00432170(id, 0)`：跑 SCE 过程。
     fn call_proc(&mut self, id: i32);
@@ -380,6 +391,10 @@ pub trait World {
     /// 主角在第几层（+0x274）。
     fn player_layer(&self) -> usize {
         0
+    }
+    /// `FUN_004215b0`（`Scene::CanDirectGo`）：第 `layer` 层两格之间按 Bresenham 一格格都走得通。
+    fn can_direct_go(&self, _layer: usize, _from: (i32, i32), _to: (i32, i32)) -> bool {
+        true
     }
     /// `FUN_0042ac80`（`SceneObj::CanRoleGoto`）：在物件所在的第 `layer` 层上，两点所在格之间按 Bresenham
     /// 一格格都能走——物件自己压住的格子不算挡（`Scene::Obj_CanDirectGo`）。
@@ -551,6 +566,21 @@ pub trait World {
 pub struct ObjectActions {
     ids: Vec<i32>,
     objs: Vec<Obj>,
+    /// 主角正在爬的藤（主角特殊动作 7）。
+    climb: Option<Climb>,
+}
+
+/// 爬藤（类型 0xf）时主角的特殊动作 7：`Role::Climb`（0x4189c0）起头，`FUN_00426eb0` 之外由主角自己的更新
+/// （0x415xxx `case 7`）推。
+#[derive(Debug, Clone, Copy)]
+struct Climb {
+    obj: usize,
+    /// +0x4d0：0 走到藤下，1 上下爬，2 平着走到另一头。
+    phase: u8,
+    /// +0x4d4：1 往上、2 往下。
+    up: bool,
+    /// +0x4d8..+0x4e0：另一头那格的中心（y 是格子自己的高度）。
+    end: Vec3,
 }
 
 impl ObjectActions {
@@ -602,7 +632,11 @@ impl ObjectActions {
                 }),
             })
             .collect();
-        Self { ids, objs }
+        Self {
+            ids,
+            objs,
+            climb: None,
+        }
     }
 
     pub fn index_of(&self, object_id: i32) -> Option<usize> {
@@ -695,6 +729,8 @@ impl ObjectActions {
             Some(o) if o.kind == 0x24 => o.queue.is_empty(),
             // 迷宫大宝箱关着（0）、开过了（1）都算闲着（`sceneobj.cpp:4402`）。
             Some(o) if o.kind == 0x1a => o.state == 0 || o.state == 1,
+            // [移植] 原版爬藤时主角在特殊动作里（控制方式 4）不收输入；这里借藤的 `ObjLockInput` 锁住。
+            Some(o) if o.kind == 0xf => self.climb.is_none_or(|c| c.obj != i),
             _ => self.idle(i),
         }
     }
@@ -771,6 +807,23 @@ impl ObjectActions {
         let (kind, p, layer) = (o.kind, o.p, o.layer);
         let p0 = p[0];
         match kind {
+            // 藤：只认调查（事件 1）。离主角（x、z）超过 600 弹「outdist」；没挂过程就自己爬
+            // （`Role::Climb`），挂了过程的跑过程（场景切换用的梯子由脚本 74 爬）。
+            0xf => {
+                if ev != 1 {
+                    return;
+                }
+                let (o, pl) = (w.object_pos(i), w.player_pos());
+                if (o.x - pl.x).hypot(o.z - pl.z) > TOUCH_DIST {
+                    w.hint("outdist");
+                    return;
+                }
+                if self.objs[i].proc == 0 {
+                    self.start_climb(i, w);
+                } else {
+                    self.own_proc(i, w);
+                }
+            }
             // 吊桥：只认事件 2。主角转过去看、放下（动画停在最后一帧）、变成可通过。
             0x13 => {
                 if ev != 2 || !self.idle(i) {
@@ -2036,6 +2089,7 @@ impl ObjectActions {
 
     /// `FUN_00426eb0` 里和队列、状态有关的部分，每帧对每个在场的物件调。
     pub fn step<W: World>(&mut self, dt: f32, w: &mut W) {
+        self.step_climb(dt, w);
         for i in 0..self.objs.len() {
             if !w.active(i) {
                 continue;
@@ -2164,6 +2218,116 @@ impl ObjectActions {
             }
             _ => {}
         }
+    }
+
+    /// `Role::Climb`（0x4189c0，`p0..p3` 是两头的格子、朝向取物件朝向 + 180）。参数 4 非 0 时第一头在第 0 层、
+    /// 第二头在第 1 层，否则都在主角那一层。离主角现在高度近的那一头是起点：起点格的 x、z 换成物件位置往
+    /// 朝向反方向退 24（`2 × ROLE_RADIUS`），高度用起点格的；主角那格到起点格走不通（`FUN_004215b0`）就弹
+    /// 「outdist」。另一头比主角高就是往上爬。主角走过去（`FUN_00412b60(起点, 1)`），转特殊动作 7。
+    fn start_climb<W: World>(&mut self, i: usize, w: &mut W) {
+        let p = self.objs[i].p;
+        let my_layer = w.player_layer();
+        let (l1, l2) = if self.objs[i].p45[0] != 0 {
+            (0, 1)
+        } else {
+            (my_layer, my_layer)
+        };
+        let (c1, _) = w.tile_point(l1, p[0], p[1]);
+        let (c2, _) = w.tile_point(l2, p[2], p[3]);
+        let face = (w.object_yaw(i) + 180.).to_radians();
+        let o = w.object_pos(i);
+        let back = Vec3::new(
+            o.x - ROLE_RADIUS * 2. * face.sin(),
+            0.,
+            o.z - ROLE_RADIUS * 2. * face.cos(),
+        );
+        let y = w.player_pos().y;
+        // 0x418b9b：第二头不比第一头远（|y2 − y| ≤ |y1 − y|）就从第二头起。
+        let (start, end, tile) = if (c2.y - y).abs() <= (c1.y - y).abs() {
+            (Vec3::new(back.x, c2.y, back.z), c1, (p[2], p[3]))
+        } else {
+            (Vec3::new(back.x, c1.y, back.z), c2, (p[0], p[1]))
+        };
+        if !w.can_direct_go(my_layer, w.player_tile(my_layer), tile) {
+            w.hint("outdist");
+            return;
+        }
+        let up = end.y > y;
+        log::debug!(
+            "场景物件：#{i} 爬藤，起点 ({:.0}, {:.1}, {:.0}) → 终点 ({:.0}, {:.1}, {:.0})，{}",
+            start.x,
+            start.y,
+            start.z,
+            end.x,
+            end.y,
+            end.z,
+            if up { "往上" } else { "往下" }
+        );
+        w.walk_begin(&start);
+        self.climb = Some(Climb {
+            obj: i,
+            phase: 0,
+            up,
+            end,
+        });
+        self.objs[i].locked = true;
+    }
+
+    /// 主角特殊动作 7 的一帧（0x415xxx `case 7`）。
+    /// 0：走到起点，地面高度一步变化超过 20 就不跟；走到了转向藤（朝向物件朝向 + 180）、播「爬」（往上
+    /// `c05`、往下 `c052`）、转 1。1：按 40 每秒上下挪，过了终点高度就停在那个高度、转 2、平着走向终点。
+    /// 2：走（高度不变）；走到了，参数 4 非 0 就换层（往上到第 1 层、往下到第 0 层），主角放到终点、按脚下
+    /// 重算高度、站住。
+    fn step_climb<W: World>(&mut self, dt: f32, w: &mut W) {
+        let Some(mut c) = self.climb else {
+            return;
+        };
+        match c.phase {
+            0 => {
+                let y0 = w.player_pos().y;
+                if w.walk_step_keep(dt, true) {
+                    let o = w.object_pos(c.obj);
+                    w.face_player(&o);
+                    w.set_act(if c.up { ACT_CLIMB_UP } else { ACT_CLIMB_DOWN });
+                    c.phase = 1;
+                } else {
+                    let mut p = w.player_pos();
+                    if (p.y - y0).abs() > CLIMB_HEIGHT_JUMP {
+                        p.y = y0;
+                        w.put_player(&p);
+                    }
+                }
+            }
+            1 => {
+                let mut p = w.player_pos();
+                p.y += if c.up { CLIMB_SPEED } else { -CLIMB_SPEED } * dt;
+                let past = if c.up { p.y > c.end.y } else { p.y < c.end.y };
+                if past {
+                    p.y = c.end.y;
+                }
+                w.put_player(&p);
+                if past {
+                    c.phase = 2;
+                    w.walk_begin(&c.end);
+                }
+            }
+            _ => {
+                if !w.walk_step_keep(dt, false) {
+                    self.climb = Some(c);
+                    return;
+                }
+                if self.objs[c.obj].p45[0] != 0 {
+                    w.set_player_layer(if c.up { 1 } else { 0 });
+                }
+                w.put_player(&c.end);
+                w.fix_player_height();
+                w.stand();
+                log::debug!("场景物件：#{} 爬完", c.obj);
+                self.climb = None;
+                return;
+            }
+        }
+        self.climb = Some(c);
     }
 
     /// 拣东西、小宝箱、存盘点共用的那一段（`LAB_00426d37`）：主角走到 `to`（每步查能不能走、按地面重算高度），
@@ -3200,6 +3364,49 @@ mod tests {
             wuling: 0,
         }]);
         (a, w)
+    }
+
+    #[test]
+    fn a_vine_too_far_away_says_outdist_and_one_with_a_proc_runs_it() {
+        let (mut a, mut w) = single(0xf, [1, 2, 3, 4], 0);
+        w.yaw = vec![0.];
+        w.player = Vec3::new(100. + 601., 300., 200.);
+        a.event(0, 1, false, 0.1, &mut w);
+        assert_eq!(w.hints, vec!["outdist".to_string()]);
+        assert!(w.walking.is_none());
+        // 事件 0 / 2 不理。
+        w.player = Vec3::new(100., 300., 200.);
+        a.event(0, 0, false, 0.1, &mut w);
+        a.event(0, 2, false, 0.1, &mut w);
+        assert!(w.walking.is_none());
+        a.objs[0].proc = 77;
+        a.event(0, 1, false, 0.1, &mut w);
+        assert_eq!(w.procs, vec![77]);
+        assert!(w.walking.is_none());
+    }
+
+    #[test]
+    fn a_layer_vine_walks_up_climbs_and_lands_on_the_other_layer() {
+        let (mut a, mut w) = single(0xf, [1, 2, 3, 4], 0);
+        a.objs[0].p45 = [1, 0];
+        w.yaw = vec![0.];
+        // 第一头在第 0 层（y 50），第二头在第 1 层（y 51）；主角在 50，近第一头，往上爬到第二头。
+        w.player = Vec3::new(100., 50., 230.);
+        a.event(0, 1, false, 0.1, &mut w);
+        // 朝向 0 + 180：起点在物件往 +z 退 24 处，高度取第一头。
+        let (to, _) = w.walking.expect("走向起点");
+        assert!((to.x - 100.).abs() < 1e-4 && (to.z - 224.).abs() < 1e-4 && to.y == 50.);
+        assert!(!a.is_static(0), "爬的时候藤锁着输入");
+        for _ in 0..20 {
+            a.step(0.1, &mut w);
+        }
+        let f = w.faced.expect("转向藤");
+        assert!((f.x, f.y, f.z) == (100., 300., 200.));
+        let p = w.player;
+        assert!((p.x, p.y, p.z) == (3. * 12. + 6., 51., 4. * 12. + 6.));
+        assert_eq!(w.player_layer, 1);
+        assert!(w.height_fixes > 0);
+        assert!(a.is_static(0));
     }
 
     #[test]

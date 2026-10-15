@@ -335,8 +335,8 @@ impl ScnScene {
     }
 
     /// 调试用：从 `layer` 层 `from` 那格泛洪，边和主角能走的一样——8 邻格（能不能走按
-    /// [`Self::tile_walkable`]，含场景物件挡路）、梯子 / 藤（移植端的 `test_ladder`：站在一头附近按
-    /// 调查键就到另一头，`switch_layer` 时另一头在另一层）、导航文件里的换层区
+    /// [`Self::tile_walkable`]，含场景物件挡路）、梯子 / 藤（类型 0xf 的两头，调查后爬过去；
+    /// `switch_layer` 时另一头在另一层）、导航文件里的换层区
     /// （传送口，[`Self::portal_switch`]）、战斗关里站在跳跃区上的跳（`jump_target` 那条格子直线）。
     /// 不出这个块。探路工具靠它判断触发点走不走得到、按它给的路一格一格走过去。
     /// `avoid` 里的格子（层, x, z）当走不了——走路时绕开路上别的走格触发点。
@@ -838,8 +838,8 @@ impl ScnScene {
                 node_type: 0,
             });
         }
-        // 挂了过程的梯子 / 藤（`test_ladder` 的 `SceProc`：站在旁边按调查键就跑，比如九龙坡小木屋
-        // 一楼爬上二楼）。不挂过程的那种是「瞬移到另一头」，探路泛洪已经当成路。
+        // 挂了过程的梯子 / 藤（调查它就跑过程，比如九龙坡小木屋
+        // 一楼爬上二楼）。不挂过程的那种调查后自己爬过去，探路泛洪已经当成路。
         for (index, t) in self.ladder_triggers.borrow().iter().enumerate() {
             if t.sce_proc_id == 0 || !self.node_present(t.node_index) {
                 continue;
@@ -1088,60 +1088,6 @@ impl ScnScene {
             return None;
         }
         Some(proc_id)
-    }
-
-    pub fn test_ladder(&self, layer: usize, coord: &Vec3) -> Option<LadderTestResult> {
-        println!("testing ladder layer {} coord {:?}", layer, coord);
-        const D: f32 = 100.;
-        let nav_coord = self
-            .nav
-            .round_nav_coord(layer, self.scene_coord_to_nav_coord(layer, coord));
-        for ladder in &*self.ladder_triggers.borrow() {
-            if !self.node_present(ladder.node_index) {
-                continue;
-            }
-            let new_layer = if ladder.switch_layer {
-                (layer + 1) % 2
-            } else {
-                layer
-            };
-
-            let mut ladder_position = ladder.position;
-            ladder_position.y = coord.y;
-            if ladder.sce_proc_id != 0 {
-                if Vec3::sub(coord, &ladder_position).norm2() < D * D {
-                    return Some(LadderTestResult::SceProc(ladder.sce_proc_id as u32));
-                }
-            }
-
-            if self
-                .nav
-                .check_connectivity(layer, nav_coord, ladder.nav_coord1)
-            {
-                return Some(LadderTestResult::NewPosition((
-                    ladder.switch_layer,
-                    self.nav_coord_to_scene_coord(
-                        new_layer,
-                        ladder.nav_coord2.0 as f32,
-                        ladder.nav_coord2.1 as f32,
-                    ),
-                )));
-            } else if self
-                .nav
-                .check_connectivity(layer, nav_coord, ladder.nav_coord2)
-            {
-                return Some(LadderTestResult::NewPosition((
-                    ladder.switch_layer,
-                    self.nav_coord_to_scene_coord(
-                        new_layer,
-                        ladder.nav_coord1.0 as f32,
-                        ladder.nav_coord1.1 as f32,
-                    ),
-                )));
-            }
-        }
-
-        None
     }
 
     pub fn get_height(&self, layer: usize, nav_coord: (f32, f32)) -> f32 {
@@ -2542,7 +2488,7 @@ impl ScnScene {
         let mut a = self.object_actions.borrow_mut();
         if !matches!(
             a.kind(i),
-            Some(0xb | 0xc | 0x17 | 0x18 | 0x1a | 0x29 | 0x2a)
+            Some(0xb | 0xc | 0xf | 0x17 | 0x18 | 0x1a | 0x29 | 0x2a)
         ) {
             return false;
         }
@@ -2566,6 +2512,12 @@ impl ScnScene {
         if let Some(i) = a.index_of(object_id) {
             a.set_times(i, times);
         }
+    }
+
+    /// `FUN_004215b0`（`Scene::CanDirectGo`）：第 `layer` 层两格之间看得见。
+    pub fn can_direct_go_tiles(&self, layer: usize, from: (i32, i32), to: (i32, i32)) -> bool {
+        let view = FieldNavView { scene: self, layer };
+        super::nav_path::line_clear(&view, from, to)
     }
 
     /// `Scene::Obj_CanDirectGo`（物件 `i` 自己压住的格子不算挡）：两点所在格之间看得见。
@@ -3630,11 +3582,6 @@ pub struct LadderTrigger {
 
 #[allow(dead_code)]
 pub struct TriggerTarget {}
-
-pub enum LadderTestResult {
-    SceProc(u32),
-    NewPosition((bool, Vec3)),
-}
 
 /// 一个类型 17 物件每帧要做的事，见 [`ScnScene::step_scene_objects`]。
 struct ObjectMotion {

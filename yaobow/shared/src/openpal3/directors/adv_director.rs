@@ -9,7 +9,7 @@ use crate::{
     openpal3::{
         asset_manager::AssetManager,
         directors::SceneManagerExtensions,
-        scene::{LadderTestResult, RoleController},
+        scene::RoleController,
         states::{global_state::GlobalState, persistent_state::PersistentState},
     },
     scripting::sce::vm::{SceExecutionOptions, SceVm},
@@ -3504,40 +3504,6 @@ impl AdventureDirectorProps {
             } else if self.examine_object(&position, nav_layer) {
                 return None;
             }
-
-            let result = {
-                let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
-                scene.test_ladder(nav_layer, &position)
-            };
-            match result {
-                Some(LadderTestResult::NewPosition((new_layer, new_position))) => {
-                    debug!(
-                        "Ladder detected, new_layer: {:?} new position: {:?}",
-                        &new_layer, &new_position
-                    );
-
-                    if new_layer {
-                        let e = self
-                            .scene_manager
-                            .get_resolved_role(self.sce_vm.state(), -1)
-                            .unwrap();
-                        let r = RoleController::get_role_controller(e).unwrap();
-                        r.inner::<RoleController>().switch_nav_layer();
-                    }
-
-                    self.scene_manager
-                        .get_resolved_role(self.sce_vm.state(), -1)
-                        .unwrap()
-                        .transform()
-                        .borrow_mut()
-                        .set_position(&new_position);
-                }
-                Some(LadderTestResult::SceProc(proc_id)) => {
-                    debug!("Ladder detected, proc_id {}", &proc_id);
-                    self.run_triggered_proc(proc_id);
-                }
-                None => {}
-            }
         }
 
         None
@@ -3787,53 +3753,11 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
     /// `FUN_00414350` + `FUN_00412230`），没到就按 归一化(终点 − 位置) × 走的速度 挪一步；`check` 时落点不能走
     /// 就停在原地，`fix` 时按脚下重算高度、否则保持原高度。
     fn walk_step(&mut self, dt: f32, check: bool, fix: bool) -> bool {
-        let Some(wk) = *self.walk else {
-            return true;
-        };
-        let pos = self.player_pos();
-        let layer = self.nav_layer_of_player();
-        let (sx, sz) = (wk.target.x - wk.start.x, wk.target.z - wk.start.z);
-        let len = (sx * sx + sz * sz).sqrt();
-        let (rx, rz) = (pos.x - wk.start.x, pos.z - wk.start.z);
-        let arrived = len < 5e-5 || {
-            let proj = (rx * sx + rz * sz) / len;
-            proj >= 0. && proj - len > -0.1
-        };
-        if arrived {
-            let mut p = Vec3::new(wk.target.x, pos.y, wk.target.z);
-            if self.scene.walkable_at(layer, &p) {
-                p.y = self.scene.floor_height(layer, &p);
-                self.set_player(&p);
-            }
-            log::debug!("场景物件：主角走到了 ({:.0}, {:.1}, {:.0})", p.x, p.y, p.z);
-            *self.walk = None;
-            self.idle();
-            return true;
-        }
-        let (dx, dz) = (wk.target.x - pos.x, wk.target.z - pos.z);
-        let n = (dx * dx + dz * dz).sqrt();
-        let (vx, vz) = if n > 0. {
-            (dx / n * wk.speed, dz / n * wk.speed)
-        } else {
-            (0., 0.)
-        };
-        let mut next = Vec3::new(pos.x + vx * dt, pos.y, pos.z + vz * dt);
-        if check && !self.scene.walkable_at(layer, &next) {
-            log::debug!("场景物件：主角走到 ({:.0}, {:.0}) 被挡住", pos.x, pos.z);
-            *self.walk = None;
-            self.idle();
-            return true;
-        }
-        if fix {
-            next.y = self.scene.floor_height(layer, &next);
-        }
-        if let Some(e) = &self.player {
-            e.transform()
-                .borrow_mut()
-                .look_at(&Vec3::new(next.x + vx, next.y, next.z + vz));
-        }
-        self.set_player(&next);
-        false
+        self.walk_step_snap(dt, check, fix, true)
+    }
+
+    fn walk_step_keep(&mut self, dt: f32, fix: bool) -> bool {
+        self.walk_step_snap(dt, false, fix, false)
     }
 
     fn sound(&mut self, name: &str) {
@@ -3914,6 +3838,10 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
 
     fn player_layer(&self) -> usize {
         self.nav_layer_of_player()
+    }
+
+    fn can_direct_go(&self, layer: usize, from: (i32, i32), to: (i32, i32)) -> bool {
+        self.scene.can_direct_go_tiles(layer, from, to)
     }
 
     fn can_role_goto(&self, i: usize, layer: usize, from: &Vec3, to: &Vec3) -> bool {
@@ -4270,6 +4198,64 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
 }
 
 impl ObjWorld<'_> {
+    /// [`World::walk_step`] 的实现。`snap` 为假时走到了只站住、不挪到终点也不按地面重算高度——主角在爬藤
+    /// （控制方式 4、特殊动作 7）时 `FUN_00413cd0` case 4 跳过 `FUN_00414350` + `FUN_00412230`。
+    fn walk_step_snap(&mut self, dt: f32, check: bool, fix: bool, snap: bool) -> bool {
+        use crate::openpal3::scene::object_action::World as _;
+        let Some(wk) = *self.walk else {
+            return true;
+        };
+        let pos = self.player_pos();
+        let layer = self.nav_layer_of_player();
+        let (sx, sz) = (wk.target.x - wk.start.x, wk.target.z - wk.start.z);
+        let len = (sx * sx + sz * sz).sqrt();
+        let (rx, rz) = (pos.x - wk.start.x, pos.z - wk.start.z);
+        let arrived = len < 5e-5 || {
+            let proj = (rx * sx + rz * sz) / len;
+            proj >= 0. && proj - len > -0.1
+        };
+        if arrived && !snap {
+            *self.walk = None;
+            self.idle();
+            return true;
+        }
+        if arrived {
+            let mut p = Vec3::new(wk.target.x, pos.y, wk.target.z);
+            if self.scene.walkable_at(layer, &p) {
+                p.y = self.scene.floor_height(layer, &p);
+                self.set_player(&p);
+            }
+            log::debug!("场景物件：主角走到了 ({:.0}, {:.1}, {:.0})", p.x, p.y, p.z);
+            *self.walk = None;
+            self.idle();
+            return true;
+        }
+        let (dx, dz) = (wk.target.x - pos.x, wk.target.z - pos.z);
+        let n = (dx * dx + dz * dz).sqrt();
+        let (vx, vz) = if n > 0. {
+            (dx / n * wk.speed, dz / n * wk.speed)
+        } else {
+            (0., 0.)
+        };
+        let mut next = Vec3::new(pos.x + vx * dt, pos.y, pos.z + vz * dt);
+        if check && !self.scene.walkable_at(layer, &next) {
+            log::debug!("场景物件：主角走到 ({:.0}, {:.0}) 被挡住", pos.x, pos.z);
+            *self.walk = None;
+            self.idle();
+            return true;
+        }
+        if fix {
+            next.y = self.scene.floor_height(layer, &next);
+        }
+        if let Some(e) = &self.player {
+            e.transform()
+                .borrow_mut()
+                .look_at(&Vec3::new(next.x + vx, next.y, next.z + vz));
+        }
+        self.set_player(&next);
+        false
+    }
+
     /// `FUN_00410360`（消息栏）：`lang.txt` 里 `key` 那条，`%s` / `%d` 换成 `arg`。
     fn push_msg(&mut self, key: &str, arg: &str) {
         self.state.push_lang_note(key, arg);

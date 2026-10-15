@@ -36,6 +36,6 @@ pub use role_controller::{
     DEFAULT_MODEL_HEIGHT, DEFAULT_MODEL_RADIUS, RoleAnimationRepeatMode, RoleController, RoleState,
     create_animated_mesh_from_mv3, create_animated_mesh_from_mv3_with_texture, create_mv3_entity,
 };
-pub use scene::{LadderTestResult, SceneCEft, ScnScene};
+pub use scene::{SceneCEft, ScnScene};
 pub use shadow::build_role_shadow;
 pub use snow::{Snow, build_snow_entity};
