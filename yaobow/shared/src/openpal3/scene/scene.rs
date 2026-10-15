@@ -55,6 +55,8 @@ pub struct ScnScene {
     poison_fogs: RefCell<Vec<(usize, super::ParticleEffect, Vec<ComRc<IEntity>>, i32)>>,
     /// 战斗特效组反复放（MeshFx 第 4 类 `MXCEft`），由导演每帧推（要用它的特效播放器）。
     ceft: RefCell<Vec<SceneCEft>>,
+    /// 搜宝鼠（`PlayerMgr::m_SeekingMouse`，模型 `DXD`），第一次用到才建。
+    seeking_mouse: RefCell<Option<ComRc<IEntity>>>,
     /// 野外怪物的 AI（`FUN_00417420`），第一次推的时候按角色建。
     field_monsters: RefCell<Vec<super::field_monster::FieldMonster>>,
     /// 场景物件挡路的格子表（`FUN_00420940`），载入物件后建。
@@ -111,6 +113,7 @@ impl ScnScene {
             save_points: RefCell::new(vec![]),
             poison_fogs: RefCell::new(vec![]),
             ceft: RefCell::new(vec![]),
+            seeking_mouse: RefCell::new(None),
             object_rng: RefCell::new(CrtRand::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -3112,6 +3115,74 @@ impl ScnScene {
                 }
             }
         }
+    }
+
+    /// 搜宝鼠找的东西（`FUN_00421ea0`）：在场、类型 0x18、参数 1 为 1 的第一个物件。
+    pub fn treasure_mouse_target(&self) -> Option<usize> {
+        self.scn_file.nodes.iter().enumerate().position(|(i, n)| {
+            n.node_type & 0xff == 0x18 && n.ladder_nav_coord1.1 == 1 && self.object_active_at(i)
+        })
+    }
+
+    /// 用搜宝鼠（`Scene::UseSeekingMouse`）：找得到就给那个物件发事件 0xb，返回 `true`。
+    pub fn use_treasure_mouse<W: super::object_action::World>(&self, w: &mut W) -> bool {
+        let Some(i) = self.treasure_mouse_target() else {
+            return false;
+        };
+        self.object_actions
+            .borrow_mut()
+            .event(i, 0xb, false, 0.001, w);
+        true
+    }
+
+    /// 搜宝鼠在 `at` 现身，一直播 `z2`（`FUN_00414e30(0x33, -1)`，动作表第 0x33 项）。
+    pub fn show_seeking_mouse(&self, at: &Vec3) {
+        let mut m = self.seeking_mouse.borrow_mut();
+        if m.is_none() {
+            match self
+                .asset_mgr
+                .load_role("DXD", "z2", "SEEKING_MOUSE".to_string(), true)
+            {
+                Some(e) => {
+                    self.scene.add_entity(e.clone());
+                    *m = Some(e);
+                }
+                None => log::warn!("搜宝鼠：读不到模型 DXD"),
+            }
+        }
+        if let Some(e) = m.as_ref() {
+            e.set_visible(true);
+            e.transform().borrow_mut().set_position(at);
+            if let Some(rc) = RoleController::get_role_controller(e.clone()) {
+                let rc = rc.inner::<RoleController>();
+                rc.set_active(true);
+                rc.play_anim("z2", super::RoleAnimationRepeatMode::Loop);
+            }
+        }
+    }
+
+    /// 搜宝鼠站住、不在场。
+    pub fn hide_seeking_mouse(&self) {
+        if let Some(e) = self.seeking_mouse.borrow().as_ref() {
+            e.set_visible(false);
+            if let Some(rc) = RoleController::get_role_controller(e.clone()) {
+                rc.inner::<RoleController>().set_active(false);
+            }
+        }
+    }
+
+    /// 场景摄像机现在的位置。
+    pub fn live_camera_position(&self) -> Vec3 {
+        self.scene.camera().transform().position()
+    }
+
+    /// 场景摄像机放到 `eye`、看着 `at`。
+    pub fn place_live_camera(&self, eye: &Vec3, at: &Vec3) {
+        self.scene
+            .camera_mut()
+            .transform_mut()
+            .set_position(eye)
+            .look_at(at);
     }
 
     /// 场景里的 `+4`（`MXCEft`），导演每帧推。

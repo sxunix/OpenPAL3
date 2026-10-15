@@ -775,6 +775,14 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "treasure_mouse" => {
+            // [] —— 等于在仙宝页用了搜宝鼠（agent 点不了菜单）。
+            director.use_treasure_mouse();
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "add_money" => {
             // [n] —— 加钱（负数扣钱），测买卖用。
             director.add_money(int_arg(0).unwrap_or(0) as i32);

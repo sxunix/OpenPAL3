@@ -126,6 +126,16 @@ pub enum Act {
     Freeze(bool),
     /// 0x15（`FUN_0042ea30` 排）：镜头 `+0x1c0` 置着就锁回主角（`FUN_0041c170(主角)`）。
     CameraLockPlayer,
+    /// 0xf（`FUN_0042e100`）：镜头跟不跟主角（`+0x1c0`）。
+    CameraFollow(bool),
+    /// 0x10（`FUN_0042e2c0(点, smooth)`）：镜头位置挪到 `to`——排队时已经按 `FUN_0041c670` 换成「看着那一点
+    /// 的镜头位置」（点 − 距离 × dir）。`smooth` 时按镜头任务类型 3（`FUN_0041d010`，余弦缓动）挪，时长 =
+    /// 两点距离 × 0.02，挪完才往下做；否则当场放过去（`FUN_0041c710(0)`）。`start` 是开始挪时的镜头位置。
+    CameraMove {
+        to: Vec3,
+        smooth: bool,
+        start: Option<Vec3>,
+    },
     /// 9（`FUN_0042d670`）：`true` 清掉物件压住的格子、`false` 按现在的位置和层重新登记（`FUN_0042a010`）。
     Tiles(bool),
     /// 10（`FUN_0042d830`）：物件的「可通过」+0xd1。
@@ -550,6 +560,22 @@ pub trait World {
     fn camera_lock_point(&mut self, _p: &Vec3) {}
     /// 镜头 `+0x1c0` 置着就锁回主角（动作 0x15，`FUN_0041c170(主角)`）。
     fn camera_lock_player(&mut self) {}
+    /// 镜头 `+0x1c0`（跟不跟主角）。
+    fn camera_follow(&mut self, _on: bool) {}
+    /// 镜头位置（`+0x1ec`）。
+    fn camera_position(&self) -> Vec3 {
+        Vec3::new(0., 0., 0.)
+    }
+    /// 镜头位置放到 `p`，角度、距离不变，看的点跟着算（`FUN_0041c710(0)`）。
+    fn camera_place(&mut self, _p: &Vec3) {}
+    /// `FUN_0041c670`：按现在的角度和距离，看着 `at` 时镜头该在哪（`at − 距离 × dir`）。
+    fn camera_eye_for(&mut self, at: &Vec3) -> Vec3 {
+        *at
+    }
+    /// 搜宝鼠（`PlayerMgr::m_SeekingMouse`，模型 `DXD`）在 `at` 现身、一直播 `z2`（动作 0x33）。
+    fn mouse_show(&mut self, _at: &Vec3) {}
+    /// 搜宝鼠站住、不在场。
+    fn mouse_hide(&mut self) {}
     /// 物件模型是 MeshFx（模型类型 4）时它的状态（`GetCurrentState`）；不是 MeshFx 是 `None`。
     fn mesh_fx_state(&self, _i: usize) -> Option<i32> {
         None
@@ -1121,9 +1147,37 @@ impl ObjectActions {
             0x17 => self.switch(i, ev, w),
             // 可以拣起的道具（`FUN_00424c20` case 0x18）：只认调查（事件 1）、状态 0。先起自己那条过程，起得来
             // 就转状态 1（等它跑完再给东西）；没有过程就走过去（`DistRestrict`）再转状态 1，登记 `ObjLockInput`。
-            // 事件 0xb（搜宝鼠）[未做]。
+            // 事件 0xb（搜宝鼠，0x4259xx）：鼠在物件位置现身（物件那一层），镜头不跟主角、缓缓挪去看物件，再一下
+            // 放回看主角，等 1 秒，镜头跟回主角，物件转状态 11（鼠站住、不在场）。
             // [原版如此] 起了过程转状态 1 以后 `break` 出来，末尾 `FUN_00432170(过程)` 又起一遍。
             0x18 => {
+                if ev == 0xb {
+                    let at = w.object_pos(i);
+                    w.mouse_show(&at);
+                    let to_item = w.camera_eye_for(&at);
+                    let me = w.player_pos();
+                    let to_me = w.camera_eye_for(&me);
+                    for a in [
+                        Act::CameraFollow(false),
+                        Act::CameraMove {
+                            to: to_item,
+                            smooth: true,
+                            start: None,
+                        },
+                        Act::CameraMove {
+                            to: to_me,
+                            smooth: false,
+                            start: None,
+                        },
+                        Act::Delay(1.),
+                        Act::CameraFollow(true),
+                        Act::State { state: 11, wait: 0 },
+                    ] {
+                        self.push(i, a, w);
+                    }
+                    self.run(i, w);
+                    return;
+                }
                 if ev != 1 || self.objs[i].state != 0 {
                     return;
                 }
@@ -2357,6 +2411,12 @@ impl ObjectActions {
     /// `FUN_00426eb0` case 0x18（拣东西）状态 1：调查时起的过程还在跑就等着；然后给参数 0 那件东西，
     /// 参数 1 不是 0、1 就给参数 1 那么多钱，否则参数 2 非 0 给参数 2 那么多钱；不在场。
     fn step_pickup<W: World>(&mut self, i: usize, w: &mut W) {
+        // 状态 11（搜宝鼠那一串做完）：鼠站住、不在场，回 0。
+        if self.objs[i].state == 11 {
+            w.mouse_hide();
+            self.objs[i].state = 0;
+            return;
+        }
         if self.objs[i].state != 1 {
             return;
         }
@@ -2597,6 +2657,31 @@ impl ObjectActions {
         while let Some(e) = self.objs[i].queue.front() {
             match e.act.clone() {
                 Act::Move { .. } | Act::Delay(_) => return,
+                Act::CameraFollow(on) => w.camera_follow(on),
+                // [移植] 原版当场放过去以后也是 `return`，下一帧 `FUN_0042f460` 看镜头任务不忙才出队；
+                // 这里当场出队。
+                Act::CameraMove {
+                    to, smooth: false, ..
+                } => w.camera_place(&to),
+                Act::CameraMove {
+                    to,
+                    smooth: true,
+                    start: None,
+                } => {
+                    let from = w.camera_position();
+                    let d = Vec3::sub(&from, &to);
+                    if let Some(e) = self.objs[i].queue.front_mut() {
+                        e.act = Act::CameraMove {
+                            to,
+                            smooth: true,
+                            start: Some(from),
+                        };
+                        e.dur = d.norm() * 0.02;
+                        e.elapsed = 0.;
+                    }
+                    return;
+                }
+                Act::CameraMove { .. } => return,
                 Act::PlayerPath { .. } => {
                     w.stand();
                     let mut points = vec![w.player_pos()];
@@ -2728,6 +2813,23 @@ impl ObjectActions {
                 if kind == 0x21 || kind == 0x1d {
                     w.fix_player_height();
                 }
+            }
+            Act::CameraMove {
+                to,
+                start: Some(from),
+                ..
+            } => {
+                let k = if e.dur > 0. {
+                    (1. - (e.elapsed / e.dur * std::f32::consts::PI).cos()) * 0.5
+                } else {
+                    1.
+                };
+                let p = Vec3::new(
+                    from.x + (to.x - from.x) * k,
+                    from.y + (to.y - from.y) * k,
+                    from.z + (to.z - from.z) * k,
+                );
+                w.camera_place(&p);
             }
             Act::PlayerPath { path: Some(path) } => {
                 let k = if e.dur > 0. {

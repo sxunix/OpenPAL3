@@ -343,14 +343,47 @@ impl AssetManager {
         role_name: &str,
         action_name: &str,
     ) -> Option<ComRc<IAnimatedMeshComponent>> {
+        let dir = self.basedata_path.join("ROLE").join(role_name);
+        let path = dir.join(action_name).with_extension("mv3");
+        if let Ok(anim) = create_animated_mesh_from_mv3(
+            entity.clone(),
+            &self.component_factory(),
+            &self.vfs,
+            &path,
+        ) {
+            return Some(anim);
+        }
+        // 动作文件不按动作名起名的角色（搜宝鼠 `DXD` 的 z1、z2 都是 `DXD.MV3`）：查角色目录下
+        // `<角色>.ini` 的 `[action_N] name = … / file = …`。
+        let file = self.role_action_file(role_name, action_name)?;
+        create_animated_mesh_from_mv3(
+            entity,
+            &self.component_factory(),
+            &self.vfs,
+            &dir.join(file),
+        )
+        .ok()
+    }
+
+    /// `<角色>.ini` 里动作 `action_name` 对应的文件名；没有这个文件或这一项是 `None`。
+    fn role_action_file(&self, role_name: &str, action_name: &str) -> Option<String> {
         let path = self
             .basedata_path
             .join("ROLE")
             .join(role_name)
-            .join(action_name)
-            .with_extension("mv3");
-
-        create_animated_mesh_from_mv3(entity, &self.component_factory(), &self.vfs, &path).ok()
+            .join(role_name)
+            .with_extension("ini");
+        let bytes = self.vfs.read_to_end(&path).ok()?;
+        let text = encoding::all::GBK
+            .decode(&bytes, DecoderTrap::Ignore)
+            .ok()?;
+        let ini = Ini::load_from_str(&text).ok()?;
+        ini.iter().find_map(|(_, props)| {
+            let name = props.get("name")?.trim();
+            name.eq_ignore_ascii_case(action_name)
+                .then(|| props.get("file").map(|f| f.trim().to_string()))
+                .flatten()
+        })
     }
 
     /// As [`Self::load_role_anim`], with opcode 116's texture override.

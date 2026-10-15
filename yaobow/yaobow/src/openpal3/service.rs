@@ -276,6 +276,8 @@ enum PendingItemProc {
     ByName(String),
     /// 土灵珠 —— proc 2101.
     Id(u32),
+    /// 搜宝鼠 —— 不是过程，交给导演（`Scene::UseSeekingMouse`）。
+    TreasureMouse,
 }
 
 ComObject_Pal3Service!(super::Pal3Service);
@@ -614,6 +616,10 @@ impl Pal3Service {
                 match proc {
                     PendingItemProc::ByName(name) => vm.state_mut().try_call_proc_by_name(&name),
                     PendingItemProc::Id(id) => vm.call_proc(id),
+                    PendingItemProc::TreasureMouse => {
+                        drop(vm);
+                        director.use_treasure_mouse();
+                    }
                 }
             }
         }
@@ -1393,8 +1399,11 @@ impl IPal3ServiceImpl for Pal3Service {
                 *self.pending_item_proc.borrow_mut() = Some(PendingItemProc::Id(id));
                 2
             }
-            // 特效和 "XMouse" 都还没有播放通路，先只关菜单。
-            UseOutcome::TreasureMouse { .. } => 2,
+            // 关菜单，下一帧交给导演（`Scene::UseSeekingMouse`）：有藏着的东西放搜宝鼠，没有放 "XMouse"。
+            UseOutcome::TreasureMouse { .. } => {
+                *self.pending_item_proc.borrow_mut() = Some(PendingItemProc::TreasureMouse);
+                2
+            }
             UseOutcome::LearnedSkill(_) => 3,
             UseOutcome::LevelUp => 4,
         }

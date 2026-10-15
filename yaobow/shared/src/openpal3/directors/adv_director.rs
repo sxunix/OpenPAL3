@@ -385,6 +385,34 @@ impl AdventureDirector {
         p.sce_vm.push_debug_command(cmd, scene_manager);
     }
 
+    /// 用了搜宝鼠（仙宝页，`special` 5）：`Scene::UseSeekingMouse`。场景里有藏着的东西就给它发事件 0xb，
+    /// 没有放「XMouse」（`FUN_00421ea0` 的另一支）。
+    pub fn use_treasure_mouse(&self) {
+        let mut p = self.props.borrow_mut();
+        let p = &mut *p;
+        let Some(scene_rc) = p.scene_manager.scn_scene() else {
+            return;
+        };
+        let player = p.scene_manager.get_resolved_role(p.sce_vm.state(), -1);
+        let scene = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
+        let mut w = ObjWorld {
+            scene,
+            player,
+            state: p.sce_vm.state_mut(),
+            walk: &mut p.object_walk,
+            fly: &mut p.player_fly,
+            hurt_time: &mut p.hurt_time,
+            procs: vec![],
+        };
+        let found = scene.use_treasure_mouse(&mut w);
+        let procs = std::mem::take(&mut w.procs);
+        if !found {
+            log::debug!("搜宝鼠：这里没有藏着的东西");
+            crate::scripting::sce::commands::play_sfx(p.sce_vm.state_mut(), "XMouse");
+        }
+        p.run_object_procs(procs);
+    }
+
     /// Set big-map destination states the way 125 does, one per index.
     pub fn set_bigmap_elements(&self, states: &[i32]) {
         let mut p = self.props.borrow_mut();
@@ -4174,6 +4202,51 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         if camera.follow_player() {
             camera.set_focus(crate::openpal3::states::camera::Focus::Point(*p));
         }
+    }
+
+    fn camera_follow(&mut self, on: bool) {
+        self.state
+            .global_state_mut()
+            .camera_mut()
+            .set_follow_player(on);
+    }
+
+    fn camera_position(&self) -> Vec3 {
+        self.scene.live_camera_position()
+    }
+
+    fn camera_place(&mut self, p: &Vec3) {
+        let camera = self.state.global_state_mut().camera_mut();
+        camera.set_position(*p);
+        camera.recompute_look_at();
+        let at = camera.look_at();
+        self.scene.place_live_camera(p, &at);
+    }
+
+    /// 镜头还跟着主角（移植端那套跟随镜头不走 `Pal3Camera`）时，角度、距离先按现在的画面量出来：
+    /// 镜头位置 − 主角位置。
+    fn camera_eye_for(&mut self, at: &Vec3) -> Vec3 {
+        use crate::openpal3::states::camera::{Focus, direction, polar_of};
+        let live = self.scene.live_camera_position();
+        let me = self.player_pos();
+        let camera = self.state.global_state_mut().camera_mut();
+        if camera.follow_player() && matches!(camera.focus(), Focus::Player) {
+            let (yaw, pitch, distance) = polar_of(&Vec3::sub(&live, &me));
+            camera.set_yaw(yaw);
+            camera.set_pitch(pitch);
+            camera.set_distance(distance);
+        }
+        let dir = direction(camera.yaw(), camera.pitch());
+        Vec3::sub(at, &Vec3::scalar_mul(camera.distance(), &dir))
+    }
+
+    fn mouse_show(&mut self, at: &Vec3) {
+        log::debug!("搜宝鼠：在 ({:.0}, {:.0}, {:.0}) 现身", at.x, at.y, at.z);
+        self.scene.show_seeking_mouse(at);
+    }
+
+    fn mouse_hide(&mut self) {
+        self.scene.hide_seeking_mouse();
     }
 
     fn camera_lock_player(&mut self) {
