@@ -2318,6 +2318,7 @@ impl AdventureDirectorProps {
         let mut source = self.sce_vm.state().audio_engine().create_source();
         source.set_data(data, radiance::audio::Codec::Wav);
         source.play(true);
+        log::debug!("脚步声：{name}");
         let source = Rc::new(RefCell::new(source));
         self.sce_vm
             .global_state_mut()
@@ -2325,7 +2326,6 @@ impl AdventureDirectorProps {
         self.footstep = Some((name, source));
     }
 
-    /// 主角脚下 nav 格的地面类型。越界原版填 2（`FUN_0041eb80` 开头）。
     /// 冒险时的中毒（[`crate::openpal3::states::poison_walk`]）：踩地面中毒、扣精、走满了解毒。
     fn step_poison(&mut self, dt: f32, floor_check: bool) {
         use crate::openpal3::states::poison_walk::{self, NO_POISON};
@@ -2377,6 +2377,7 @@ impl AdventureDirectorProps {
         }
     }
 
+    /// 主角脚下 nav 格的地面类型。越界原版填 2（`FUN_0041eb80` 开头）。
     fn player_floor_type(&self) -> i32 {
         const OUT_OF_RANGE: i32 = 2;
         let Some(role) = self
@@ -3255,6 +3256,9 @@ impl AdventureDirectorProps {
         self.step_flexeff(delta_sec);
 
         if !adv_enabled {
+            // [移植] 原版 `FUN_0041eb80` 每帧都按主角的移动方式放脚步声，脚本让主角走时也响；移植端只按
+            // 输入挑，过场里停掉。
+            self.step_footstep(&Vec3::new(0., 0., 0.), 0.);
             // [移植] 过场里把「跳」的图标收起（原版这时不更新它）。
             self.sce_vm.state_mut().set_jump_icon(None);
             return None;
@@ -3327,6 +3331,7 @@ impl AdventureDirectorProps {
             &moving_direction,
             throw,
         );
+        self.step_footstep(&moving_direction, throw);
         // 主角脚下的场景物件（`FUN_00422e40` → `FUN_00420b40`）。
         if !frozen && !locked {
             self.player_on_object(delta_sec);
