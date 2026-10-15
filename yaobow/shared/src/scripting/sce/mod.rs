@@ -142,6 +142,8 @@ pub struct SceState {
     combat_combo_request: Option<u32>,
     /// 调试：下一帧把场上的敌人全部打倒（`combat_win`）。
     combat_win_request: bool,
+    /// 调试：给正在打的战斗某一位改精（走 `ChangeHP`，重楼变身那种都照常触发）。
+    combat_hp_request: Option<(usize, i32)>,
     /// 存盘点要打开系统页的存档（`FUN_00426eb0` case 0x2a），界面那边取走。
     save_menu_request: bool,
     /// 特效 `bink` 类要播的 2D 动画（`movie/2DEFFECT` 下的名字，如 `t102`）。
@@ -239,6 +241,7 @@ impl SceState {
             combat_shake_request: None,
             combat_combo_request: None,
             combat_win_request: false,
+            combat_hp_request: None,
             save_menu_request: false,
             combat_movie_requests: vec![],
         }
@@ -469,6 +472,15 @@ impl SceState {
 
     pub fn take_combat_win_request(&mut self) -> bool {
         std::mem::take(&mut self.combat_win_request)
+    }
+
+    /// 调试：给战斗位 `slot` 的精加减 `delta`。
+    pub fn request_combat_hp(&mut self, slot: usize, delta: i32) {
+        self.combat_hp_request = Some((slot, delta));
+    }
+
+    pub fn take_combat_hp_request(&mut self) -> Option<(usize, i32)> {
+        self.combat_hp_request.take()
     }
 
     pub fn request_save_menu(&mut self) {

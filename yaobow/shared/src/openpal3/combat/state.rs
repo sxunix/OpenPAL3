@@ -81,6 +81,9 @@ pub const K_INVISIBLE: usize = 23;
 /// 避毒（`+0x48f`）：装备可赋予，挂着就加不上五毒。
 pub const K_POISON_IMMUNE: usize = 26;
 
+/// 重楼变身后的战场（红场）。
+pub const CHONGLOU_STAGE: &str = "z39";
+
 /// A permanent duration (`0x7fff`).
 pub const FOREVER: i16 = 0x7fff;
 
@@ -648,6 +651,8 @@ pub struct Battle {
     /// 「本场有新人产生」的 `m_bCreatedNewRole` 是条死字段：全树只有声明和一个
     /// `HasNewRoleCreated()`，没人写也没人读。）
     pub pending_spawns: Vec<(usize, u32)>,
+    /// 要换上的战场（重楼变身时 `HandleChongLouAnamo` 的 `LoadScene("z39")`），由会话那一层领走。
+    pub pending_stage: Option<&'static str>,
     /// 逃跑等待被打掉的那一位（`cbrolestate.cpp:5209`）。`Battle` 不知道谁登记了
     /// 什么行动，所以只记下位号，由 [`CombatSession`](super::session::CombatSession)
     /// 领走、把那一次逃跑作废。
@@ -673,6 +678,7 @@ impl Battle {
             stolen_items: Vec::new(),
             spent_gu: 0,
             pending_spawns: Vec::new(),
+            pending_stage: None,
             flee_broken: None,
             popups: Vec::new(),
             rng: CombatRng::new(seed),
@@ -874,14 +880,14 @@ impl Battle {
         }
 
         // 重楼（738）精见底不是死，是当场换成「重楼变身」739
-        // （`cbrolestate.cpp:5230` → `HandleChongLouAnamo`）。原版还会把战场换成
-        // `z39`（红场），移植端没做——舞台是整场建一次的，中途换场得整个重搭。
+        // （`cbrolestate.cpp:5230` → `HandleChongLouAnamo`），战场同时换成 `z39`（红场）。
         if self
             .get(slot)
             .is_some_and(|c| c.actor_id == MONSTER_CHONGLOU && !c.alive)
         {
             log::info!("Combat: 位 {slot} 重楼倒下，变身成 739");
             self.pending_spawns.push((slot, MONSTER_CHONGLOU_AWAKENED));
+            self.pending_stage = Some(CHONGLOU_STAGE);
         }
         moved
     }
@@ -2346,6 +2352,7 @@ mod tests {
         b.change_hp(5, -9999);
         assert!(!b.get(5).unwrap().alive);
         assert_eq!(b.pending_spawns, vec![(5, MONSTER_CHONGLOU_AWAKENED)]);
+        assert_eq!(b.pending_stage, Some(CHONGLOU_STAGE), "战场换成红场");
         assert_eq!(b.outcome(), Outcome::Ongoing, "还有怪排着队要出来");
         b.pending_spawns.clear();
         assert_eq!(b.outcome(), Outcome::Win);

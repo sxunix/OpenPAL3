@@ -587,6 +587,15 @@ impl AdventureDirector {
             .add_item(id, count);
     }
 
+    /// 调试：正在打的战斗里给某一位改精。
+    pub fn request_combat_hp(&self, slot: usize, delta: i32) {
+        self.props
+            .borrow_mut()
+            .sce_vm
+            .state_mut()
+            .request_combat_hp(slot, delta);
+    }
+
     /// 调试：正在打的战斗直接判胜。
     pub fn request_combat_win(&self) {
         self.props

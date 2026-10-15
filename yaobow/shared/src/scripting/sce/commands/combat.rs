@@ -1074,7 +1074,50 @@ impl SceCommandCombat {
         });
     }
 
+    /// 换战场（`m_pStage->GetScene()->LoadScene(名)`）：原来的战场模型藏起来（`IScene` 没有删实体的口子），
+    /// 换上新的模型和它的灯。人、指针、五灵环都不动。
+    fn swap_stage(&mut self, state: &mut SceState) {
+        use crate::openpal3::combat::stage;
+        let Some(name) = self
+            .session
+            .as_mut()
+            .and_then(|s| s.battle.pending_stage.take())
+        else {
+            return;
+        };
+        let Some(scene) = self.stage.clone() else {
+            self.combat_scene = Some(name.to_string());
+            return;
+        };
+        let asset_mgr = state.asset_mgr();
+        let vfs = asset_mgr.vfs();
+        let model_path = stage::scene_model_path(name);
+        if mini_fs::StoreExt::open(vfs, &model_path).is_err() {
+            log::warn!("Combat: 战场模型不在包里 {}", model_path.display());
+            return;
+        }
+        if let Some(old) = self.combat_scene.as_ref() {
+            let old_name = format!("COMBAT_STAGE_{old}");
+            for e in scene.entities() {
+                if e.name() == old_name {
+                    e.set_visible(false);
+                }
+            }
+        }
+        scene.set_lighting(stage::scene_lighting(vfs, name));
+        scene.add_entity(crate::openpal3::loaders::pol::create_entity_from_pol_model(
+            &asset_mgr.component_factory(),
+            vfs,
+            &model_path,
+            format!("COMBAT_STAGE_{name}"),
+            true,
+        ));
+        log::info!("Combat: 战场换成 {name}");
+        self.combat_scene = Some(name.to_string());
+    }
+
     fn spawn_pending(&mut self, state: &mut SceState) {
+        self.swap_stage(state);
         let pending: Vec<(usize, u32)> = match self.session.as_mut() {
             Some(s) if !s.battle.pending_spawns.is_empty() => {
                 std::mem::take(&mut s.battle.pending_spawns)
@@ -3688,6 +3731,11 @@ impl SceCommand for SceCommandCombat {
         if state.take_combat_win_request() {
             if let Some(session) = self.session.as_mut() {
                 session.debug_win();
+            }
+        }
+        if let Some((slot, delta)) = state.take_combat_hp_request() {
+            if let Some(session) = self.session.as_mut() {
+                session.battle.change_hp(slot, delta);
             }
         }
         if let Some([amp, decay, freq]) = state.take_combat_shake_request() {

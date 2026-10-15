@@ -907,6 +907,17 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "combat_hp" => {
+            // [位, 增减] —— 调试：给正在打的战斗某一位改精（走 ChangeHP，测重楼变身那类）。
+            director.request_combat_hp(
+                int_arg(0).unwrap_or(0) as usize,
+                int_arg(1).unwrap_or(0) as i32,
+            );
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "combat_win" => {
             // [] —— 调试：正在打的战斗按「敌人全倒」收场，结算照常（剧情战撑不过去时推进度用）。
             director.request_combat_win();

@@ -839,6 +839,7 @@ impl CombatSession {
             }
         }
         self.battle.pending_spawns.clear();
+        self.battle.pending_stage = None;
     }
 
     /// 舞台不演了、这一次行动作废：不结算，直接回蓄力段（我方普攻开演时目标全倒下）。
