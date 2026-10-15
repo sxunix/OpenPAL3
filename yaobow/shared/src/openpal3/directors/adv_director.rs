@@ -2370,6 +2370,7 @@ impl AdventureDirectorProps {
                 self.ram_fly = None;
             }
         }
+        scene.step_eyeballs(player.as_ref().map(|e| e.transform().borrow().position()));
         let info = player.as_ref().and_then(|e| {
             let rc = RoleController::get_role_controller(e.clone())?;
             let rc = rc.inner::<RoleController>();

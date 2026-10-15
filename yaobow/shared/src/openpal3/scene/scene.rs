@@ -3029,6 +3029,41 @@ impl ScnScene {
         self.save_points.borrow_mut().push(fx);
     }
 
+    /// 锁妖塔的眼球（类型 0x15，渲染 `FUN_00424570` case 0x15）：每帧摆到物件位置，再按
+    /// `SetTwoVector((0,0,1), 眼球 − (主角 + 60 向上))` 转——模型的 +Z 朝着离开主角头顶的方向，不管物件的朝向。
+    pub fn step_eyeballs(&self, player: Option<Vec3>) {
+        let Some(pl) = player else {
+            return;
+        };
+        for i in 0..self.scn_file.nodes.len() {
+            if (self.scn_file.nodes[i].node_type & 0xff) != 0x15 {
+                continue;
+            }
+            let Some(e) = self.object_entity_at(i) else {
+                continue;
+            };
+            let pos = self.scn_file.nodes[i].position;
+            let d = Vec3::new(pos.x - pl.x, pos.y - (pl.y + 60.), pos.z - pl.z);
+            let len = d.norm();
+            if len <= 1e-6 {
+                continue;
+            }
+            let d = Vec3::new(d.x / len, d.y / len, d.z / len);
+            // 从 (0,0,1) 转到 d 的最短弧：轴 = Z × d，角 = acos(Z·d)；正好反向时绕 Y 转半圈。
+            let axis = Vec3::new(-d.y, d.x, 0.);
+            let an = axis.norm();
+            let angle = d.z.clamp(-1., 1.).acos();
+            let t = e.transform();
+            let mut tr = t.borrow_mut();
+            tr.set_position(&pos).clear_rotation();
+            if an > 1e-6 {
+                tr.rotate_axis_angle_local(&Vec3::new(axis.x / an, axis.y / an, 0.), angle);
+            } else if d.z < 0. {
+                tr.rotate_axis_angle_local(&Vec3::UP, std::f32::consts::PI);
+            }
+        }
+    }
+
     /// 瘴气（`MXPoisonFog::Create`，exe 0x4bd880）：`effect\gbParticle\poisonfog.par`，整个放大 32 倍
     /// （`SetSpaceScale(32)`，写在粒子特效的 +0x118）。粒子在物件原点那里发。
     fn load_poison_fog(&self, node_index: usize, entities: &mut Vec<ComRc<IEntity>>) {
