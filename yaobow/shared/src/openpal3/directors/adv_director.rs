@@ -105,6 +105,7 @@ impl AdventureDirector {
                 flexeff_audio: vec![],
                 flexeff_pending: vec![],
                 flexeff_seq: 0,
+                flexeff_launch_seq: 1,
             }),
         }
     }
@@ -253,6 +254,7 @@ impl AdventureDirector {
                 flexeff_audio: vec![],
                 flexeff_pending: vec![],
                 flexeff_seq: 0,
+                flexeff_launch_seq: 1,
             }),
         })
     }
@@ -900,11 +902,13 @@ struct AdventureDirectorProps {
     flexeff: Vec<(
         crate::openpal3::scene::flexeff_quad::QuadEffect,
         ComRc<radiance::comdef::IEntity>,
+        u32,
     )>,
     /// `cylinder` 那一支。
     flexeff_cyl: Vec<(
         crate::openpal3::scene::flexeff_cylinder::CylinderEffect,
         ComRc<radiance::comdef::IEntity>,
+        u32,
     )>,
     /// flexeff 的 `particle` 类：`.par` 粒子，挂在特效位置上。
     flexeff_par: Vec<FlexParticle>,
@@ -912,38 +916,47 @@ struct AdventureDirectorProps {
     flexeff_explosive: Vec<(
         crate::openpal3::scene::flexeff_explosive::ExplosiveEffect,
         ComRc<radiance::comdef::IEntity>,
+        u32,
     )>,
     /// `grid` 实例：模型、面片实体。
     flexeff_grid: Vec<(
         crate::openpal3::scene::flexeff_grid::GridEffect,
         ComRc<radiance::comdef::IEntity>,
+        u32,
     )>,
     /// `model` 实例：模型、`.cvd` / `.pol` 实体。
     flexeff_model: Vec<(
         crate::openpal3::scene::flexeff_model::ModelEffect,
         ComRc<radiance::comdef::IEntity>,
+        u32,
     )>,
     /// `shock` 实例：模型、面片实体。
     flexeff_shock: Vec<(
         crate::openpal3::scene::flexeff_shock::ShockEffect,
         ComRc<radiance::comdef::IEntity>,
+        u32,
     )>,
     /// `camera` 实例：`(flexcam 序列号，≤ 0 = 只停；离起播还剩几秒)`。
-    flexeff_cam: Vec<(i32, f32)>,
+    flexeff_cam: Vec<(i32, f32, u32)>,
     /// `quake` / `bink` 实例：到点才把请求交给战斗命令。`(离到点还剩几秒, 请求)`。
-    flexeff_timed: Vec<(f32, FlexTimed)>,
+    flexeff_timed: Vec<(f32, FlexTimed, u32)>,
     /// `meteor` 实例：模型、头部面片实体（定义不画头部时没有）、拖尾实体。
     flexeff_meteor: Vec<(
         crate::openpal3::scene::flexeff_meteor::MeteorEffect,
         Option<ComRc<radiance::comdef::IEntity>>,
         ComRc<radiance::comdef::IEntity>,
+        u32,
     )>,
     /// `audio` 那一支——没有画面，只是到点放几个 wav。
-    flexeff_audio: Vec<crate::openpal3::scene::flexeff_audio::AudioEffect>,
-    /// `callback` 排下来、还在等延迟的特效组：`(组号, 位置, 还差几秒, 深度)`。
-    flexeff_pending: Vec<(i32, Vec3, f32, u8)>,
+    flexeff_audio: Vec<(crate::openpal3::scene::flexeff_audio::AudioEffect, u32)>,
+    /// `callback` 排下来、还在等延迟的特效组：`(组号, 位置, 还差几秒, 深度, 所属那次播放)`。
+    flexeff_pending: Vec<(i32, Vec3, f32, u8, u32)>,
     /// 实体名的流水号，免得同名。
     flexeff_seq: usize,
+    /// 每播一次特效组发一个号（`RunEffGroup` 0x4ce340 的返回值；计数器 0x1895980 由
+    /// `FUN_004d58a0` 置 1）。上面每个列表的条目都记着自己是哪一次播出来的，
+    /// [`Self::flexeff_running`] 拿它问「还在播吗」。
+    flexeff_launch_seq: u32,
 }
 
 /// 到点才交给战斗命令的特效请求。
@@ -970,6 +983,8 @@ struct FlexParticle {
     origin: Vec3,
     /// 子块 +72：起播延迟。
     delay: f32,
+    /// 哪一次播出来的（`flexeff_launch_seq`）。
+    launch: u32,
     /// 子块 +76：发射这一步的时长。
     life: f32,
     t: f32,
@@ -1138,6 +1153,75 @@ impl AdventureDirectorProps {
         }
     }
 
+    /// 发一个播放号（`RunEffGroup` 0x4ce340：计数器到 −1 就回到 1）。
+    fn next_flexeff_launch(&mut self) -> u32 {
+        if self.flexeff_launch_seq == u32::MAX {
+            self.flexeff_launch_seq = 1;
+        }
+        self.flexeff_launch_seq += 1;
+        self.flexeff_launch_seq - 1
+    }
+
+    /// 场景里的 `+4`（[`crate::openpal3::scene::SceneCEft`]）：载入后头一帧在场的 `Start`，之后在场时每帧
+    /// `Update`。要放的组排进 `requests`，这一帧的 `step_flexeff` 里就建出来。
+    fn step_scene_ceft(&mut self, dt: f32, requests: &mut Vec<(i32, Vec3, u8, u32)>) {
+        use crate::openpal3::scene::{SceneCEft, ScnScene};
+        let Some(scene_rc) = self.scene_manager.scn_scene() else {
+            return;
+        };
+        let scene = scene_rc.inner::<ScnScene>();
+        let mut list = scene.scene_ceft();
+        for c in list.iter_mut() {
+            let active = scene.object_active_at(c.node);
+            if c.fresh {
+                c.fresh = false;
+                if !active {
+                    c.pos = Vec3::new(0., 0., 0.);
+                    continue;
+                }
+                // `Start`：放一次、计时清零；这一帧不再 `Update`（放的东西要等下面才建出来）。
+                c.launch = self.next_flexeff_launch();
+                c.t = 0.;
+                requests.push((c.group, c.pos, 0, c.launch));
+                log::debug!("场景特效：#{} 组 {} 开播", c.node, c.group);
+                continue;
+            }
+            if !active {
+                continue;
+            }
+            c.t += dt;
+            let again = if c.group == SceneCEft::TIMED_GROUP {
+                c.t >= SceneCEft::TIMED_SECS
+            } else {
+                !self.flexeff_running(c.launch)
+            };
+            if again {
+                c.launch = self.next_flexeff_launch();
+                requests.push((c.group, c.pos, 0, c.launch));
+                if c.group == SceneCEft::TIMED_GROUP {
+                    c.t = 0.;
+                }
+            }
+        }
+    }
+
+    /// `IsEffGroupRunning`（0x4ce580）：那次播放还有没放完的条目。号 0 恒为否。
+    fn flexeff_running(&self, launch: u32) -> bool {
+        launch != 0
+            && (self.flexeff.iter().any(|e| e.2 == launch)
+                || self.flexeff_cyl.iter().any(|e| e.2 == launch)
+                || self.flexeff_par.iter().any(|e| e.launch == launch)
+                || self.flexeff_explosive.iter().any(|e| e.2 == launch)
+                || self.flexeff_grid.iter().any(|e| e.2 == launch)
+                || self.flexeff_model.iter().any(|e| e.2 == launch)
+                || self.flexeff_shock.iter().any(|e| e.2 == launch)
+                || self.flexeff_cam.iter().any(|e| e.2 == launch)
+                || self.flexeff_timed.iter().any(|e| e.2 == launch)
+                || self.flexeff_meteor.iter().any(|e| e.3 == launch)
+                || self.flexeff_audio.iter().any(|e| e.1 == launch)
+                || self.flexeff_pending.iter().any(|e| e.4 == launch))
+    }
+
     /// 143 CEft 排下的战斗特效。
     ///
     /// 每帧先把脚本排的请求接进来：查 `flexeff` 的特效组，对其中 `quad` 类
@@ -1155,23 +1239,25 @@ impl AdventureDirectorProps {
         use fileformats::pal3::flexeff::GROUP_SUBS;
         use radiance::comdef::ISceneExt;
 
-        let mut requests: Vec<(i32, Vec3, u8)> = self
-            .sce_vm
-            .state_mut()
-            .take_effect_requests()
-            .into_iter()
-            .map(|(g, p)| (g, p, 0u8))
-            .collect();
+        let mut requests: Vec<(i32, Vec3, u8, u32)> = vec![];
+        for (g, p) in self.sce_vm.state_mut().take_effect_requests() {
+            let launch = self.next_flexeff_launch();
+            requests.push((g, p, 0u8, launch));
+        }
+        // 场景里的 `+4`（`MXCEft`）：放完了再放一遍。
+        self.step_scene_ceft(delta_sec, &mut requests);
         // `callback` 排下来的，延迟到点了就展开。
         for entry in self.flexeff_pending.iter_mut() {
             entry.2 -= delta_sec;
         }
         let mut still = vec![];
-        for (g, p, left, depth) in std::mem::take(&mut self.flexeff_pending) {
+        // 到点的是另播一组（FUN_004ce460），发新号。
+        for (g, p, left, depth, parent) in std::mem::take(&mut self.flexeff_pending) {
             if left <= 0. {
-                requests.push((g, p, depth));
+                let launch = self.next_flexeff_launch();
+                requests.push((g, p, depth, launch));
             } else {
-                still.push((g, p, left, depth));
+                still.push((g, p, left, depth, parent));
             }
         }
         self.flexeff_pending = still;
@@ -1182,7 +1268,7 @@ impl AdventureDirectorProps {
 
         // `action` 类的提示先攒着：循环里 `asset_mgr` 还借着 `sce_vm`。
         let mut action_cues = vec![];
-        for (group_id, position, depth) in requests {
+        for (group_id, position, depth, launch) in requests {
             let asset_mgr = self.sce_vm.state().asset_mgr();
             let Some(eff) = asset_mgr.flexeff() else {
                 continue;
@@ -1213,7 +1299,13 @@ impl AdventureDirectorProps {
                                 let v =
                                     f32::from_le_bytes(sub[o..o + 4].try_into().unwrap()) as i32;
                                 if v > 0 {
-                                    self.flexeff_pending.push((v, position, delay, depth + 1));
+                                    self.flexeff_pending.push((
+                                        v,
+                                        position,
+                                        delay,
+                                        depth + 1,
+                                        launch,
+                                    ));
                                 }
                             }
                         }
@@ -1231,7 +1323,8 @@ impl AdventureDirectorProps {
                         let sub = group.sub(k, sidx).unwrap();
                         let names = sound_names(&def, sub);
                         if !names.is_empty() {
-                            self.flexeff_audio.push(AudioEffect::new(names, sub));
+                            self.flexeff_audio
+                                .push((AudioEffect::new(names, sub), launch));
                         }
                     }
                     continue;
@@ -1303,6 +1396,7 @@ impl AdventureDirectorProps {
                             entities,
                             origin: Vec3::add(&position, &offset),
                             delay: f(72).max(0.),
+                            launch,
                             life: f(76).max(0.),
                             t: 0.,
                             scale,
@@ -1332,7 +1426,7 @@ impl AdventureDirectorProps {
                         } else {
                             -1
                         };
-                        self.flexeff_cam.push((seq, f(72).max(0.)));
+                        self.flexeff_cam.push((seq, f(72).max(0.), launch));
                     }
                     continue;
                 }
@@ -1353,12 +1447,18 @@ impl AdventureDirectorProps {
                         let sub = group.sub(k, sidx).unwrap();
                         let f = |o: usize| f32::from_le_bytes(sub[o..o + 4].try_into().unwrap());
                         if class == Some("quake") {
-                            self.flexeff_timed
-                                .push((f(72).max(0.), FlexTimed::Quake([f(0), f(4), f(8)])));
+                            self.flexeff_timed.push((
+                                f(72).max(0.),
+                                FlexTimed::Quake([f(0), f(4), f(8)]),
+                                launch,
+                            ));
                         } else if f(0) != 0. {
                             let name = format!("{prefix}{:03}", f(0).round_ties_even() as i32);
-                            self.flexeff_timed
-                                .push((f(72).max(0.) + f(4).max(0.), FlexTimed::Movie(name)));
+                            self.flexeff_timed.push((
+                                f(72).max(0.) + f(4).max(0.),
+                                FlexTimed::Movie(name),
+                                launch,
+                            ));
                         }
                     }
                     continue;
@@ -1419,8 +1519,11 @@ impl AdventureDirectorProps {
                         };
                         scene.add_entity(entity.clone());
                         log::info!("CEft: 模型 {}", def.asset());
-                        self.flexeff_model
-                            .push((ModelEffect::new(md, sub, origin), entity));
+                        self.flexeff_model.push((
+                            ModelEffect::new(md, sub, origin),
+                            entity,
+                            launch,
+                        ));
                     }
                     continue;
                 }
@@ -1459,7 +1562,7 @@ impl AdventureDirectorProps {
                         );
                         scene.add_entity(entity.clone());
                         log::info!("CEft: 碎片 {} {}×{}", def.asset(), xd.cols, xd.rows);
-                        self.flexeff_explosive.push((effect, entity));
+                        self.flexeff_explosive.push((effect, entity, launch));
                     }
                     continue;
                 }
@@ -1495,7 +1598,7 @@ impl AdventureDirectorProps {
                         );
                         scene.add_entity(entity.clone());
                         log::info!("CEft: 方格 {} {}×{}", def.asset(), gd.cols, gd.rows);
-                        self.flexeff_grid.push((effect, entity));
+                        self.flexeff_grid.push((effect, entity, launch));
                     }
                     continue;
                 }
@@ -1531,7 +1634,7 @@ impl AdventureDirectorProps {
                             effect.capacity(),
                         );
                         scene.add_entity(entity.clone());
-                        self.flexeff_shock.push((effect, entity));
+                        self.flexeff_shock.push((effect, entity, launch));
                     }
                     continue;
                 }
@@ -1600,7 +1703,7 @@ impl AdventureDirectorProps {
                             f32::from_le_bytes(sub[72..76].try_into().unwrap()),
                             f32::from_le_bytes(sub[76..80].try_into().unwrap())
                         );
-                        self.flexeff_meteor.push((effect, heads, trails));
+                        self.flexeff_meteor.push((effect, heads, trails, launch));
                     }
                     continue;
                 }
@@ -1631,14 +1734,17 @@ impl AdventureDirectorProps {
                             build_quad_entity(&factory, seq, name, image.clone(), qd.additive);
                         scene.add_entity(entity.clone());
                         self.flexeff
-                            .push((QuadEffect::new(qd, sub, origin), entity));
+                            .push((QuadEffect::new(qd, sub, origin), entity, launch));
                     } else {
                         let cd = CylinderDef::from_def(&def);
                         let entity =
                             build_cylinder_entity(&factory, seq, name, image.clone(), cd.additive);
                         scene.add_entity(entity.clone());
-                        self.flexeff_cyl
-                            .push((CylinderEffect::new(cd, sub, origin), entity));
+                        self.flexeff_cyl.push((
+                            CylinderEffect::new(cd, sub, origin),
+                            entity,
+                            launch,
+                        ));
                     }
                 }
             }
@@ -1652,12 +1758,12 @@ impl AdventureDirectorProps {
         // 声音先处理，它不依赖场景也不依赖相机。
         if !self.flexeff_audio.is_empty() {
             let mut due: Vec<String> = vec![];
-            for a in self.flexeff_audio.iter_mut() {
+            for (a, _) in self.flexeff_audio.iter_mut() {
                 if let Some(names) = a.step(delta_sec) {
                     due.extend(names.iter().cloned());
                 }
             }
-            self.flexeff_audio.retain(|a| !a.finished());
+            self.flexeff_audio.retain(|(a, _)| !a.finished());
             for name in due {
                 self.play_effect_sound(&name);
             }
@@ -1713,7 +1819,7 @@ impl AdventureDirectorProps {
 
         if !self.flexeff_timed.is_empty() {
             let mut due = vec![];
-            self.flexeff_timed.retain_mut(|(left, cue)| {
+            self.flexeff_timed.retain_mut(|(left, cue, _)| {
                 *left -= delta_sec;
                 if *left <= 0. {
                     due.push(cue.clone());
@@ -1740,7 +1846,7 @@ impl AdventureDirectorProps {
 
         if !self.flexeff_cam.is_empty() {
             let mut due = vec![];
-            self.flexeff_cam.retain_mut(|(seq, left)| {
+            self.flexeff_cam.retain_mut(|(seq, left, _)| {
                 *left -= delta_sec;
                 if *left <= 0. {
                     due.push(*seq);
@@ -1757,7 +1863,7 @@ impl AdventureDirectorProps {
 
         if !self.flexeff_model.is_empty() {
             use crate::openpal3::scene::flexeff_model::{place, play_tree, set_visible_tree};
-            for (effect, entity) in self.flexeff_model.iter_mut() {
+            for (effect, entity, _) in self.flexeff_model.iter_mut() {
                 if effect.step(delta_sec) {
                     set_visible_tree(entity, true);
                     play_tree(entity);
@@ -1766,7 +1872,7 @@ impl AdventureDirectorProps {
                     place(entity, effect);
                 }
             }
-            self.flexeff_model.retain(|(effect, entity)| {
+            self.flexeff_model.retain(|(effect, entity, _)| {
                 if effect.finished() {
                     set_visible_tree(entity, false);
                     false
@@ -1778,11 +1884,11 @@ impl AdventureDirectorProps {
 
         if !self.flexeff_explosive.is_empty() {
             use crate::openpal3::scene::flexeff_explosive::write_explosive;
-            for (effect, entity) in self.flexeff_explosive.iter_mut() {
+            for (effect, entity, _) in self.flexeff_explosive.iter_mut() {
                 effect.step(delta_sec);
                 write_explosive(entity, effect);
             }
-            self.flexeff_explosive.retain(|(effect, entity)| {
+            self.flexeff_explosive.retain(|(effect, entity, _)| {
                 if effect.finished() {
                     entity.set_visible(false);
                     false
@@ -1794,11 +1900,11 @@ impl AdventureDirectorProps {
 
         if !self.flexeff_grid.is_empty() {
             use crate::openpal3::scene::flexeff_grid::write_grid;
-            for (effect, entity) in self.flexeff_grid.iter_mut() {
+            for (effect, entity, _) in self.flexeff_grid.iter_mut() {
                 effect.step(delta_sec);
                 write_grid(entity, effect);
             }
-            self.flexeff_grid.retain(|(effect, entity)| {
+            self.flexeff_grid.retain(|(effect, entity, _)| {
                 if effect.finished() {
                     entity.set_visible(false);
                     false
@@ -1810,11 +1916,11 @@ impl AdventureDirectorProps {
 
         if !self.flexeff_shock.is_empty() {
             use crate::openpal3::scene::flexeff_shock::write_shock;
-            for (effect, entity) in self.flexeff_shock.iter_mut() {
+            for (effect, entity, _) in self.flexeff_shock.iter_mut() {
                 effect.step(delta_sec);
                 write_shock(entity, effect);
             }
-            self.flexeff_shock.retain(|(effect, entity)| {
+            self.flexeff_shock.retain(|(effect, entity, _)| {
                 if effect.finished() {
                     entity.set_visible(false);
                     false
@@ -1835,14 +1941,14 @@ impl AdventureDirectorProps {
                     camera.transform().position(),
                 )
             };
-            for (effect, heads, trails) in self.flexeff_meteor.iter_mut() {
+            for (effect, heads, trails, _) in self.flexeff_meteor.iter_mut() {
                 effect.step(delta_sec);
                 if let Some(h) = heads {
                     write_meteor_heads(h, effect, &right, &up);
                 }
                 write_meteor_trails(trails, effect, &eye);
             }
-            self.flexeff_meteor.retain(|(effect, heads, trails)| {
+            self.flexeff_meteor.retain(|(effect, heads, trails, _)| {
                 if !effect.finished() {
                     return true;
                 }
@@ -1865,7 +1971,7 @@ impl AdventureDirectorProps {
                 Vec3::new(f[0][1], f[1][1], f[2][1]),
             )
         };
-        for (effect, entity) in self.flexeff.iter_mut() {
+        for (effect, entity, _) in self.flexeff.iter_mut() {
             effect.step(delta_sec);
             if effect.quads().len() > MAX_QUADS {
                 log::warn!(
@@ -1877,7 +1983,7 @@ impl AdventureDirectorProps {
         }
         // 跑完的收掉。
         let mut done = vec![];
-        self.flexeff.retain(|(effect, entity)| {
+        self.flexeff.retain(|(effect, entity, _)| {
             if effect.finished() {
                 done.push(entity.clone());
                 false
@@ -1889,12 +1995,12 @@ impl AdventureDirectorProps {
             entity.set_visible(false);
         }
 
-        for (effect, entity) in self.flexeff_cyl.iter_mut() {
+        for (effect, entity, _) in self.flexeff_cyl.iter_mut() {
             effect.step(delta_sec);
             write_cylinder_mesh(entity, effect);
         }
         let mut done = vec![];
-        self.flexeff_cyl.retain(|(effect, entity)| {
+        self.flexeff_cyl.retain(|(effect, entity, _)| {
             if effect.finished() {
                 done.push(entity.clone());
                 false

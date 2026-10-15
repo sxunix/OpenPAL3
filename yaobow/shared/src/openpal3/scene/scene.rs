@@ -53,6 +53,8 @@ pub struct ScnScene {
     save_points: RefCell<Vec<super::save_point::SavePointFx>>,
     /// 瘴气（MeshFx 第 0 类 `MXPoisonFog`）：（`.scn` 序号, 粒子, 每组一个实体, 状态 0 / 1 / −1）。
     poison_fogs: RefCell<Vec<(usize, super::ParticleEffect, Vec<ComRc<IEntity>>, i32)>>,
+    /// 战斗特效组反复放（MeshFx 第 4 类 `MXCEft`），由导演每帧推（要用它的特效播放器）。
+    ceft: RefCell<Vec<SceneCEft>>,
     /// 野外怪物的 AI（`FUN_00417420`），第一次推的时候按角色建。
     field_monsters: RefCell<Vec<super::field_monster::FieldMonster>>,
     /// 场景物件挡路的格子表（`FUN_00420940`），载入物件后建。
@@ -108,6 +110,7 @@ impl ScnScene {
             rams: RefCell::new(vec![]),
             save_points: RefCell::new(vec![]),
             poison_fogs: RefCell::new(vec![]),
+            ceft: RefCell::new(vec![]),
             object_rng: RefCell::new(CrtRand::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1831,6 +1834,9 @@ impl ScnScene {
                         ));
                         self.load_poison_fog(node_index, &mut entities);
                     }
+                    if obj.name == "+4" {
+                        self.ceft.borrow_mut().push(SceneCEft::new(node_index, obj));
+                    }
                     if entity.is_none() && (obj.name == "+2" || obj.name == "+1") {
                         entity = Some(radiance::scene::CoreEntity::create(
                             format!("OBJECT_{}", obj.object_id()),
@@ -3144,6 +3150,11 @@ impl ScnScene {
         }
     }
 
+    /// 场景里的 `+4`（`MXCEft`），导演每帧推。
+    pub fn scene_ceft(&self) -> std::cell::RefMut<'_, Vec<SceneCEft>> {
+        self.ceft.borrow_mut()
+    }
+
     /// MeshFx 的状态（`FUN_004b7020`，`GetCurrentState`）：瘴气才有；不是 MeshFx 是 `None`。
     pub fn mesh_fx_state(&self, i: usize) -> Option<i32> {
         if let Some((_, _, _, s)) = self.poison_fogs.borrow().iter().find(|f| f.0 == i) {
@@ -3751,6 +3762,42 @@ impl super::nav_path::FieldNav for FieldNavView<'_> {
 fn flower_closed_name(name: &str) -> String {
     let keep = name.len().saturating_sub(5);
     format!("{}2.pol", &name[..keep])
+}
+
+/// MeshFx 第 4 类 `MXCEft`（`.scn` 名字 `+4`，虚表 0x56f3c0）：在物件位置上反复放一个战斗特效组。
+///
+/// * 组号是 `Create` 的参数，物件 +0x23c，也就是 `.scn` 记录 +0x190（`dw184[3]`）。
+/// * 载入时物件在场就 `Start`（0x4b73f0）：位置记成物件位置、放一次、计时清零。不在场的不 `Start`，
+///   位置停在构造函数（0x4b72e0）清成的 (0, 0, 0)。
+/// * `Update`（0x4b7340）只在物件在场时跑（`FUN_00426eb0` 开头不在场就返回，再经 `FUN_00429d10`）：
+///   计时加 `dt`；组 275（光栅笼子）计时到 9.5 秒就再放一次、清零；别的组上一次放的不在播了就再放。
+pub struct SceneCEft {
+    pub node: usize,
+    pub group: i32,
+    pub pos: Vec3,
+    /// 上一次放的播放号；0 = 还没放过。
+    pub launch: u32,
+    pub t: f32,
+    /// 载入后的头一帧还没处理（那一帧按在不在场决定要不要 `Start`）。[推断] 原版在物件载入函数
+    /// 末尾按 +0xad 调 `Start`，这里拿头一帧的在场状态代替，认为两者一致。
+    pub fresh: bool,
+}
+
+impl SceneCEft {
+    /// 组 275 不看在不在播，按时间重放（`Update` 里 `cmp [esi+0x5c], 0x113`）。
+    pub const TIMED_GROUP: i32 = 275;
+    pub const TIMED_SECS: f32 = 9.5;
+
+    fn new(node: usize, obj: &ScnNode) -> Self {
+        Self {
+            node,
+            group: obj.dw184.get(3).copied().unwrap_or(0) as i32,
+            pos: obj.position,
+            launch: 0,
+            t: 0.,
+            fresh: true,
+        }
+    }
 }
 
 #[cfg(test)]
