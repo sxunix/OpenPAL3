@@ -1,18 +1,25 @@
 //! The PAL3 camera, as the original models it.
 //!
 //! `DAT_00bfda68`'s camera block is polar, not a transform: yaw, pitch and
-//! roll, a distance, a look-at point and a camera position, with one
-//! function — `FUN_0041c710` — deriving whichever of the last two is not
-//! being held fixed:
+//! roll, a distance, the camera position (`+0x1ec`) and the look-at point
+//! (`+0x1e0`), with one function — `FUN_0041c710` — deriving whichever of
+//! the last two is not being held fixed:
 //!
 //! ```text
 //! dir = (sin yaw · cos pitch,  sin pitch,  −cos pitch · cos yaw)
-//! mode 0:  position = look_at + distance · dir      // look-at held
-//! mode 1:  look_at  = position − distance · dir     // position held
+//! mode 0:  look_at  = position + distance · dir     // camera held
+//! mode 1:  position = look_at  − distance · dir     // look-at held
 //! ```
 //!
-//! `dir` points from the look-at point **towards** the camera. yaobow uses
-//! the game's coordinates unconverted, so the formula applies as written.
+//! `dir` points from the camera **towards** the look-at point: the render
+//! call is `gbCamera::SetLookAt(+0x1ec, +0x1e0, +0x204)`, whose parameters
+//! are `(pfrom, pto, pup)` (`engine/globalvr/gbcamera.h:50`), and
+//! Pal3.Unity's `CameraSetTransformCommand` agrees — the triple it gets is
+//! the camera position and the look-at is `position + forward · distance`.
+//! (This model used to have the two points the other way round, which put
+//! every scripted shot at its own target looking back at where the camera
+//! should be.) yaobow uses the game's coordinates unconverted, so the
+//! formula applies as written.
 //!
 //! Everything the camera opcodes do is a move within this model: 30/31/251
 //! change what is looked at, 32 changes the distance, 33 and 35 animate the
@@ -37,14 +44,15 @@ pub enum Focus {
 }
 
 /// One entry of the camera state stack — the seven dwords `FUN_0041d220`
-/// pushes and `FUN_0041d410` restores. Note what is *not* in it: the
-/// look-at point and the focus target both survive a pop unchanged.
+/// pushes and `FUN_0041d410` restores: yaw, pitch, distance and the
+/// look-at point (`+0x1e0..+0x1e8`). The camera position is derived again
+/// on pop, and the focus target survives it unchanged.
 #[derive(Debug, Clone, Copy)]
 pub struct Saved {
     pub yaw: f32,
     pub pitch: f32,
     pub distance: f32,
-    pub position: Vec3,
+    pub look_at: Vec3,
 }
 
 #[derive(Debug, Clone)]
@@ -57,9 +65,9 @@ pub struct Pal3Camera {
     roll: f32,
     /// `+0x1d4`.
     distance: f32,
-    /// `+0x1ec`.
-    look_at: Vec3,
     /// `+0x1e0`.
+    look_at: Vec3,
+    /// `+0x1ec`.
     position: Vec3,
     focus: Focus,
     /// `+0x1c0`. Cleared by a script that takes the camera over and set
@@ -91,13 +99,9 @@ impl Default for Pal3Camera {
     }
 }
 
-/// `FUN_0041c710`'s direction: from the look-at point towards the camera.
-///
-/// The signs are the binary's, and they were checked against the screen:
-/// q01/xa's cutscene camera is `(yaw -167.1°, pitch -16.42°, distance
-/// 664)` with its look-at 187 units up, which puts the camera near ground
-/// level — an odd-looking framing, but negating the pitch renders a black
-/// frame, so the literal reading is the right one.
+/// `FUN_0041c710`'s direction: from the camera towards the look-at point.
+/// A negative pitch looks down — q01/xa's cutscene camera is `(yaw
+/// -167.1°, pitch -16.42°, distance 664)` from a point 187 units up.
 pub fn direction(yaw: f32, pitch: f32) -> Vec3 {
     Vec3::new(
         yaw.sin() * pitch.cos(),
@@ -106,16 +110,17 @@ pub fn direction(yaw: f32, pitch: f32) -> Vec3 {
     )
 }
 
-/// The yaw, pitch and length that [`direction`] would turn back into
-/// `offset`. Used to express an offset the rest of the engine already
-/// works in as this model's angles.
+/// The yaw, pitch and distance for a camera sitting at `offset` from its
+/// look-at point (`offset = position − look_at`, so `direction` is
+/// `−offset / distance`). Used to express an offset the rest of the engine
+/// already works in as this model's angles.
 pub fn polar_of(offset: &Vec3) -> (f32, f32, f32) {
     let distance = (offset.x * offset.x + offset.y * offset.y + offset.z * offset.z).sqrt();
     if distance <= f32::EPSILON {
         return (0., 0., 0.);
     }
-    let pitch = (offset.y / distance).asin();
-    let yaw = offset.x.atan2(-offset.z);
+    let pitch = (-offset.y / distance).asin();
+    let yaw = (-offset.x).atan2(offset.z);
     (yaw, pitch, distance)
 }
 
@@ -175,32 +180,36 @@ impl Pal3Camera {
         self.look_at = look_at;
     }
 
-    /// `FUN_0041c710(0)`: hold the look-at point, move the camera.
-    pub fn recompute_position(&mut self) {
-        let dir = direction(self.yaw, self.pitch);
-        self.position = Vec3::add(&self.look_at, &Vec3::scalar_mul(self.distance, &dir));
+    pub fn set_position(&mut self, position: Vec3) {
+        self.position = position;
     }
 
-    /// `FUN_0041c710(1)`: hold the camera, move the look-at point.
+    /// `FUN_0041c710(1)`: hold the look-at point, move the camera.
+    pub fn recompute_position(&mut self) {
+        let dir = direction(self.yaw, self.pitch);
+        self.position = Vec3::sub(&self.look_at, &Vec3::scalar_mul(self.distance, &dir));
+    }
+
+    /// `FUN_0041c710(0)`: hold the camera, move the look-at point.
     pub fn recompute_look_at(&mut self) {
         let dir = direction(self.yaw, self.pitch);
-        self.look_at = Vec3::sub(&self.position, &Vec3::scalar_mul(self.distance, &dir));
+        self.look_at = Vec3::add(&self.position, &Vec3::scalar_mul(self.distance, &dir));
     }
 
     /// 38 `CameraPushState` — `FUN_0041d220` pushes yaw, pitch, distance
-    /// and the camera position.
+    /// and the look-at point.
     pub fn push_state(&mut self) {
         self.stack.push(Saved {
             yaw: self.yaw,
             pitch: self.pitch,
             distance: self.distance,
-            position: self.position,
+            look_at: self.look_at,
         });
     }
 
     /// 39 `CameraPopState` — `FUN_0041d410` restores those four and then
-    /// recomputes with the camera position held (`FUN_0041c710(1)`), so
-    /// the look-at point is derived rather than restored.
+    /// recomputes with the look-at held (`FUN_0041c710(1)`), so the camera
+    /// position is derived rather than restored.
     pub fn pop_state(&mut self) -> bool {
         let Some(saved) = self.stack.pop() else {
             return false;
@@ -208,8 +217,8 @@ impl Pal3Camera {
         self.yaw = saved.yaw;
         self.pitch = saved.pitch;
         self.distance = saved.distance;
-        self.position = saved.position;
-        self.recompute_look_at();
+        self.look_at = saved.look_at;
+        self.recompute_position();
         true
     }
 
@@ -263,7 +272,7 @@ mod tests {
             Vec3::new(0., 500., 0.),
         ] {
             let (yaw, pitch, distance) = polar_of(&offset);
-            let back = Vec3::scalar_mul(distance, &direction(yaw, pitch));
+            let back = Vec3::scalar_mul(-distance, &direction(yaw, pitch));
             assert!(close(back.x, offset.x), "{back:?} vs {offset:?}");
             assert!(close(back.y, offset.y), "{back:?} vs {offset:?}");
             assert!(close(back.z, offset.z), "{back:?} vs {offset:?}");
@@ -284,7 +293,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pop_restores_the_angles_but_derives_the_look_at() {
+    fn a_pop_restores_the_look_at_and_derives_the_camera() {
         let mut camera = Pal3Camera::default();
         camera.look_at_target(Vec3::new(0., 0., 0.));
         let before = camera.position();
@@ -296,11 +305,32 @@ mod tests {
         assert!(!same(&camera.position(), &before));
 
         assert!(camera.pop_state());
+        assert!(same(&camera.look_at(), &Vec3::new(0., 0., 0.)));
+        // The camera comes back out of the formula, and for these angles
+        // that is where it was.
         assert!(same(&camera.position(), &before));
-        // The look-at comes back out of the formula, and for these angles
-        // that is the origin again.
-        assert!(close(camera.look_at().x, 0.));
-        assert!(close(camera.look_at().z, 0.));
         assert!(!camera.pop_state(), "空栈再弹应当无事发生");
+    }
+
+    #[test]
+    fn a_set_transform_triple_is_the_camera_and_a_negative_pitch_looks_down() {
+        // 36 `CameraSet(88.5°, -19.27°, 904, -2275.31, 298.29, -56.95)`
+        // (M25 proc 1002): `FUN_0041c9a0` writes the triple to `+0x1ec`
+        // and calls `FUN_0041c710(0)`.
+        let mut camera = Pal3Camera::default();
+        camera.set_yaw(88.5f32.to_radians());
+        camera.set_pitch((-19.27f32).to_radians());
+        camera.set_distance(904.);
+        camera.set_position(Vec3::new(-2275.31, 298.29, -56.95));
+        camera.recompute_look_at();
+        assert!(same(
+            &camera.position(),
+            &Vec3::new(-2275.31, 298.29, -56.95)
+        ));
+        assert!(close(
+            camera.look_at().y,
+            298.29 - 904. * 19.27f32.to_radians().sin()
+        ));
+        assert!(camera.look_at().x > camera.position().x + 800.);
     }
 }

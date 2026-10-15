@@ -510,11 +510,11 @@ impl SceProcContext {
                 command!(
                     self,
                     SceCommandCameraMove,
-                    position_x: f32,
-                    position_y: f32,
-                    position_z: f32,
-                    unknown_1: f32,
-                    unknown_2: f32
+                    x: f32,
+                    y: f32,
+                    z: f32,
+                    duration: f32,
+                    curve: i32
                 )
             }
             35 => {

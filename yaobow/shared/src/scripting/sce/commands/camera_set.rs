@@ -12,15 +12,15 @@ use radiance::math::Vec3;
 /// `LAB_00435570` converts the two angles to radians (`* 0x56a9f0`) and
 /// hands everything to `FUN_0041c9a0(yaw, pitch, distance, x, y, z, 1)`,
 /// which stores pitch at `+0x1c4`, distance at `+0x1d4`, yaw at `+0x1c8`,
-/// clears roll, writes `(x, y, z)` to `+0x1ec` — the **look-at point** —
-/// and then calls `FUN_0041c710(0)`, deriving the camera position as
-/// `look_at + distance · dir`.
+/// clears roll, writes `(x, y, z)` to `+0x1ec` — the **camera position**
+/// (`gbCamera::SetLookAt`'s `pfrom`) — and then calls `FUN_0041c710(0)`,
+/// deriving the look-at point as `position + distance · dir`.
 ///
-/// So the triple is what the camera looks *at*, and the third scalar is
-/// how far away it stands. This used to place the camera at `(x, y, z)`
-/// and ignore the distance, which put every scripted shot inside its own
-/// subject — a black frame in q01/xa's 竹林, where the target is 664
-/// units from where the camera belongs.
+/// So the triple is where the camera stands and the third scalar is how
+/// far ahead it looks. (Before this was read the other way round, the
+/// triple was taken as the look-at point and the camera put `distance`
+/// behind it — in M25 proc 1002 that left the camera under the floor
+/// facing a wall.)
 ///
 /// It does not touch the focus target (`+0x17c` / `+0x180`); a script
 /// that wants the camera to keep tracking says so separately.
@@ -29,7 +29,7 @@ pub struct SceCommandCameraSet {
     yaw: f32,
     pitch: f32,
     distance: f32,
-    look_at: Vec3,
+    position: Vec3,
 }
 
 impl SceCommand for SceCommandCameraSet {
@@ -40,22 +40,22 @@ impl SceCommand for SceCommandCameraSet {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
-        let position = {
+        let look_at = {
             let camera = state.global_state_mut().camera_mut();
             camera.set_yaw(self.yaw);
             camera.set_pitch(self.pitch);
             camera.set_distance(self.distance);
-            camera.set_look_at(self.look_at);
-            camera.recompute_position();
-            camera.position()
+            camera.set_position(self.position);
+            camera.recompute_look_at();
+            camera.look_at()
         };
 
         if let Some(scene) = scene_manager.scene() {
             scene
                 .camera_mut()
                 .transform_mut()
-                .set_position(&position)
-                .look_at(&self.look_at);
+                .set_position(&self.position)
+                .look_at(&look_at);
         }
 
         true
@@ -68,7 +68,7 @@ impl SceCommandCameraSet {
             yaw: yaw.to_radians(),
             pitch: pitch.to_radians(),
             distance,
-            look_at: Vec3::new(x, y, z),
+            position: Vec3::new(x, y, z),
         }
     }
 }

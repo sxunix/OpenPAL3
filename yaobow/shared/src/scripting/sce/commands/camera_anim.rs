@@ -47,7 +47,7 @@ fn ease(curve: i32, t: f32) -> f32 {
 }
 
 /// Push the current polar state onto the scene's camera.
-fn apply(scene_manager: &ComRc<ISceneManager>, camera: &Pal3Camera) {
+pub(super) fn apply(scene_manager: &ComRc<ISceneManager>, camera: &Pal3Camera) {
     let Some(scene) = scene_manager.scene() else {
         return;
     };
@@ -60,7 +60,7 @@ fn apply(scene_manager: &ComRc<ISceneManager>, camera: &Pal3Camera) {
 }
 
 /// Progress of a timed camera move, or `None` once it has finished.
-fn progress(
+pub(super) fn progress(
     elapsed: &mut f32,
     duration: f32,
     curve: i32,
@@ -231,7 +231,7 @@ impl SceCommandCameraSwing {
 /// Instant, absolute, and in **radians**: the handler passes the
 /// parameter straight through with none of the `* 0.017453292` the other
 /// angle commands apply (0x438d09). `FUN_0041c710(1)` then holds the
-/// camera and swings its aim, as 35 does.
+/// look-at point and swings the camera round it, as 33 does.
 #[derive(Debug, Clone)]
 pub struct SceCommandCameraYaw {
     yaw: f32,
@@ -247,7 +247,7 @@ impl SceCommand for SceCommandCameraYaw {
     ) -> bool {
         let camera = state.global_state_mut().camera_mut();
         camera.set_yaw(self.yaw);
-        camera.recompute_look_at();
+        camera.recompute_position();
         let snapshot = camera.clone();
         apply(&scene_manager, &snapshot);
         true
