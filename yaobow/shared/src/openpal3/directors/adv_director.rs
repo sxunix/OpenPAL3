@@ -4122,6 +4122,20 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         }
     }
 
+    fn camera_lock_point(&mut self, p: &Vec3) {
+        let camera = self.state.global_state_mut().camera_mut();
+        if camera.follow_player() {
+            camera.set_focus(crate::openpal3::states::camera::Focus::Point(*p));
+        }
+    }
+
+    fn camera_lock_player(&mut self) {
+        let camera = self.state.global_state_mut().camera_mut();
+        if camera.follow_player() {
+            camera.set_focus(crate::openpal3::states::camera::Focus::Player);
+        }
+    }
+
     fn mesh_fx_state(&self, i: usize) -> Option<i32> {
         self.scene.mesh_fx_state(i)
     }

@@ -116,6 +116,8 @@ pub enum Act {
     Anim { hold: bool },
     /// 8（`FUN_0042d4b0`）：冻结计数（`FUN_0041e720`），`false` 减一、`true` 加一；小于 1 时主角、野怪都停。
     Freeze(bool),
+    /// 0x15（`FUN_0042ea30` 排）：镜头 `+0x1c0` 置着就锁回主角（`FUN_0041c170(主角)`）。
+    CameraLockPlayer,
     /// 9（`FUN_0042d670`）：`true` 清掉物件压住的格子、`false` 按现在的位置和层重新登记（`FUN_0042a010`）。
     Tiles(bool),
     /// 10（`FUN_0042d830`）：物件的「可通过」+0xd1。
@@ -528,6 +530,10 @@ pub trait World {
     fn swap_model(&mut self, _i: usize, _name: &str) {}
     /// 物件模型停在最后一帧、不再播（`[vtbl+0x18](-1)` + `SetTimeScale(0)`）。
     fn hold_anim_end(&mut self, _i: usize) {}
+    /// 镜头 `+0x1c0` 置着就盯住这一点（`FUN_0041c1b0`）：石梁转、升降平台动时看机关。
+    fn camera_lock_point(&mut self, _p: &Vec3) {}
+    /// 镜头 `+0x1c0` 置着就锁回主角（动作 0x15，`FUN_0041c170(主角)`）。
+    fn camera_lock_player(&mut self) {}
     /// 物件模型是 MeshFx（模型类型 4）时它的状态（`GetCurrentState`）；不是 MeshFx 是 `None`。
     fn mesh_fx_state(&self, _i: usize) -> Option<i32> {
         None
@@ -1018,7 +1024,7 @@ impl ObjectActions {
             }
             // 旋转石梁 / 旋转墙（`FUN_00424c20` case 7、8）：只认被别的机关叫（事件 2），停着（状态 0）才动。
             // 目标角度 = 现在的角度 + 90，主角站住，清掉压住的格子，放音效，扣一次次数，登记 `ObjLockInput`。
-            // [未做] 镜头空闲时锁到石梁上（`FUN_0041c1b0`）。
+            // 镜头 `+0x1c0` 置着就盯住石梁（`FUN_0041c1b0`）。
             7 | 8 => {
                 if ev != 2 || self.objs[i].state != 0 {
                     return;
@@ -1028,6 +1034,8 @@ impl ObjectActions {
                 w.stand();
                 w.object_tiles(i, true, layer);
                 self.sound(i, 0, w);
+                let at = w.object_pos(i);
+                w.camera_lock_point(&at);
                 self.use_once(i, w);
                 self.objs[i].locked = true;
             }
@@ -1047,6 +1055,12 @@ impl ObjectActions {
                 self.sound(i, 0, w);
                 self.objs[i].lift = w.player_on(i);
                 self.use_once(i, w);
+                // 镜头盯住平台：往上升的盯着升到的高度（参数 0），往下降的盯着现在的位置。
+                let mut at = w.object_pos(i);
+                if self.objs[i].state == 1 {
+                    at.y = self.objs[i].p[0] as f32;
+                }
+                w.camera_lock_point(&at);
                 self.objs[i].locked = true;
             }
             0xc => self.skill_gate(i, ev, w),
@@ -1244,10 +1258,10 @@ impl ObjectActions {
     /// 可通过，参数 1 非 0 就换层（`FUN_0042b510`：上面是 1 层、下面是 0 层，载着的主角一起换），
     /// 排「等 2 秒」；每帧 `FUN_0042b350` 把参数 2 那个物件的高度带上、层不同就挪过来，开着
     /// `depend` 那个开关时直接摆到上面。停住那一帧：不再载人，叫连着的物件，跑自己那条过程。
-    /// [未做] 镜头锁主角（`FUN_0042ea30`）。
+    /// 停住时排「等 2 秒、镜头锁回主角」（`FUN_0042e870` + `FUN_0042ea30`）。
     /// `FUN_00426eb0` case 7、8：状态 1 时每秒转 30 度，过了目标就停在目标、回状态 0、按新角度登记格子，
-    /// 排 2 秒延时（`FUN_0042e870`），接着跑队列（`FUN_0042ebe0`）。连着的不是另一根石梁时原版还排一条
-    /// 镜头回到主角（`FUN_0042ea30`）——[未做]，移植端镜头没锁过去。
+    /// 排 2 秒延时（`FUN_0042e870`），连着的不是另一根石梁（类型 7）时再排镜头锁回主角（`FUN_0042ea30`），
+    /// 接着跑队列（`FUN_0042ebe0`）。
     fn step_beam<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
         if self.objs[i].state != 1 {
             return;
@@ -1264,6 +1278,9 @@ impl ObjectActions {
         w.object_tiles(i, false, layer);
         w.save_yaw(i);
         self.push(i, Act::Delay(2.), w);
+        if !self.objs[i].link.is_some_and(|l| self.objs[l].kind == 7) {
+            self.push(i, Act::CameraLockPlayer, w);
+        }
         self.run(i, w);
     }
 
@@ -1638,7 +1655,7 @@ impl ObjectActions {
         w.set_object_pos(i, &at);
         if let Some(s) = stopped {
             self.lift_stop(i, s, rises_layer, w);
-            for a in [Act::Delay(2.)] {
+            for a in [Act::Delay(2.), Act::CameraLockPlayer] {
                 self.push(i, a, w);
             }
             self.run(i, w);
@@ -2493,6 +2510,7 @@ impl ObjectActions {
                     }
                 }
                 Act::Freeze(release) => w.freeze(release),
+                Act::CameraLockPlayer => w.camera_lock_player(),
                 Act::Passable(v) => w.set_passable(i, v),
                 Act::Face(p) => w.face_player(&p),
                 Act::Sound(p) => self.sound(i, p, w),
