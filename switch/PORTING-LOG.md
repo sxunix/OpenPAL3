@@ -1106,3 +1106,11 @@ real fights are not representative.
   home (FUN_0050a700) pops a 1 s MISS and applies nothing, unless it is
   a revive (record +0x29a = 2) or a skill hitting a whole side
   (FUN_004f05a0); the stage fills the flags each frame.
+- Vines (object kind 0xf) are climbed as in the exe instead of
+  upstream's "press examine near either end and teleport": examine only,
+  outdist past 600 or without a straight nav line to the start tile; the
+  end nearer the hero's height is the start, 24 back from the object;
+  walk there, `c05` / `c052` at 40 per second, walk flat to the other
+  end, switch layer when parameter 4 is set (Role::Climb 0x4189c0,
+  special action 7). Objects are only selectable on the hero's layer and
+  every vine sits on layer 0, so layer-switching vines go up only.
