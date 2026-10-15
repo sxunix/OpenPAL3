@@ -509,12 +509,60 @@ impl SceState {
         self.note = Some((text, NOTE_SECONDS));
     }
 
-    /// 消息栏（`FUN_00410360`）：收起提示框（`FUN_00450d00(0)`），加一行；第一行 y = 0x28，之后接在最后
-    /// 一行下面 0x18。[未做] 开头那句 `DAT_00de7df8 + 0x94` 非 0 时不加。
+    /// 屏幕效果在走（`ScreenEffectMgr::IsFadingOut`，exe `FUN_004be590` + `FUN_004be5e0`：效果队列
+    /// `+0x94` 非空）——淡出、淡入的过程中，和淡出以后一直黑着的时候。移植端看幕布不是 0（负的是白）。
+    pub fn is_fading(&self) -> bool {
+        self.curtain != 0.
+    }
+
+    /// 消息栏（`FUN_00410360`）：屏幕效果在走就不加（[`Self::is_fading`]）；否则收起提示框
+    /// （`FUN_00450d00(0)`），加一行，第一行 y = 0x28，之后接在最后一行下面 0x18。
     pub fn push_note(&mut self, text: String) {
+        if self.is_fading() {
+            return;
+        }
         self.note = None;
         let y = self.msgs.last().map_or(MSG_TOP, |m| m.2 + MSG_STEP);
         self.msgs.push((text, 0., y));
+    }
+
+    /// `lang.txt` 里 `key` 那条（`FUN_00430570`），`%s` / `%d` 换成 `arg`，进消息栏。
+    pub fn push_lang_note(&mut self, key: &str, arg: &str) {
+        let text = common::store_ext::StoreExt2::read_to_end_from_gbk(
+            self.asset_mgr.vfs(),
+            crate::openpal3::combat::result::LANG_PATH,
+        )
+        .ok()
+        .and_then(|t| crate::openpal3::combat::result::lang_value(&t, key));
+        let Some(t) = text else {
+            log::warn!("lang.txt 里没有 {key}");
+            return;
+        };
+        let t = match (t.find("%s"), t.find("%d")) {
+            (Some(k), _) | (None, Some(k)) => format!("{}{}{}", &t[..k], arg, &t[k + 2..]),
+            _ => t,
+        };
+        self.push_note(t);
+    }
+
+    /// `FUN_0040fc90`（`PlayerMgr::AddMoney`）：钱加减（不低于 0），消息栏报「getmoney」（并放 wa006）/
+    /// 「lossmoney」/ 减到 0 报「lossallmoney」。
+    pub fn add_money_with_note(&mut self, amount: i32) {
+        let before = self.global_state().persistent_state().money();
+        self.global_state_mut()
+            .persistent_state_mut()
+            .add_money(amount);
+        let now = self.global_state().persistent_state().money();
+        let delta = now - before;
+        if now == 0 {
+            self.push_lang_note("lossallmoney", "");
+        } else if delta < 0 {
+            self.push_lang_note("lossmoney", &(-delta).to_string());
+        } else {
+            self.push_lang_note("getmoney", &delta.to_string());
+            // `FUN_0040fc90` 放 wa006 不看屏幕效果（46 那里看）。
+            crate::scripting::sce::commands::play_sfx(self, "wa006");
+        }
     }
 
     /// 消息栏每帧（`FUN_004105b0` 排版、`FUN_00402d20` 类型 1 画字）。每行：时间加 `dt`，

@@ -4075,21 +4075,7 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
     }
 
     fn give_money(&mut self, amount: i32) {
-        let before = self.state.global_state().persistent_state().money();
-        self.state
-            .global_state_mut()
-            .persistent_state_mut()
-            .add_money(amount);
-        let now = self.state.global_state().persistent_state().money();
-        let delta = now - before;
-        if now == 0 {
-            self.push_msg("lossallmoney", "");
-        } else if delta < 0 {
-            self.push_msg("lossmoney", &(-delta).to_string());
-        } else {
-            self.push_msg("getmoney", &delta.to_string());
-            crate::scripting::sce::commands::play_sfx(self.state, "wa006");
-        }
+        self.state.add_money_with_note(amount);
     }
 
     fn give_exp(&mut self, amount: i32) {
@@ -4151,23 +4137,8 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
 
 impl ObjWorld<'_> {
     /// `FUN_00410360`（消息栏）：`lang.txt` 里 `key` 那条，`%s` / `%d` 换成 `arg`。
-    /// [移植] 原版是一栏叠着放的消息（`DAT_00bfdb80` 那张表，屏幕上方居中，一条一行），这里先排进提示框。
     fn push_msg(&mut self, key: &str, arg: &str) {
-        let text = common::store_ext::StoreExt2::read_to_end_from_gbk(
-            self.state.asset_mgr().vfs(),
-            crate::openpal3::combat::result::LANG_PATH,
-        )
-        .ok()
-        .and_then(|t| crate::openpal3::combat::result::lang_value(&t, key));
-        let Some(t) = text else {
-            log::warn!("场景物件：lang.txt 里没有 {key}");
-            return;
-        };
-        let t = match (t.find("%s"), t.find("%d")) {
-            (Some(k), _) | (None, Some(k)) => format!("{}{}{}", &t[..k], arg, &t[k + 2..]),
-            _ => t,
-        };
-        self.state.push_note(t);
+        self.state.push_lang_note(key, arg);
     }
 }
 

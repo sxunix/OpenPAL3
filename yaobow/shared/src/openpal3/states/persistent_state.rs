@@ -32,6 +32,23 @@ pub const SLOT_ADORN1: usize = 3;
 pub const SLOT_ADORN2: usize = 4;
 pub const SLOT_WEAPON: usize = 5;
 
+/// 46 / 47 给、拿灵珠时一起给、拿的那份（战斗里用的灵珠；土灵珠另有 6427）。
+fn pearl_pairs(item_id: u32) -> &'static [u32] {
+    match item_id {
+        6119 => &[8146],
+        6120 => &[8147],
+        6122 => &[8149],
+        6123 => &[8150, 6427],
+        6124 => &[8151],
+        6125 => &[8152],
+        _ => &[],
+    }
+}
+
+/// 镇妖剑、魔剑（46 增加物品给景天换剑时特别对待，见 [`PersistentState::script_add_item`]）。
+pub const DEMON_SUPPRESSING_SWORD: u32 = 6602;
+pub const DEMON_SWORD: u32 = 6603;
+
 /// Which slots an item type may go in, in preference order. Empty when the
 /// item is not equipment. 饰品 (`ItemType::Wearable`) is the only type with
 /// two slots.
@@ -1054,6 +1071,73 @@ impl PersistentState {
         *self.inventory.entry(item_id).or_insert(0) += count;
     }
 
+    /// 46 增加物品（exe 0x435830）的背包那一半。数据库里没有这件就什么都不做，返回 `None`；否则返回它的名字
+    /// （调用方拿去报「getitem」）。
+    ///
+    /// * 景天能用的武器（类型 11、`applicable_actors[0]` 非 0：木剑 / 镇妖剑 / 魔剑）直接装到景天的武器格：
+    ///   原来空着就装上；原来是魔剑，新的放进背包；原来是镇妖剑，只有新的是魔剑才换（镇妖剑放进背包），
+    ///   别的**丢掉**（exe 0x4358f3 那一支不加任何东西，照原样）；原来是别的，旧的放进背包、换上新的。
+    ///   数量不看。
+    /// * 六颗灵珠（风 6119、雷 6120、火 6122、土 6123、圣 6124、五毒 6125）加的同时各配一件
+    ///   8146 / 8147 / 8149 / 8150 / 8151 / 8152（战斗里用的那份），土灵珠再加一件 6427。
+    /// * 别的照数量加。
+    pub fn script_add_item(&mut self, db: &GameDb, item_id: u32, count: u32) -> Option<String> {
+        let item = db.item(item_id)?;
+        let name = item.name.as_str().unwrap_or_default();
+        if item.item_type == 11 && item.applicable_actors[0] != 0 {
+            let current = self.roles.get(&0).map_or(0, |r| r.equipment[SLOT_WEAPON]);
+            let wear = |s: &mut Self| {
+                if let Some(r) = s.roles.get_mut(&0) {
+                    r.equipment[SLOT_WEAPON] = item_id;
+                }
+            };
+            match current {
+                0 => wear(self),
+                DEMON_SWORD => self.add_item(item_id, count),
+                DEMON_SUPPRESSING_SWORD => {
+                    if item_id == DEMON_SWORD {
+                        self.add_item(current, 1);
+                        wear(self);
+                    }
+                }
+                old => {
+                    self.add_item(old, 1);
+                    wear(self);
+                }
+            }
+            return Some(name);
+        }
+        self.add_item(item_id, count);
+        for &id in pearl_pairs(item_id) {
+            if db.item(id).is_some() {
+                self.add_item(id, 1);
+            }
+        }
+        Some(name)
+    }
+
+    /// 47 拿走一个物品（exe 0x435bf0）的背包那一半。数据库里没有这件就什么都不做，返回 `None`；否则返回它的
+    /// 名字（调用方拿去报「loseitem」）。五个主角六个装备格里正穿着这件的都清空（不放回背包，也不重算属性），
+    /// 再从背包拿走一件；灵珠连配的那一两件一起拿走（见 [`Self::script_add_item`]）。
+    pub fn script_remove_item(&mut self, db: &GameDb, item_id: u32) -> Option<String> {
+        let item = db.item(item_id)?;
+        let name = item.name.as_str().unwrap_or_default();
+        for actor in 0..5u32 {
+            if let Some(r) = self.roles.get_mut(&actor) {
+                for slot in r.equipment.iter_mut() {
+                    if *slot == item_id {
+                        *slot = 0;
+                    }
+                }
+            }
+        }
+        self.remove_item(item_id, 1);
+        for &id in pearl_pairs(item_id) {
+            self.remove_item(id, 1);
+        }
+        Some(name)
+    }
+
     /// Removes up to `count`; returns how many were actually removed.
     pub fn remove_item(&mut self, item_id: u32, count: u32) -> u32 {
         let Some(held) = self.inventory.get_mut(&item_id) else {
@@ -1293,6 +1377,68 @@ mod tests {
         assert!(state.team().is_empty());
         assert_eq!(state.money(), 0);
         assert_eq!(state.item_count(1), 0);
+    }
+
+    fn script_db() -> GameDb {
+        use fileformats::pal3::gdb::GameItemInfo;
+        let item = |id: u32, t: u8, jingtian: bool| {
+            let mut i = GameItemInfo::blank(id);
+            i.item_type = t;
+            i.applicable_actors[0] = jingtian as u8;
+            i
+        };
+        GameDb::from_tables(
+            vec![
+                item(6601, 11, true),
+                item(6602, 11, true),
+                item(6603, 11, true),
+                item(82001, 11, false),
+                item(6123, 2, false),
+                item(8150, 10, false),
+                item(6427, 3, false),
+            ],
+            vec![],
+        )
+    }
+
+    /// 46：景天的剑直接装上（旧的进背包；魔剑在身上时新的进背包；镇妖剑只让魔剑换、别的丢掉），
+    /// 别人的武器照常进背包；土灵珠配两件；数据库里没有的不加。
+    #[test]
+    fn script_add_item_equips_jingtian_swords_and_pairs_pearls() {
+        let db = script_db();
+        let mut s = PersistentState::new("t".into());
+        s.roles.insert(0, super::growth_test_role());
+        s.roles.get_mut(&0).unwrap().equipment[SLOT_WEAPON] = 6601;
+        assert!(s.script_add_item(&db, 6602, 1).is_some());
+        assert_eq!(s.roles[&0].equipment[SLOT_WEAPON], 6602);
+        assert_eq!(s.item_count(6601), 1);
+        s.script_add_item(&db, 6601, 1);
+        assert_eq!(s.roles[&0].equipment[SLOT_WEAPON], 6602, "镇妖剑只让魔剑换");
+        assert_eq!(s.item_count(6601), 1, "木剑丢掉了");
+        s.script_add_item(&db, 6603, 1);
+        assert_eq!(s.roles[&0].equipment[SLOT_WEAPON], 6603);
+        assert_eq!(s.item_count(6602), 1);
+        s.script_add_item(&db, 6601, 1);
+        assert_eq!(s.roles[&0].equipment[SLOT_WEAPON], 6603);
+        assert_eq!(s.item_count(6601), 2, "魔剑在身上，新的进背包");
+        s.script_add_item(&db, 82001, 1);
+        assert_eq!(s.item_count(82001), 1);
+        s.script_add_item(&db, 6123, 2);
+        assert_eq!(
+            (s.item_count(6123), s.item_count(8150), s.item_count(6427)),
+            (2, 1, 1)
+        );
+        assert!(s.script_add_item(&db, 9999, 1).is_none());
+        assert_eq!(s.item_count(9999), 0);
+        // 47：身上穿着的清掉（不回背包），背包里拿走一件，灵珠连配的一起拿。
+        s.script_remove_item(&db, 6603);
+        assert_eq!(s.roles[&0].equipment[SLOT_WEAPON], 0);
+        assert_eq!(s.item_count(6603), 0);
+        s.script_remove_item(&db, 6123);
+        assert_eq!(
+            (s.item_count(6123), s.item_count(8150), s.item_count(6427)),
+            (1, 0, 0)
+        );
     }
 
     #[test]

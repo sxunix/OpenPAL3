@@ -59,9 +59,9 @@ macro_rules! skipped {
 
 /// 157 显示一条提示 — `LAB_00438f10` → `FUN_00410360(文本)`。
 ///
-/// 名字里的「当铺经营游戏」是误会：`FUN_00410360` 就是提示框那一路
-/// （加减钱的 `FUN_0040fc90` 也拿它弹「获得 %d 文」），和 opcode 68 同一个
-/// 控件。实机只有 Q12 的 proc 1302 用它，弹的是「景天精减少到1」这种话。
+/// 名字里的「当铺经营游戏」是误会：`FUN_00410360` 是消息栏（加减钱的
+/// `FUN_0040fc90` 也拿它报「获得 %d 文」），屏幕上方一行行叠着、淡出，见
+/// [`SceState::push_note`]。实机只有 Q12 的 proc 1302 用它，报的是「景天精减少到1」这种话。
 #[derive(Debug, Clone)]
 pub struct SceCommandMiniGamePawnshopNote {
     text: String,
@@ -82,7 +82,7 @@ impl SceCommand for SceCommandMiniGamePawnshopNote {
         _delta_sec: f32,
     ) -> bool {
         if !self.text.trim().is_empty() {
-            state.show_note(self.text.clone());
+            state.push_note(self.text.clone());
         }
         true
     }

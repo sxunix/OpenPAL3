@@ -497,7 +497,7 @@ fn add_base(role: &mut RoleState, slot: usize, delta: i32) {
 }
 
 /// `FUN_0040be80(0)` 之后那 12 次钳位：`cur < max ? (cur < 1 → 0) : max`。
-fn clamp_current(state: &mut PersistentState, actor_id: u32, db: &GameDb) {
+pub(crate) fn clamp_current(state: &mut PersistentState, actor_id: u32, db: &GameDb) {
     let Some(role) = state.role(actor_id) else {
         return;
     };
