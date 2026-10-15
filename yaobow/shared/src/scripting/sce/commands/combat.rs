@@ -3572,6 +3572,17 @@ impl SceCommand for SceCommandCombat {
 
         // 有舞台、没在快进，才把出手交给舞台演。
         session.stage_driven = !state.fast_forward() && !self.actors.is_empty();
+        // `FUN_0050a700`：当前位置到原位的距离 ≤ 13 算在原位（三维长度）。没有舞台角色的算在原位。
+        for (slot, away) in session.away_from_home.iter_mut().enumerate() {
+            *away = self
+                .actors
+                .get(slot)
+                .and_then(|a| a.as_ref())
+                .is_some_and(|a| {
+                    let p = a.entity.transform().borrow().position();
+                    Vec3::sub(&p, &a.home).norm() > 13.
+                });
+        }
         if !session.stage_driven && session.staging.is_some() {
             session.release();
         }

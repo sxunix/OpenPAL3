@@ -339,6 +339,9 @@ pub struct CombatSession {
     pub camera_requests: Vec<i32>,
     /// 要放的特效组和放在哪个战斗位身上（`FUN_004ce340`），舞台每帧取走。
     pub effects: Vec<(i32, usize)>,
+    /// 舞台每帧填：这个战斗位的人离自己的原位超过 13（`FUN_0050a700` 为否：当前位置
+    /// `+0x19b8` 到原位 `+0x19c4` 的距离）。仙术 / 特技结算时用（[`Self::cast`]）。
+    pub away_from_home: [bool; SLOTS],
     /// 饿鬼整格吃掉的道具（id, 个数），散场时从背包里扣。
     pub eaten_items: Vec<(u32, u32)>,
     pub elapsed: f32,
@@ -401,6 +404,7 @@ impl CombatSession {
             sfx: Vec::new(),
             dodged: Vec::new(),
             effects: Vec::new(),
+            away_from_home: [false; SLOTS],
             eaten_items: Vec::new(),
             camera_requests: Vec::new(),
             elapsed: 0.,
@@ -1797,6 +1801,26 @@ impl CombatSession {
             vec![target]
         };
         for t in targets {
+            // 目标不在原位（`FUN_0050a700` 为否）、又不是复活类（技能记录 `+0x29a`，即状态 24
+            // 那一项不是 2）：弹 1 秒「MISS」、不结算（`FUN_004f1070` 0x4f10d5 起）。特技多一道：
+            // 打一整边的（`target_range_type` 2/4，`FUN_004f05a0`）照样结算（`FUN_004f1420`）。
+            if self.away_from_home.get(t).copied().unwrap_or(false)
+                && !choice.revives()
+                && !(special && choice.hits_everyone())
+            {
+                self.battle.popups.push(super::state::Popup {
+                    slot: t,
+                    kind: super::state::PopupKind::Miss,
+                    secs: super::state::POPUP_MISS_SECS,
+                });
+                self.push_log(format!(
+                    "{} {} → {} 不在原位，MISS",
+                    self.name(slot),
+                    choice.name,
+                    self.name(t)
+                ));
+                continue;
+            }
             let r = if special {
                 let (r, stolen) = self.battle.special_on(slot, t, &choice.effect);
                 log::info!(
@@ -2598,6 +2622,77 @@ mod tests {
         assert!(s.battle.get(5).unwrap().hp < 60, "选中的那个挨了");
         assert!(s.battle.get(6).unwrap().hp < 60, "没选中的也挨了");
         assert_eq!(s.battle.get(0).unwrap().sp, sp - 10, "全体技能只扣一次气");
+    }
+
+    #[test]
+    fn a_spell_on_a_target_away_from_home_misses() {
+        let mut s = session();
+        s.battle.place(6, fighter(Side::Enemy, 60, 1));
+        while s.profiles.len() <= 6 {
+            s.profiles.push(Profile::default());
+        }
+        let mut impacts = [(0u8, 0i16); ATTRIBUTE_SLOTS];
+        impacts[ATTR_HP] = (0, -20);
+        let effect = SkillEffect {
+            id: 77,
+            sp_cost: 10,
+            success_rate_level: 100,
+            impacts,
+            target_range: 4,
+            special_cost_type: -1,
+            ..Default::default()
+        };
+        let choice = SkillChoice {
+            multiplier: 0,
+            name: "群攻".into(),
+            effect,
+        };
+        s.profiles[0].skills = vec![choice.clone()];
+        s.profiles[0].specials = vec![choice];
+        s.away_from_home[5] = true;
+        let sp = s.battle.get(0).unwrap().sp;
+        s.battle.popups.clear();
+        // 仙术（`FUN_004f1070`）：打一整边也逐个查，5 号不在原位就 MISS、不掉精。
+        s.cast(0, 5, 0, false);
+        assert_eq!(s.battle.get(5).unwrap().hp, 60);
+        assert!(s.battle.get(6).unwrap().hp < 60);
+        assert!(
+            s.battle
+                .popups
+                .iter()
+                .any(|p| p.slot == 5 && p.kind == crate::openpal3::combat::state::PopupKind::Miss)
+        );
+        assert_eq!(s.battle.get(0).unwrap().sp, sp - 10, "消耗照扣");
+        // 特技（`FUN_004f1420`）：打一整边的不查原位。
+        s.cast(0, 5, 0, true);
+        assert!(s.battle.get(5).unwrap().hp < 60);
+    }
+
+    #[test]
+    fn a_revive_spell_ignores_the_home_check() {
+        let mut s = session();
+        let mut effect = SkillEffect {
+            id: 78,
+            success_rate_level: 100,
+            target_range: 1,
+            special_cost_type: -1,
+            ..Default::default()
+        };
+        effect.state_codes[24] = 2;
+        s.profiles[0].skills = vec![SkillChoice {
+            multiplier: 0,
+            name: "复活".into(),
+            effect,
+        }];
+        s.away_from_home[1] = true;
+        s.battle.popups.clear();
+        s.cast(0, 1, 0, false);
+        assert!(
+            !s.battle
+                .popups
+                .iter()
+                .any(|p| p.kind == crate::openpal3::combat::state::PopupKind::Miss)
+        );
     }
 
     #[test]
