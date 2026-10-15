@@ -55,6 +55,10 @@ impl<T: SceCommand + std::fmt::Debug> SceCommandDebug for T {
     }
 }
 
+/// 消息栏第一行的 y、行距（`FUN_00402c40` 写的 0x28、`FUN_00410360` 加的 0x18）。
+const MSG_TOP: i32 = 0x28;
+const MSG_STEP: i32 = 0x18;
+
 pub struct SceState {
     asset_mgr: Rc<AssetManager>,
     global_state: GlobalState,
@@ -94,8 +98,8 @@ pub struct SceState {
     /// 68 Note's toast: the text and how long it still has to live. The
     /// command does not block, so the vm draws and ages it.
     note: Option<(String, f32)>,
-    /// 排着等提示框的消息（[`Self::push_note`]）。
-    note_queue: std::collections::VecDeque<String>,
+    /// 消息栏（`FUN_00410360` 往 `DAT_00bfdb80` 那张表里加的，类型 1）：（文字, 出来了几秒, 行的 y）。
+    msgs: Vec<(String, f32, i32)>,
     /// 提示框的九宫格外框 `ui\flex\note0..8.tga`，第一次显示时读。
     note_frame: Vec<Option<std::rc::Rc<radiance::rendering::Sprite>>>,
     /// 主角头上「跳」的图标：左上角在屏幕上的归一化坐标（x、y ∈ −1..1，y 朝上）；`None` 收起。
@@ -218,7 +222,7 @@ impl SceState {
             dialog_renderer,
             status_renderer,
             note: None,
-            note_queue: std::collections::VecDeque::new(),
+            msgs: vec![],
             note_frame: Vec::new(),
             jump_icon: None,
             jump_icon_frames: None,
@@ -505,13 +509,100 @@ impl SceState {
         self.note = Some((text, NOTE_SECONDS));
     }
 
-    /// 消息栏（`FUN_00410360`）：提示框正开着就排在后面，等它收起再出。
+    /// 消息栏（`FUN_00410360`）：收起提示框（`FUN_00450d00(0)`），加一行；第一行 y = 0x28，之后接在最后
+    /// 一行下面 0x18。[未做] 开头那句 `DAT_00de7df8 + 0x94` 非 0 时不加。
     pub fn push_note(&mut self, text: String) {
-        if self.note.is_some() {
-            self.note_queue.push_back(text);
-        } else {
-            self.show_note(text);
+        self.note = None;
+        let y = self.msgs.last().map_or(MSG_TOP, |m| m.2 + MSG_STEP);
+        self.msgs.push((text, 0., y));
+    }
+
+    /// 消息栏每帧（`FUN_004105b0` 排版、`FUN_00402d20` 类型 1 画字）。每行：时间加 `dt`，
+    /// alpha = `1 − 0.4·max(0, t − 1.5)`（满 1.5 秒后 2.5 秒淡完），×255 截成字节为 0 就去掉；有去掉的就把
+    /// 剩下的从 0x28 起每 0x18 重排。外框 `ui\flex\note` 九宫格：宽 = 最长那行的 GBK 字节数 × 10 + 64、居中
+    /// （不小于 0），上 5、下 `行数 × 24 + 30`，透明度取各行里最大的。字白色、按 `字节数 × 10` 居中。
+    pub fn render_msgs(&mut self, ui: &imgui::Ui, delta_sec: f32) {
+        if self.msgs.is_empty() {
+            return;
         }
+        let alpha = |t: f32| (1. - 0.4 * (t - 1.5).max(0.)).max(0.);
+        let mut gone = false;
+        for m in self.msgs.iter_mut() {
+            m.1 += delta_sec;
+        }
+        self.msgs.retain(|m| {
+            let keep = (alpha(m.1) * 255.) as u8 != 0;
+            gone |= !keep;
+            keep
+        });
+        if gone {
+            for (k, m) in self.msgs.iter_mut().enumerate() {
+                m.2 = MSG_TOP + MSG_STEP * k as i32;
+            }
+        }
+        if self.msgs.is_empty() {
+            return;
+        }
+        if self.note_frame.is_empty() {
+            self.note_frame = (0..9)
+                .map(|i| {
+                    self.asset_mgr
+                        .load_sprite(format!("/basedata/basedata/ui/flex/note{i}.tga"))
+                })
+                .collect();
+        }
+        let len = |t: &str| crate::scripting::sce::commands::dlg_sel::gbk_len(t) as i32;
+        let longest = self.msgs.iter().map(|m| len(&m.0)).max().unwrap_or(0);
+        let frame_alpha = self
+            .msgs
+            .iter()
+            .map(|m| (alpha(m.1) * 255.) as u8)
+            .max()
+            .unwrap_or(0) as f32
+            / 255.;
+        let w = longest * 10 + 64;
+        let x0 = ((800 - w) / 2).max(0);
+        let b = (x0, 5, x0 + w, self.msgs.len() as i32 * 24 + 30);
+        let c = 32.min(w / 2).min((b.3 - b.1) / 2);
+        let (ix0, iy0, ix1, iy1) = (b.0 + c, b.1 + c, b.2 - c, b.3 - c);
+        let pieces = [
+            (b.0, b.1, ix0, iy0),
+            (b.0, iy1, ix0, b.3),
+            (ix1, iy1, b.2, b.3),
+            (ix1, b.1, b.2, iy0),
+            (b.0, iy0, ix0, iy1),
+            (ix0, iy1, ix1, b.3),
+            (ix1, iy0, b.2, iy1),
+            (ix0, b.1, ix1, iy0),
+            (ix0, iy0, ix1, iy1),
+        ];
+        let lines: Vec<(String, i32, f32)> = self
+            .msgs
+            .iter()
+            .map(|m| (m.0.clone(), m.2, (alpha(m.1) * 255.) as u8 as f32 / 255.))
+            .collect();
+        let frame = &self.note_frame;
+        crate::scripting::sce::commands::overlay(ui, "Msgs", |ui, at, _scale| {
+            let list = ui.get_window_draw_list();
+            for (k, r) in pieces.iter().enumerate() {
+                let Some(tex) = frame.get(k).and_then(|t| t.as_deref()) else {
+                    continue;
+                };
+                if r.0 < r.2 && r.1 < r.3 {
+                    list.add_image(tex.imgui_texture_id(), at(r.0, r.1), at(r.2, r.3))
+                        .col([1., 1., 1., frame_alpha])
+                        .build();
+                }
+            }
+            let _font = radiance::imgui::game_font(radiance::imgui::GameFontSize::LARGE)
+                .map(|f| ui.push_font(f));
+            // [推断] 行的 y 当字的底边：第一行 0x28、框顶 5，末行 `24n + 16`、框底 `24n + 30`，上下各留 15、14，
+            // 当顶边的话末行会出框。字宽按每字节 10（20 像素一个汉字）。
+            for (text, y, a) in &lines {
+                let x = (800 - len(text) * 10) / 2;
+                list.add_text(at(x, *y - 20), [1., 1., 1., *a], text);
+            }
+        });
     }
 
     /// 设主角头上「跳」的图标（`FUN_0041d9a0` → `FUN_00445e70` 开关、`FUN_00445d20` 挪位置）。
@@ -562,11 +653,6 @@ impl SceState {
     /// `ui\flex\note` 九宫格，角块边长取 min(32, 半宽, 半高)；字是字号档 2、居中，
     /// 颜色是控件默认的 0xff000505（近黑）。
     pub fn render_note(&mut self, ui: &imgui::Ui, delta_sec: f32) {
-        if self.note.is_none() {
-            if let Some(t) = self.note_queue.pop_front() {
-                self.show_note(t);
-            }
-        }
         let Some((text, remaining)) = self.note.as_mut() else {
             return;
         };
