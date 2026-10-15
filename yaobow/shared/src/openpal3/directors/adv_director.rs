@@ -2451,11 +2451,28 @@ impl AdventureDirectorProps {
             fly.to.y * k + (1. - k) * fly.from.y,
             fly.to.z * k + (1. - k) * fly.from.z,
         );
+        let done = fly.t >= FLY_SECS;
+        // 飞完：控制方式还原，缩放回 1、站住；那一转只在特殊动作里画。
+        let (angle, scale) = match (done, fly.flag) {
+            (true, _) => (0., 1.),
+            // 0x4151f8：角度先截成整数（`__ftol`）再存 +0x540。
+            (false, 1) => ((90. * k).trunc(), 1. - 0.3 * k),
+            (false, _) => ((90. * (1. - k)).trunc(), 0.7 + 0.3 * k),
+        };
         if let Some(e) = self
             .scene_manager
             .get_resolved_role(self.sce_vm.state(), -1)
         {
-            e.transform().borrow_mut().set_position(&p);
+            let mut m = radiance::math::Transform::from_matrix(fly.facing);
+            m.scale_local(&Vec3::new(scale, scale, scale))
+                .rotate_axis_angle(&fly.axis, angle)
+                .set_position(&p);
+            e.transform().borrow_mut().set_matrix(*m.matrix());
+            if done {
+                if let Some(rc) = RoleController::get_role_controller(e.clone()) {
+                    rc.inner::<RoleController>().idle();
+                }
+            }
         }
         self.sce_vm
             .global_state_mut()
@@ -3560,15 +3577,22 @@ struct ObjectWalk {
     speed: f32,
 }
 
-/// `Role::RotateFly`（`FUN_00414e50` 起、`FUN_00415xxx` 特殊动作 0xb 每帧推）：0.5 秒里按
-/// `(1 − cos πt) / 2` 从起点挪到终点；`flag` 1 飞进去时缩放 1 → 0.7，2 飞出来时 0.7 → 1。
-/// [未做] 同时绕「(起点 − 终点) × Y」那根轴转 0 → 90°（飞出来 90 → 0）、蹲下的动作（0x12）和缩放，
-/// 移植端只挪位置。
+/// `Role::RotateFly`（`FUN_00414e50` 起、`FUN_00415xxx` 特殊动作 0xb 每帧推）：主角站住、播「下蹲」
+/// （动作 0x12 `ACT_SITDOWN`），0.5 秒里按 `(1 − cos πt) / 2` 从起点挪到终点，同时绕「归一化(起点 − 终点)
+/// × Y」那根轴转 0 → 90、缩放 1 → 0.7（`flag` 1 飞进去）或 90 → 0、0.7 → 1（`flag` 2 飞出来）；
+/// 画的时候那一转乘在朝向之前（`Role::Render`：`Translate` → `Rotate(角, 轴)` → `Rotate(朝向, Y)` →
+/// `Scale`）。那个 90 是**弧度**：`gbMatrixStack::Rotate` → `gbQuaternion::SetAxisAngle` 按弧度取半角
+/// （`engine/math/gbmath.cpp:788`），所以主角一边飞一边转十几圈——「旋转飞」。exe（0x4151d0 起）
+/// 和源码一样，只多一步把角度截成整数弧度。飞完缩放回 1、站住。
 #[derive(Debug, Clone, Copy)]
 struct PlayerFly {
     from: Vec3,
     to: Vec3,
     t: f32,
+    flag: u8,
+    axis: Vec3,
+    /// 起飞时主角模型的朝向（去掉平移）。
+    facing: radiance::math::Mat44,
 }
 
 /// 飞一趟的秒数（`+0x4e4 = 0.5`）。
@@ -3958,10 +3982,29 @@ impl crate::openpal3::scene::object_action::World for ObjWorld<'_> {
         );
         self.idle();
         let from = self.player_pos();
+        let d = Vec3::normalized(&Vec3::sub(&from, to));
+        let axis = Vec3::normalized(&Vec3::cross(&d, &Vec3::UP));
+        let mut facing = self
+            .player
+            .as_ref()
+            .map(|e| *e.transform().borrow().matrix())
+            .unwrap_or_else(|| *radiance::math::Transform::new().matrix());
+        facing[0][3] = 0.;
+        facing[1][3] = 0.;
+        facing[2][3] = 0.;
+        if let Some(rc) = self.player_rc() {
+            rc.inner::<RoleController>().play_anim(
+                crate::openpal3::combat::motion::ACTION_NAMES[0x12],
+                crate::openpal3::scene::RoleAnimationRepeatMode::Repeat(1),
+            );
+        }
         *self.fly = Some(PlayerFly {
             from,
             to: *to,
             t: 0.,
+            flag,
+            axis,
+            facing,
         });
     }
 
