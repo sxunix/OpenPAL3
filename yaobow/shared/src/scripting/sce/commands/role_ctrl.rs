@@ -36,7 +36,8 @@ impl SceCommandRoleCtrl {
 
 /// `PlayerMgr::SetCtrl(new, true)`（`FUN_0040e5f0`）：新主角接过旧主角的位置、朝向、所在层，旧的不在场、
 /// 新的在场并站好，再换成新主角受控。换成龙葵时她的模型一律换回 `"105"`（蓝，人形）。
-/// [未做] `SceneMgr::m_fHurtTime = 10`、头像框、中毒状态的画面提示。
+/// 最后接新主角身上的毒（见 [`apply_poison_of`]）。[未做] `SceneMgr::m_fHurtTime = 10`、左上角头像换人
+/// （`m_face.SetFacePic`）。
 pub fn set_ctrl(scene_manager: &ComRc<ISceneManager>, state: &mut SceState, new: i32) {
     let old = state.global_state().role_controlled();
     if old != new {
@@ -84,4 +85,33 @@ pub fn set_ctrl(scene_manager: &ComRc<ISceneManager>, state: &mut SceState, new:
             .set_longkui_mode(0);
     }
     state.global_state_mut().set_role_controlled(new);
+    apply_poison_of(scene_manager, state, new);
+}
+
+/// `PlayerMgr::SetCtrl` 末尾：新主角身上有五毒里的哪一种（头一个）就接着中这种毒、跳过头一下
+/// （`SetPoison(毒, true, 1)`），都没有就不中毒（`SetPoison(FS_NUM, false, 0)`，顺带清掉五毒的状态字节）。
+fn apply_poison_of(scene_manager: &ComRc<ISceneManager>, state: &mut SceState, new: i32) {
+    use crate::openpal3::states::poison_walk::NO_POISON;
+    let pos = scene_manager
+        .scn_scene()
+        .and_then(|scn| scn.inner::<ScnScene>().get_role_entity(new))
+        .map(|e| e.transform().borrow().position())
+        .unwrap_or(radiance::math::Vec3::new(0., 0., 0.));
+    let gs = state.global_state_mut();
+    let mut pw = *gs.poison_walk_mut();
+    {
+        let mut ps = gs.persistent_state_mut();
+        let Some(role) = ps.role_mut(new.max(0) as u32) else {
+            return;
+        };
+        match (0..5).find(|&i| role.states[i] != 0) {
+            Some(i) => {
+                pw.set(i as i32, true, 1, pos, role);
+            }
+            None => {
+                pw.set(NO_POISON, false, 0, pos, role);
+            }
+        }
+    }
+    *gs.poison_walk_mut() = pw;
 }

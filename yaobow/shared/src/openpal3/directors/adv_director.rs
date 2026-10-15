@@ -2326,6 +2326,57 @@ impl AdventureDirectorProps {
     }
 
     /// 主角脚下 nav 格的地面类型。越界原版填 2（`FUN_0041eb80` 开头）。
+    /// 冒险时的中毒（[`crate::openpal3::states::poison_walk`]）：踩地面中毒、扣精、走满了解毒。
+    fn step_poison(&mut self, dt: f32, floor_check: bool) {
+        use crate::openpal3::states::poison_walk::{self, NO_POISON};
+        // 战斗是另一个游戏状态，原版那时不走 `FUN_0040c230`。
+        if self.sce_vm.state().combat().is_some_and(|c| c.active) {
+            return;
+        }
+        let Some(pos) = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)
+            .map(|e| e.transform().borrow().position())
+        else {
+            return;
+        };
+        let floor = floor_check.then(|| self.player_floor_type());
+        let ctrl = self.sce_vm.global_state().role_controlled();
+        let mut pw = *self.sce_vm.global_state_mut().poison_walk_mut();
+        let mut notes = vec![];
+        let mut hurt_sound = None;
+        {
+            let gs = self.sce_vm.global_state_mut();
+            let mut ps = gs.persistent_state_mut();
+            let Some(role) = ps.role_mut(ctrl.max(0) as u32) else {
+                return;
+            };
+            if let Some(p) = floor.and_then(poison_walk::floor_poison) {
+                notes.extend(pw.set(p, true, 0, pos, role));
+            }
+            let (hit, cured) = pw.step(dt, pos, role);
+            if let Some((hit, snd)) = hit {
+                let d = poison_walk::apply_hit(role, hit);
+                log::debug!("中毒：{:?} 精 {d:+}", hit);
+                if d < 0 && snd {
+                    hurt_sound = poison_walk::hurt_sound(ctrl);
+                }
+            }
+            if cured {
+                log::debug!("中毒：走满了，解毒");
+                pw.set(NO_POISON, true, 0, pos, role);
+            }
+        }
+        *self.sce_vm.global_state_mut().poison_walk_mut() = pw;
+        for key in notes {
+            log::debug!("中毒：{key}");
+            self.sce_vm.state_mut().push_lang_note(&key, "");
+        }
+        if let Some(name) = hurt_sound {
+            crate::scripting::sce::commands::play_sfx(self.sce_vm.state_mut(), name);
+        }
+    }
+
     fn player_floor_type(&self) -> i32 {
         const OUT_OF_RANGE: i32 = 2;
         let Some(role) = self
@@ -3194,6 +3245,8 @@ impl AdventureDirectorProps {
         }
         // 场景物件的动作队列和状态（`FUN_00426eb0`）同样每帧推，过场里也推。
         self.step_object_actions(delta_sec);
+        // 中毒（`FUN_0040c230`）每帧都推，过场里也推；踩地面中毒只在主角能动时查（`RoleCtrl::UpdateSnd`）。
+        self.step_poison(delta_sec, adv_enabled);
 
         // Weather is drawn over the whole frame in the original, after
         // the scene graph ends, so it keeps running through cutscenes.

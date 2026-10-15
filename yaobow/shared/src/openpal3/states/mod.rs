@@ -10,6 +10,7 @@ pub mod growth;
 pub mod hockshop;
 pub mod inn;
 pub mod item_use;
+pub mod poison_walk;
 pub mod killflyer;
 pub mod persistent_state;
 pub mod role_move;

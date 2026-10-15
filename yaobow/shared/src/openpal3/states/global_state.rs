@@ -26,6 +26,8 @@ pub struct GlobalState {
     fop_state: FopState,
     adv_input_enabled: bool,
     role_controlled: i32,
+    /// 冒险时受控主角的中毒（`PlayerMgr::m_pstate`，见 [`super::poison_walk`]）。
+    poison_walk: super::poison_walk::PoisonWalk,
 
     asset_mgr: Rc<AssetManager>,
     bgm_source: Box<dyn AudioMemorySource>,
@@ -118,6 +120,7 @@ impl GlobalState {
             divine_tree_flower: true,
             effect_position: Vec3::new(0., 0., 0.),
             camera: Pal3Camera::default(),
+            poison_walk: Default::default(),
             appraise_result: 0,
             object_freeze: 1,
         }
@@ -340,6 +343,10 @@ impl GlobalState {
 
     pub fn camera_mut(&mut self) -> &mut Pal3Camera {
         &mut self.camera
+    }
+
+    pub fn poison_walk_mut(&mut self) -> &mut super::poison_walk::PoisonWalk {
+        &mut self.poison_walk
     }
 
     pub fn effect_position(&self) -> Vec3 {
