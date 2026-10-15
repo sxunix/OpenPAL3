@@ -2368,6 +2368,11 @@ impl AdventureDirectorProps {
                     .set_position(c);
                 log::debug!("冲撞：落到层 {layer} ({x}, {z})");
                 self.ram_fly = None;
+                // 落地后镜头锁回主角（case 0xd 末尾 `FUN_0041c170`）。
+                let camera = self.sce_vm.global_state_mut().camera_mut();
+                if camera.follow_player() {
+                    camera.set_focus(crate::openpal3::states::camera::Focus::Player);
+                }
             }
         }
         scene.step_eyeballs(player.as_ref().map(|e| e.transform().borrow().position()));
@@ -2390,6 +2395,14 @@ impl AdventureDirectorProps {
             );
             self.hurt_time = 0.;
             self.ram_fly = Some((vel, 0., target));
+            // 撞上时镜头锁在主角当时的位置，人飞出去镜头不跟
+            // （case 0xd 里 `FUN_0041c1b0(player + 0xa0)`）。
+            if let Some((at, _, _)) = info {
+                let camera = self.sce_vm.global_state_mut().camera_mut();
+                if camera.follow_player() {
+                    camera.set_focus(crate::openpal3::states::camera::Focus::Point(at));
+                }
+            }
             if let Some(rc) = player.and_then(RoleController::get_role_controller) {
                 rc.inner::<RoleController>().idle();
             }
