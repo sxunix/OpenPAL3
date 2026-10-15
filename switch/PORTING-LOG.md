@@ -1067,18 +1067,40 @@ real fights are not representative.
   `object\wz20_N.cvd` and cost the girl 2 favour. A save point walks the
   hero to 48 short of it and opens the system page in save mode; saving
   elsewhere follows `DAT_005cefa9` (not in mazes, not in m02) and is
-  refused with AssisLang 343. Item / money / exp lines go through the
-  note box one after another (the original stacks them in a list at the
-  top — not done).
+  refused with AssisLang 343.
 - `ctype` (+0xd0) comes from the type (FUN_00422430), not from `.scn`
   +0x24; the two only differ on the 68 save points, which is why they
   could never be examined.
 - MeshFx: save points (+2, MXSavePoint: stone, save.tga, ray.tga cone),
-  transport points (+1, MXTransport: trans.tga, two cones; the
-  teleporting state 1 not done), poison fog (+0, MXPoisonFog:
-  poisonfog.par ×32, cleared by the skill gate via ChangeState(1)).
-  Torches (+3) were already drawn by upstream's effect code. +4
-  (MXCEft, a combat effect group re-run in place) is not done: the
-  effect player has no per-launch handle to ask "still running".
+  transport points (+1, MXTransport: trans.tga, two cones), poison fog
+  (+0, MXPoisonFog: poisonfog.par ×32, cleared by the skill gate via
+  ChangeState(1)). Torches (+3) were already drawn by upstream's effect
+  code. +4 (MXCEft): the group id is `.scn` record +0x190; Start runs it
+  at the object when present at load, Update (only while present)
+  re-runs group 275 every 9.5 s and the rest once IsEffGroupRunning
+  (0x4ce580) says the last run ended. For that the flexeff player tags
+  every entry with RunEffGroup's launch number (counter starts at 1;
+  a callback's child gets a new one). The transport's teleport state 1
+  is unreachable: MeshFx ChangeState(1) is only called by the skill
+  gate (case 0xc), and all 76 `+1` nodes are type 0.
 - 神树 flowers and their master switch swap the visible model
   (FUN_0042c280 / FUN_0042c730), not just the blocking box.
+- Messages (PushMsg, FUN_00410360) stack in a list at the top: first
+  line y 0x28, +0x18 each, fully visible 1.5 s then fading over 2.5 s;
+  the `ui\flex\note` frame is longest × 10 + 64 wide. Refused while the
+  screen-effect queue is non-empty (0x4be5e0); script fades 69/70/81/91
+  all queue (kinds 1-4), fade-outs hold, so `curtain != 0` matches, and
+  a fade-out now covers the screen from its first frame. Opcodes 46/47
+  add/remove items through the same messages and wa006 (46 skips the
+  sound while fading; AddMoney/AddItem play it regardless), 48 is
+  AddMoney (getmoney / lossmoney / lossallmoney), 157 posts its text.
+- Type 0x15 eyeball turns to the hero (render FUN_00424570 case 0x15).
+- Camera locks while it follows the player: a turning beam or a moving
+  lift locks onto the object (FUN_0041c1b0) and, 2 s after it stops,
+  back to the hero (act 0x15; beams skip this when the linked object is
+  type 7); a ram's hit locks onto where the hero stood, so the hero
+  flies out of frame, and lands back on the hero (case 0xd).
+- Combat: a spell or skill landing on a target more than 13 from its
+  home (FUN_0050a700) pops a 1 s MISS and applies nothing, unless it is
+  a revive (record +0x29a = 2) or a skill hitting a whole side
+  (FUN_004f05a0); the stage fills the flags each frame.
