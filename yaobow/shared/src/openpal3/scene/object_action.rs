@@ -71,7 +71,8 @@ pub const SWITCH_REACH: f32 = 24.;
 /// [推断] exe 里读的是 `_DAT_00d8bef0`，没找到初始化它的地方；值取源码 `SceneObj_Common.cpp:278`
 /// 的 `DIST_RESTRICT = ROLE_RADIUS * 9`。
 pub const DIST_RESTRICT: f32 = ROLE_RADIUS * 9.;
-/// 开关参数 2 为 2 时，`p[2]` 起的三个参数是世界转到的角度（状态 11 用 5 秒转过去）。[未做]
+/// 开关参数 2 为 2 时，`p[2]` 起的三个参数是世界转到的角度（状态 11 用 5 秒转过去）。不做：发行的
+/// `.scn` 里没有参数 2 为 2 的开关（源码注释叫「神魔之井旋转开关」）。
 pub const ROTATE_SECS: f32 = 5.;
 /// 主角动作编号（`ACTION_KIND`，名字见 [`crate::openpal3::combat::motion::ACTION_NAMES`]）：技能、调查。
 pub const ACT_SKILL: usize = 8;
@@ -1771,7 +1772,7 @@ impl ObjectActions {
 
     /// `FUN_00424c20` case 5，参数 0 为 0 的移动浮板（不看事件）：开关标志开着、板停在两头（状态 0 / 3）、
     /// 板比主角高不过 40 时，记下要往哪头走（在起点就往终点、反之亦然），载人，主角走到板中心（状态 4），
-    /// 扣一次次数、登记 `ObjLockInput`。[未做] 参数 0 为 1 的那种（站上去按主角来的方向推着走）。
+    /// 扣一次次数、登记 `ObjLockInput`。参数 0 为 1 的是跳台，见 [`Self::step_hop`]。
     fn platform_touch<W: World>(&mut self, i: usize, w: &mut W) {
         let state = self.objs[i].state;
         let Some(plat) = self.objs[i].plat.as_mut() else {
@@ -2514,8 +2515,8 @@ impl ObjectActions {
     /// 停在最后一帧，回 0，跑自己那条过程（登记 `ObjLockInput`）；参数 0 为 1 的「可通过」跟着开关走；
     /// 连着的物件收到事件 2。11：世界转动（参数 2 为 2）。
     ///
-    /// [未做] 参数 2 为 1（神树花总开关，`FUN_0042c730`）、参数 2 为 2 的世界转动（状态 11）、连着的是
-    /// 移动浮板（类型 5）时让浮板开到另一头——这三样都只记日志。
+    /// 参数 2 为 1 是神树花总开关（换模型，`FUN_0042c730`）；连着移动浮板（类型 5）时让浮板开到另一头。
+    /// 参数 2 为 2 的世界转动只记日志：发行数据里没有这种开关。
     fn step_switch<W: World>(&mut self, i: usize, dt: f32, w: &mut W) {
         match self.objs[i].state {
             SWITCH_PENDING => {

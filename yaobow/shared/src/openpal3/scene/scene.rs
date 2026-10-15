@@ -1915,7 +1915,7 @@ impl ScnScene {
 
     /// `FUN_00421230`：一格的地面高度。格子上登记了在场的物件时按类型换成物件的高度（物件 +0x2c）：
     /// 5/7/0x13/0x21/0x26/0x28 取物件高度，0x1d（乌龟）再加 24，0x16/0x22/0x25 格子能走时取两者大的、不能走
-    /// 时取物件高度。越界是 0。[未做] 0xb 且参数 0 为 1 的按模型矩阵取（`FUN_00429db0`），这里还按格子。
+    /// 时取物件高度。越界是 0。0xb 且参数 0 为 1（顶上能走的箱子）见 [`Self::floor_height`]。
     /// 导航格的原始地面高度，不算物件；出界是 0（`FUN_0042ebe0` case 0xd）。
     pub fn nav_floor(&self, layer: usize, p: &Vec3) -> f32 {
         use super::field_monster::Layers as _;
@@ -1989,9 +1989,9 @@ impl ScnScene {
         let owner = self.object_blocking.borrow().as_ref().and_then(|b| {
             b.owner(layer, x, z)
                 .filter(|i| b.active(*i))
-                .map(|i| (i, b.kind(i).unwrap_or(0)))
+                .map(|i| (i, b.kind(i).unwrap_or(0), b.p0(i).unwrap_or(0)))
         });
-        let Some((i, kind)) = owner else {
+        let Some((i, kind, p0)) = owner else {
             return base;
         };
         let Some(y) = self
@@ -2001,6 +2001,18 @@ impl ScnScene {
             return base;
         };
         match kind {
+            // 顶上能走的箱子（0x421303）：箱顶 = 物件高度 + 碰撞盒 y 边长（`FUN_00429db0`）。原版接着拿
+            // `(int)箱顶` 当**行号**查同一列的格子（源码 `layer->GetIndex(x, y)`，把高度当成了 z），那格能走
+            // 就取两者大的，否则取箱顶。照抄这个毛病；[推断] 行号出界（原版读到表外）当作不能走。
+            0xb if p0 == 1 => {
+                let top = y + self.object_model_height(i);
+                let row = top as i32;
+                if nav.tile_type(x, row) > 1 {
+                    top.max(SceneLayers { scene: self }.height(layer, x, row))
+                } else {
+                    top
+                }
+            }
             0x16 | 0x22 | 0x25 if nav.tile_type(x, z) > 1 => base.max(y),
             0x16 | 0x22 | 0x25 | 5 | 7 | 0x13 | 0x21 | 0x26 | 0x28 => y,
             0x1d => y + 24.,

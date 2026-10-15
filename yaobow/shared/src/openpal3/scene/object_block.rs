@@ -382,6 +382,11 @@ impl ObjectBlocking {
         self.objs.get(i).map(|o| o.kind)
     }
 
+    /// 物件 `i` 的参数 0（+0xf8）。
+    pub fn p0(&self, i: usize) -> Option<i32> {
+        self.objs.get(i).map(|o| o.p0)
+    }
+
     /// `FUN_00421020`：这一格能不能走。`base` 是格子自己的判定（记录 +4 字节 > 1）。格子上有在场的物件时：
     /// 类型 5/7/0x13/0x16/0x22/0x25/0x26/0x28、以及「0xb 且参数 0 为 1」按「格子能走 或 可通过」，
     /// 其它按「格子能走 且 可通过」。越界不能走。
