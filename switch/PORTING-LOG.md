@@ -1021,6 +1021,8 @@ explorer cannot survive.
 Not done yet: the closed-flower and plate model swaps, the type 21
 eyeball's look, the lift and beam camera locks, the spell-side MISS case
 in FUN_0050a700.
+(All four were done on 2026-10-15; see the sections below. The "plate"
+is the master switch's disc, `4\_c.cvd` / `4\_c1.cvd`.)
 
 ## 2026-10-15 — 海底城 to the ending
 
