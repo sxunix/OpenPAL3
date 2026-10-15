@@ -3164,6 +3164,7 @@ impl AdventureDirectorProps {
             let scn = scene_rc.inner::<crate::openpal3::scene::ScnScene>();
             scn.step_object_moves(delta_sec);
             scn.step_scene_objects(delta_sec);
+            scn.step_guide_bee(delta_sec);
         }
         // 场景物件的动作队列和状态（`FUN_00426eb0`）同样每帧推，过场里也推。
         self.step_object_actions(delta_sec);

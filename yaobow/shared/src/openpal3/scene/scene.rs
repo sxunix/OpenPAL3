@@ -57,6 +57,9 @@ pub struct ScnScene {
     ceft: RefCell<Vec<SceneCEft>>,
     /// 搜宝鼠（`PlayerMgr::m_SeekingMouse`，模型 `DXD`），第一次用到才建。
     seeking_mouse: RefCell<Option<ComRc<IEntity>>>,
+    /// 引路蜂（`PlayerMgr::m_Bee`，模型 `DXA`）和它正在飞的那一趟（起点、终点、已飞秒数、总秒数）。
+    guide_bee: RefCell<Option<ComRc<IEntity>>>,
+    guide_bee_flight: RefCell<Option<(Vec3, Vec3, f32, f32)>>,
     /// 野外怪物的 AI（`FUN_00417420`），第一次推的时候按角色建。
     field_monsters: RefCell<Vec<super::field_monster::FieldMonster>>,
     /// 场景物件挡路的格子表（`FUN_00420940`），载入物件后建。
@@ -114,6 +117,8 @@ impl ScnScene {
             poison_fogs: RefCell::new(vec![]),
             ceft: RefCell::new(vec![]),
             seeking_mouse: RefCell::new(None),
+            guide_bee: RefCell::new(None),
+            guide_bee_flight: RefCell::new(None),
             object_rng: RefCell::new(CrtRand::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -3171,6 +3176,94 @@ impl ScnScene {
         }
     }
 
+    /// 154 引路蜂飞向（`cmd_Bee`）：蜂在 `from`（主角的渲染位置）现身，按 `speed`（NPC 走路速度
+    /// `WalkSpeed`）直线挪到 `to`（`Role::AMove`，特殊动作 10）。
+    pub fn start_guide_bee(&self, from: Vec3, to: Vec3, speed: f32) {
+        let mut bee = self.guide_bee.borrow_mut();
+        if bee.is_none() {
+            match self
+                .asset_mgr
+                .load_role("DXA", "z1", "GUIDE_BEE".to_string(), true)
+            {
+                Some(e) => {
+                    // 影子（角色实体下挂的那块）留在地上：原版 `GetShadowQuad` 画在 `m_groundpos`，
+                    // 蜂本身比地面高 80。
+                    for child in e.children() {
+                        child.transform().borrow_mut().set_position(&Vec3::new(
+                            0.,
+                            -GUIDE_BEE_LIFT,
+                            0.,
+                        ));
+                    }
+                    self.scene.add_entity(e.clone());
+                    *bee = Some(e);
+                }
+                None => log::warn!("引路蜂：读不到模型 DXA"),
+            }
+        }
+        let Some(e) = bee.as_ref() else {
+            return;
+        };
+        e.set_visible(true);
+        if let Some(rc) = RoleController::get_role_controller(e.clone()) {
+            let rc = rc.inner::<RoleController>();
+            rc.set_active(true);
+            rc.play_anim("z1", super::RoleAnimationRepeatMode::Loop);
+        }
+        let dist = Vec3::sub(&to, &from).norm();
+        let dur = if speed > 0. { dist / speed } else { 0. };
+        log::debug!(
+            "引路蜂：从 ({:.0}, {:.0}, {:.0}) 飞向 ({:.0}, {:.0}, {:.0})，{dur:.1} 秒",
+            from.x,
+            from.y,
+            from.z,
+            to.x,
+            to.y,
+            to.z
+        );
+        drop(bee);
+        *self.guide_bee_flight.borrow_mut() = Some((from, to, 0., dur));
+        self.place_guide_bee(&from, &to, 0., dur);
+    }
+
+    /// 引路蜂每帧（`PlayerMgr` 的更新 + 特殊动作 10）：x、z 在起点到终点间线性插值，高度按脚下重算
+    /// （`UpdateRenderPos`）后再抬高 80；到了就不在场。[推断] 蜂的 `m_onlayer` 从没设过，按第 0 层取地面。
+    pub fn step_guide_bee(&self, dt: f32) {
+        let flight = *self.guide_bee_flight.borrow();
+        let Some((from, to, t, dur)) = flight else {
+            return;
+        };
+        let t = t + dt;
+        if t >= dur {
+            *self.guide_bee_flight.borrow_mut() = None;
+            if let Some(e) = self.guide_bee.borrow().as_ref() {
+                e.set_visible(false);
+                if let Some(rc) = RoleController::get_role_controller(e.clone()) {
+                    rc.inner::<RoleController>().set_active(false);
+                }
+            }
+            return;
+        }
+        *self.guide_bee_flight.borrow_mut() = Some((from, to, t, dur));
+        self.place_guide_bee(&from, &to, t, dur);
+    }
+
+    fn place_guide_bee(&self, from: &Vec3, to: &Vec3, t: f32, dur: f32) {
+        let k = if dur > 0. { t / dur } else { 1. };
+        let mut p = Vec3::new(
+            from.x + (to.x - from.x) * k,
+            0.,
+            from.z + (to.z - from.z) * k,
+        );
+        p.y = self.floor_height(0, &p) + GUIDE_BEE_LIFT;
+        if let Some(e) = self.guide_bee.borrow().as_ref() {
+            e.transform()
+                .borrow_mut()
+                .set_position(&p)
+                .look_at(&Vec3::new(p.x + to.x - from.x, p.y, p.z + to.z - from.z));
+        }
+    }
+
     /// 场景摄像机现在的位置。
     pub fn live_camera_position(&self) -> Vec3 {
         self.scene.camera().transform().position()
@@ -3793,6 +3886,9 @@ fn flower_closed_name(name: &str) -> String {
     let keep = name.len().saturating_sub(5);
     format!("{}2.pol", &name[..keep])
 }
+
+/// 引路蜂比地面高多少（`PlayerMgr` 更新里 `m_Bee.m_renderpos.y += 80`）。
+const GUIDE_BEE_LIFT: f32 = 80.;
 
 /// MeshFx 第 4 类 `MXCEft`（`.scn` 名字 `+4`，虚表 0x56f3c0）：在物件位置上反复放一个战斗特效组。
 ///

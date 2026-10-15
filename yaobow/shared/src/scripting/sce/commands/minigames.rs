@@ -87,15 +87,53 @@ impl SceCommand for SceCommandMiniGamePawnshopNote {
         true
     }
 }
-skipped!(
-    SceCommandNavigationBeeFlyTo,
-    "154 控制引路蜂飞向指定位置 — `LAB_00438ba0`，参数是 nav 层与 \
-     tile 坐标。引路蜂是纯提示性的装饰，跳过不影响可玩性。",
-    "",
+/// 154 引路蜂飞向 — `LAB_00438ba0`（源码 `cmd_Bee`）：层号对 2 取余，取那一层 (`tile_x`, `tile_y`) 格的
+/// 中心当终点；引路蜂在主角的渲染位置现身、站住，再按走路的样子（NPC 速度 `WalkSpeed`）直线挪过去
+/// （`Role::AMove`），每帧抬高 80，到了就不在场。脚本不等它。
+#[derive(Debug, Clone)]
+pub struct SceCommandNavigationBeeFlyTo {
     nav_layer: i32,
     tile_x: i32,
-    tile_y: i32
-);
+    tile_y: i32,
+}
+
+impl SceCommand for SceCommandNavigationBeeFlyTo {
+    fn update(
+        &mut self,
+        scene_manager: ComRc<ISceneManager>,
+        _ui: &Ui,
+        state: &mut SceState,
+        _delta_sec: f32,
+    ) -> bool {
+        use crate::openpal3::directors::SceneManagerExtensions;
+        use radiance::comdef::IEntityExt;
+        let Some(scene) = scene_manager.scn_scene() else {
+            return true;
+        };
+        let scene = scene.inner::<crate::openpal3::scene::ScnScene>();
+        let Some(from) = scene_manager
+            .get_resolved_role(state, -1)
+            .map(|e| e.transform().borrow().position())
+        else {
+            return true;
+        };
+        let layer = self.nav_layer.rem_euclid(2) as usize;
+        let (to, _) = scene.tile_point(layer, self.tile_x, self.tile_y);
+        let speed = state.global_state().role_constants().walk_speed;
+        scene.start_guide_bee(from, to, speed);
+        true
+    }
+}
+
+impl SceCommandNavigationBeeFlyTo {
+    pub fn new(nav_layer: i32, tile_x: i32, tile_y: i32) -> Self {
+        Self {
+            nav_layer,
+            tile_x,
+            tile_y,
+        }
+    }
+}
 
 /// 101 当铺等级 · 120 Manage 类型 · 121 Period 类型 · 122 Accrual 类型 ·
 /// 123 UnHock 类型 — `LAB_00436cb0` / `00436d30` / `00436db0` /
