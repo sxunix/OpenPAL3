@@ -376,6 +376,18 @@ impl AdventureDirector {
         p.sce_vm.push_debug_command(cmd, scene_manager);
     }
 
+    /// [调试] 等于用了一件迷宫仙宝（`FUN_00410580(k)`）：27..30 置 0 号角色的辟邪/退魔/神眼/精进，
+    /// 31 撒紫幽粉。agent 点不了道具页。
+    pub fn debug_field_state(&self, k: usize) {
+        let mut p = self.props.borrow_mut();
+        let mut ps = p.sce_vm.global_state_mut().persistent_state_mut();
+        if k == 31 {
+            ps.set_purple_powder();
+        } else {
+            ps.set_leader_maze_state(k);
+        }
+    }
+
     pub fn start_debug_bigmap(&self) {
         let mut p = self.props.borrow_mut();
         let scene_manager = p.scene_manager.clone();
@@ -3193,16 +3205,28 @@ impl AdventureDirectorProps {
         if let Some(rc) = RoleController::get_role_controller(player.clone()) {
             rc.inner::<RoleController>().idle();
         }
+        // 紫幽粉在身：个数写死 6（`FUN_00407560`：`DAT_00c10cc1 != 0` 时把 `.scn` 记录里的个数改成 6）。
+        let count = if self
+            .sce_vm
+            .global_state()
+            .persistent_state()
+            .purple_powder()
+        {
+            6
+        } else {
+            hit.count as i32
+        };
         log::info!(
-            "Field: 撞上 ROLE_{}（{:?} × {}），朝向判定 {}",
+            "Field: 撞上 ROLE_{}（{:?} × {}，记录里是 {}），朝向判定 {}",
             hit.role_index,
             hit.ids,
+            count,
             hit.count,
             hit.sneak
         );
         let cmd = Box::new(
             crate::scripting::sce::commands::SceCommandCombat::new_field(
-                hit.count as i32,
+                count,
                 hit.ids,
                 hit.sneak,
                 hit.role_index,
@@ -3359,11 +3383,18 @@ impl AdventureDirectorProps {
                     .unwrap_or(0);
                 let monster = *gs.monster_constants();
                 let role = *gs.role_constants();
+                let wards = {
+                    let ps = gs.persistent_state();
+                    crate::openpal3::scene::Wards {
+                        exorcism: ps.leader_maze_state(27),
+                        repel: ps.leader_maze_state(28),
+                    }
+                };
                 if let Some(scene_rc) = self.scene_manager.scn_scene() {
                     scene_rc
                         .inner::<crate::openpal3::scene::ScnScene>()
                         .step_field_monsters(
-                            delta_sec, &player, layer, &db, &monster, &role, frozen,
+                            delta_sec, &player, layer, &db, &monster, &role, frozen, wards,
                         );
                 }
             }

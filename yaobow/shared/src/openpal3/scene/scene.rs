@@ -1316,6 +1316,7 @@ impl ScnScene {
         monster: &crate::openpal3::states::role_move::MonsterConstants,
         role_consts: &crate::openpal3::states::role_move::RoleConstants,
         frozen: bool,
+        wards: super::Wards,
     ) {
         use super::field_monster::{FieldMonster, Levels};
         let player_pos = player.transform().borrow().position();
@@ -1362,6 +1363,7 @@ impl ScnScene {
             let rc = rc.inner::<RoleController>();
             m.layer = rc.nav_layer();
             m.frozen = frozen;
+            m.wards = wards;
             let pos = e.transform().borrow().position();
             let facing = Self::facing_of(&e);
             let before = m.state;

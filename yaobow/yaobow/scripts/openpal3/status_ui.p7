@@ -58,6 +58,13 @@ let ST_SHEN_X: float = 6.0;
 let ST_SHEN_Y: float = 49.0;
 let ST_SHEN_W: float = 39.0;
 let ST_SHEN_H: float = 31.0;
+// The four 辟邪/退魔/神眼/精进 icons, all on one 32x64 window at (47,5).
+let ST_STATE_X: float = 47.0;
+let ST_STATE_Y: float = 5.0;
+let ST_STATE_W: float = 32.0;
+let ST_STATE_H: float = 64.0;
+// `FS_TIME`: the field states last this long; the icons fade over it.
+let ST_FS_TIME: float = 60.0;
 // `UIProgressBar::Update`: m_speed 1 * 36 px per second.
 let ST_BAR_SPEED: float = 36.0;
 // `UISceneFace::Update`: the click variant shows this long before the menu.
@@ -86,6 +93,8 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     // 2 click). Loaded up front: `load_sprite` can't run mid-frame (the
     // texture cache is borrowed while the HUD paints).
     pub faces: array<?box<scripting_services.ISprite>>,
+    // bx / tm / sy / jj: the 辟邪 / 退魔 / 神眼 / 精进 icons.
+    pub state_icons: array<?box<scripting_services.ISprite>>,
     // Whether the full-screen character-status menu is open.
     pub menu_open: bool = false,
     // Previous-frame left-button state, for click rising-edge detection.
@@ -171,12 +180,30 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
         // Draw the HUD dial first so the full-screen menu (drawn below)
         // composites OVER it — the menu owns the screen while open. Order
         // is `UISceneFace`'s child order: bk, face, 精, 神.
-        blit_crop(ui, self.bk, x0, y0, s, 0.0, 0.0, ST_BK_W, ST_BK_H, 255, 255, 255);
-        blit_crop(ui, face, x0, y0, s, ST_FACE_X, ST_FACE_Y, ST_FACE_SIZE, ST_FACE_SIZE, r, g, b);
+        blit_crop(ui, self.bk, x0, y0, s, 0.0, 0.0, ST_BK_W, ST_BK_H, 255, 255, 255, 255.0);
+        blit_crop(ui, face, x0, y0, s, ST_FACE_X, ST_FACE_Y, ST_FACE_SIZE, ST_FACE_SIZE,
+            r, g, b, 255.0);
         blit_crop(ui, self.hp, x0, y0, s, ST_JING_X, ST_JING_Y, floor(self.jing_px), ST_JING_H,
-            255, 255, 255);
+            255, 255, 255, 255.0);
         blit_crop(ui, self.mp, x0, y0, s, ST_SHEN_X, ST_SHEN_Y, floor(self.shen_px), ST_SHEN_H,
-            255, 255, 255);
+            255, 255, 255, 255.0);
+        // The leader's (role 0, whoever is controlled) field states, fading
+        // out over FS_TIME but never below alpha 80.
+        let states = self.pal3.leader_field_states();
+        if states != 0 {
+            // `BYTE alpha = max(80, ...)`: whole steps.
+            let mut alpha = 80.0;
+            let fade = (1.0 - self.pal3.field_state_time() / ST_FS_TIME) * 255.0;
+            if fade > 80.0 { alpha = floor(fade); }
+            let mut bit = 1;
+            for i in Range(0, 4) {
+                if (states / bit) % 2 == 1 {
+                    blit_crop(ui, self.state_icons[i], x0, y0, s, ST_STATE_X, ST_STATE_Y,
+                        ST_STATE_W, ST_STATE_H, 255, 255, 255, alpha);
+                }
+                bit = bit * 2;
+            }
+        }
 
         // The full-screen menus, painted on top of the HUD. The system
         // menu (save/load/exit) replaces the state menu when the toolbar's
@@ -490,8 +517,9 @@ fn bar_step(cur: float, target: float, dt: float) -> float {
     return cur;
 }
 
-// `ProgressRc.right` is a RECT long: whole pixels. (p7 has no float->int
-// cast; the bars are under 50px, so count up.)
+// Whole part of a small non-negative value (`ProgressRc.right` is a RECT
+// long; the icon alpha a BYTE). p7 has no float->int cast and these stay
+// under 256, so count up.
 fn floor(v: float) -> float {
     let mut n = 0.0;
     while n + 1.0 <= v { n = n + 1.0; }
@@ -500,12 +528,13 @@ fn floor(v: float) -> float {
 
 // A UI picture as the engine blits it: the `w`x`h` texels at the bottom-left
 // of the texture, 1:1, at window pixel (`px`, `py`) of the panel at
-// (`x0`, `y0`) scaled by `s`, multiplied by colour `r,g,b` (0..255).
+// (`x0`, `y0`) scaled by `s`, multiplied by colour `r,g,b` and alpha `a`
+// (0..255).
 fn blit_crop(
     ui: box<radiance.IUiHost>, sp: ?box<scripting_services.ISprite>,
     x0: float, y0: float, s: float,
     px: float, py: float, w: float, h: float,
-    r: int, g: int, b: int,
+    r: int, g: int, b: int, a: float,
 ) -> int {
     if w <= 0.0 || h <= 0.0 { return 0; }
     if sp == null { return 0; }
@@ -521,7 +550,7 @@ fn blit_crop(
     let sy = y0 + py * s;
     ui.image_rect_tinted(t.com_id(), sx, sy, sx + w * s, sy + h * s,
         t.u0(), v0, u1, t.v1(),
-        (r as float) / 255.0, (g as float) / 255.0, (b as float) / 255.0, 1.0);
+        (r as float) / 255.0, (g as float) / 255.0, (b as float) / 255.0, a / 255.0);
     0
 }
 
@@ -543,6 +572,11 @@ pub fn make_pal3_status_renderer(
         faces.push(sprites.load_sprite(dir + "face01.tga"));
         faces.push(sprites.load_sprite(dir + "face02.tga"));
     }
-    return box(Pal3StatusRendererImpl(sprites, atlas, pal3, bk, hp, mp, faces,
+    let mut state_icons: array<?box<scripting_services.ISprite>> = [];
+    state_icons.push(sprites.load_sprite(FACE_ROOT + "bx.tga"));
+    state_icons.push(sprites.load_sprite(FACE_ROOT + "tm.tga"));
+    state_icons.push(sprites.load_sprite(FACE_ROOT + "sy.tga"));
+    state_icons.push(sprites.load_sprite(FACE_ROOT + "jj.tga"));
+    return box(Pal3StatusRendererImpl(sprites, atlas, pal3, bk, hp, mp, faces, state_icons,
         false, false, -1));
 }

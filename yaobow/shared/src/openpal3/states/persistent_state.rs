@@ -1306,6 +1306,18 @@ impl PersistentState {
         self.maze_effect_timer = 0.;
     }
 
+    /// 角色 0 的状态字节 `k`（27..30 辟邪/退魔/神眼/精进）在不在。
+    pub fn leader_maze_state(&self, k: usize) -> bool {
+        self.roles
+            .get(&0)
+            .is_some_and(|r| k < STATE_BYTES && r.states[k] != 0)
+    }
+
+    /// 迷宫仙宝计时器（`DAT_00c10cd0`）走了多少秒。右上角状态图标按它淡出。
+    pub fn maze_effect_time(&self) -> f32 {
+        self.maze_effect_timer
+    }
+
     /// `FUN_00410580(k)` 的另一支：角色 0 的状态字节 `k` 置 1，计时器归零。
     pub fn set_leader_maze_state(&mut self, k: usize) {
         if let Some(role) = self.roles.get_mut(&0) {

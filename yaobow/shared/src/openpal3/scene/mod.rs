@@ -28,6 +28,7 @@ pub use cvd_entity::{
     play_cvd_subtree, scene_object_initial_play,
 };
 pub use effect::build_effect;
+pub use field_monster::Wards;
 pub use particles::{
     MAX_PARTICLES, Particle, ParticleEffect, ParticleGroup, build_particle_entity, pack_color,
     write_particle_mesh,

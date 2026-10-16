@@ -46,6 +46,18 @@ pub enum Motion {
     Path(Box<Path>),
     /// `+0x4f4 = 7`：沿路径走向层间矩形，要去另一层（`FUN_00413010` 排的）。
     CrossPath(Box<Path>),
+    /// `+0x4f4 = 6`：背着主角跑（退魔时 `FUN_00417850` 排的）。
+    Flee,
+}
+
+/// 0 号角色身上影响野怪的两种冒险状态（用驱魔香 / 狂龙香置位，60 秒后清掉，见
+/// `PersistentState::set_leader_maze_state`）。调用方每帧写。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Wards {
+    /// 状态 27 辟邪（`DAT_00c04667`）：怪看不见主角（`FUN_004178a0` 开头）。
+    pub exorcism: bool,
+    /// 状态 28 退魔（`DAT_00c04668`）：怪发现主角就背着跑，离主角超过发现半径的 1.4 倍就回家。
+    pub repel: bool,
 }
 
 /// 一只野外怪物。
@@ -83,6 +95,8 @@ pub struct FieldMonster {
     repath: u32,
     /// 冻结计数小于 1（`DAT_0058b230`），调用方每帧写。
     pub frozen: bool,
+    /// 辟邪 / 退魔，调用方每帧写。
+    pub wards: Wards,
 }
 
 /// 离怪物这么近直接发现，不看视野（`FUN_004178a0`）。
@@ -148,6 +162,7 @@ impl FieldMonster {
             link: 0,
             repath: 0,
             frozen: false,
+            wards: Wards::default(),
         };
         if levels.move_range != 0 {
             m.start_wander(monster, role);
@@ -191,7 +206,7 @@ impl FieldMonster {
         self.velocity = Vec3::new(0., 0., 0.);
     }
 
-    /// `FUN_004178a0`：看见主角没有。主角得在同一层、离出生点不超过 `+0x594 × 0.8`（原版这个距离
+    /// `FUN_004178a0`：看见主角没有。辟邪时一律看不见。主角得在同一层、离出生点不超过 `+0x594 × 0.8`（原版这个距离
     /// 带着主角的 +8，在地上是 0）；离怪不到 120 直接看见，不到 `+0x598` 且在怪正前方（点积 > 0.7）、
     /// 导航网格上看得见（`FUN_004215b0`）也算。
     pub fn detects<W: Layers>(
@@ -202,7 +217,7 @@ impl FieldMonster {
         player_layer: usize,
         w: &W,
     ) -> bool {
-        if player_layer != self.layer {
+        if self.wards.exorcism || player_layer != self.layer {
             return false;
         }
         let (hx, hz) = (player.x - self.home.0, player.z - self.home.1);
@@ -471,7 +486,8 @@ impl FieldMonster {
         None
     }
 
-    /// 追主角（`FUN_00417850`）：朝主角找路，速度按追的算。
+    /// 追主角（`FUN_00417850`）：朝主角找路，速度按追的算。退魔时不找路，移动方式换成 6（背着主角跑），
+    /// 速度方式 1 照样按追的算。
     #[allow(clippy::too_many_arguments)]
     fn begin_chase<W: Layers>(
         &mut self,
@@ -484,7 +500,11 @@ impl FieldMonster {
         role: &RoleConstants,
     ) {
         self.state = State::Chase;
-        self.chase_path(player, pos, player_layer, true, w, placed);
+        if self.wards.repel {
+            self.motion = Motion::Flee;
+        } else {
+            self.chase_path(player, pos, player_layer, true, w, placed);
+        }
         self.set_speed(monster, role);
     }
 
@@ -508,6 +528,7 @@ impl FieldMonster {
         match self.motion {
             Motion::Still => {}
             Motion::Wander => self.wander_force(facing, rng),
+            Motion::Flee => self.flee_force(pos, player),
             Motion::Path(_) | Motion::CrossPath(_) => {
                 let cross = matches!(self.motion, Motion::CrossPath(_));
                 let (arrived, end) = self.follow_path(pos, facing, w, &mut placed);
@@ -546,11 +567,18 @@ impl FieldMonster {
                 }
             }
             State::Chase => {
-                self.chase_path(player, &here, player_layer, false, w, &mut placed);
-                let here = placed.unwrap_or(*pos);
+                // 退魔：不找路，离主角超过发现半径的 1.4 倍就回（两边的 +8 在地上都是 0）。否则朝主角找路，
                 // 离出生点超过 `+0x594` 就回（这个距离带着怪的 +8，在地上是 0）。
-                let (hx, hz) = (here.x - self.home.0, here.z - self.home.1);
-                if (hx * hx + here.y * here.y + hz * hz).sqrt() > self.leash {
+                let give_up = if self.wards.repel {
+                    Vec3::sub(&here, player).norm() > self.find_radius * 1.4
+                } else {
+                    self.chase_path(player, &here, player_layer, false, w, &mut placed);
+                    let here = placed.unwrap_or(*pos);
+                    let (hx, hz) = (here.x - self.home.0, here.z - self.home.1);
+                    (hx * hx + here.y * here.y + hz * hz).sqrt() > self.leash
+                };
+                let here = placed.unwrap_or(*pos);
+                if give_up {
                     self.state = State::Return;
                     self.target_is_entity = false;
                     let home = Vec3::new(self.home.0, 0., self.home.1);
@@ -627,6 +655,19 @@ impl FieldMonster {
         let mut force = clamp(Vec3::add(&ahead, &steer), self.max_force * 0.3);
         force.y = 0.;
         self.force = force;
+    }
+
+    /// `FUN_00413cd0` case 6 → `FUN_00413390(-1)` → `FUN_00414250`：想要的速度是背着主角、大小为最高速，
+    /// 受力 = 想要的速度 − 现在的速度，截到最大推力。
+    fn flee_force(&mut self, pos: &Vec3, player: &Vec3) {
+        let d = Vec3::sub(player, pos);
+        let n = d.norm();
+        let desired = if n > 0. {
+            Vec3::scalar_mul(-self.max_speed / n, &d)
+        } else {
+            d
+        };
+        self.force = clamp(Vec3::sub(&desired, &self.velocity), self.max_force);
     }
 
     /// `FUN_0041ad40`：照现在的速度 1.4 秒后会出活动范围，就加一把往出生点的力（超出多少 × 1.4），
@@ -779,6 +820,67 @@ mod tests {
         };
         let end = p.points.last().unwrap();
         assert_eq!((end.x, end.z), (1005., 1005.), "终点是出生点那一格的中心");
+    }
+
+    #[test]
+    fn exorcism_hides_the_player_even_up_close() {
+        let mut m = monster(Levels {
+            move_range: 3,
+            ..Default::default()
+        });
+        let w = one(TestGrid::open(200, 200, 10.));
+        let ahead = Vec3::new(0., 0., 1.);
+        m.wards.exorcism = true;
+        assert!(!m.detects(&at(0., 0.), &ahead, &at(0., 10.), 0, &w));
+    }
+
+    #[test]
+    fn repel_makes_it_run_off_and_go_home_past_the_find_radius() {
+        let w = one(TestGrid::open(400, 400, 10.));
+        let mut m = monster(Levels {
+            move_range: 1,
+            move_speed: 1,
+            chase_speed: 1,
+        });
+        m.wards.repel = true;
+        let mut rng = CrtRand::new(3);
+        let (mut pos, mut facing) = (at(0., 0.), Vec3::new(0., 0., 1.));
+        let player = at(0., 50.);
+        advance(&mut m, &w, &mut pos, &mut facing, &player, 0, &mut rng);
+        assert_eq!(m.state, State::Chase);
+        assert!(matches!(m.motion, Motion::Flee));
+        assert_eq!(m.max_speed, 210., "速度照追的算");
+        for _ in 0..30 {
+            advance(&mut m, &w, &mut pos, &mut facing, &player, 0, &mut rng);
+        }
+        assert!(pos.z < HOME.1, "背着主角跑：{pos:?}");
+        // 跑出发现半径的 1.4 倍就回家。
+        let far = Vec3::new(player.x, 0., player.z - m.find_radius * 1.4 - 1.);
+        let (mc, rc) = consts();
+        m.step(0.1, &far, &facing, &player, 0, &mut rng, &w, &mc, &rc);
+        assert_eq!(m.state, State::Return);
+        assert!(matches!(m.motion, Motion::Path(_)));
+    }
+
+    #[test]
+    fn a_fleeing_monster_chases_again_once_repel_wears_off() {
+        let (mc, rc) = consts();
+        let w = one(TestGrid::open(200, 200, 10.));
+        let mut m = monster(Levels {
+            move_range: 1,
+            move_speed: 1,
+            chase_speed: 1,
+        });
+        m.wards.repel = true;
+        let mut rng = CrtRand::new(3);
+        let fwd = Vec3::new(0., 0., 1.);
+        let player = at(0., 50.);
+        m.step(0.1, &at(0., 0.), &fwd, &player, 0, &mut rng, &w, &mc, &rc);
+        assert!(matches!(m.motion, Motion::Flee));
+        m.wards.repel = false;
+        m.step(0.1, &at(0., 0.), &fwd, &player, 0, &mut rng, &w, &mc, &rc);
+        assert_eq!(m.state, State::Chase);
+        assert!(matches!(m.motion, Motion::Path(_)), "没在走路径就直接找路");
     }
 
     /// 按怪的输出把它挪一帧（和 `ScnScene::step_field_monsters` 一样的顺序）。

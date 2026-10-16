@@ -2111,6 +2111,18 @@ impl IPal3ServiceImpl for Pal3Service {
         self.hud_poison.get()
     }
 
+    fn leader_field_states(&self) -> i32 {
+        self.with_persistent_state(0, |s| {
+            (0..4)
+                .filter(|&i| s.leader_maze_state(27 + i))
+                .fold(0, |m, i| m | (1 << i))
+        })
+    }
+
+    fn field_state_time(&self) -> f32 {
+        self.with_persistent_state(0., |s| s.maze_effect_time())
+    }
+
     fn money(&self) -> i32 {
         self.with_persistent_state(0, |s| s.money())
     }

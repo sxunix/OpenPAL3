@@ -775,6 +775,16 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "field_state" => {
+            // [k] —— 用一件迷宫仙宝：27 辟邪 28 退魔 29 神眼 30 精进，31 紫幽粉。
+            if let Some(k) = int_arg(0).filter(|k| (27..=31).contains(k)) {
+                director.debug_field_state(k as usize);
+            }
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "treasure_mouse" => {
             // [] —— 等于在仙宝页用了搜宝鼠（agent 点不了菜单）。
             director.use_treasure_mouse();
