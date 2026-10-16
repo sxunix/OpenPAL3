@@ -870,6 +870,13 @@ interface IUiHost: IUnknown {
                     float u0, float v0, float u1, float v1,
                     float r, float g, float b, float a);
 
+    // `image_rect`, its texels multiplied by `r,g,b,a` (normal alpha blend) —
+    // what a UI window's `SetWndColor` does to its picture.
+    void image_rect_tinted(int texture_com_id,
+                    float x0, float y0, float x1, float y1,
+                    float u0, float v0, float u1, float v1,
+                    float r, float g, float b, float a);
+
     // Draw `s` at absolute position `[x,y]` (top-left) in colour
     // `r,g,b,a`, using the registered LARGE game font (the PAL3 in-game
     // dialog font) when available, falling back to the default font.

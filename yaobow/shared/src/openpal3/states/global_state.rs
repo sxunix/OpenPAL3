@@ -345,6 +345,11 @@ impl GlobalState {
         &mut self.camera
     }
 
+    /// 受控主角现在中的毒（0..4；不中毒是 [`super::poison_walk::NO_POISON`]）。
+    pub fn poison_kind(&self) -> i32 {
+        self.poison_walk.kind()
+    }
+
     pub fn poison_walk_mut(&mut self) -> &mut super::poison_walk::PoisonWalk {
         &mut self.poison_walk
     }

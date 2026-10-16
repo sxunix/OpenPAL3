@@ -1119,6 +1119,43 @@ impl IUiHostImpl for ImguiUiHost {
         });
     }
 
+    fn image_rect_tinted(
+        &self,
+        texture_com_id: i32,
+        x0: f32,
+        y0: f32,
+        x1: f32,
+        y1: f32,
+        u0: f32,
+        v0: f32,
+        u1: f32,
+        v1: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        let _ = with_frame("image_rect_tinted", |f| {
+            let texture_id = f
+                .textures
+                .borrow_mut()
+                .resolve(texture_com_id as i64)
+                .or_else(|| {
+                    (texture_com_id >= 0).then(|| imgui::TextureId::new(texture_com_id as usize))
+                });
+            let Some(texture_id) = texture_id else {
+                return;
+            };
+            let s = if f.dpi_scale > 0.0 { f.dpi_scale } else { 1.0 };
+            f.ui.get_background_draw_list()
+                .add_image(texture_id, [x0 * s, y0 * s], [x1 * s, y1 * s])
+                .uv_min([u0, v0])
+                .uv_max([u1, v1])
+                .col(imgui::ImColor32::from_rgba_f32s(r, g, b, a))
+                .build();
+        });
+    }
+
     fn text_at(&self, x: f32, y: f32, r: f32, g: f32, b: f32, a: f32, s: &str) {
         let _ = with_frame("text_at", |f| {
             // Prefer the registered LARGE game font (the PAL3 in-game

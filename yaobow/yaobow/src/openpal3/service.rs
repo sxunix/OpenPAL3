@@ -252,6 +252,9 @@ pub struct Pal3Service {
     /// a frame by [`Self::pump_pre_update`]. The menu paints from inside
     /// the director's update and can't reach the scene from there.
     item_use_ctx: Cell<UseContext>,
+    /// 右上角头像：受控主角、现在中的毒（每帧在 `refresh_item_use_context` 里抄）。
+    hud_role: Cell<i32>,
+    hud_poison: Cell<i32>,
     /// The SCE procedure a just-used 引路蜂 / 土灵珠 asks for. Queued
     /// rather than run on the spot for the same reason saves are: the
     /// menu is painting inside the director's own update.
@@ -307,6 +310,8 @@ impl Pal3Service {
             debug_layer_handle: RefCell::new(None),
             intro_played: Cell::new(false),
             item_use_ctx: Cell::new(UseContext::default()),
+            hud_role: Cell::new(0),
+            hud_poison: Cell::new(-1),
             pending_item_proc: RefCell::new(None),
             pending_bigmap: Cell::new(false),
             ui_sounds: RefCell::new(Vec::new()),
@@ -828,6 +833,15 @@ impl Pal3Service {
             .sce_vm()
             .state()
             .has_proc(EARTH_PEARL_PROC);
+        {
+            let director = adv.inner::<AdventureDirector>();
+            let vm = director.sce_vm();
+            let gs = vm.global_state();
+            self.hud_role.set(gs.role_controlled().clamp(0, 4));
+            let p = gs.poison_kind();
+            self.hud_poison
+                .set(if (0..=4).contains(&p) { p } else { -1 });
+        }
         self.item_use_ctx.set(ctx);
     }
 
@@ -2087,6 +2101,14 @@ impl IPal3ServiceImpl for Pal3Service {
                 _ => 0,
             }
         })
+    }
+
+    fn controlled_role(&self) -> i32 {
+        self.hud_role.get()
+    }
+
+    fn poison_kind(&self) -> i32 {
+        self.hud_poison.get()
     }
 
     fn money(&self) -> i32 {

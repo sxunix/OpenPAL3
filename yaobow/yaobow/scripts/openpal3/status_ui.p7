@@ -1,16 +1,17 @@
 // PAL3 in-game status indicator (top-right HUD), declarative-UI port.
 //
-// Owns all of its state in p7: it `load_sprite`s the `ui/scene/face`
-// panel art once (`bk.tga` background ring, `hp.tga`/`mp.tga` gauges, and
-// the team-lead avatar `face0` normal/hover/click variants) and holds the
-// handles for its lifetime so the textures stay uploaded. The SCE command
-// loop forwards a per-frame `render_status` call only while the player has
-// control (no SCE running).
+// Mirrors `UISceneFace` (gameui/uisceneface.cpp): a 71x90 window hung off
+// the screen's right edge, 5px down, holding the `bk.tga` ring, the
+// controlled hero's avatar (`face<role>/face00..02.tga`, normal / hover /
+// click) and two `UIProgressBar`s — 精 on `mp.tga`, 神 on `hp.tga`.
+// The engine blits a UI picture 1:1 from its texture's bottom-left corner
+// (bk.tga's art is exactly the 71x90 bottom-left of a 128x128 page), so
+// every piece here is drawn as that crop, scaled uniformly with the panel.
 //
-// HP/MP render full (no HP/MP state exists yet). The avatar swaps variant
-// on mouse-over (hover) / mouse-down (click). Clicking the avatar opens
-// the full-screen character-status (状态) menu, delegated to
-// `state_menu.paint_state_menu`; it closes on its exit button or an
+// The avatar is tinted by the walking poison (`CB_COLOR_*`) and darkened
+// when 精 drops under a quarter. Clicking it shows the click variant for
+// 0.8s, then opens the full-screen character-status (状态) menu, delegated
+// to `state_menu.paint_state_menu`; it closes on its exit button or an
 // outside click. The agent server can also drive it via `set_menu_open`.
 
 import radiance;
@@ -34,32 +35,43 @@ import yaobow.openpal3.lineup_menu as lineup_menu;
 // 侠义榜, likewise.
 import yaobow.openpal3.justicebook_menu as book_menu;
 
-// Panel size as a fraction of framebuffer height. bk.tga is 128x128; the
-// whole HUD is scaled uniformly so its on-screen height = lh * this.
-let ST_PANEL_HEIGHT_FACTOR: float = 0.22;
-// bk.tga has fully-transparent padding (57px right, 38px top). To snap the
-// visible dial flush to the screen's right edge we shift right by that pad;
-// to control the top gap we cancel the top pad and add a small native gap.
-let ST_BK_RIGHT_PAD: float = 57.0;
-let ST_BK_TOP_PAD: float   = 38.0;
-let ST_TOP_GAP_PX: float   = 6.0;
+// HUD scale: the 128px of the old full-page layout spans this fraction of
+// the framebuffer height (kept from the previous tuning, so the dial keeps
+// its size on screen).
+let ST_SCALE_FACTOR: float = 0.22 / 128.0;
+// `UISceneFace::Create`, in window pixels.
+let ST_BK_W: float = 71.0;
+let ST_BK_H: float = 90.0;
+let ST_TOP: float = 5.0;
+let ST_FACE_X: float = 15.0;
+let ST_FACE_Y: float = 4.0;
+let ST_FACE_SIZE: float = 64.0;
+// The bars' `ProgressRc` for `m_radius` 2 (`UIProgressBar::Render`, LEFT):
+// left+2, top+1 .. bottom-2, at most right-2.
+// 精: window (2,1) 50x43.
+let ST_JING_X: float = 4.0;
+let ST_JING_Y: float = 2.0;
+let ST_JING_W: float = 46.0;
+let ST_JING_H: float = 40.0;
+// 神: window (4,48) 43x34.
+let ST_SHEN_X: float = 6.0;
+let ST_SHEN_Y: float = 49.0;
+let ST_SHEN_W: float = 39.0;
+let ST_SHEN_H: float = 31.0;
+// `UIProgressBar::Update`: m_speed 1 * 36 px per second.
+let ST_BAR_SPEED: float = 36.0;
+// `UISceneFace::Update`: the click variant shows this long before the menu.
+let ST_CLICK_DELAY: float = 0.8;
 
-// --- Native-pixel layout (relative to bk's top-left corner, 128px canvas) ---
-// Each element is positioned + sized in bk's native pixels; the whole panel
-// is scaled by (panel / BK_SIZE) to actual screen pixels. Tune these freely.
-let ST_BK_SIZE: float    = 128.0;
-let ST_AVATAR_X: float   = 16.0;
-let ST_AVATAR_Y: float   = 42.0;
-let ST_AVATAR_W: float   = 64.0;
-let ST_AVATAR_H: float   = 64.0;
-let ST_HP_X: float       = 5.0;
-let ST_HP_Y: float       = 17.0;
-let ST_HP_W: float       = 64.0;
-let ST_HP_H: float       = 64.0;
-let ST_MP_X: float       = 6.0;
-let ST_MP_Y: float       = 54.0;
-let ST_MP_W: float       = 64.0;
-let ST_MP_H: float       = 64.0;
+// `CB_COLOR_*` (combat/cbdefine.h), indexed by `poison_kind`:
+// 0 风 1 雷 2 水 3 火 4 土. Wind 0xFF52B66B, thunder 0xFFA466EA, water
+// 0xFF399AAD, fire 0xFFDE7531, earth 0xFFD6AE5A, split into R/G/B.
+let POISON_R: array<int> = [82, 164, 57, 222, 214];
+let POISON_G: array<int> = [182, 102, 154, 117, 174];
+let POISON_B: array<int> = [107, 234, 173, 49, 90];
+
+let FACE_DIR: array<string> = ["face0/", "face1/", "face2/", "face3/", "face4/"];
+let FACE_ROOT: string = "/basedata/basedata/ui/scene/face/";
 
 pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     pub sprites: box<scripting_services.ISpriteService>,
@@ -70,10 +82,10 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     pub bk: ?box<scripting_services.ISprite>,
     pub hp: ?box<scripting_services.ISprite>,
     pub mp: ?box<scripting_services.ISprite>,
-    // Team-lead avatar variants: 0 normal, 1 hover, 2 click.
-    pub face_n: ?box<scripting_services.ISprite>,
-    pub face_h: ?box<scripting_services.ISprite>,
-    pub face_c: ?box<scripting_services.ISprite>,
+    // Avatars of all five heroes, `role * 3 + variant` (0 normal, 1 hover,
+    // 2 click). Loaded up front: `load_sprite` can't run mid-frame (the
+    // texture cache is borrowed while the HUD paints).
+    pub faces: array<?box<scripting_services.ISprite>>,
     // Whether the full-screen character-status menu is open.
     pub menu_open: bool = false,
     // Previous-frame left-button state, for click rising-edge detection.
@@ -93,60 +105,78 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     pub array_state: int = -1,
     // 侠义榜 state (-1 closed; otherwise the book's packed state).
     pub book_state: int = -1,
+    // The bars' current `m_progress`, in window pixels.
+    pub jing_px: float = 0.0,
+    pub shen_px: float = 0.0,
+    // Seconds since the avatar was clicked; -1 when not clicked.
+    pub click_time: float = -1.0,
 ) {
     pub fn render_status(self: refmut<Self>, ui: box<radiance.IUiHost>, dt: float) -> int {
         let lw = ui.display_size_x() as float;
         let lh = ui.display_size_y() as float;
         if lw <= 0.0 || lh <= 0.0 { return 0; }
 
-        let panel = lh * ST_PANEL_HEIGHT_FACTOR;
-        let s = panel / ST_BK_SIZE;
-        // Hang bk's transparent right pad off-screen so the dial is flush
-        // right; cancel its top pad and leave a small native top gap.
-        let x1 = lw + ST_BK_RIGHT_PAD * s;
-        let x0 = x1 - panel;
-        let y0 = (ST_TOP_GAP_PX - ST_BK_TOP_PAD) * s;
-        let y1 = y0 + panel;
+        let s = lh * ST_SCALE_FACTOR;
+        let x0 = lw - ST_BK_W * s;
+        let y0 = ST_TOP * s;
 
-        // Each element is laid out in native px relative to bk's top-left
-        // corner (x0, y0), then scaled by `s`.
-        let ax0 = x0 + ST_AVATAR_X * s;
-        let ay0 = y0 + ST_AVATAR_Y * s;
-        let ax1 = ax0 + ST_AVATAR_W * s;
-        let ay1 = ay0 + ST_AVATAR_H * s;
-        let hx0 = x0 + ST_HP_X * s;
-        let hy0 = y0 + ST_HP_Y * s;
-        let hx1 = hx0 + ST_HP_W * s;
-        let hy1 = hy0 + ST_HP_H * s;
-        let mx0 = x0 + ST_MP_X * s;
-        let my0 = y0 + ST_MP_Y * s;
-        let mx1 = mx0 + ST_MP_W * s;
-        let my1 = my0 + ST_MP_H * s;
+        // `SetFacePic(PlayerMgr::m_underctrl)`.
+        let role = self.pal3.controlled_role();
 
         let pmx = ui.mouse_pos_x();
         let pmy = ui.mouse_pos_y();
         let down = ui.mouse_down(0);
         // Rising edge: pressed this frame but not last.
         let click = down && !self.prev_down;
-        let over = pmx >= x0 && pmx <= x1 && pmy >= y0 && pmy <= y1;
+        let fx0 = x0 + ST_FACE_X * s;
+        let fy0 = y0 + ST_FACE_Y * s;
+        let over = pmx >= fx0 && pmx <= fx0 + ST_FACE_SIZE * s
+            && pmy >= fy0 && pmy <= fy0 + ST_FACE_SIZE * s;
         let was_open = self.menu_open;
 
-        // Decorative variant: click (mouse down over panel) > hover > normal.
-        let mut face = self.face_n;
-        if over {
-            if down { face = self.face_c; } else { face = self.face_h; }
+        // 精 (stat 3/4) and 神 (stat 7/8) of the controlled hero; the bars
+        // walk toward their target at 36 px/s.
+        let jing = self.pal3.role_stat(role, 3);
+        let jing_max = self.pal3.role_stat(role, 4);
+        let shen = self.pal3.role_stat(role, 7);
+        let shen_max = self.pal3.role_stat(role, 8);
+        self.jing_px = bar_step(self.jing_px, bar_target(jing, jing_max, ST_JING_W), dt);
+        self.shen_px = bar_step(self.shen_px, bar_target(shen, shen_max, ST_SHEN_W), dt);
+
+        // Avatar colour: poison tint, then near-death darkening on 精.
+        let mut r = 255;
+        let mut g = 255;
+        let mut b = 255;
+        let poison = self.pal3.poison_kind();
+        if poison >= 0 && poison < 5 {
+            r = POISON_R[poison];
+            g = POISON_G[poison];
+            b = POISON_B[poison];
+        }
+        if jing_max > 0 && jing * 100 / jing_max < 25 {
+            r = r / 4;
+            g = g / 5;
+            b = b / 5;
         }
 
+        // Variant: click (for 0.8s after the press) > hover > normal.
+        let mut variant = 0;
+        if self.click_time >= 0.0 {
+            variant = 2;
+        } else if over {
+            variant = 1;
+        }
+        let face = self.faces[role * 3 + variant];
+
         // Draw the HUD dial first so the full-screen menu (drawn below)
-        // composites OVER it — the menu owns the screen while open.
-        let items: array<box<gui.Element>> = [
-            sprite_rect(self.bk, x0, y0, x1, y1),
-            sprite_rect(face, ax0, ay0, ax1, ay1),
-            sprite_rect(self.hp, hx0, hy0, hx1, hy1),
-            sprite_rect(self.mp, mx0, my0, mx1, my1),
-        ];
-        let root = gui.Stack(items);
-        gui.paint_root(root, ui, gui.make_ctx());
+        // composites OVER it — the menu owns the screen while open. Order
+        // is `UISceneFace`'s child order: bk, face, 精, 神.
+        blit_crop(ui, self.bk, x0, y0, s, 0.0, 0.0, ST_BK_W, ST_BK_H, 255, 255, 255);
+        blit_crop(ui, face, x0, y0, s, ST_FACE_X, ST_FACE_Y, ST_FACE_SIZE, ST_FACE_SIZE, r, g, b);
+        blit_crop(ui, self.hp, x0, y0, s, ST_JING_X, ST_JING_Y, floor(self.jing_px), ST_JING_H,
+            255, 255, 255);
+        blit_crop(ui, self.mp, x0, y0, s, ST_SHEN_X, ST_SHEN_Y, floor(self.shen_px), ST_SHEN_H,
+            255, 255, 255);
 
         // The full-screen menus, painted on top of the HUD. The system
         // menu (save/load/exit) replaces the state menu when the toolbar's
@@ -375,11 +405,19 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
             }
         }
 
-        // Avatar click opens the menu (only when it wasn't already open, so
-        // the menu's own outside-click dismissal isn't instantly undone).
-        if !was_open && !sys_was_open && !prop_was_open && !equip_was_open && !magic_was_open
-            && !sword_was_open && !array_was_open && !book_was_open && over && click {
-            self.menu_open = true;
+        // Avatar click: hold the click variant 0.8s, then open the menu
+        // (only when nothing was open, so the menu's own outside-click
+        // dismissal isn't instantly undone).
+        let any_open = was_open || sys_was_open || prop_was_open || equip_was_open
+            || magic_was_open || sword_was_open || array_was_open || book_was_open;
+        if self.click_time >= 0.0 {
+            self.click_time = self.click_time + dt;
+            if self.click_time > ST_CLICK_DELAY {
+                self.click_time = -1.0;
+                if !self.is_menu_open() { self.menu_open = true; }
+            }
+        } else if !any_open && over && click {
+            self.click_time = 0.0;
         }
         self.prev_down = down;
         // 系统页关着就把存盘点给的「能存」收回。
@@ -429,15 +467,62 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     }
 }
 
-// Place a sprite in the rect `(x0, y0)-(x1, y1)`. The screen-local
-// `SpriteRect` element this used to wrap is gone — `gui.Sprite` is the shared
-// widget for "blit an `ISprite` into the rect the parent assigns", and it is
-// null-safe, so the caller no longer needs its own guard.
-fn sprite_rect(
-    s: ?box<scripting_services.ISprite>,
-    x0: float, y0: float, x1: float, y1: float,
-) -> box<gui.Element> {
-    return gui.Positioned(x0, y0, x1 - x0, y1 - y0, gui.Sprite(s));
+// `UIProgressBar::SetProgress`: the bar length for `cur` of `max`.
+fn bar_target(cur: int, max: int, len: float) -> float {
+    if max <= 0 { return 0.0; }
+    let mut t = (cur as float) * len / (max as float);
+    if t < 0.0 { t = 0.0; }
+    if t > len { t = len; }
+    return t;
+}
+
+// `UIProgressBar::Update`: move `cur` toward `target` by 36 px/s.
+fn bar_step(cur: float, target: float, dt: float) -> float {
+    let d = ST_BAR_SPEED * dt;
+    if cur < target {
+        if cur + d >= target { return target; }
+        return cur + d;
+    }
+    if cur > target {
+        if cur - d <= target { return target; }
+        return cur - d;
+    }
+    return cur;
+}
+
+// `ProgressRc.right` is a RECT long: whole pixels. (p7 has no float->int
+// cast; the bars are under 50px, so count up.)
+fn floor(v: float) -> float {
+    let mut n = 0.0;
+    while n + 1.0 <= v { n = n + 1.0; }
+    return n;
+}
+
+// A UI picture as the engine blits it: the `w`x`h` texels at the bottom-left
+// of the texture, 1:1, at window pixel (`px`, `py`) of the panel at
+// (`x0`, `y0`) scaled by `s`, multiplied by colour `r,g,b` (0..255).
+fn blit_crop(
+    ui: box<radiance.IUiHost>, sp: ?box<scripting_services.ISprite>,
+    x0: float, y0: float, s: float,
+    px: float, py: float, w: float, h: float,
+    r: int, g: int, b: int,
+) -> int {
+    if w <= 0.0 || h <= 0.0 { return 0; }
+    if sp == null { return 0; }
+    let t = sp!;
+    let tw = t.width() as float;
+    let th = t.height() as float;
+    if tw <= 0.0 || th <= 0.0 { return 0; }
+    let du = t.u1() - t.u0();
+    let dv = t.v1() - t.v0();
+    let u1 = t.u0() + du * (w / tw);
+    let v0 = t.v0() + dv * ((th - h) / th);
+    let sx = x0 + px * s;
+    let sy = y0 + py * s;
+    ui.image_rect_tinted(t.com_id(), sx, sy, sx + w * s, sy + h * s,
+        t.u0(), v0, u1, t.v1(),
+        (r as float) / 255.0, (g as float) / 255.0, (b as float) / 255.0, 1.0);
+    0
 }
 
 pub fn make_pal3_status_renderer(
@@ -445,13 +530,19 @@ pub fn make_pal3_status_renderer(
     atlas: box<openpal3.IPal3UiAtlas>,
     pal3: box<openpal3.IPal3Service>,
 ) -> box<openpal3.IPal3StatusRenderer> {
-    let face = "/basedata/basedata/ui/scene/face/";
-    let bk = sprites.load_sprite(face + "bk.tga");
-    let hp = sprites.load_sprite(face + "mp.tga");
-    let mp = sprites.load_sprite(face + "hp.tga");
-    let face_n = sprites.load_sprite(face + "face0/face00.tga");
-    let face_h = sprites.load_sprite(face + "face0/face01.tga");
-    let face_c = sprites.load_sprite(face + "face0/face02.tga");
-    return box(Pal3StatusRendererImpl(sprites, atlas, pal3, bk, hp, mp, face_n, face_h, face_c,
+    let bk = sprites.load_sprite(FACE_ROOT + "bk.tga");
+    // `hp` is the 精 bar (mp.tga), `mp` the 神 bar (hp.tga) — the original's
+    // names for the two pictures are swapped against what they show.
+    let hp = sprites.load_sprite(FACE_ROOT + "mp.tga");
+    let mp = sprites.load_sprite(FACE_ROOT + "hp.tga");
+    // `face<role>/face0<variant>.tga` (`SetFacePic`'s "face%d\\face%02d").
+    let mut faces: array<?box<scripting_services.ISprite>> = [];
+    for role in Range(0, 5) {
+        let dir = FACE_ROOT + FACE_DIR[role];
+        faces.push(sprites.load_sprite(dir + "face00.tga"));
+        faces.push(sprites.load_sprite(dir + "face01.tga"));
+        faces.push(sprites.load_sprite(dir + "face02.tga"));
+    }
+    return box(Pal3StatusRendererImpl(sprites, atlas, pal3, bk, hp, mp, faces,
         false, false, -1));
 }

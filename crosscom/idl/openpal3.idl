@@ -137,6 +137,12 @@ interface IPal3Service: IUnknown {
     // Returns 0 for an unknown actor or selector.
     int role_stat(int actor_id, int stat);
 
+    // 右上角头像那一块（`UISceneFace`）：受控主角的编号（0..4），没在冒险里是 0。
+    int controlled_role();
+
+    // 受控主角现在中的毒：0 风 1 雷 2 水 3 火 4 土，不中毒是 -1。
+    int poison_kind();
+
     // 金钱.
     int money();
 
