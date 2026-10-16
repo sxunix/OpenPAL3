@@ -1165,8 +1165,13 @@ Later the same day:
 
 Not done: the time-scale effect class is unreachable in the original
 (only combo 508, whose skill_id 0 matches nothing), so it stays skipped.
-Still open: the fly-swatting art (source subgame/KillFlyer is at hand),
-the ski instruction / result boxes, PI24 and the white fade-in.
+Then (2026-10-17): the fly-swatting game follows subgame/KillFlyer
+(flies actually fly now — they used to be born with their own position as
+target and never move —, rotated sprites, the dead sprite, the swatter
+cursor and its original overlap test, the opening "减血N", the result
+box); the ski run gained the help box, fades, PI24 and the result box on
+black. The agent can drive the mouse (`mouse [x, y, action]`), which also
+confirmed the HUD avatar's 0.8 s pressed face before the menu opens.
 
 Screen effects (141) corrected from the source (script/scriptcmd.cpp,
 effect/UnderWater.cpp, GrayScale.cpp) and the exe: 0 is not a "trail"
