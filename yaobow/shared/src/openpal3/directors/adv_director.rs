@@ -2551,7 +2551,7 @@ impl AdventureDirectorProps {
         // 飞完：控制方式还原，缩放回 1、站住；那一转只在特殊动作里画。
         let (angle, scale) = match (done, fly.flag) {
             (true, _) => (0., 1.),
-            // 0x4151f8：角度先截成整数（`__ftol`）再存 +0x540。
+            // 0x4151f8：角度（度）先截成整数（`__ftol`）再存 +0x540。
             (false, 1) => ((90. * k).trunc(), 1. - 0.3 * k),
             (false, _) => ((90. * (1. - k)).trunc(), 0.7 + 0.3 * k),
         };
@@ -2561,7 +2561,7 @@ impl AdventureDirectorProps {
         {
             let mut m = radiance::math::Transform::from_matrix(fly.facing);
             m.scale_local(&Vec3::new(scale, scale, scale))
-                .rotate_axis_angle(&fly.axis, angle)
+                .rotate_axis_angle(&fly.axis, f32::to_radians(angle))
                 .set_position(&p);
             e.transform().borrow_mut().set_matrix(*m.matrix());
             if done {
@@ -3782,9 +3782,10 @@ struct ObjectWalk {
 /// （动作 0x12 `ACT_SITDOWN`），0.5 秒里按 `(1 − cos πt) / 2` 从起点挪到终点，同时绕「归一化(起点 − 终点)
 /// × Y」那根轴转 0 → 90、缩放 1 → 0.7（`flag` 1 飞进去）或 90 → 0、0.7 → 1（`flag` 2 飞出来）；
 /// 画的时候那一转乘在朝向之前（`Role::Render`：`Translate` → `Rotate(角, 轴)` → `Rotate(朝向, Y)` →
-/// `Scale`）。那个 90 是**弧度**：`gbMatrixStack::Rotate` → `gbQuaternion::SetAxisAngle` 按弧度取半角
-/// （`engine/math/gbmath.cpp:788`），所以主角一边飞一边转十几圈——「旋转飞」。exe（0x4151d0 起）
-/// 和源码一样，只多一步把角度截成整数弧度。飞完缩放回 1、站住。
+/// `Scale`）。那个 90 是**度**：`gbQuaternion::SetAxisAngle` 里的 `gbCos` / `gbSin` 是
+/// `cos(π·x / 180)`（`engine/math/gbmath.h:262`），出货的 gbengine.dll（0x10026850）也是
+/// `角 × 0.5 × 0.0174533` 再 `fcos` / `fsin`——主角一边飞一边倒下四分之一圈。exe（0x4151d0 起）
+/// 和源码一样，只多一步把角度截成整数度。飞完缩放回 1、站住。（先前按弧度做成转十几圈，是错的。）
 #[derive(Debug, Clone, Copy)]
 struct PlayerFly {
     from: Vec3,
