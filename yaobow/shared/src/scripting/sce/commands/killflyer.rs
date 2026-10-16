@@ -280,7 +280,7 @@ impl SceCommandMiniGameSwatAFly {
 
 /// 九宫格（`UIStaticFlex::Render`）：角块边长取 min(贴图边长, 半宽, 半高)，0..8 是左上、左下、右下、
 /// 右上、左、下、右、上、中。
-fn draw_flex(
+pub(crate) fn draw_flex(
     list: &imgui::DrawListMut<'_>,
     pieces: &[Option<Rc<Sprite>>],
     r: (i32, i32, i32, i32),

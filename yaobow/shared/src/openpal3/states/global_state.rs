@@ -31,6 +31,8 @@ pub struct GlobalState {
 
     asset_mgr: Rc<AssetManager>,
     bgm_source: Box<dyn AudioMemorySource>,
+    /// 最后一次 `play_bgm` 放的曲名（滑雪这类小游戏换掉音乐、出来时放回去用）。
+    bgm_name: Option<String>,
     sound_sources: Vec<Rc<RefCell<Box<dyn AudioMemorySource>>>>,
     default_scene_bgm: HashMap<String, String>,
     /// `music.txt` `[combat]`: city → battle theme.
@@ -103,6 +105,7 @@ impl GlobalState {
             role_controlled: 0,
             asset_mgr,
             bgm_source,
+            bgm_name: None,
             sound_sources,
             default_scene_bgm,
             combat_bgm,
@@ -192,6 +195,14 @@ impl GlobalState {
         let data = self.asset_mgr.load_music_data(name);
         self.bgm_source.set_data(data, AudioCodec::Mp3);
         self.bgm_source.play(true);
+        self.bgm_name = Some(name.to_string());
+    }
+
+    /// 正在放的背景音乐叫什么（停着就是 `None`）。
+    pub fn playing_bgm(&self) -> Option<String> {
+        (self.bgm_source.state() != AudioSourceState::Stopped)
+            .then(|| self.bgm_name.clone())
+            .flatten()
     }
 
     pub fn play_default_bgm(&mut self) {
