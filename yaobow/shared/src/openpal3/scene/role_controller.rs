@@ -462,6 +462,12 @@ impl RoleController {
         self.active_anim_name.borrow().clone()
     }
 
+    /// 现在这个动作播到了第几秒（循环的动作每圈从 0 起）。
+    pub fn anim_time(&self) -> f32 {
+        self.anim_now()
+            .map_or(0., |a| a.inner::<AnimatedMeshComponent>().morph_time())
+    }
+
     /// 动作的时间倍率（原版 `gbVisNode::SetTimeScale`，跳跃分 4 / 1 / 0 / 2 四档）。
     pub fn set_anim_time_scale(&self, scale: f32) {
         if let Some(anim) = self.anim_now() {

@@ -6,21 +6,26 @@
 //!
 //! 操作照原版：**按住鼠标左键加速，点右键跳**，没有左右操控。Esc 弃权。
 //!
-//! 画面是 800×600 虚拟坐标上的一条示意雪道（进度条式），不是原版那个 3D
-//! 的滑坡——`m22-6.POL` 的场景通路还没接。
+//! 画面照原版：景天踩着剑滑下 `m22-6.pol` 的 3D 雪道（[`crate::openpal3::ski_view`]，命令开始时
+//! 把这个场景压到场景栈顶、结束时弹掉），右上角是计时牌（`Skee_ui`），雪球追上来时右边闪警告。
 
 use std::path::PathBuf;
 
+use std::rc::Rc;
+
+use crate::openpal3::ski_view::SkiView;
 use crate::openpal3::states::ski::{
-    BOOST_MAX, CRUISE_SPEED, Outcome, Phase, Radii, SkiInput, SkiRun, TIME_LIMIT_SECS,
+    Aabb, OBSTACLE_COUNT, Outcome, Shapes, SkiInput, SkiRun, TIME_LIMIT_SECS, TREASURE_COUNT,
 };
 use crate::openpal3::states::ski_path::SkiPath;
 use crate::scripting::sce::commands::appraise::overlay;
+use crate::scripting::sce::commands::encamp::draw_sprite;
 use crate::scripting::sce::{SceCommand, SceState};
 use crosscom::ComRc;
 use imgui::{MouseButton, Ui};
 use radiance::comdef::ISceneManager;
 use radiance::input::Key;
+use radiance::rendering::Sprite;
 
 /// exe 里写死的路径（`s_basedata_Skee_path_ase_005f4d34`）；根目录和
 /// `SkeeScene/Scene/` 下各有一份，内容一样。
@@ -30,8 +35,9 @@ const PATH_CANDIDATES: [&str; 2] = [
 ];
 
 const BALL_POL: &str = "/basedata/basedata/SubGame/Skee/SkeeScene/Ball/Ball.POL";
-const OBSTACLE_POL: &str = "/basedata/basedata/SubGame/Skee/SkeeScene/Obstruct/obstruct0.POL";
-const TREASURE_POL: &str = "/basedata/basedata/SubGame/Skee/SkeeScene/Treasure/Treasure0.POL";
+const OBSTACLE_DIR: &str = "/basedata/basedata/SubGame/Skee/SkeeScene/Obstruct";
+/// 人物（角色 101）的动作文件：开局量身高用 c01，滑 h02、跳 h05 的盒子做碰撞。
+const MAN_DIR: &str = "/basedata/basedata/ROLE/101";
 
 /// 三件能捡的古董。**写死在 exe 里**（`FUN_0052f6c0` 开头把
 /// `0x1783 / 0x178d / 0x1781` 填进 `+0x8a4`），不是从 `skee_sav.sv` 读的
@@ -44,17 +50,49 @@ pub const TREASURE_IDS: [u32; 3] = [6019, 6029, 6017];
 const RESULT_SECONDS: f32 = 3.0;
 
 const TEXT: [f32; 4] = [1., 1., 1., 1.];
-const DIM: [f32; 4] = [0.65, 0.7, 0.8, 1.];
-const SLOPE: [f32; 4] = [0.82, 0.88, 0.95, 1.];
-const BALL: [f32; 4] = [1., 1., 1., 1.];
-const CHASER: [f32; 4] = [0.75, 0.3, 0.25, 1.];
-const OBSTACLE: [f32; 4] = [0.35, 0.25, 0.18, 1.];
-const TREASURE: [f32; 4] = [1., 0.84, 0.2, 1.];
 
-/// 雪道画在这一段虚拟坐标里。
-const TRACK_LEFT: i32 = 60;
-const TRACK_RIGHT: i32 = 740;
-const TRACK_Y: i32 = 380;
+/// `Skee_ui::Create` 的界面（800×600）：计时牌、两位数字、雪球来了的警告。
+const TIME_BK_RECT: (i32, i32, i32, i32) = (681, 0, 800, 92);
+const TIME_TEN_RECT: (i32, i32, i32, i32) = (729, 16, 761, 40);
+const TIME_ONE_RECT: (i32, i32, i32, i32) = (729, 40, 761, 64);
+const WARNING_RECT: (i32, i32, i32, i32) = (644, 200, 700, 264);
+/// 警告两张图每 160 毫秒换一次（`Skee_ui::Update`）。
+const WARNING_FLIP_SECS: f32 = 0.16;
+const TIME_BK: &str = "/basedata/basedata/SubGame/Skee/SkeeTimeBk.tga";
+const WARNING_A: &str = "/basedata/basedata/SubGame/Skee/sb0.tga";
+const WARNING_B: &str = "/basedata/basedata/SubGame/Skee/sb1.tga";
+/// 数字借鉴定小游戏的（`SubGame\Appraise\Number\%d.tga`）。
+const DIGIT_DIR: &str = "/basedata/basedata/SubGame/Appraise/Number";
+
+/// 界面用到的图。
+struct Hud {
+    time_bk: Option<Rc<Sprite>>,
+    digits: Vec<Option<Rc<Sprite>>>,
+    warning: [Option<Rc<Sprite>>; 2],
+}
+
+/// 滑雪的场景和界面；不进 `Clone`，命令复制出去时不带（命令只在虚拟机里跑一份）。
+#[derive(Default)]
+struct Live {
+    view: Option<SkiView>,
+    pushed: bool,
+    hud: Option<Hud>,
+    warning_clock: f32,
+}
+
+impl Clone for Live {
+    fn clone(&self) -> Self {
+        Self::default()
+    }
+}
+
+impl std::fmt::Debug for Live {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Live")
+            .field("pushed", &self.pushed)
+            .finish()
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct SceCommandMiniGameSki {
@@ -64,6 +102,7 @@ pub struct SceCommandMiniGameSki {
     unavailable: bool,
     result_shown: f32,
     settled: bool,
+    live: Live,
 }
 
 impl SceCommandMiniGameSki {
@@ -74,6 +113,7 @@ impl SceCommandMiniGameSki {
             unavailable: false,
             result_shown: 0.,
             settled: false,
+            live: Live::default(),
         }
     }
 
@@ -96,14 +136,37 @@ impl SceCommandMiniGameSki {
             return;
         };
 
-        // 碰撞半径从模型自带的包围盒来。实机 obstruct0..5 和 Treasure0..7
-        // 是同一份 `.POL` 的十四份拷贝，所以读一个就够。
-        let radii = Radii {
-            ball: pol_extent(vfs, BALL_POL).unwrap_or(Radii::SHIPPED.ball),
-            obstacle: pol_extent(vfs, OBSTACLE_POL).unwrap_or(Radii::SHIPPED.obstacle),
-            treasure: pol_extent(vfs, TREASURE_POL).unwrap_or(Radii::SHIPPED.treasure),
-            // 追球那一处原版是 `gbOBBox::GetRadius`。
-            chaser: pol_radius(vfs, BALL_POL).unwrap_or(Radii::SHIPPED.chaser),
+        // 古董用物品自己的模型（`FUN_0052f8e0`：`Item\%s\%s.pol`，`%s` 是物品记录 +0x24 的模型名）。
+        let models: Vec<Option<String>> = TREASURE_IDS
+            .iter()
+            .map(|&id| {
+                state.global_state().game_db().and_then(|db| {
+                    db.item(id)
+                        .and_then(|i| i.model_name.as_str().ok())
+                        .filter(|m| !m.is_empty())
+                })
+            })
+            .collect();
+
+        // 碰撞盒都从模型文件量；读不到的用实机量好的兜底。
+        let fallback = Shapes::shipped();
+        let man = |act: &str| mv3_box(vfs, &format!("{MAN_DIR}/{act}.MV3"));
+        let shapes = Shapes {
+            man_height: man("C01").map_or(fallback.man_height, |b| b.size[1]),
+            man_slide: man("H02").unwrap_or(fallback.man_slide),
+            man_jump: man("H05").unwrap_or(fallback.man_jump),
+            obstacles: std::array::from_fn::<_, OBSTACLE_COUNT, _>(|i| {
+                pol_box(vfs, &format!("{OBSTACLE_DIR}/obstruct{i}.POL"))
+                    .unwrap_or(fallback.obstacles[i])
+            }),
+            treasures: std::array::from_fn::<_, TREASURE_COUNT, _>(|i| {
+                models
+                    .get(i)
+                    .and_then(|m| m.as_ref())
+                    .and_then(|m| pol_box(vfs, &format!("/basedata/basedata/item/{m}/{m}.pol")))
+                    .unwrap_or(fallback.treasures[i])
+            }),
+            ball: pol_box(vfs, BALL_POL).unwrap_or(fallback.ball),
         };
 
         // 原版每件先查一次背包，已经有的就不摆（`FUN_0052ece0`）。
@@ -123,7 +186,21 @@ impl SceCommandMiniGameSki {
             .map(|_| rng.rand15() as u32)
             .collect();
 
-        self.run = Some(SkiRun::new(path, radii, &TREASURE_IDS, &owned, &rand));
+        let run = SkiRun::new(path, shapes, &TREASURE_IDS, &owned, &rand);
+        let asset_mgr = state.asset_mgr().clone();
+        self.live.view = SkiView::new(&asset_mgr, &run, &models, rng.rand15() as u32);
+        if self.live.view.is_none() {
+            log::warn!("Ski: 3D 场景建不起来，只画界面");
+        }
+        let sprite = |p: &str| asset_mgr.load_sprite(PathBuf::from(p));
+        self.live.hud = Some(Hud {
+            time_bk: sprite(TIME_BK),
+            digits: (0..10)
+                .map(|i| sprite(&format!("{DIGIT_DIR}/{i}.tga")))
+                .collect(),
+            warning: [sprite(WARNING_A), sprite(WARNING_B)],
+        });
+        self.run = Some(run);
     }
 
     /// `FUN_00532410`：滑完且还剩至少一秒才把收集品塞进背包。
@@ -155,109 +232,60 @@ impl SceCommandMiniGameSki {
         }
     }
 
-    fn draw(&self, ui: &Ui) {
+    /// 界面（`Skee_ui`）：右上角计时牌和剩余秒数的十位、个位；雪球追上来后（`GiveSomeShow`）右边两张
+    /// 警告图轮换；滑完写结果。
+    fn draw(&mut self, ui: &Ui, delta_sec: f32) {
         let Some(run) = self.run.as_ref() else {
             return;
         };
-        let len = run.path().length().max(1.);
-        let span = (TRACK_RIGHT - TRACK_LEFT) as f32;
-        let at_x = |d: f32| TRACK_LEFT + (d.clamp(0., len) / len * span) as i32;
-
+        let Some(hud) = self.live.hud.as_ref() else {
+            return;
+        };
+        let warning = run.chasing() && run.outcome().is_none();
+        if warning {
+            self.live.warning_clock += delta_sec;
+        }
+        let flip = ((self.live.warning_clock / WARNING_FLIP_SECS) as i32 % 2) as usize;
+        let secs = run.seconds_left.clamp(0, 99) as usize;
+        let result = run.outcome().map(|o| match o {
+            Outcome::Cleared => format!(
+                "滑完了　得 {} 分（{} 件 × 100 ＋ {} 秒 × 30）",
+                run.score(),
+                run.picked().len(),
+                run.seconds_left
+            ),
+            Outcome::Caught => "被后面的雪球追上了　一件也没拿到".to_string(),
+            Outcome::TimedOut => "时间到　一件也没拿到".to_string(),
+        });
         overlay(ui, "Ski", |ui, at, _scale| {
             let list = ui.get_window_draw_list();
-            list.add_rect(at(0, 0), at(800, 600), [0.05, 0.08, 0.14, 0.75])
-                .filled(true)
-                .build();
-
-            // 雪道。
-            list.add_rect(at(TRACK_LEFT, TRACK_Y), at(TRACK_RIGHT, TRACK_Y + 6), SLOPE)
-                .filled(true)
-                .build();
-
-            for o in run.obstacles() {
-                let x = at_x(o.distance);
-                list.add_rect(at(x - 4, TRACK_Y - 22), at(x + 4, TRACK_Y), OBSTACLE)
-                    .filled(true)
-                    .build();
+            draw_sprite(&list, hud.time_bk.as_deref(), TIME_BK_RECT, &at);
+            let digit = |n: usize| hud.digits.get(n).and_then(|d| d.as_deref());
+            draw_sprite(&list, digit(secs / 10), TIME_TEN_RECT, &at);
+            draw_sprite(&list, digit(secs % 10), TIME_ONE_RECT, &at);
+            if warning {
+                draw_sprite(&list, hud.warning[flip].as_deref(), WARNING_RECT, &at);
             }
-            for t in run.treasures() {
-                if !t.present {
-                    continue;
-                }
-                let x = at_x(t.distance);
-                list.add_rect(at(x - 5, TRACK_Y - 74), at(x + 5, TRACK_Y - 64), TREASURE)
-                    .filled(true)
-                    .build();
+            if let Some(text) = &result {
+                list.add_text(at(200, 300), TEXT, text);
             }
-
-            // 追上来那个雪球，过半程才出现。
-            if run.chasing() {
-                let x = at_x(run.chaser);
-                list.add_circle(at(x, TRACK_Y - 14), 11., CHASER)
-                    .filled(true)
-                    .build();
-            }
-
-            // 玩家。跳起来的时候画高一点。
-            let x = at_x(run.travelled);
-            let lift = ((run.height() - run.pos.1) * 0.45) as i32;
-            list.add_circle(at(x, TRACK_Y - 12 - lift), 9., BALL)
-                .filled(true)
-                .build();
-
-            let head = format!(
-                "滑雪　剩 {:>2} 秒　速度 {:>5.1}　收集 {}/{}",
-                run.seconds_left,
-                run.speed,
-                run.picked().len(),
-                run.treasures().len()
-            );
-            list.add_text(at(TRACK_LEFT, 60), TEXT, head);
-
-            let hint = match run.outcome() {
-                Some(Outcome::Cleared) => format!(
-                    "滑完了　得 {} 分（{} 件 × 100 ＋ {} 秒 × 30）",
-                    run.score(),
-                    run.picked().len(),
-                    run.seconds_left
-                ),
-                Some(Outcome::Caught) => "被后面的雪球追上了　一件也没拿到".to_string(),
-                Some(Outcome::TimedOut) => "时间到　一件也没拿到".to_string(),
-                None if !run.chasing() => {
-                    "按住左键加速（过半程才管用）　右键跳　Esc 弃权".to_string()
-                }
-                None => "后面追上来了　按住左键加速　右键跳过障碍".to_string(),
-            };
-            list.add_text(at(TRACK_LEFT, 84), DIM, hint);
-
-            if run.phase() == Phase::Hit {
-                list.add_text(at(TRACK_LEFT, 108), CHASER, "撞上了，正在减速");
-            }
-
-            // 速度条：巡航 10.86 到冲刺上限 28.86。
-            let w = ((run.speed / BOOST_MAX).clamp(0., 1.) * 200.) as i32;
-            list.add_rect(
-                at(TRACK_LEFT, 440),
-                at(TRACK_LEFT + 200, 452),
-                [0.2, 0.24, 0.3, 1.],
-            )
-            .filled(true)
-            .build();
-            list.add_rect(at(TRACK_LEFT, 440), at(TRACK_LEFT + w, 452), SLOPE)
-                .filled(true)
-                .build();
-            let cruise = TRACK_LEFT + (CRUISE_SPEED / BOOST_MAX * 200.) as i32;
-            list.add_rect(at(cruise, 436), at(cruise + 1, 456), CHASER)
-                .filled(true)
-                .build();
         });
+    }
+
+    /// 结束：把滑雪场景从场景栈上弹掉。
+    fn leave(&mut self, scene_manager: &ComRc<ISceneManager>) {
+        if self.live.pushed {
+            scene_manager.pop_scene();
+            self.live.pushed = false;
+        }
+        self.live.view = None;
     }
 }
 
 impl SceCommand for SceCommandMiniGameSki {
     fn update(
         &mut self,
-        _scene_manager: ComRc<ISceneManager>,
+        scene_manager: ComRc<ISceneManager>,
         ui: &Ui,
         state: &mut SceState,
         delta_sec: f32,
@@ -265,9 +293,16 @@ impl SceCommand for SceCommandMiniGameSki {
         if self.run.is_none() && !self.unavailable {
             self.start(state);
         }
+        if !self.live.pushed && !state.fast_forward() {
+            if let Some(view) = &self.live.view {
+                scene_manager.push_scene(view.scene.clone());
+                self.live.pushed = true;
+            }
+        }
 
         // 数据缺了或者快进：照旧只跑收尾过程。
         if self.unavailable || state.fast_forward() {
+            self.leave(&scene_manager);
             self.settle(state);
             if self.end_game_proc > 0 {
                 state.call_proc(self.end_game_proc as u32);
@@ -294,16 +329,20 @@ impl SceCommand for SceCommandMiniGameSki {
 
         let done = if let Some(run) = self.run.as_mut() {
             run.update(delta_sec, input);
+            if let Some(view) = self.live.view.as_mut() {
+                view.update(run, delta_sec);
+            }
             run.outcome().is_some()
         } else {
             true
         };
-        self.draw(ui);
+        self.draw(ui, delta_sec);
 
         if done {
             self.result_shown += delta_sec;
         }
         if quit || (done && self.result_shown >= RESULT_SECONDS) {
+            self.leave(&scene_manager);
             self.settle(state);
             // 原版滑完回冒险模式时 `FUN_00432170(DAT_00dba254, 0)`。
             if self.end_game_proc > 0 {
@@ -320,29 +359,31 @@ fn read_bytes(vfs: &mini_fs::MiniFs, path: &str) -> Option<Vec<u8>> {
     vfs.read_to_end(PathBuf::from(path)).ok()
 }
 
-/// `.POL` 第一个网格的 AABB 三个半轴。
-fn pol_half_extents(vfs: &mini_fs::MiniFs, path: &str) -> Option<(f32, f32, f32)> {
+/// `.POL` 的包围盒（`gbGeomNode::GetOBBox`）：所有网格 AABB 的并。
+fn pol_box(vfs: &mini_fs::MiniFs, path: &str) -> Option<Aabb> {
     let bytes = read_bytes(vfs, path)?;
     let pol = fileformats::pol::read_pol(&mut std::io::Cursor::new(bytes)).ok()?;
-    let mesh = pol.meshes.first()?;
-    let (mn, mx) = (&mesh.aabb_min, &mesh.aabb_max);
-    Some((
-        (mx.x - mn.x) * 0.5,
-        (mx.y - mn.y) * 0.5,
-        (mx.z - mn.z) * 0.5,
-    ))
+    let mut min = [f32::MAX; 3];
+    let mut max = [f32::MIN; 3];
+    for m in &pol.meshes {
+        let (lo, hi) = (&m.aabb_min, &m.aabb_max);
+        for (k, (l, h)) in [(lo.x, hi.x), (lo.y, hi.y), (lo.z, hi.z)]
+            .into_iter()
+            .enumerate()
+        {
+            min[k] = min[k].min(l);
+            max[k] = max[k].max(h);
+        }
+    }
+    (min[0] <= max[0]).then(|| Aabb::from_min_max(min, max))
 }
 
-/// 最大的那个半轴。
-fn pol_extent(vfs: &mini_fs::MiniFs, path: &str) -> Option<f32> {
-    let (x, y, z) = pol_half_extents(vfs, path)?;
-    Some(x.max(y).max(z))
-}
-
-/// 半对角线——原版 `gbOBBox::GetRadius` 那一处用它，这里拿 AABB 顶替 OBB。
-fn pol_radius(vfs: &mini_fs::MiniFs, path: &str) -> Option<f32> {
-    let (x, y, z) = pol_half_extents(vfs, path)?;
-    Some((x * x + y * y + z * z).sqrt())
+/// 一个动作文件的包围盒（`gbMVActorDef::GetCollideOBB`：动作的 `GetBoundBox`，`.mv3` 头里那个）。
+fn mv3_box(vfs: &mini_fs::MiniFs, path: &str) -> Option<Aabb> {
+    let bytes = read_bytes(vfs, path)?;
+    let mv3 = fileformats::mv3::read_mv3(&mut std::io::Cursor::new(bytes)).ok()?;
+    let m = mv3.models.first()?;
+    Some(Aabb::from_min_max(m.aabb_min, m.aabb_max))
 }
 
 /// 一局的时长上限，给别处引用。

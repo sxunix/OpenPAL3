@@ -5,10 +5,11 @@
 //! `FUN_005310c0`（收尾），摆放在 `FUN_0052ed30`，结算在 `FUN_00532410`。
 //! 逆向记录在 `switch/re/notes/ski.md`。
 //!
-//! 一句话说清这个游戏：雪球沿 `Skee_path.ASE` 那条固定路径往下滚，**没有
-//! 左右操控**，玩家只有两个动作——按住左键加速、点右键跳。过了半程之后
-//! 背后会有另一个雪球以同样的巡航速度追上来，被追上就算没滑完。路上摆了
-//! 六个障碍（撞上就减速到停），三件收集品悬在跳起来才够得着的高度。
+//! 一句话说清这个游戏：景天（角色 101）踩着剑沿 `Skee_path.ASE` 那条固定路径往下滑（源码
+//! `subgame/Skee/Skee_slider.cpp`，下面说的「雪球」「球」都是指他——这些注释最早按 exe 读，以为滑的
+//! 是个球），**没有左右操控**，玩家只有两个动作——按住左键加速、点右键跳。过了半程之后背后会有一个
+//! 雪球以同样的巡航速度追上来，被追上就算没滑完。路上摆了六个障碍（撞上就减速到停），三件收集品悬在
+//! 跳起来才够得着的高度。碰撞全是不转的盒子相交（[`Aabb`]）。
 
 use super::ski_path::SkiPath;
 
@@ -40,6 +41,9 @@ pub const GRAVITY: f32 = 0.03;
 
 /// 追上来那个雪球的速度（`+0xe94`，和巡航速度同值）。
 pub const CHASER_SPEED: f32 = CRUISE_SPEED;
+
+/// 过半程之后等多久才放出追来的雪球（`m_WaitBall.Wait(300)`，毫秒）。
+pub const CHASER_DELAY_SECS: f32 = 0.3;
 
 /// 倒计时初值，秒（`+0x11a0 = 0x3b`）。
 pub const TIME_LIMIT_SECS: i32 = 59;
@@ -171,36 +175,84 @@ pub struct Treasure {
     pub present: bool,
 }
 
-/// 各个模型的包围盒半径，都是从 `.POL` 自带的 AABB 算出来的，不是估的。
-///
-/// 原版做的是 OBB 相交（`gbOBBox::IsColOBB`），追球那一处是
-/// `gbOBBox::GetRadius` 比路径距离差。移植端统一用「两个半径之和」做球-球
-/// 判定——**这一步是近似**，盒子的朝向没进来。
-#[derive(Debug, Clone, Copy)]
-pub struct Radii {
-    /// `Ball.POL` 的最大半轴，也就是 `+0x1e4`（决定跳多高、收集品挂多高）。
-    /// 那个球模型三个半轴都是 65.6，本来就是个球。
-    ///
-    /// 原版这个值是从球的 OBB 上取的，取的到底是哪一项还没钉死
-    /// （`FUN_005306a0` 末尾 `+0x1e4 = iStack_1c`）——这里取最大半轴。
-    pub ball: f32,
-    /// `obstruct0.POL` 的最大半轴。
-    pub obstacle: f32,
-    /// `Treasure0.POL` 的最大半轴。实机这十四个 `.POL` 字节完全相同。
-    pub treasure: f32,
-    /// 追上来那个雪球的半径。这一处原版明确调的是 `gbOBBox::GetRadius`，
-    /// 所以取半对角线。
-    pub chaser: f32,
+/// 不转的碰撞盒（`gbOBBox`，滑雪里的盒子都只平移不转）：中心相对物体原点的偏移、三边**全长**
+/// （`engine/physics/gbcollide.h`：`width = xlen`）。
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Aabb {
+    pub center: [f32; 3],
+    pub size: [f32; 3],
 }
 
-impl Radii {
-    /// 实机那几个 `.POL` 量出来的值，装了游戏就该从文件读，这里只是兜底。
-    pub const SHIPPED: Radii = Radii {
-        ball: 65.62,
-        obstacle: 72.38,
-        treasure: 72.38,
-        chaser: 113.56,
-    };
+impl Aabb {
+    pub fn from_min_max(min: [f32; 3], max: [f32; 3]) -> Self {
+        Self {
+            center: [0, 1, 2].map(|k| (min[k] + max[k]) * 0.5),
+            size: [0, 1, 2].map(|k| max[k] - min[k]),
+        }
+    }
+
+    /// `gbOBBox::IsColOBB` 对两个不转的盒子：分离轴只剩三根坐标轴（叉乘轴全是零向量，分不开），
+    /// 每根轴上中心距不超过两边全长之和的一半就是碰上。`at` 是各自物体的位置。
+    pub fn hits(&self, at: (f32, f32, f32), other: &Aabb, other_at: (f32, f32, f32)) -> bool {
+        let a = [at.0, at.1, at.2];
+        let b = [other_at.0, other_at.1, other_at.2];
+        (0..3).all(|k| {
+            let d = (other.center[k] + b[k]) - (self.center[k] + a[k]);
+            d.abs() <= (self.size[k] + other.size[k]) * 0.5
+        })
+    }
+
+    /// 最长的一条边。
+    pub fn longest(&self) -> f32 {
+        self.size[0].max(self.size[1]).max(self.size[2])
+    }
+
+    /// `gbOBBox::GetRadius`：半对角线。
+    pub fn radius(&self) -> f32 {
+        let [x, y, z] = self.size;
+        (x * x + y * y + z * z).sqrt() * 0.5
+    }
+}
+
+/// 各个模型的碰撞盒，都从模型文件读。
+#[derive(Debug, Clone, Copy)]
+pub struct Shapes {
+    /// 开局时人物碰撞盒的高 `box.ylen`（`Skee_slider::LoadSlider`：`Init("101")` 之后、还在第一个
+    /// 动作 c01 上时量的，exe `FUN_005306a0` 末尾存进 `+0x1e4`）。跳的高度上限 `h × 4/3`、古董抬高
+    /// `h + h/3` 都按它。
+    pub man_height: f32,
+    /// 人物的碰撞盒是**当前动作**的包围盒（`gbMVActorDef::GetCollideOBB` = 动作的 `GetBoundBox`）：
+    /// 滑的时候取 h02，跳的时候取 h05 [推断：随机换上的 h03 / h04、摔完起身的 h01 没分开，盒子差得不多]。
+    pub man_slide: Aabb,
+    pub man_jump: Aabb,
+    /// `obstruct0..5.pol` 的盒子（`FUN_0052f800` 里 `GetOBBox`）。
+    pub obstacles: [Aabb; OBSTACLE_COUNT],
+    /// 三件古董各自物品模型的盒子（`FUN_0052f8e0`），和 `ids` 对应。
+    pub treasures: [Aabb; TREASURE_COUNT],
+    /// 追来的雪球 `Ball.pol` 的盒子：追上的判定是两边沿路径的距离差小于它的 `GetRadius`。
+    pub ball: Aabb,
+}
+
+impl Shapes {
+    /// 实机文件量出来的值（人物 c01 / h02 / h05 的 `.mv3` 头、`obstruct0.pol`、`Ball.pol`），装了
+    /// 游戏就该从文件读，这里只是兜底；古董没有现成的量，按障碍那个盒子填。
+    pub fn shipped() -> Self {
+        let obstacle = Aabb {
+            center: [0., 0., 0.],
+            size: [144.76, 29.82, 55.08],
+        };
+        Self {
+            man_height: 76.038,
+            man_slide: Aabb::from_min_max([-7.644, 0.389, -19.256], [22.531, 68.203, 30.775]),
+            man_jump: Aabb::from_min_max([-26.393, -1.057, -17.558], [34.992, 120.942, 34.347]),
+            obstacles: [obstacle; OBSTACLE_COUNT],
+            treasures: [obstacle; TREASURE_COUNT],
+            ball: Aabb {
+                center: [0., 0., 0.],
+                size: [131.24, 131.06, 131.06],
+            },
+        }
+    }
 }
 
 /// 一局滑雪。
@@ -238,15 +290,19 @@ pub struct SkiRun {
     jump_y: f32,
     /// `+0x320`：跳的高度上限。
     ceiling: f32,
-    /// `+0x1e4`：球半径。
+    /// `+0x1e4`：开局量的人高。
     radius: f32,
-    /// 各个模型的包围盒半径。
-    radii: Radii,
+    /// 各个模型的碰撞盒。
+    shapes: Shapes,
 
     /// `+0x2ac`：滚过半程了没有。加速键和追球都要它。
     started: bool,
     /// `+0xe90`：追上来那个雪球滚了多远。
     pub chaser: f32,
+    /// 过半程到放出雪球之间还要等多久（`m_WaitBall.Wait(300)`）。
+    chase_wait: Option<f32>,
+    /// 雪球已经放到雪道上（`m_isShowBall`）。
+    chaser_out: bool,
 
     obstacles: Vec<Obstacle>,
     treasures: Vec<Treasure>,
@@ -265,8 +321,8 @@ impl SkiRun {
     /// 开一局。`ids` 是三个能捡的物品号（`FUN_0052f6c0` 里写死的
     /// `0x1783 / 0x178d / 0x1781`），`owned` 说哪几件背包里已经有了（有的
     /// 就不摆），`rand` 给收集品挑摆放点。
-    pub fn new(path: SkiPath, radii: Radii, ids: &[u32], owned: &[bool], rand: &[u32]) -> Self {
-        let radius = radii.ball;
+    pub fn new(path: SkiPath, shapes: Shapes, ids: &[u32], owned: &[bool], rand: &[u32]) -> Self {
+        let radius = shapes.man_height;
         let points = path.points.len();
 
         let obstacles = obstacle_indices(points)
@@ -318,9 +374,11 @@ impl SkiRun {
             jump_y: start.y,
             ceiling: jump_ceiling(radius),
             radius,
-            radii,
+            shapes,
             started: false,
             chaser: 0.,
+            chase_wait: None,
+            chaser_out: false,
             obstacles,
             treasures,
             seconds_left: TIME_LIMIT_SECS,
@@ -457,20 +515,37 @@ impl SkiRun {
             self.speed += ACCEL;
         }
 
+        self.push_off_obstacle();
         if self.phase != Phase::Hit && self.phase != Phase::Stopping {
             self.collide();
         }
 
-        // 追球：过半程之后按巡航速度往前推，追上就完。
+        // 追球：过半程时记下滑到的距离（`+0x2b0`），300 毫秒后把雪球放到那里（`FUN_0052fb00`），
+        // 从那以后按巡航速度往前滚，追上就完。放出来之前它不动、也追不上。
         if self.started {
-            self.chaser += CHASER_SPEED * dt;
-            if (self.travelled - self.chaser).abs() < self.radii.chaser {
-                self.finish(Outcome::Caught);
-                return;
+            if let Some(wait) = self.chase_wait.as_mut() {
+                *wait -= delta_sec;
+                if *wait <= 0. {
+                    self.chase_wait = None;
+                    self.chaser_out = true;
+                }
+            } else if self.chaser_out {
+                self.chaser += CHASER_SPEED * dt;
+                if (self.travelled - self.chaser).abs() < self.shapes.ball.radius() {
+                    self.finish(Outcome::Caught);
+                    return;
+                }
             }
         } else if self.travelled >= self.path.length() * 0.5 {
             self.started = true;
+            self.chaser = self.travelled;
+            self.chase_wait = Some(CHASER_DELAY_SECS);
         }
+    }
+
+    /// 追来的雪球放到雪道上了没有（画它用）。
+    pub fn chaser_out(&self) -> bool {
+        self.chaser_out
     }
 
     /// `FUN_00530f70`：撞完先掉速，掉到 0 回正常滚。
@@ -544,40 +619,64 @@ impl SkiRun {
         }
     }
 
-    fn collide(&mut self) {
-        let here = (self.pos.0, self.height(), self.pos.2);
+    /// 人物现在的碰撞盒（当前动作的包围盒）。
+    fn man_box(&self) -> Aabb {
+        if self.phase == Phase::Jumping {
+            self.shapes.man_jump
+        } else {
+            self.shapes.man_slide
+        }
+    }
 
-        // 障碍：撞上就进减速状态，并沿路径推过去（原版是 `+0x290 +=
-        // 障碍最大半轴 × 2` 再 `FUN_00531160` 把球贴到那个路径点上）。
-        let reach = self.radii.obstacle + self.radius;
+    /// 摔完刚转回正常滑（`+0x314 == 1`，上一个状态是撞）：还压着哪个障碍，就沿路径往前推它最长边的
+    /// 两倍，再把人贴到那个路径点上（`FUN_00531160`）。原版这一段一直查到「起身」那个动作播完才把
+    /// `+0x314` 清掉；这里推一次就清 [推断：推过去就不再压着，多查几帧也不会再推]。
+    fn push_off_obstacle(&mut self) {
+        if self.prev_phase != Phase::Hit || self.phase != Phase::Rolling {
+            return;
+        }
+        self.prev_phase = Phase::Rolling;
+        let man = self.man_box();
+        let here = (self.pos.0, self.pos.1, self.pos.2);
         let hit = self
             .obstacles
             .iter()
-            .find(|o| distance(here, (o.x, o.y, o.z)) < reach)
-            .copied();
-        if let Some(o) = hit {
-            self.braking = true;
-            self.brake_locked = false;
-            self.set_phase(Phase::Hit);
-            // 原版是等减速状态结束、`+0x314 == 1` 那一帧才推：
-            // `+0x290 += 障碍最大半轴 × 2` 再 `FUN_00531160` 把球贴到那个
-            // 路径点上。这里在撞上的当帧就推过去，省掉「停在障碍里」的
-            // 那段——差别只在停住时球停在障碍前还是障碍后。
-            let _ = o;
-            self.travelled += reach * 2.;
+            .zip(&self.shapes.obstacles)
+            .find(|(o, b)| man.hits(here, b, (o.x, o.y, o.z)))
+            .map(|(_, b)| b.longest());
+        if let Some(longest) = hit {
+            self.travelled += longest * 2.;
             if let Some(p) = self.path.at(self.travelled) {
                 self.pos = p;
             }
+        }
+    }
+
+    fn collide(&mut self) {
+        let here = (self.pos.0, self.height(), self.pos.2);
+        let man = self.man_box();
+
+        // 障碍：撞上就进减速状态（`FUN_00530be0(1)`，`+0x31c = 1` 先掉速）。推过去要等停下来之后，见
+        // [`Self::push_off_obstacle`]。
+        let hit = self
+            .obstacles
+            .iter()
+            .zip(&self.shapes.obstacles)
+            .any(|(o, b)| man.hits(here, b, (o.x, o.y, o.z)));
+        if hit {
+            self.braking = true;
+            self.brake_locked = false;
+            self.set_phase(Phase::Hit);
             return;
         }
 
         // 收集品：背包里已经有的原版就不捡（这里 `present` 已经把这一层
         // 筛掉了），捡到就把模型藏起来、记进这一局的槽。
-        for t in self.treasures.iter_mut() {
+        for (t, b) in self.treasures.iter_mut().zip(&self.shapes.treasures) {
             if !t.present {
                 continue;
             }
-            if distance(here, (t.x, t.y, t.z)) < self.radii.treasure + self.radius {
+            if man.hits(here, b, (t.x, t.y, t.z)) {
                 t.present = false;
                 if !self.picked.contains(&t.id) {
                     self.picked.push(t.id);
@@ -625,7 +724,7 @@ mod tests {
     fn with_spacing(spacing: f32) -> SkiRun {
         SkiRun::new(
             straight(POINTS, spacing),
-            Radii::SHIPPED,
+            Shapes::shipped(),
             &[6019, 6029, 6017],
             &[false; 3],
             &RAND,
@@ -651,12 +750,13 @@ mod tests {
         // 抬高量用的是取整之后的半径：r + r/3，整数除法。
         assert_eq!(treasure_lift(24.), 32.);
         assert_eq!(treasure_lift(10.), 13., "10 + 10/3 = 13，不是 13.33");
-        // 实机球半径 65.62：取整成 65，抬 65 + 21 = 86。
-        assert_eq!(treasure_lift(Radii::SHIPPED.ball), 86.);
+        // 实机人高 76.04：取整成 76，抬 76 + 25 = 101。
+        assert_eq!(treasure_lift(Shapes::shipped().man_height), 101.);
         // 跳的上限是浮点算的 r × 4/3。
         assert!((jump_ceiling(24.) - 32.).abs() < 1e-4);
         assert!(
-            jump_ceiling(Radii::SHIPPED.ball) >= treasure_lift(Radii::SHIPPED.ball),
+            jump_ceiling(Shapes::shipped().man_height)
+                >= treasure_lift(Shapes::shipped().man_height),
             "跳不到收集品那个高度就没法捡"
         );
     }
@@ -679,7 +779,8 @@ mod tests {
 
     #[test]
     fn boosting_only_works_after_halfway() {
-        let mut r = run();
+        // 点距 10：半程之后要过 850 才到下一个障碍，加速前不会撞上。
+        let mut r = with_spacing(10.);
         let input = SkiInput {
             boost: true,
             jump: false,
@@ -693,10 +794,7 @@ mod tests {
             r.update(1. / 60., SkiInput::default());
         }
         assert!(r.chasing());
-        // 半程附近正好有障碍，撞上的时候加速键不管用——等回到正常滚。
-        while r.phase() != Phase::Rolling && r.outcome().is_none() {
-            r.update(1. / 60., SkiInput::default());
-        }
+        assert_eq!(r.phase(), Phase::Rolling);
         let before = r.speed;
         r.update(1. / 60., input);
         assert!(r.speed > before, "过了半程按住左键要加速");
@@ -732,7 +830,7 @@ mod tests {
         }
         assert_eq!(r.phase(), Phase::Rolling, "跳完要落回地面");
         assert!(
-            peak >= jump_ceiling(Radii::SHIPPED.ball) - 1e-3,
+            peak >= jump_ceiling(Shapes::shipped().man_height) - 1e-3,
             "最高只跳到 {peak}"
         );
     }
@@ -776,10 +874,64 @@ mod tests {
     }
 
     #[test]
+    fn a_treasure_overhead_needs_a_jump() {
+        // 古董挂在路面上 101（人高 76 + 25），滑的盒子顶在 68，碰不到；跳起来的盒子（h05，到 121）够得着。
+        let mut r = with_spacing(10.);
+        let t = r.treasures()[0];
+        let below = r.path().at(t.distance).unwrap();
+        r.travelled = t.distance;
+        r.pos = below;
+        r.update(1. / 60., SkiInput::default());
+        assert!(r.picked().is_empty(), "不跳不该捡到");
+
+        let mut r = with_spacing(10.);
+        r.travelled = t.distance - 60.;
+        r.pos = r.path().at(r.travelled).unwrap();
+        r.update(
+            1. / 60.,
+            SkiInput {
+                boost: false,
+                jump: true,
+            },
+        );
+        for _ in 0..600 {
+            r.update(1. / 60., SkiInput::default());
+            if !r.picked().is_empty() || r.phase() != Phase::Jumping {
+                break;
+            }
+        }
+        assert_eq!(r.picked(), &[t.id], "跳起来要捡到");
+    }
+
+    #[test]
+    fn a_tumble_pushes_past_the_obstacle_only_after_stopping() {
+        let mut r = run();
+        let o = r.obstacles()[0];
+        r.travelled = o.distance;
+        r.pos = r.path().at(o.distance).unwrap();
+        r.update(1. / 60., SkiInput::default());
+        assert_eq!(r.phase(), Phase::Hit);
+        let at_hit = r.travelled;
+        assert!(at_hit < o.distance + 10., "撞上的当帧不推");
+        for _ in 0..4000 {
+            r.update(1. / 60., SkiInput::default());
+            if r.phase() == Phase::Rolling {
+                break;
+            }
+        }
+        // 停下来回到正常滑那一帧，还压着障碍就推过最长边的两倍（144.76 × 2）。
+        assert!(
+            r.travelled >= at_hit + 289.,
+            "停下后要推过障碍：{}",
+            r.travelled
+        );
+    }
+
+    #[test]
     fn something_already_in_the_bag_is_not_on_the_slope() {
         let r = SkiRun::new(
             straight(POINTS, 1.),
-            Radii::SHIPPED,
+            Shapes::shipped(),
             &[6019, 6029, 6017],
             &[true, false, false],
             &RAND,
@@ -790,8 +942,8 @@ mod tests {
 
     #[test]
     fn running_out_of_time_pays_nothing() {
-        // 巡航速度 10.86 换算下来约 507 单位/秒，59 秒滚不完这条长道。
-        let mut r = with_spacing(10.);
+        // 巡航速度 10.86 换算下来约 507 单位/秒，59 秒连半程都滚不到（追球还没出来）。
+        let mut r = with_spacing(20.);
         for _ in 0..4200 {
             r.update(1. / 60., SkiInput::default());
             if r.outcome().is_some() {
@@ -805,12 +957,36 @@ mod tests {
     }
 
     #[test]
+    fn the_chaser_starts_where_halfway_was_reached() {
+        let mut r = with_spacing(1.);
+        while !r.chasing() && r.outcome().is_none() {
+            r.update(1. / 60., SkiInput::default());
+        }
+        let half = r.chaser;
+        assert!(
+            (half - r.path().length() * 0.5).abs() < 20.,
+            "记下的是过半程那一刻滑到的距离"
+        );
+        for _ in 0..12 {
+            r.update(1. / 60., SkiInput::default());
+        }
+        assert_eq!(r.chaser, half, "放出来之前不动");
+    }
+
+    #[test]
     fn getting_caught_pays_nothing() {
         let mut r = run();
         // 推到半程之后，把追球贴到身后。
         while !r.chasing() && r.outcome().is_none() {
             r.update(1. / 60., SkiInput::default());
         }
+        // 放出雪球之前追不上。
+        r.update(1. / 60., SkiInput::default());
+        assert!(!r.chaser_out());
+        for _ in 0..30 {
+            r.update(1. / 60., SkiInput::default());
+        }
+        assert!(r.chaser_out(), "过半程 0.3 秒后放出雪球");
         r.chaser = r.travelled;
         r.update(1. / 60., SkiInput::default());
         assert_eq!(r.outcome(), Some(Outcome::Caught));
@@ -821,12 +997,16 @@ mod tests {
     fn rolling_the_whole_path_pays_out() {
         let mut r = run();
         for _ in 0..60_000 {
-            // 一直按加速，才跑得过追球。
+            // 一直按加速，障碍到跟前就跳，才跑得过追球。
+            let ahead = r
+                .obstacles()
+                .iter()
+                .any(|o| (0.0..150.).contains(&(o.distance - r.travelled)));
             r.update(
                 1. / 240.,
                 SkiInput {
                     boost: true,
-                    jump: false,
+                    jump: ahead,
                 },
             );
             if r.outcome().is_some() {

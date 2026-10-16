@@ -775,6 +775,14 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "ski" => {
+            // [] —— 直接开一局滑雪（107），不跑收尾过程。
+            director.start_debug_ski();
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "field_state" => {
             // [k] —— 用一件迷宫仙宝：27 辟邪 28 退魔 29 神眼 30 精进，31 紫幽粉。
             if let Some(k) = int_arg(0).filter(|k| (27..=31).contains(k)) {

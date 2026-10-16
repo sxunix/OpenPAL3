@@ -376,6 +376,16 @@ impl AdventureDirector {
         p.sce_vm.push_debug_command(cmd, scene_manager);
     }
 
+    /// [调试] 直接开一局滑雪（SCE 107），滑完不跑收尾过程。
+    pub fn start_debug_ski(&self) {
+        let mut p = self.props.borrow_mut();
+        let scene_manager = p.scene_manager.clone();
+        let cmd: Box<dyn crate::scripting::sce::SceCommand> = Box::new(
+            crate::scripting::sce::commands::SceCommandMiniGameSki::new(0),
+        );
+        p.sce_vm.push_debug_command(cmd, scene_manager);
+    }
+
     /// [调试] 等于用了一件迷宫仙宝（`FUN_00410580(k)`）：27..30 置 0 号角色的辟邪/退魔/神眼/精进，
     /// 31 撒紫幽粉。agent 点不了道具页。
     pub fn debug_field_state(&self, k: usize) {
