@@ -44,8 +44,8 @@
 //! ——普通 alpha 混合，但 `ColorOp = ADD`，**把顶点色加到贴图上**。
 //! 那个顶点色是每个目的地自己的一种暗色，在 `UIBigMap.cpp` 建控件时逐个
 //! `SetColor` 写死（雪岭镇 (95,71,51)、德阳 (58,80,113)、蜀山 (40,76,93)……
-//! 38 个各不相同）。imgui 只会乘不会加，照搬要给每个图标再烘一张
-//! 「贴图 + 这个颜色」的精灵；这里先用描一圈边顶着，是有意选的。
+//! 38 个各不相同，见 [`bm::HOVER_COLORS`]）。imgui 只会乘不会加，所以加载时给每个图标再烘一张
+//! 「贴图 + 这个颜色」（每个通道加完截到 255，alpha 不变）的精灵，悬停时画它，和原版逐像素一样。
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -79,6 +79,9 @@ pub const MODE_TITLE: i32 = 15;
 pub const MODE_BIGMAP: i32 = 13;
 
 type Tex = Option<Rc<Sprite>>;
+
+/// 按钮按住时加的颜色（`UIButtonEXA` 构造里 `m_surecolor = (10, 10, 10, 255)`）。
+const PRESSED_COLOR: (u8, u8, u8) = (10, 10, 10);
 type Rect = (i32, i32, i32, i32);
 
 /// 两个对话框的 rect（`0x449858` 起），种类 2 是/否、种类 3 提示。
@@ -164,6 +167,10 @@ impl Flash {
 struct BigMapScreen {
     tiles: Vec<Tex>,
     icons: Vec<Tex>,
+    /// 悬停时的图标（贴图 + 那个目的地的颜色）。
+    hover_icons: Vec<Tex>,
+    /// 按住时的图标（贴图 + `m_surecolor` (10, 10, 10)）。
+    pressed_icons: Vec<Tex>,
     spirit: HashMap<&'static str, [Tex; 2]>,
     dlg_bg: Tex,
     yes_tex: [Tex; 3],
@@ -191,6 +198,8 @@ struct BigMapScreen {
     /// 机器（Switch）或者鼠标一直停在窗口角上时，不能因为「贴着边」一直卷。
     mouse_origin: Option<(f32, f32)>,
     mouse_active: bool,
+    /// 左键在哪个目的地上按下的（`UIButtonEXA` 的 `MOUSEDOWN`）；松开时还在它上面才算点了。
+    pressed_on: Option<usize>,
 }
 
 impl BigMapScreen {
@@ -229,6 +238,29 @@ impl BigMapScreen {
                     .then(|| asset_mgr.load_sprite(format!("{ELEMENT_DIR}/{}.tga", d.texture)))
                     .flatten()
             })
+            .collect();
+        // `ui_tex_vcolor.gbf`（`ColorOp = ADD`）画出来的样子：贴图每个通道加上顶点色、截到 255，alpha 不变。
+        let added = |i: usize, (r, g, b): (u8, u8, u8)| -> Tex {
+            if !visible.contains(&i) {
+                return None;
+            }
+            let path = format!("{ELEMENT_DIR}/{}.tga", DESTINATIONS[i].texture);
+            let mut image = asset_mgr.read_picture(path)?;
+            for p in image.pixels_mut() {
+                p.0[0] = p.0[0].saturating_add(r);
+                p.0[1] = p.0[1].saturating_add(g);
+                p.0[2] = p.0[2].saturating_add(b);
+            }
+            Some(Rc::new(Sprite::load_from_image(
+                image,
+                asset_mgr.component_factory().as_ref(),
+            )))
+        };
+        let hover_icons = (0..DESTINATIONS.len())
+            .map(|i| added(i, bm::HOVER_COLORS[i]))
+            .collect();
+        let pressed_icons = (0..DESTINATIONS.len())
+            .map(|i| added(i, PRESSED_COLOR))
             .collect();
         let spirit = ["LU", "RU", "LD", "RD"]
             .into_iter()
@@ -293,6 +325,8 @@ impl BigMapScreen {
         Self {
             tiles,
             icons,
+            hover_icons,
+            pressed_icons,
             spirit,
             dlg_bg,
             yes_tex,
@@ -317,6 +351,7 @@ impl BigMapScreen {
             walking: None,
             dialog: None,
             last_mouse: (-1., -1.),
+            pressed_on: None,
             mouse_origin: None,
             mouse_active: false,
         }
@@ -404,10 +439,10 @@ impl BigMapScreen {
                 } else {
                     "LU"
                 };
-                self.draw(ui, None);
+                self.draw(ui, None, None);
                 return Some(i);
             }
-            self.draw(ui, None);
+            self.draw(ui, None, None);
             return None;
         }
 
@@ -453,9 +488,16 @@ impl BigMapScreen {
                     self.cursor = i;
                     self.pad_used = false;
                 }
+                // `UIButtonEXA::Update`：按下（`_1stClick`）进 `MOUSEDOWN`，松开时鼠标还在这个按钮上才
+                // 发 `UIWM_COMMAND`。
+                let released = ui.is_mouse_released(MouseButton::Left);
                 if click {
-                    if let Some(i) = hovered {
-                        self.activate(i);
+                    self.pressed_on = hovered;
+                } else if released {
+                    if let Some(i) = self.pressed_on.take() {
+                        if hovered == Some(i) {
+                            self.activate(i);
+                        }
                     }
                 } else if !self.visible.is_empty() {
                     let n = self.visible.len();
@@ -480,7 +522,10 @@ impl BigMapScreen {
         }
 
         let hover = self.hovered(mx, my);
-        self.draw(ui, hover);
+        let pressed = self
+            .pressed_on
+            .filter(|_| ui.is_mouse_down(MouseButton::Left));
+        self.draw(ui, hover, pressed);
         None
     }
 
@@ -503,7 +548,7 @@ impl BigMapScreen {
         }
     }
 
-    fn draw(&self, ui: &Ui, hover: Option<usize>) {
+    fn draw(&self, ui: &Ui, hover: Option<usize>, pressed: Option<usize>) {
         overlay(ui, "BigMap", |ui, at, _scale| {
             let list = ui.get_window_draw_list();
             let (vx, vy) = (self.view.0 as i32, self.view.1 as i32);
@@ -515,7 +560,29 @@ impl BigMapScreen {
             let alpha = self.flash.alpha as f32 / 255.;
             for &i in &self.visible {
                 let r = self.screen_rect(&DESTINATIONS[i]);
-                let Some(icon) = self.icons[i].as_deref() else {
+                let lit = hover == Some(i) || (self.pad_used && i == self.cursor);
+                let lit = lit && self.walking.is_none();
+                // 鼠标按在上面（`MOUSEDOWN`）：「贴图 + (10, 10, 10)」，画在右下挪 2 的框里，贴图坐标
+                // 仍按原框取（`UIRenderQuad(m_rect, drawrc, m_surecolor, …)`）。悬停（`MOUSEON`）：
+                // 「贴图 + 这个目的地的颜色」。
+                // 按下之后移开也还是按下的样子（`m_state` 不跟着 `mouseon` 变），直到松开。
+                let down = pressed == Some(i) && self.walking.is_none();
+                if down {
+                    if let Some(icon) = self.pressed_icons[i].as_deref() {
+                        let (uv0, uv1) = super::encamp::sprite_uv(icon, r);
+                        list.add_image(icon.imgui_texture_id(), at(r.0 + 2, r.1 + 2), at(r.2, r.3))
+                            .uv_min(uv0)
+                            .uv_max(uv1)
+                            .build();
+                        continue;
+                    }
+                }
+                let icon = if lit {
+                    self.hover_icons[i].as_deref().or(self.icons[i].as_deref())
+                } else {
+                    self.icons[i].as_deref()
+                };
+                let Some(icon) = icon else {
                     continue;
                 };
                 if self.flashing.contains(&i) {
@@ -527,14 +594,6 @@ impl BigMapScreen {
                         .build();
                 } else {
                     draw_sprite(&list, Some(icon), r, at);
-                }
-                let lit = hover == Some(i) || (self.pad_used && i == self.cursor);
-                if lit && self.walking.is_none() {
-                    // 原版是把目的地自己那种暗色「加」到图标上（见模块开头），
-                    // 这里先描一圈边顶着。
-                    list.add_rect(at(r.0, r.1), at(r.2, r.3), [1., 0.92, 0.45, 1.])
-                        .thickness(2.)
-                        .build();
                 }
             }
 
