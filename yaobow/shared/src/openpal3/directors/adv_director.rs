@@ -2306,10 +2306,10 @@ impl AdventureDirectorProps {
     /// 脚步声。原版 `FUN_0041eb80`：按主角的移动模式挑走或跑那一套，
     /// 再按脚下 nav 格的地面类型（第 5 字节）挑 a–d 里的一个，循环播；
     /// 和上一帧同一条就不管，换了就停旧的播新的，停下来就停掉。
-    fn step_footstep(&mut self, moving_direction: &Vec3, throw: f32) {
-        // 只看有没有输入。原版挑的是角色的移动模式，撞墙走不动时模式
-        // 也还在「走」上，声音不停。
-        let mode = (moving_direction.norm() > 0.5).then(|| player_mode(throw));
+    ///
+    /// 主角能动时只看有没有输入（原版挑的是角色的移动模式，撞墙走不动时模式也还在「走」上，声音不停，
+    /// 和按输入等价）；过场里看受控主角正在走还是跑（脚本让他走），见 [`Self::scripted_footstep_mode`]。
+    fn step_footstep(&mut self, mode: Option<crate::openpal3::states::role_move::MoveMode>) {
         let wanted = footstep::sound_name(mode, self.player_floor_type());
 
         match (&self.footstep, &wanted) {
@@ -2317,7 +2317,8 @@ impl AdventureDirectorProps {
             (Some((playing, _)), Some(name)) if playing == name => return,
             _ => {}
         }
-        if let Some((_, source)) = self.footstep.take() {
+        if let Some((name, source)) = self.footstep.take() {
+            log::debug!("脚步声：{name} 停");
             source.borrow_mut().stop();
             self.sce_vm.global_state_mut().remove_sound_source(source);
         }
@@ -2336,6 +2337,21 @@ impl AdventureDirectorProps {
             .global_state_mut()
             .add_sound_source(source.clone());
         self.footstep = Some((name, source));
+    }
+
+    /// 过场里受控主角的动作（`Role::GetCurAct`）：走 / 跑放对应的脚步声，别的（站着、播别的动作）不放。
+    fn scripted_footstep_mode(&self) -> Option<crate::openpal3::states::role_move::MoveMode> {
+        use crate::openpal3::scene::{RoleController, RoleState};
+        use crate::openpal3::states::role_move::MoveMode;
+        let player = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)?;
+        let rc = RoleController::get_role_controller(player)?;
+        match rc.inner::<RoleController>().state() {
+            RoleState::Walking => Some(MoveMode::Walk),
+            RoleState::Running => Some(MoveMode::Run),
+            _ => None,
+        }
     }
 
     /// 冒险时的中毒（[`crate::openpal3::states::poison_walk`]）：踩地面中毒、扣精、走满了解毒。
@@ -3367,9 +3383,9 @@ impl AdventureDirectorProps {
         self.step_flexeff(delta_sec);
 
         if !adv_enabled {
-            // [移植] 原版 `FUN_0041eb80` 每帧都按主角的移动方式放脚步声，脚本让主角走时也响；移植端只按
-            // 输入挑，过场里停掉。
-            self.step_footstep(&Vec3::new(0., 0., 0.), 0.);
+            // 原版 `FUN_0041eb80` 每帧都按主角的动作放脚步声，脚本让主角走、跑时也响。
+            let mode = self.scripted_footstep_mode();
+            self.step_footstep(mode);
             // [移植] 过场里把「跳」的图标收起（原版这时不更新它）。
             self.sce_vm.state_mut().set_jump_icon(None);
             return None;
@@ -3442,7 +3458,7 @@ impl AdventureDirectorProps {
             &moving_direction,
             throw,
         );
-        self.step_footstep(&moving_direction, throw);
+        self.step_footstep((moving_direction.norm() > 0.5).then(|| player_mode(throw)));
         // 主角脚下的场景物件（`FUN_00422e40` → `FUN_00420b40`）。
         if !frozen && !locked {
             self.player_on_object(delta_sec);
