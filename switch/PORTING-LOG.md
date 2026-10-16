@@ -1183,3 +1183,21 @@ COLORWRITEENABLE = 3) over a black clear, then Frame.Tga is multiplied
 on (shadow.gbf, DESTCOLOR/ZERO), a yellow memory tone with a vignette.
 Both cover the 3D scene only, under the HUD and fades. The imgui
 renderers (vulkan, switchgl) gained a multiply blend for this.
+
+Menus (2026-10-17): the big map's destination buttons take the exe's
+per-icon hover colour (FUN_004462c0's 38 RGB entries, added on top) and
+the UIButtonEXA press (darkened by 10,10,10 and shifted 2 px, fires on
+release over the same button). The 道具 and 装备 pages now show the
+item's 3D model over the Info panel, spinning at the 98°/s the view
+control is built with (FUN_00439030 writes 98 to +0xf4; Update adds
+98·dt and wraps to 0 past 359); the camera follows the selected item
+(道具: weapon 228/(128,262), plot 200/(128,258), item 0x1915
+160/(128,276), else 160/(128,258); 装备: weapon 228/(128,262), else
+180/(128,258)) and the angle carries over between items as in the
+original. Menu sounds: every page's toolbar plays wa001; 道具 tabs wa001,
+entering 选人 wa002, a one-target item refused on a character wa004;
+装备 plates and tabs wa001, wearing wa002, refused wa004.
+
+Still silent / not drawn: the 仙术, 阵法, 御剑, 侠义榜 and 系统 pages'
+own sounds; the 仙术 page's 3D preview (160/(110,268), model source not
+yet identified) and the 御剑 page's sword and 龙晶石 views.
