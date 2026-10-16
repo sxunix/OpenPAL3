@@ -165,7 +165,11 @@ pub fn paint_item_menu(
         if i == tab { variant = "1"; }
         else { if hover { variant = "2"; } }
         chrome.sprite(ui, atlas, SPR_TAB + TAB_BASE[i] + variant + ".tga", tx0, ty0, s);
-        if hover && click { new_tab = i; }
+        // Any tab click, the open one included, plays wa001 (`0x4a0628`).
+        if hover && click {
+            new_tab = i;
+            pal3.ui_sound(chrome.SND_CLICK);
+        }
     }
     if new_tab != tab {
         tab = new_tab;
@@ -204,7 +208,11 @@ pub fn paint_item_menu(
         // 右键退出选人 [推断: 原版的取消键没定位]。
         if ui.mouse_down(1) { using = false; }
         if plate >= 0 {
+            // A one-target item the clicked character cannot take: the
+            // original (`FUN_0049cf80`) says so and plays wa004.
+            let single = pal3.item_use_target(sel_item) != -1;
             let outcome = pal3.use_item(sel_item, chrome.role_at(pal3, plate));
+            if outcome == 0 && single { pal3.ui_sound(chrome.SND_REFUSE); }
             // 2 = 引路蜂/土灵珠跑过程、搜宝鼠 —— 三支原版都关菜单。
             if outcome == 2 { return CLOSE; }
             if outcome == 1 {
@@ -232,7 +240,14 @@ pub fn paint_item_menu(
                     sel = index;
                     // 点行就进选人态（`FUN_0049c2c0`）；只有恢复和仙宝两页
                     // 的东西能这么用。
-                    if can_enter_use(pal3, tab, item_id) { using = true; }
+                    // The original enters 选人 on a double-click (0x3f0) and
+                    // plays wa002, or wa004 when the item cannot be used
+                    // here. A plain click there is silent, so only the
+                    // accepted case sounds.
+                    if can_enter_use(pal3, tab, item_id) {
+                        if !using { pal3.ui_sound(chrome.SND_ACCEPT); }
+                        using = true;
+                    }
                 }
 
                 pal3.draw_item_name(ui,
@@ -313,7 +328,7 @@ pub fn paint_item_menu(
     }
 
     // ---- Bottom action toolbar -------------------------------------------
-    let hit = chrome.paint_toolbar(ui, atlas, ox, oy, cw, ch, s, mx, my, down, click,
+    let hit = chrome.paint_toolbar(ui, atlas, pal3, ox, oy, cw, ch, s, mx, my, down, click,
         chrome.PAGE_PROP);
     if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
     if hit == chrome.PAGE_STATE { return TO_STATE; }

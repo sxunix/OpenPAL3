@@ -179,7 +179,7 @@ pub fn paint_lineup_menu(
     }
 
     // ---- Bottom action toolbar -------------------------------------------
-    let hit = chrome.paint_toolbar(ui, atlas, ox, oy, cw, ch, s, mx, my, down, click,
+    let hit = chrome.paint_toolbar(ui, atlas, pal3, ox, oy, cw, ch, s, mx, my, down, click,
         chrome.PAGE_ARRAY);
     if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
     if hit == chrome.PAGE_STATE { return TO_STATE; }

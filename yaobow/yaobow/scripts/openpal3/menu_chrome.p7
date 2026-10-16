@@ -77,6 +77,15 @@ pub let PAGE_SYSTEM: int = 7;
 pub let TOOLBAR_EXIT: int = 8;
 pub let TOOLBAR_NONE: int = -1;
 
+// Menu sounds. Each page keeps its own table of the same eight names
+// (道具 page 0x5cadc4, 装备 page 0x5c936c, ...): wa001 for an ordinary
+// click (toolbar, tabs, switching character), wa002 when an action goes
+// ahead (entering 选人 to use an item, wearing a piece), wa004 when it is
+// refused.
+pub let SND_CLICK: string = "wa001";
+pub let SND_ACCEPT: string = "wa002";
+pub let SND_REFUSE: string = "wa004";
+
 pub let SPR_STPBARL: string = "ui/GameMainUI/Communal/StpCtl/StpBarL.tga";
 pub let SPR_STPBARM: string = "ui/GameMainUI/Communal/StpCtl/StpBarM.tga";
 pub let SPR_STPBARR: string = "ui/GameMainUI/Communal/StpCtl/StpBarR.tga";
@@ -156,7 +165,12 @@ pub fn paint_frame(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
 //
 // The exit button is tested FIRST: the 系统 medallion's art overlaps the X
 // at the bar's right end and must not steal those clicks.
+//
+// Either click plays wa001: every page's command handler does
+// `FUN_0053df70(<its sound table>[0] = "wa001", 1)` before switching
+// (`FUN_004a5010`) or closing.
 pub fn paint_toolbar(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+                     pal3: box<openpal3.IPal3Service>,
                      ox: float, oy: float, cw: float, ch: float, s: float,
                      mx: float, my: float, down: bool, click: bool, current: int) -> int {
     let tb_y0 = oy + TB_Y * s;
@@ -203,7 +217,11 @@ pub fn paint_toolbar(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas
     blit(ui, atlas, SPR_EXIT + ex_variant + ".tga", ex_x0, ex_y0, ex_x0 + EX_W * s, ex_y0 + EX_H * s);
 
     if click {
-        if on_exit { return TOOLBAR_EXIT; }
+        if on_exit {
+            pal3.ui_sound(SND_CLICK);
+            return TOOLBAR_EXIT;
+        }
+        if hit != TOOLBAR_NONE { pal3.ui_sound(SND_CLICK); }
         return hit;
     }
     return TOOLBAR_NONE;

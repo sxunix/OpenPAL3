@@ -308,6 +308,10 @@ interface IPal3Service: IUnknown {
     // original.
     void spin_model_view(int key, float deg_per_sec);
 
+    // Play a UI sound effect by name (`wa001` …), the way the menu pages'
+    // command handlers do (`FUN_0053df70(name, 1)` + `FUN_0053e2e0`).
+    void ui_sound(&str name);
+
     void draw_combat_actor_name(IUiHost ui, int actor_id, float x, float y,
         float size, float r, float g, float b, float a);
     void draw_combat_actor_description(IUiHost ui, int actor_id, float x,

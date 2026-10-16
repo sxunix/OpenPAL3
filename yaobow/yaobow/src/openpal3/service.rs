@@ -1756,6 +1756,10 @@ impl IPal3ServiceImpl for Pal3Service {
         slot.view.finished()
     }
 
+    fn ui_sound(&self, name: &str) -> () {
+        self.play_ui_sound(name);
+    }
+
     fn spin_model_view(&self, key: i32, deg_per_sec: f32) -> () {
         if let Some(slot) = self.model_views.borrow().get(&key) {
             slot.view.set_spin(deg_per_sec);
