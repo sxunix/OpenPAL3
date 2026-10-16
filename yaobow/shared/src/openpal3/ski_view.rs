@@ -228,7 +228,6 @@ pub struct SkiView {
     man: ComRc<IEntity>,
     board: Option<ComRc<IEntity>>,
     ball: Option<ComRc<IEntity>>,
-    obstacles: Vec<ComRc<IEntity>>,
     treasures: Vec<Option<ComRc<IEntity>>>,
     tags: HashMap<&'static str, Vec<TagFrame>>,
     pose: Pose,
@@ -298,22 +297,19 @@ impl SkiView {
         if let Some(b) = &ball {
             b.set_visible(false);
         }
-        let obstacles = run
-            .obstacles()
-            .iter()
-            .enumerate()
-            .filter_map(|(i, o)| {
-                let e = pol(
-                    &format!("{OBSTACLE_DIR}/obstruct{i}.pol"),
-                    &format!("SKEE_OBSTRUCT_{i}"),
-                )?;
-                // `Render`：`Translate(m_nodePos[i])`，不转。
-                e.transform()
-                    .borrow_mut()
-                    .set_matrix(translate(&Vec3::new(o.x, o.y, o.z)));
-                Some(e)
-            })
-            .collect();
+        // 障碍不动，摆好交给场景就行。
+        for (i, o) in run.obstacles().iter().enumerate() {
+            let Some(e) = pol(
+                &format!("{OBSTACLE_DIR}/obstruct{i}.pol"),
+                &format!("SKEE_OBSTRUCT_{i}"),
+            ) else {
+                continue;
+            };
+            // `Render`：`Translate(m_nodePos[i])`，不转。
+            e.transform()
+                .borrow_mut()
+                .set_matrix(translate(&Vec3::new(o.x, o.y, o.z)));
+        }
         // 古董用物品自己的模型：`FUN_0052f8e0` 拼 `Item\%s\%s.pol`（`%s` 是物品记录 +0x24 的模型名）。
         let treasures = run
             .treasures()
@@ -342,7 +338,6 @@ impl SkiView {
             man,
             board,
             ball,
-            obstacles,
             treasures,
             tags,
             pose: Pose::Sliding,

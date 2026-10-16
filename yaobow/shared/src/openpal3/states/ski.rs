@@ -290,8 +290,6 @@ pub struct SkiRun {
     jump_y: f32,
     /// `+0x320`：跳的高度上限。
     ceiling: f32,
-    /// `+0x1e4`：开局量的人高。
-    radius: f32,
     /// 各个模型的碰撞盒。
     shapes: Shapes,
 
@@ -373,7 +371,6 @@ impl SkiRun {
             jump_vel: JUMP_SPEED,
             jump_y: start.y,
             ceiling: jump_ceiling(radius),
-            radius,
             shapes,
             started: false,
             chaser: 0.,
