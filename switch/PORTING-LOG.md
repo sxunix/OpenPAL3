@@ -1129,9 +1129,10 @@ real fights are not representative.
 - 引路蜂 (opcode 154, the 75 _YLF_ procs): the bee DXA flies from the
   hero to the tile at NPC walk speed, 80 above the floor, shadow on the
   ground, and disappears on arrival.
-- 食人花 rotate-fly: crouch (j03), spin about (start - end) x Y by a whole
-  number of radians up to 90 (gbQuaternion takes radians, so ~14 turns),
-  scale 1 -> 0.7 in / 0.7 -> 1 out.
+- 食人花 rotate-fly: crouch (j03), tip about (start - end) x Y by whole
+  degrees up to 90, scale 1 -> 0.7 in / 0.7 -> 1 out. (First written as
+  radians / ~14 turns; gbCos is cos(π·x/180) and the shipped gbengine.dll
+  multiplies by 0.0174533, so it is degrees — corrected below.)
 - 重楼's transformation switches the battlefield to z39 (old stage model
   hidden, z39 model and lights added).
 - Poison floors (水浸 6 / 沼泽 10 / 熔岩 13 -> 水 / 风 / 火毒) and walking
@@ -1140,7 +1141,30 @@ real fights are not representative.
 - Footsteps (we021/we022 by floor) were written in September but never
   called; now they play.
 
-Still open: the battle time-scale effect class (one effect group, 156),
-the number floating over the hero when hurt outside combat (HeadMsg), the
-HUD face swap on hero switch, footsteps for scripted walking, the screen
-trail effect, the ski slope and fly-swatting textures.
+Later the same day:
+
+- Status HUD follows UISceneFace: the controlled hero's face, 精 / 神 bars
+  (1:1 bottom-left crops, 36 px/s), poison tint (CB_COLOR_*) and
+  near-death darkening, the 辟邪 / 退魔 / 神眼 / 精进 icons fading over
+  the 60 s timer.
+- Field states act on field monsters: 辟邪 hides the hero, 退魔 makes them
+  flee and give up past 1.4 x find radius, 紫幽粉 makes every field
+  encounter 6 monsters.
+- Number font (gbdata\number.tga, 4x3 cells; the minus sign is the
+  clamped leftmost texel column stretched over a cell): the 精 loss
+  floating over the hero (walking poison, trap Obj_Hurt — which now also
+  plays we015..019) and 神眼's monster counts.
+- Footsteps while a script walks / runs the hero.
+- Rotate-fly corrected to 90 degrees.
+- Ski in 3D (SCE 107): 景天 riding the J13 sword down m22-6 with the
+  board on tag_weapon1 (the .mv3 "unknown data" are the tag tracks),
+  obstacles, treasures (the items' own models), the chasing snowball,
+  the follow camera and the timer HUD. Collisions are now the original
+  unrotated boxes (action bound boxes for the man), the push comes after
+  he stops, treasures need a jump, the chaser starts at halfway.
+
+Not done: the time-scale effect class is unreachable in the original
+(only combo 508, whose skill_id 0 matches nothing), so it stays skipped.
+Still open: the screen trail effect (needs a previous-frame target on
+both backends), the fly-swatting art (source subgame/KillFlyer is at
+hand), the ski instruction / result boxes, PI24 and the white fade-in.
