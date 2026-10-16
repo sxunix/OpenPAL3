@@ -89,10 +89,19 @@ impl SceVm {
             }
         }
 
+        // 屏幕效果先画（在淡入淡出黑幕之下），只套在栈顶的冒险场景上。
+        {
+            use crate::openpal3::directors::SceneManagerExtensions;
+            let scene = self
+                .scene_manager
+                .scn_scene()
+                .and_then(|_| self.scene_manager.scene());
+            let ui = self.ui.ui();
+            self.state.render_screen_effect(ui, delta_sec, scene);
+        }
         self.draw_curtain();
 
         let ui = self.ui.ui();
-        self.state.render_screen_effect(ui);
         self.state.render_note(ui, delta_sec);
         self.state.render_msgs(ui, delta_sec);
         self.state.render_jump_icon(ui, delta_sec);

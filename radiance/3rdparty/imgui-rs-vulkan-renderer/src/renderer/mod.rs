@@ -82,6 +82,7 @@ pub struct Renderer {
     pipeline: vk::Pipeline,
     /// Same as `pipeline` but blending `SrcAlpha, One` (local addition).
     additive_pipeline: vk::Pipeline,
+    multiply_pipeline: vk::Pipeline,
     pipeline_layout: vk::PipelineLayout,
     descriptor_set_layout: vk::DescriptorSetLayout,
     fonts_texture: Option<Texture>,
@@ -278,7 +279,7 @@ impl Renderer {
             #[cfg(feature = "dynamic-rendering")]
             dynamic_rendering,
             options,
-            false,
+            vulkan::Blend::Normal,
         )?;
         let additive_pipeline = create_vulkan_pipeline(
             &device,
@@ -288,7 +289,17 @@ impl Renderer {
             #[cfg(feature = "dynamic-rendering")]
             dynamic_rendering,
             options,
-            true,
+            vulkan::Blend::Additive,
+        )?;
+        let multiply_pipeline = create_vulkan_pipeline(
+            &device,
+            pipeline_layout,
+            #[cfg(not(feature = "dynamic-rendering"))]
+            render_pass,
+            #[cfg(feature = "dynamic-rendering")]
+            dynamic_rendering,
+            options,
+            vulkan::Blend::Multiply,
         )?;
 
         // Fonts texture
@@ -330,6 +341,7 @@ impl Renderer {
             allocator,
             pipeline,
             additive_pipeline,
+            multiply_pipeline,
             pipeline_layout,
             descriptor_set_layout,
             fonts_texture: Some(fonts_texture),
@@ -359,20 +371,28 @@ impl Renderer {
         unsafe {
             self.device.destroy_pipeline(self.pipeline, None);
             self.device.destroy_pipeline(self.additive_pipeline, None);
+            self.device.destroy_pipeline(self.multiply_pipeline, None);
         }
         self.pipeline = create_vulkan_pipeline(
             &self.device,
             self.pipeline_layout,
             render_pass,
             self.options,
-            false,
+            vulkan::Blend::Normal,
         )?;
         self.additive_pipeline = create_vulkan_pipeline(
             &self.device,
             self.pipeline_layout,
             render_pass,
             self.options,
-            true,
+            vulkan::Blend::Additive,
+        )?;
+        self.multiply_pipeline = create_vulkan_pipeline(
+            &self.device,
+            self.pipeline_layout,
+            render_pass,
+            self.options,
+            vulkan::Blend::Multiply,
         )?;
         Ok(())
     }
@@ -631,6 +651,8 @@ impl Renderer {
                         let tag = unsafe { (*raw_cmd).UserCallbackData as usize };
                         let pipeline = if tag == crate::CALLBACK_BLEND_ADDITIVE {
                             Some(self.additive_pipeline)
+                        } else if tag == crate::CALLBACK_BLEND_MULTIPLY {
+                            Some(self.multiply_pipeline)
                         } else if tag == crate::CALLBACK_BLEND_NORMAL {
                             Some(self.pipeline)
                         } else {
@@ -671,6 +693,7 @@ impl Drop for Renderer {
             }
             device.destroy_pipeline(self.pipeline, None);
             device.destroy_pipeline(self.additive_pipeline, None);
+            device.destroy_pipeline(self.multiply_pipeline, None);
             device.destroy_pipeline_layout(self.pipeline_layout, None);
             device.destroy_descriptor_pool(self.descriptor_pool, None);
             self.fonts_texture

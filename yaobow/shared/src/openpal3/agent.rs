@@ -775,6 +775,14 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "screen_effect" => {
+            // [k] —— 下一条 141：0 水下、1 回忆色调、-1 关。
+            director.debug_screen_effect(int_arg(0).unwrap_or(-1) as i32);
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "ski" => {
             // [] —— 直接开一局滑雪（107），不跑收尾过程。
             director.start_debug_ski();

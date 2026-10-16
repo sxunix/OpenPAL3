@@ -1165,6 +1165,16 @@ Later the same day:
 
 Not done: the time-scale effect class is unreachable in the original
 (only combo 508, whose skill_id 0 matches nothing), so it stays skipped.
-Still open: the screen trail effect (needs a previous-frame target on
-both backends), the fly-swatting art (source subgame/KillFlyer is at
-hand), the ski instruction / result boxes, PI24 and the white fade-in.
+Still open: the fly-swatting art (source subgame/KillFlyer is at hand),
+the ski instruction / result boxes, PI24 and the white fade-in.
+
+Screen effects (141) corrected from the source (script/scriptcmd.cpp,
+effect/UnderWater.cpp, GrayScale.cpp) and the exe: 0 is not a "trail"
+but UnderWater — the scene goes into an offscreen target and comes back
+through a scrolling bump map (V8U8 from 48·cos/sin, BUMPENVMAT 0.01),
+done here as a 48x36 grid of image quads with the same offsets; 1 is
+GrayScale — the scene is drawn with blue writes off (exe FUN_004b6df0:
+COLORWRITEENABLE = 3) over a black clear, then Frame.Tga is multiplied
+on (shadow.gbf, DESTCOLOR/ZERO), a yellow memory tone with a vignette.
+Both cover the 3D scene only, under the HUD and fades. The imgui
+renderers (vulkan, switchgl) gained a multiply blend for this.

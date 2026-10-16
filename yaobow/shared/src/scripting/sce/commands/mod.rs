@@ -185,7 +185,7 @@ pub use role_turn_face::SceCommandRoleTurnFace;
 pub use scene_state::{
     SceCommandGetSwitch, SceCommandInitFlower, SceCommandObjectMove, SceCommandObjectNotFromSave,
 };
-pub use screen_effect::SceCommandScreenEffect;
+pub use screen_effect::{ScreenEffect, SceCommandScreenEffect, UnderWater, draw_memory_tint};
 pub use script_run_mode::SceCommandScriptRunMode;
 pub use set_bigmap_element::SceCommandSetBigMapElement;
 pub use show_chat_rest::SceCommandShowChatRest;

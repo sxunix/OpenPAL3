@@ -56,13 +56,23 @@ pub(crate) fn create_vulkan_pipeline_layout(
     Ok(pipeline_layout)
 }
 
+/// Local addition: which blend a pipeline uses. `Additive` is `SrcAlpha, One`
+/// (PAL3's `ui_tex_color.gbf`), `Multiply` is `DstColor, Zero` with the
+/// destination alpha kept (frame-buffer × colour, for PAL3's screen tints).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Blend {
+    Normal,
+    Additive,
+    Multiply,
+}
+
 pub(crate) fn create_vulkan_pipeline(
     device: &Device,
     pipeline_layout: vk::PipelineLayout,
     #[cfg(not(feature = "dynamic-rendering"))] render_pass: vk::RenderPass,
     #[cfg(feature = "dynamic-rendering")] dynamic_rendering: DynamicRendering,
     options: Options,
-    additive: bool,
+    blend: Blend,
 ) -> RendererResult<vk::Pipeline> {
     let entry_point_name = CString::new("main").unwrap();
 
@@ -151,15 +161,24 @@ pub(crate) fn create_vulkan_pipeline(
                 | vk::ColorComponentFlags::A,
         )
         .blend_enable(true)
-        .src_color_blend_factor(vk::BlendFactor::SRC_ALPHA)
-        .dst_color_blend_factor(if additive {
-            vk::BlendFactor::ONE
-        } else {
-            vk::BlendFactor::ONE_MINUS_SRC_ALPHA
+        .src_color_blend_factor(match blend {
+            Blend::Multiply => vk::BlendFactor::DST_COLOR,
+            _ => vk::BlendFactor::SRC_ALPHA,
+        })
+        .dst_color_blend_factor(match blend {
+            Blend::Normal => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+            Blend::Additive => vk::BlendFactor::ONE,
+            Blend::Multiply => vk::BlendFactor::ZERO,
         })
         .color_blend_op(vk::BlendOp::ADD)
-        .src_alpha_blend_factor(vk::BlendFactor::ONE)
-        .dst_alpha_blend_factor(vk::BlendFactor::ONE_MINUS_SRC_ALPHA)
+        .src_alpha_blend_factor(match blend {
+            Blend::Multiply => vk::BlendFactor::ZERO,
+            _ => vk::BlendFactor::ONE,
+        })
+        .dst_alpha_blend_factor(match blend {
+            Blend::Multiply => vk::BlendFactor::ONE,
+            _ => vk::BlendFactor::ONE_MINUS_SRC_ALPHA,
+        })
         .alpha_blend_op(vk::BlendOp::ADD)];
     let color_blending_info = vk::PipelineColorBlendStateCreateInfo::default()
         .logic_op_enable(false)

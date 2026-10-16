@@ -376,6 +376,15 @@ impl AdventureDirector {
         p.sce_vm.push_debug_command(cmd, scene_manager);
     }
 
+    /// [调试] 直接下一条 141（屏幕特效）。
+    pub fn debug_screen_effect(&self, effect: i32) {
+        let mut p = self.props.borrow_mut();
+        let scene_manager = p.scene_manager.clone();
+        let cmd: Box<dyn crate::scripting::sce::SceCommand> =
+            Box::new(crate::scripting::sce::commands::SceCommandScreenEffect::new(effect));
+        p.sce_vm.push_debug_command(cmd, scene_manager);
+    }
+
     /// [调试] 直接开一局滑雪（SCE 107），滑完不跑收尾过程。
     pub fn start_debug_ski(&self) {
         let mut p = self.props.borrow_mut();

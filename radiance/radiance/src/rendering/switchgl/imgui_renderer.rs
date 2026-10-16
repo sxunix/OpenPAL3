@@ -260,6 +260,8 @@ impl SwitchGLImguiRenderer {
                                     GL_ONE,
                                     GL_ONE_MINUS_SRC_ALPHA,
                                 );
+                            } else if tag == crate::imgui::CALLBACK_BLEND_MULTIPLY {
+                                glBlendFuncSeparate(GL_DST_COLOR, GL_ZERO, GL_ZERO, GL_ONE);
                             } else if tag == crate::imgui::CALLBACK_BLEND_NORMAL {
                                 glBlendFuncSeparate(
                                     GL_SRC_ALPHA,

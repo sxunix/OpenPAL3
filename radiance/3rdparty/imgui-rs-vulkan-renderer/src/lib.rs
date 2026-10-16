@@ -150,3 +150,6 @@ pub const CALLBACK_BLEND_ADDITIVE: usize = 0x4144_4431;
 /// `UserCallbackData` of a `RawCallback` that switches back to the normal
 /// alpha-blend pipeline.
 pub const CALLBACK_BLEND_NORMAL: usize = 0x4144_4430;
+/// `UserCallbackData` of a `RawCallback` that switches the following draws to
+/// multiplying the frame buffer (`DstColor, Zero`, destination alpha kept).
+pub const CALLBACK_BLEND_MULTIPLY: usize = 0x4144_4432;

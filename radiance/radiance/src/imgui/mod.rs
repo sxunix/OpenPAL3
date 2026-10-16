@@ -26,6 +26,9 @@ use std::{
 pub const CALLBACK_BLEND_ADDITIVE: usize = 0x4144_4431;
 /// Switches back to the normal alpha blend.
 pub const CALLBACK_BLEND_NORMAL: usize = 0x4144_4430;
+/// Switches to multiplying the frame buffer by the draw's colour
+/// (`DstColor, Zero`, destination alpha kept) — PAL3's screen tints.
+pub const CALLBACK_BLEND_MULTIPLY: usize = 0x4144_4432;
 
 unsafe extern "C" fn blend_marker(_: *const sys::ImDrawList, _: *const sys::ImDrawCmd) {}
 
@@ -63,6 +66,12 @@ fn push_background_blend_marker(tag: usize) {
 /// scripted UI host places its absolutely-positioned art (`image_rect`).
 pub fn push_background_blend_additive() {
     push_background_blend_marker(CALLBACK_BLEND_ADDITIVE);
+}
+
+/// Multiply the frame buffer on the background draw list (see
+/// [`CALLBACK_BLEND_MULTIPLY`]); end with [`push_background_blend_normal`].
+pub fn push_background_blend_multiply() {
+    push_background_blend_marker(CALLBACK_BLEND_MULTIPLY);
 }
 
 /// Back to the normal alpha blend on the background draw list.

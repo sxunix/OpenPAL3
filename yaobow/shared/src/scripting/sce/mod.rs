@@ -140,9 +140,10 @@ pub struct SceState {
     /// 140 开关下雪 — the flag at `0xbfda40` the frame loop tests
     /// before `gbDropGroup::Render`.
     snow: bool,
-    /// 141 设置全局屏幕特效: the full-screen picture to lay over the
-    /// frame, once loaded. `None` when no effect is on.
-    screen_effect: Option<Rc<radiance::rendering::Sprite>>,
+    /// 141 设置全局屏幕特效：水下（0）或回忆色调（1）。
+    screen_effect: crate::scripting::sce::commands::ScreenEffect,
+    /// 水下效果的离屏目标和时钟；目标建好就一直留着（中途析构 Vulkan 会去等已销毁的信号量）。
+    under_water: crate::scripting::sce::commands::UnderWater,
     /// 147 退出游戏到主菜单 asked for the title screen. `FUN_0044f610(4)`
     /// swaps the game's whole state object; here the host has to build
     /// the title director, so the request is parked until it looks.
@@ -255,7 +256,8 @@ impl SceState {
             combat: None,
             snow: false,
             water_magic: false,
-            screen_effect: None,
+            screen_effect: crate::scripting::sce::commands::ScreenEffect::None,
+            under_water: crate::scripting::sce::commands::UnderWater::default(),
             title_requested: false,
             effect_requests: vec![],
             combat_camera_requests: vec![],
@@ -403,35 +405,37 @@ impl SceState {
         self.snow = snow;
     }
 
-    /// 141: put a full-screen picture over everything, or clear it.
-    pub fn set_screen_effect(&mut self, sprite: Option<Rc<radiance::rendering::Sprite>>) {
-        self.screen_effect = sprite;
+    /// 141：开一个屏幕效果，或关掉。
+    pub fn set_screen_effect(&mut self, effect: crate::scripting::sce::commands::ScreenEffect) {
+        self.screen_effect = effect;
     }
 
-    /// Draw the 141 overlay. The original renders a UI quad spanning the
-    /// whole viewport in NDC with uv (0,0)-(1,1) and vertex colour white
-    /// (`gbDynVertBuf::RenderUIQuad` at 0x4b6e20), so it stretches rather
-    /// than fits.
-    pub fn render_screen_effect(&self, ui: &imgui::Ui) {
-        let Some(sprite) = self.screen_effect.as_ref() else {
+    /// 画 141 的效果（`pal3.cpp` 里两者都包着 3D 场景：`GrayScale::Begin` / `UnderWater::Begin` 在场景之前，
+    /// `End` 在场景之后、`Glow` 和界面之前）。这里画进**背景绘制列表、在每帧最前面**，所以盖住场景，
+    /// 压在 HUD、对话框、淡入淡出黑幕之下。`scene` 是栈顶的冒险场景；战斗、小游戏压了别的场景时是
+    /// `None`，原版那些状态也不套这两个效果。
+    pub fn render_screen_effect(
+        &mut self,
+        ui: &imgui::Ui,
+        delta_sec: f32,
+        scene: Option<ComRc<radiance::comdef::IScene>>,
+    ) {
+        use crate::scripting::sce::commands::ScreenEffect;
+        let Some(scene) = scene else {
             return;
         };
-        let size = ui.io().display_size;
-        let _pad = ui.push_style_var(imgui::StyleVar::WindowPadding([0., 0.]));
-        let _border = ui.push_style_var(imgui::StyleVar::WindowBorderSize(0.));
-        ui.window("ScreenEffect")
-            .collapsible(false)
-            .title_bar(false)
-            .resizable(false)
-            .movable(false)
-            .scroll_bar(false)
-            .draw_background(false)
-            .no_inputs()
-            .position([0., 0.], imgui::Condition::Always)
-            .size(size, imgui::Condition::Always)
-            .build(|| {
-                imgui::Image::new(sprite.imgui_texture_id(), size).build(ui);
-            });
+        match &self.screen_effect {
+            ScreenEffect::None => {}
+            ScreenEffect::Memory(frame) => {
+                crate::scripting::sce::commands::draw_memory_tint(ui, frame.as_deref())
+            }
+            ScreenEffect::UnderWater => {
+                self.under_water.update(delta_sec);
+                if let Some(engine) = self.asset_mgr.rendering_engine() {
+                    self.under_water.render(ui, &self.asset_mgr, &engine, scene);
+                }
+            }
+        }
     }
 
     /// 147 asks to leave for the title screen.
