@@ -96,6 +96,7 @@ impl SceVm {
         self.state.render_note(ui, delta_sec);
         self.state.render_msgs(ui, delta_sec);
         self.state.render_jump_icon(ui, delta_sec);
+        self.state.render_number_labels(ui);
         if self.active_commands.len() == 0 {
             loop {
                 match self.state.get_next_cmd() {

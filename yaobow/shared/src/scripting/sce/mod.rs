@@ -59,6 +59,18 @@ impl<T: SceCommand + std::fmt::Debug> SceCommandDebug for T {
 const MSG_TOP: i32 = 0x28;
 const MSG_STEP: i32 = 0x18;
 
+/// 飘字多久淡完（`HeadMsg::Render` 类型 0：`r = t / 2.5`）。
+pub const HEAD_NUMBER_SECS: f32 = 2.5;
+
+/// 数字字体（`GB_FONT_NUMBER`）画的一串字。
+#[derive(Debug, Clone)]
+pub struct NumberLabel {
+    pub text: String,
+    /// 第一个字左下角的归一化坐标（x、y ∈ −1..1，y 朝上）。
+    pub ndc: [f32; 2],
+    pub rgba: [f32; 4],
+}
+
 pub struct SceState {
     asset_mgr: Rc<AssetManager>,
     global_state: GlobalState,
@@ -107,6 +119,13 @@ pub struct SceState {
     /// 图标的帧（`ui\scene\tiao%d.tga`，第一次显示时按编号一直读到没有），和已经显示了多久。
     jump_icon_frames: Option<Vec<std::rc::Rc<radiance::rendering::Sprite>>>,
     jump_icon_clock: f32,
+    /// 头顶飘的扣精数（`HeadMsg` 类型 0）：（文字, 出来了几秒）。位置每帧跟着受控主角，导演投影后
+    /// 放进 [`Self::number_labels`]。
+    head_numbers: Vec<(String, f32)>,
+    /// 这一帧用数字字体画的字（飘字、神眼），导演每帧给。
+    number_labels: Vec<NumberLabel>,
+    /// 数字字体的贴图 `gbdata\number.tga`，第一次画时读。
+    number_font: Option<Option<std::rc::Rc<radiance::rendering::Sprite>>>,
     /// What the dialog box is showing, so the agent snapshot can report
     /// it. The box itself lives in a p7 renderer that cannot be read
     /// back, and an automation driver has no other way to tell "waiting
@@ -229,6 +248,9 @@ impl SceState {
             jump_icon: None,
             jump_icon_frames: None,
             jump_icon_clock: 0.,
+            head_numbers: vec![],
+            number_labels: vec![],
+            number_font: None,
             dialog: None,
             combat: None,
             snow: false,
@@ -663,6 +685,90 @@ impl SceState {
                 list.add_text(at(x, *y - 20), [1., 1., 1., *a], text);
             }
         });
+    }
+
+    /// `PlayerMgr::Hurt` / `Obj_Hurt` 扣了受控主角的精：头顶飘一个 `"%d"`（`HeadMsg` 类型 0）。
+    pub fn push_head_number(&mut self, delta: i32) {
+        self.head_numbers.push((delta.to_string(), 0.));
+    }
+
+    /// 飘字过一帧（`HeadMsg::Update`），返回还在的：（文字, `r` = 出来的秒数 / 2.5）。`Render` 算出的
+    /// alpha 截成字节为 0 就不再画、下一帧去掉。
+    pub fn step_head_numbers(&mut self, dt: f32) -> Vec<(String, f32)> {
+        for m in self.head_numbers.iter_mut() {
+            m.1 += dt;
+        }
+        self.head_numbers
+            .retain(|m| ((1. - m.1 / HEAD_NUMBER_SECS).max(0.) * 255.) as u8 != 0);
+        self.head_numbers
+            .iter()
+            .map(|m| (m.0.clone(), m.1 / HEAD_NUMBER_SECS))
+            .collect()
+    }
+
+    /// 这一帧用数字字体画的字。
+    pub fn set_number_labels(&mut self, labels: Vec<NumberLabel>) {
+        self.number_labels = labels;
+    }
+
+    /// 画数字字体的字（`gbNumberFont::Flush`）：`number.tga` 是 4 × 3 格（0..9、×、空），字 `c` 取第
+    /// `c − '0'` 格，`% 4`、`/ 4` 按 C 截向零。每个字 16 × 16 像素、紧挨着，左下角在给的归一化坐标。
+    /// 负号算出来是 −3：u 落在 −0.75..−0.5，字体效果 `font.gbf` 是 `AddressU = CLAMP`，取的就是贴图最左
+    /// 一列（「0」的左边缘，首行格子中段不透明）横着拉满一格——原版的负号就是这么一道横杠。
+    pub fn render_number_labels(&mut self, ui: &imgui::Ui) {
+        if self.number_labels.is_empty() {
+            return;
+        }
+        let font = self
+            .number_font
+            .get_or_insert_with(|| {
+                self.asset_mgr
+                    .load_sprite("/basedata/basedata/gbdata/number.tga")
+            })
+            .clone();
+        let Some(font) = font else {
+            return;
+        };
+        let texel = 0.5 / font.width().max(1) as f32;
+        let texel_v = 0.5 / font.height().max(1) as f32;
+        // D3D 的 u（或倒过来的 v）出了 0..1 就夹到边上那一行 / 列的中心。
+        let clamp = |a: f32, b: f32, half: f32| {
+            if b <= 0. {
+                (half, half)
+            } else if a >= 1. {
+                (1. - half, 1. - half)
+            } else {
+                (a.max(0.), b.min(1.))
+            }
+        };
+        let [sw, sh] = ui.io().display_size;
+        let labels = std::mem::take(&mut self.number_labels);
+        crate::scripting::sce::commands::overlay(ui, "NumberFont", |ui, _at, scale| {
+            let list = ui.get_window_draw_list();
+            let size = 16. * scale;
+            for l in &labels {
+                let mut x = (l.ndc[0] + 1.) * sw * 0.5;
+                let bottom = (1. - l.ndc[1]) * sh * 0.5;
+                for c in l.text.bytes() {
+                    if (b'!'..=b'~').contains(&c) {
+                        let n = c as i32 - b'0' as i32;
+                        let (col, row) = ((n % 4) as f32, (n / 4) as f32);
+                        let (u0, u1) = clamp(col * 0.25, col * 0.25 + 0.25, texel);
+                        let (v0, v1) = clamp(row / 3., (row + 1.) / 3., texel_v);
+                        list.add_image(
+                            font.imgui_texture_id(),
+                            [x, bottom - size],
+                            [x + size, bottom],
+                        )
+                        .uv_max([u1, v1])
+                        .col(l.rgba)
+                        .build();
+                    }
+                    x += size;
+                }
+            }
+        });
+        self.number_labels = labels;
     }
 
     /// 设主角头上「跳」的图标（`FUN_0041d9a0` → `FUN_00445e70` 开关、`FUN_00445d20` 挪位置）。

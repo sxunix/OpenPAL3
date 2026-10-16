@@ -1252,6 +1252,29 @@ impl ScnScene {
     /// 野外怪物撞上主角（`FUN_00417420` 末尾）：场景里类型 2、带怪物 id、还在场（没藏）的角色，和主角
     /// 高度差 < 24、距离 < 两人碰撞半径之和就开战。离得 ≥ 12 时按朝向判偷袭（`FUN_0041ba10` 各查一次：
     /// 主角面前有没有怪、怪面前有没有主角）——怪看得见主角而主角背对它 = 敌方偷袭（2），反过来 = 我方偷袭（1）。
+    /// 神眼要标的怪（`PlayerMgr::DrawMsg`）：场景里种类 2、在场的角色，给脚下、头顶的点（`GetHeadPos`：
+    /// 位置加碰撞盒高）和 `.scn` 记录里的个数。
+    pub fn far_sight_targets(&self) -> Vec<(Vec3, Vec3, i32)> {
+        let mut out = vec![];
+        for role in &self.scn_file.roles {
+            if !role.is_combat_npc() {
+                continue;
+            }
+            let Some(e) = self.get_role_entity(role.index as i32) else {
+                continue;
+            };
+            if !e.visible() {
+                continue;
+            }
+            let feet = e.transform().borrow().position();
+            let mut head = feet;
+            head.y += RoleController::get_role_controller(e.clone())
+                .map_or(0., |rc| rc.inner::<RoleController>().model_height());
+            out.push((feet, head, role.monster_count() as i32));
+        }
+        out
+    }
+
     pub fn touching_field_monster(
         &self,
         player: &ComRc<IEntity>,

@@ -2357,6 +2357,7 @@ impl AdventureDirectorProps {
         let mut pw = *self.sce_vm.global_state_mut().poison_walk_mut();
         let mut notes = vec![];
         let mut hurt_sound = None;
+        let mut head_number = None;
         {
             let gs = self.sce_vm.global_state_mut();
             let mut ps = gs.persistent_state_mut();
@@ -2370,8 +2371,11 @@ impl AdventureDirectorProps {
             if let Some((hit, snd)) = hit {
                 let d = poison_walk::apply_hit(role, hit);
                 log::debug!("中毒：{:?} 精 {d:+}", hit);
-                if d < 0 && snd {
-                    hurt_sound = poison_walk::hurt_sound(ctrl);
+                if d < 0 {
+                    head_number = Some(d);
+                    if snd {
+                        hurt_sound = poison_walk::hurt_sound(ctrl);
+                    }
                 }
             }
             if cured {
@@ -2383,6 +2387,9 @@ impl AdventureDirectorProps {
         for key in notes {
             log::debug!("中毒：{key}");
             self.sce_vm.state_mut().push_lang_note(&key, "");
+        }
+        if let Some(d) = head_number {
+            self.sce_vm.state_mut().push_head_number(d);
         }
         if let Some(name) = hurt_sound {
             crate::scripting::sce::commands::play_sfx(self.sce_vm.state_mut(), name);
@@ -2706,6 +2713,84 @@ impl AdventureDirectorProps {
     /// `+0x40..+0x48`、`GetRadius` 要乘 0.5，所以 `+0x44` 是**整条 Y 边长，
     /// 即模型高**（和 `lineup_page_layout.md` §177 查到的是同一个字段）——
     /// 移植端用角色模型高是对的。
+    /// 世界坐标投到屏幕的归一化坐标（`gbCamera::PointWorldToScr`）；在镜头背后是 `None`。
+    fn world_to_ndc(&self, p: &Vec3) -> Option<[f32; 2]> {
+        let world = self.scene_manager.scene()?;
+        let cam = world.camera();
+        let m = radiance::math::Mat44::multiplied(cam.projection_matrix(), &cam.view_matrix());
+        let r = m.floats();
+        let v = [p.x, p.y, p.z, 1.];
+        let clip = |i: usize| (0..4).map(|k| r[i][k] * v[k]).sum::<f32>();
+        let w = clip(3);
+        (w > 1e-4).then(|| [clip(0) / w, clip(1) / w])
+    }
+
+    /// 数字字体这一帧要画的字。
+    ///
+    /// - 飘字（`HeadMsg::Render` 类型 0）：每帧从受控主角的位置往上 `64 + 20r` 投下来（r = 秒数 / 2.5），
+    ///   左移 0.1，颜色 (20, 20, 230)，alpha `(1 − r) × 255`。
+    /// - 神眼（0 号角色状态 29，`DAT_00c04669`）：每只在场的野怪头顶印它 `.scn` 记录里的个数，左移 0.05，
+    ///   颜色 (200, 200, 200, 128)。原版只标在视野里的（`m_bInView`，模型没被裁掉）；[推断] 这里按头顶或
+    ///   脚下有一个投在屏幕里算。
+    fn step_number_labels(&mut self, dt: f32) {
+        use crate::scripting::sce::NumberLabel;
+        let rising = self.sce_vm.state_mut().step_head_numbers(dt);
+        let mut labels = vec![];
+        if self.sce_vm.state().combat().is_some_and(|c| c.active) {
+            self.sce_vm.state_mut().set_number_labels(labels);
+            return;
+        }
+        if !rising.is_empty() {
+            if let Some(pos) = self
+                .scene_manager
+                .get_resolved_role(self.sce_vm.state(), -1)
+                .map(|e| e.transform().borrow().position())
+            {
+                for (text, r) in rising {
+                    let p = Vec3::new(pos.x, pos.y + 64. + r * 20., pos.z);
+                    if let Some([x, y]) = self.world_to_ndc(&p) {
+                        let a = ((1. - r).max(0.) * 255.) as u8 as f32 / 255.;
+                        labels.push(NumberLabel {
+                            text,
+                            ndc: [x - 0.1, y],
+                            rgba: [20. / 255., 20. / 255., 230. / 255., a],
+                        });
+                    }
+                }
+            }
+        }
+        let far_sight = self
+            .sce_vm
+            .global_state()
+            .persistent_state()
+            .leader_maze_state(29);
+        if far_sight {
+            if let Some(scene_rc) = self.scene_manager.scn_scene() {
+                let targets = scene_rc
+                    .inner::<crate::openpal3::scene::ScnScene>()
+                    .far_sight_targets();
+                let on_screen = |p: Option<[f32; 2]>| {
+                    p.is_some_and(|[x, y]| (-1.0..=1.0).contains(&x) && (-1.0..=1.0).contains(&y))
+                };
+                for (feet, head, n) in targets {
+                    let at = self.world_to_ndc(&head);
+                    if !on_screen(at) && !on_screen(self.world_to_ndc(&feet)) {
+                        continue;
+                    }
+                    let Some([x, y]) = at else {
+                        continue;
+                    };
+                    labels.push(NumberLabel {
+                        text: n.to_string(),
+                        ndc: [x - 0.05, y],
+                        rgba: [200. / 255., 200. / 255., 200. / 255., 128. / 255.],
+                    });
+                }
+            }
+        }
+        self.sce_vm.state_mut().set_number_labels(labels);
+    }
+
     fn jump_icon_ndc(&self) -> Option<[f32; 2]> {
         let (player, _) = self.jump_spot()?;
         let rc = RoleController::get_role_controller(player.clone())?;
@@ -3272,6 +3357,8 @@ impl AdventureDirectorProps {
         self.step_object_actions(delta_sec);
         // 中毒（`FUN_0040c230`）每帧都推，过场里也推；踩地面中毒只在主角能动时查（`RoleCtrl::UpdateSnd`）。
         self.step_poison(delta_sec, adv_enabled);
+        // 头顶飘字和神眼（`PlayerMgr::UpdateMsg` / `DrawMsg`），过场里也画。
+        self.step_number_labels(delta_sec);
 
         // Weather is drawn over the whole frame in the original, after
         // the scene graph ends, so it keeps running through cutscenes.
@@ -3698,13 +3785,28 @@ const FLY_SECS: f32 = 0.5;
 
 /// 场景物件的动作要碰的主角、模型、音效、冻结计数。
 /// `PlayerMgr::Obj_Hurt(frac)`（`FUN_004101f0(frac, 1, 0)`）：队里每人扣最大精的 `frac`，最少剩 1。
+/// 受控主角扣掉的数在头顶飘出来，再放他的 we015..we019。
 fn obj_hurt(state: &mut crate::scripting::sce::SceState, frac: f32) {
-    let mut p = state.global_state_mut().persistent_state_mut();
-    let team: Vec<u32> = p.team().to_vec();
-    for id in team {
-        if let Some(r) = p.role_mut(id) {
-            let hp = (r.hp as f32 - r.max_hp as f32 * frac) as i32;
-            r.hp = hp.max(1);
+    let ctrl = state.global_state().role_controlled();
+    let mut mine = 0;
+    {
+        let mut p = state.global_state_mut().persistent_state_mut();
+        let team: Vec<u32> = p.team().to_vec();
+        for id in team {
+            if let Some(r) = p.role_mut(id) {
+                let old = r.hp;
+                let hp = (r.hp as f32 - r.max_hp as f32 * frac) as i32;
+                r.hp = hp.max(1);
+                if id as i32 == ctrl {
+                    mine = r.hp - old;
+                }
+            }
+        }
+    }
+    if mine < 0 {
+        state.push_head_number(mine);
+        if let Some(name) = crate::openpal3::states::poison_walk::hurt_sound(ctrl) {
+            crate::scripting::sce::commands::play_sfx(state, name);
         }
     }
 }
