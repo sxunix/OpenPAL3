@@ -1785,8 +1785,8 @@ if (slot->+0x590 < FUN_004db700(slot)) {           // 这一位该走下一个�
   （每次 `rand%3` 两个下标，不同就换），前两只放进第 5、第 7 位。
 * **重楼变身** `HandleChongLouAnamo`：怪物 **738 重楼**在 `ChangeHP`
   里精见底时不走死亡那一支，而是当场 `CreateMonster(同一位, 739)`，
-  并且 `LoadScene("z39")` 换成红场。移植端**变身做了，换场没做**——
-  舞台是整场建一次的，中途换场要整个重搭（`drop_stage` 会把演出状态一起清掉）。
+  并且 `LoadScene("z39")` 换成红场。移植端变身和换场都做了（c8455e18：`swap_stage` 藏起旧舞台、加上 z39 的
+  模型和灯光，不整个重搭）。
 
   为此 `Battle::outcome()` 加了一条：`pending_spawns` 非空时不判赢。原版造人
   是在 `ChangeHP` / `CheckPerRound` 里当场完成的，敌方一刻也没空过；移植端要

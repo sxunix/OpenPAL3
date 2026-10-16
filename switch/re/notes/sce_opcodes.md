@@ -187,9 +187,9 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 102 | `00436f90` | int | GameSwitchRenderingStateCommand | ✓ SceCommandSwitchMode | **实为 `SwitchMode(n)` 全局模式切换**，不是渲染状态；13 = 大地图、0 = 回冒险、15 = 回标题。见 [`bigmap.md`](bigmap.md) |
 | 103 | `00436c60` | int | MiniGameStartPawnshopCommand | ✓ SceCommandMiniGamePawnshop（文字浮层，陈列/休息没做）| 进入当铺经营游戏，参数是**过程号** |
 | 104 | `00437080` | （无） | MiniGameStartAppraisalsCommand | ✓ SceCommandAppraise | 进入鉴定游戏。见 [`appraise_minigame.md`](appraise_minigame.md) |
-| 105 | `004370e0` | （无） | MiniGameStartSwatAFlyCommand | ✓ SceCommandMiniGameSwatAFly（方块占位，没接贴图）| 进入打苍蝇游戏 |
+| 105 | `004370e0` | （无） | MiniGameStartSwatAFlyCommand | ✓ SceCommandMiniGameSwatAFly（照 `KF_Sys` 的贴图、拍子、说明框，见 `killflyer.md`）| 进入打苍蝇游戏 |
 | 106 | `00437120` | int | MiniGameStartEncampCommand | ✓ SceCommandEncamp | 进入宿营游戏，参数是四方象枢方位号 0–3。见 [`encamp.md`](encamp.md) |
-| 107 | `00436f40` | int | MiniGameStartSkiCommand | ✓ SceCommandMiniGameSki（规则全；画面是示意雪道，3D 滑坡没接） | 进入滑雪游戏，参数是**过程号** |
+| 107 | `00436f40` | int | MiniGameStartSkiCommand | ✓ SceCommandMiniGameSki（3D 雪道、说明框 / 结算框，见 `ski.md`） | 进入滑雪游戏，参数是**过程号** |
 | 108 | `004370c0` | int | ScriptVarSetAppraisalsResultCommand | ✓ SceCommandGetAppr | 取出鉴定小游戏的结果并设置给变量 |
 | 109 | `00436fb0` | int | FeatureEnableSwordPurifyingCommand | ✓ SceCommandEnableFeature | 打开或关闭魔剑养成功能， |
 | 110 | `00436fe0` | int | FeatureEnableJusticeBookCommand | ✓ SceCommandEnableFeature | 打开或关闭降妖谱功能， |
@@ -223,7 +223,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 138 | `00437010` | int | FeatureEnableSwordSkillCommand | ✓ SceCommandEnableFeature | 打开或关闭魔剑技功能， |
 | 139 | `004386c0` | float int int int | — | —  |  |
 | 140 | `004387b0` | int | EffectShowSnowCommand | ✓ SceCommandSnow | 开启下雪特效， |
-| 141 | `004388c0` | int | EffectSetScreenEffectCommand | ✓ SceCommandScreenEffect | 设置全局镜头（屏幕）特效， |
+| 141 | `004388c0` | int | EffectSetScreenEffectCommand | ✓ SceCommandScreenEffect（0 水下、1 回忆色调，见 `screen_effect.rs`）| 设置全局镜头（屏幕）特效， |
 | 142 | `00438930` | float float float | EffectSetPositionCommand | ✓ SceCommandEffectPosition | 设置VFX特效位置， |
 | 143 | `004389a0` | int | EffectPlayCommand | ✓ SceCommandPlayCombatEffect | 播放VFX特效， |
 | 144 | `004389d0` | int | EffectAttachToActorCommand | ✓ SceCommandEffectAtRole | 在角色位置播放特效， |
