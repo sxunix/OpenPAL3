@@ -777,7 +777,7 @@ pub(crate) fn draw_sprite_col(
 /// `out.x = x·m00 + y·m10 + z·m20 + m30`），所以 `(1,0,0)` 转到
 /// `(cosθ, sinθ)`——在 +Y 朝上的 NDC 里就是逆时针。
 /// 指针的角度是往下减的，所以画面上看是顺时针转。
-fn draw_rotated_sprite(
+pub(crate) fn draw_rotated_sprite(
     list: &imgui::DrawListMut<'_>,
     sprite: Option<&Sprite>,
     r: Rect,

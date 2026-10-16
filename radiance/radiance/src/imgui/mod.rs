@@ -85,6 +85,21 @@ thread_local! {
     /// 喂给 imgui，合成按键原先只叠在引擎的 `InputEngine` 上，读 imgui 输入的
     /// 界面（宿营、鉴定、对话选项……）收不到。
     static SYNTHETIC_KEYS: RefCell<Vec<(imgui::Key, bool)>> = const { RefCell::new(Vec::new()) };
+    /// 合成鼠标事件（agent 用），同样每帧开头灌进 imgui。
+    static SYNTHETIC_MOUSE: RefCell<Vec<SyntheticMouse>> = const { RefCell::new(Vec::new()) };
+}
+
+/// 一条合成鼠标事件。位置用游戏的 800×600 坐标（按 `min(宽/800, 高/600)` 等比放大、居中，和界面
+/// 那套虚拟坐标一致），灌进去时再换成屏幕像素。
+#[derive(Debug, Clone, Copy)]
+pub enum SyntheticMouse {
+    Move800(f32, f32),
+    Button(usize, bool),
+}
+
+/// 记一条要灌给 imgui 的鼠标事件（下一帧生效）。
+pub fn queue_synthetic_mouse(event: SyntheticMouse) {
+    SYNTHETIC_MOUSE.with(|q| q.borrow_mut().push(event));
 }
 
 /// 记一条要灌给 imgui 的键盘事件（下一帧生效）。同一帧里「按下 + 松开」也行：
@@ -319,6 +334,28 @@ impl ImguiContext {
                     io.backend_flags.insert(imgui::BackendFlags::HAS_GAMEPAD);
                 }
                 io.add_key_event(key, down);
+            }
+        }
+        let mouse = SYNTHETIC_MOUSE.with(|q| std::mem::take(&mut *q.borrow_mut()));
+        if !mouse.is_empty() {
+            let io = context.io_mut();
+            let [sw, sh] = io.display_size;
+            let scale = (sw / 800.).min(sh / 600.);
+            let (ox, oy) = ((sw - 800. * scale) * 0.5, (sh - 600. * scale) * 0.5);
+            for event in mouse {
+                match event {
+                    SyntheticMouse::Move800(x, y) => {
+                        io.add_mouse_pos_event([ox + x * scale, oy + y * scale])
+                    }
+                    SyntheticMouse::Button(b, down) => {
+                        let button = match b {
+                            1 => imgui::MouseButton::Right,
+                            2 => imgui::MouseButton::Middle,
+                            _ => imgui::MouseButton::Left,
+                        };
+                        io.add_mouse_button_event(button, down);
+                    }
+                }
             }
         }
         let ui = context.frame();

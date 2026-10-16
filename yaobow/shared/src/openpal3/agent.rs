@@ -775,6 +775,46 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "mouse" => {
+            // [x, y, 动作] —— 合成鼠标，坐标是 800×600 的游戏坐标；动作 "move" / "down" / "up" /
+            // "click"（左键按下再松开）/ "rclick"。
+            use radiance::imgui::{SyntheticMouse, queue_synthetic_mouse};
+            let x = params.args.first().and_then(|v| v.as_f64()).unwrap_or(400.) as f32;
+            let y = params.args.get(1).and_then(|v| v.as_f64()).unwrap_or(300.) as f32;
+            let action = params
+                .args
+                .get(2)
+                .and_then(|v| v.as_str())
+                .unwrap_or("move");
+            queue_synthetic_mouse(SyntheticMouse::Move800(x, y));
+            match action {
+                "down" => queue_synthetic_mouse(SyntheticMouse::Button(0, true)),
+                "up" => queue_synthetic_mouse(SyntheticMouse::Button(0, false)),
+                "click" => {
+                    queue_synthetic_mouse(SyntheticMouse::Button(0, true));
+                    queue_synthetic_mouse(SyntheticMouse::Button(0, false));
+                }
+                "rclick" => {
+                    queue_synthetic_mouse(SyntheticMouse::Button(1, true));
+                    queue_synthetic_mouse(SyntheticMouse::Button(1, false));
+                }
+                _ => {}
+            }
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "killflyer" => {
+            // [] —— 直接开一局打苍蝇（105）。
+            director.start_debug_command(Box::new(
+                crate::scripting::sce::commands::SceCommandMiniGameSwatAFly::new(),
+            ));
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "screen_effect" => {
             // [k] —— 下一条 141：0 水下、1 回忆色调、-1 关。
             director.debug_screen_effect(int_arg(0).unwrap_or(-1) as i32);

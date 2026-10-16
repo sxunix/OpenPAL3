@@ -20,6 +20,14 @@ pub const FALL_SPEED0: f32 = 0.3;
 pub const FALL_ACCEL: f32 = 0.01;
 /// 越界几次就飞走（`+0x6a0[i]` 加到 2）。
 pub const EDGE_LIMIT: u32 = 2;
+/// 苍蝇画多大（`flyerW` / `flyerH`）。
+pub const FLY_DRAW: f32 = 32.;
+/// 金苍蝇的速度是普通的 1.6 倍（`m_specspeed = m_speed × 1.6`，`m_type != 0` 用它）。
+pub const GOLD_SPEED: f32 = 1.6;
+/// 每局开始苍蝇都在场地正中（`KF_Sys::Reset`：`m_pt = (400, 300)`）。
+pub const START: (f32, f32) = (400., 300.);
+/// 原版每帧加一次，不乘帧时间；按每秒 60 帧折算 [推断：D3D 默认垂直同步]。
+pub const FRAMES_PER_SEC: f32 = 60.;
 
 /// 一只苍蝇的状态（原版 `+0x64c + i*4`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -51,6 +59,41 @@ pub struct Fly {
     pub fall: f32,
     /// 越了几次界。
     pub edges: u32,
+    /// 下一帧要不要先挑新的目标点（`m_isGetNextpt`，开局为真）。
+    pub need_target: bool,
+    /// 图转的角度（度，逆时针为正），每挑一次目标点算一次（`SetRot`）。
+    pub angle: f32,
+}
+
+/// 原版 `KF_Sys::CheckRectOverLap`（照抄，包括它只认「严格跨过边」的写法）：`src` 的左边、右边、上边、
+/// 下边有一条跨进 `dst` 里，或者整个落在 `dst` 里面，才算重叠。矩形是 (左, 上, 右, 下)。拍子（45 见方）
+/// 把苍蝇（32 见方）整个罩住时四条都不成立，**不算中**——原版如此。
+pub fn rect_overlap(src: (i32, i32, i32, i32), dst: (i32, i32, i32, i32)) -> bool {
+    let (sl, st, sr, sb) = src;
+    let (dl, dt, dr, db) = dst;
+    let v_in = (st > dt && st < db) || (sb > dt && sb < db);
+    let h_in = (sl > dl && sl < dr) || (sr > dl && sr < dr);
+    let left = sl < dl && sr > dl && v_in;
+    let right = sl < dr && sr > dr && v_in;
+    let top = st < dt && sb > dt && h_in;
+    let bottom = st < db && sb > db && h_in;
+    let center = st > dt && sl > dl && sr < dr && sb < db;
+    left || right || top || bottom || center
+}
+
+/// 拍子打得到的那一块（`CheckFlyerState`：左上角是鼠标 −(32, 29)，45 × 45）。
+pub fn swatter_rect(mx: i32, my: i32) -> (i32, i32, i32, i32) {
+    let (l, t) = (mx - 32, my - 29);
+    (l, t, l + 45, t + 45)
+}
+
+/// 新目标点的图角（`KF_Sys::Update`）：`acos(点积 / (|新方向| + |上次方向|))`，上次方向一直是 (0, 1)
+/// （`m_lastvec` 只在 `Reset` 里赋），分母是**长度之和**不是乘积（原版如此）；x 往左时取 `360 − 角`。
+pub fn fly_angle(dx: f32, dy: f32) -> f32 {
+    let len = (dx * dx + dy * dy).sqrt();
+    let cos = dy / (len + 1.);
+    let a = cos.clamp(-1., 1.).acos().to_degrees();
+    if dx < 0. { 360. - a } else { a }
 }
 
 impl Fly {
@@ -124,18 +167,18 @@ impl FlyGame {
                     rng.rand15() % 20 + 1
                 };
                 let speed = (rng.rand15() % 12 - 6) as f32 * 0.1 + 0.8;
-                let x = (rng.rand15() % FIELD_W as i32) as f32;
-                let y = (rng.rand15() % FIELD_H as i32) as f32;
                 flies.push(Fly {
-                    x,
-                    y,
-                    target: (x, y),
+                    x: START.0,
+                    y: START.1,
+                    target: START,
                     speed,
                     value,
                     gold,
                     state: FlyState::Flying,
                     fall: 0.,
                     edges: 0,
+                    need_target: true,
+                    angle: 0.,
                 });
             }
         }
@@ -147,16 +190,28 @@ impl FlyGame {
         }
     }
 
-    /// 拍一下。中了就让那只开始往下掉（钱要等它落地才算）。
-    pub fn swat(&mut self, x: f32, y: f32) -> bool {
+    /// 拍一下（鼠标在 `x`, `y`）。拍子那块和苍蝇的 32×32 框重叠就算中（[`rect_overlap`]），同一下能拍中
+    /// 好几只；中了就换死苍蝇的图往下掉（钱要等它落地才算）。返回拍中几只。
+    pub fn swat(&mut self, x: f32, y: f32) -> usize {
+        let kill = swatter_rect(x as i32, y as i32);
+        let mut n = 0;
         for fly in self.flies.iter_mut() {
-            if fly.hit(x, y) {
+            if fly.state != FlyState::Flying {
+                continue;
+            }
+            // `RECT` 是整数：`m_pt.y − 16` 截掉小数。
+            let (l, t) = (
+                (fly.x - FLY_DRAW * 0.5) as i32,
+                (fly.y - FLY_DRAW * 0.5) as i32,
+            );
+            let body = (l, t, l + FLY_DRAW as i32, t + FLY_DRAW as i32);
+            if rect_overlap(kill, body) {
                 fly.state = FlyState::Falling;
                 fly.fall = FALL_SPEED0;
-                return true;
+                n += 1;
             }
         }
-        false
+        n
     }
 
     /// 走一帧。
@@ -191,8 +246,22 @@ impl FlyGame {
         let mut rng = self.rng.clone();
         for fly in self.flies.iter_mut() {
             match fly.state {
+                FlyState::Flying if fly.need_target => {
+                    // 这一帧只挑目标点、转图，不挪。
+                    fly.target = (
+                        (rng.rand15() % FIELD_W as i32) as f32,
+                        (rng.rand15() % FIELD_H as i32) as f32,
+                    );
+                    fly.angle = fly_angle(fly.target.0 - fly.x, fly.target.1 - fly.y);
+                    fly.need_target = false;
+                }
                 FlyState::Flying => {
-                    let step = fly.speed * 60. * delta_sec;
+                    let speed = if fly.gold {
+                        fly.speed * GOLD_SPEED
+                    } else {
+                        fly.speed
+                    };
+                    let step = speed * FRAMES_PER_SEC * delta_sec;
                     let mut next = false;
                     let mut out = false;
                     // x 这一轴。
@@ -239,15 +308,13 @@ impl FlyGame {
                         }
                     }
                     if next {
-                        fly.target = (
-                            (rng.rand15() % FIELD_W as i32) as f32,
-                            (rng.rand15() % FIELD_H as i32) as f32,
-                        );
+                        fly.need_target = true;
                     }
                 }
                 FlyState::Falling => {
-                    fly.y += fly.fall * 60. * delta_sec;
-                    fly.fall += FALL_ACCEL;
+                    let frames = FRAMES_PER_SEC * delta_sec;
+                    fly.y += fly.fall * frames;
+                    fly.fall += FALL_ACCEL * frames;
                     if fly.y >= floor {
                         // 落地才算钱。
                         fly.state = FlyState::Done;
@@ -327,8 +394,10 @@ mod tests {
             state: FlyState::Flying,
             fall: 0.,
             edges: 0,
+            need_target: false,
+            angle: 0.,
         }];
-        assert!(g.swat(100., 100.));
+        assert_eq!(g.swat(100., 100.), 1);
         assert_eq!(g.earned, 0, "刚拍中还没落地，不给钱");
         for _ in 0..600 {
             g.tick(0.05);
@@ -352,6 +421,8 @@ mod tests {
             state: FlyState::Flying,
             fall: 0.,
             edges: 0,
+            need_target: false,
+            angle: 0.,
         }];
         for _ in 0..2000 {
             g.tick(0.05);
@@ -362,6 +433,56 @@ mod tests {
         assert!(g.finished());
         assert_eq!(g.earned, 0);
         assert_eq!(g.killed, 0);
+    }
+
+    #[test]
+    fn flies_start_in_the_middle_and_set_off() {
+        let mut g = FlyGame::new(5);
+        for f in &g.flies {
+            assert_eq!((f.x, f.y), START);
+        }
+        for _ in 0..30 {
+            g.tick(1. / 60.);
+        }
+        assert!(g.flies.iter().all(|f| (f.x, f.y) != START), "开局要飞起来");
+    }
+
+    #[test]
+    fn the_swatter_square_is_offset_up_left_of_the_cursor() {
+        // 拍子左上角在鼠标 −(32, 29)，45 宽：鼠标在苍蝇右下 20 处还拍得到，左上 20 处拍不到。
+        let fly = |x: f32, y: f32| Fly {
+            x,
+            y,
+            target: (x, y),
+            speed: 1.,
+            value: 1,
+            gold: false,
+            state: FlyState::Flying,
+            fall: 0.,
+            edges: 0,
+            need_target: false,
+            angle: 0.,
+        };
+        let mut g = FlyGame::new(1);
+        g.flies = vec![fly(200., 200.)];
+        assert_eq!(g.swat(220., 220.), 1);
+        g.flies = vec![fly(200., 200.)];
+        assert_eq!(g.swat(170., 170.), 0);
+        // 两只挨着的，拍子右边压过两只的右边，一下都拍到。
+        g.flies = vec![fly(200., 200.), fly(215., 200.)];
+        assert_eq!(g.swat(232., 226.), 2);
+        // 原版的怪处：拍子把苍蝇整个罩住（四条边都不在苍蝇框里）反而不算中。
+        g.flies = vec![fly(200., 200.)];
+        assert_eq!(g.swat(212., 210.), 0);
+    }
+
+    #[test]
+    fn the_angle_uses_the_sum_of_lengths() {
+        // 正下方：cos = 100/(100+1)，约 8 度，不是 0。
+        assert!((fly_angle(0., 100.) - 8.07).abs() < 0.05);
+        // 往左的取 360 − 角。
+        assert!((fly_angle(-50., 0.) - 270.).abs() < 1e-3);
+        assert!(fly_angle(-50., 10.) > 270.);
     }
 
     #[test]
@@ -377,8 +498,10 @@ mod tests {
             state: FlyState::Flying,
             fall: 0.,
             edges: 0,
+            need_target: false,
+            angle: 0.,
         }];
-        assert!(!g.swat(0., 0.));
+        assert_eq!(g.swat(0., 0.), 0);
         assert_eq!(g.flies[0].state, FlyState::Flying);
     }
 }

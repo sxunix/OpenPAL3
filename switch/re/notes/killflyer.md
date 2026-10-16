@@ -79,11 +79,19 @@ FUN_0044f610(0)              // 回冒险模式
 
 ## 7. 移植
 
-- `shared/src/openpal3/states/killflyer.rs`：常数、掷骰、三种状态和记分，
-  外加 `cost_from_hp`。
-- `scripting/sce/commands/killflyer.rs`：SCE 105 的实现，阻塞脚本，鼠标点
-  苍蝇；打完一波停 2.5 秒再结算（钱加身上、精扣花费）。
-- **和原版的差别**：
-  - 画的是 800×600 虚拟坐标上的方块，不是 `SubGame\KillFlyer\*.tga`；
-  - 飞行的每帧步长没读出来，用「速度系数 × 60 像素/秒」逼近 `[推断]`；
-  - 拍子贴图的 100 毫秒换帧、音效没接。
+参考源码 `subgame/KillFlyer/KF_Sys.cpp` 和上面 exe 的读法一致，移植照源码补齐。
+
+- `shared/src/openpal3/states/killflyer.rs`：常数、掷骰、状态和记分，外加 `cost_from_hp`。
+  - 苍蝇每局从场地正中 (400, 300) 出发，第一帧先挑目标点（`Reset` 里 `m_isGetNextpt = true`；
+    先前出生就把目标设成自己的位置，两根轴都「到了」又不换点，苍蝇根本不飞）；
+  - 两根轴各走各的，按帧走 `m_speed` 像素，金苍蝇 ×1.6（`m_specspeed`）；按 60 帧/秒折算 [推断]；
+  - 挑目标点时算图角：`acos(dy / (|新方向| + 1))`，分母是长度**之和**（原版笔误，照抄），x 往左取 360 − 角；
+  - 命中：拍子那块（鼠标 −(32, 29)，45×45）和苍蝇 32×32 框按原版 `CheckRectOverLap` 判，一下能拍中几只；
+    拍子把苍蝇整个罩住反而不算中（原版那个函数只认边跨进去）；
+  - 掉落每帧 +0.01 也按帧折算。
+- `scripting/sce/commands/killflyer.rs`：界面照 `KF_Sys`——背景场景压暗到 62/255（原版是进来时的定格截图，
+  这里场景还在动 [推断]）；开局 2.2 秒闪「减血N」（AssisLang 243，alpha 每帧 −7/+6，6..255）；苍蝇 32×32 转向
+  飞的方向，拍中换 `FlyerDie.tga`；拍子 `Kill.tga` / `Kill_pa.tga`（左下角 1:1 裁 64×58）跟鼠标，拍下放 wa040、
+  100 毫秒换回；有苍蝇在飞时循环放 wa039；场地里藏鼠标；结束弹 `UI\Flex\Note` 九宫格（0.5 秒余弦缓动从中心
+  展开）写「打死苍蝇 N 只 / 获得金钱 M」（258 / 259），点一下离开。手柄 B / Esc 随时离开 [移植]。
+- agent：`killflyer` 开一局，`mouse [x, y, 动作]` 发合成鼠标（800×600 坐标，move/down/up/click/rclick）。
