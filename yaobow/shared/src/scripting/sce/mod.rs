@@ -760,6 +760,7 @@ impl SceState {
                             [x, bottom - size],
                             [x + size, bottom],
                         )
+                        .uv_min([u0, v0])
                         .uv_max([u1, v1])
                         .col(l.rgba)
                         .build();
