@@ -9,8 +9,6 @@
 // inset) lives in menu_chrome.p7.
 //
 // Not yet reproduced from the original, and called out where it matters:
-//   * the item's 3D model preview inside the Info panel (the original
-//     renders `Item\<model>\<model>.pol` there),
 //   * the three sort buttons draw but do not sort,
 //   * the second Info line (the original shows something under the
 //     description; which value is still unidentified).
@@ -74,6 +72,17 @@ let SB_THUMB_H: float = 28.0;
 // 232 - 16 = 216 px.
 let DESC_X: float = 22.0; let DESC_Y: float = 372.0;
 let DESC_WRAP: float = 196.0;
+
+// 3D preview over the Info panel (`IPal3Service::draw_model_view` key; the
+// 侠义榜 uses 1 and 2). Camera per selected item, `0x4a0e70`: weapons
+// (ItemType 11) 228 at (128,262), 剧情 (6) 200 at (128,258), item 6421
+// (0x1915) 160 at (128,276), everything else 160 at (128,258); always
+// tilted from 600. Spins at 98°/s (`FUN_0043a090(1,0)` in the page init).
+let VIEW_ITEM: int = 3;
+let ITEM_TYPE_WEAPON: int = 11;
+let ITEM_TYPE_PLOT: int = 6;
+let ITEM_TALL_ID: int = 6421;
+let VIEW_SPIN: float = 98.0;
 
 // 三个排序按钮, y 492..512, 94x20.
 let SORT_Y: float = 492.0;
@@ -270,6 +279,20 @@ pub fn paint_item_menu(
     if count > 0 {
         let item_id = pal3.inventory_item_id(mask, sel);
         if item_id >= 0 {
+            let kind = pal3.item_info(item_id, 0);
+            let mut size = 160.0;
+            let mut look_y = 258.0;
+            if kind == ITEM_TYPE_WEAPON {
+                size = 228.0;
+                look_y = 262.0;
+            } else if kind == ITEM_TYPE_PLOT {
+                size = 200.0;
+            } else if item_id == ITEM_TALL_ID {
+                look_y = 276.0;
+            }
+            let _v = pal3.draw_model_view(ui, VIEW_ITEM, "item:" + chrome.int_str(item_id),
+                size, 128.0, look_y, 0.0, false, 0, 1.0, 0, ox, oy, s);
+            pal3.spin_model_view(VIEW_ITEM, VIEW_SPIN);
             pal3.draw_item_description(ui,
                 item_id,
                 ox + (DESC_X + chrome.TXT_MARGIN) * s,

@@ -907,7 +907,8 @@ impl Pal3Service {
 
     /// Pull one text field off a combat actor's database row.
     /// `draw_model_view` 的模型串：`.pol` / `.cvd` 是 basedata 下的路径，`actor:<id>`
-    /// 是战斗角色的模型（播待机，怪物那套的 50 号），其余当角色名。
+    /// 是战斗角色的模型（播待机，怪物那套的 50 号），`item:<id>` 是物品模型
+    /// （`Item\<模型>\<模型>.pol`，贴图换成 `<模型><图标>.tga`，和买卖页一样），其余当角色名。
     fn model_source(&self, model: &str) -> Option<shared::openpal3::model_view::ModelSource> {
         use shared::openpal3::combat::motion::{Motion, MotionSet};
         use shared::openpal3::model_view::ModelSource;
@@ -923,6 +924,26 @@ impl Pal3Service {
                 return None;
             }
             return Some(ModelSource::Role { name, action: idle });
+        }
+        if let Some(id) = model.strip_prefix("item:") {
+            let id: u32 = id.trim().parse().ok()?;
+            let db = self.active_game_db.borrow();
+            let row = db.as_ref()?.item(id)?;
+            let name = row
+                .model_name
+                .as_str()
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            // 原版拿模型名和一个全局串比，相等就写 "NONE"、什么也不载 [推断：空名]。
+            if name.is_empty() || name.eq_ignore_ascii_case("NONE") {
+                return None;
+            }
+            let icon = row.icon_name.as_str().unwrap_or_default();
+            return Some(ModelSource::Pol {
+                path: PathBuf::from(format!("/basedata/basedata/item/{name}/{name}.pol")),
+                texture: Some(format!("{name}{icon}.tga")),
+            });
         }
         let lower = model.to_ascii_lowercase();
         let path = || PathBuf::from(format!("/basedata/basedata/{}", model.replace('\\', "/")));
@@ -1661,7 +1682,11 @@ impl IPal3ServiceImpl for Pal3Service {
         };
         let mut views = self.model_views.borrow_mut();
         if views.get(&key).is_none_or(|v| v.model != model) {
+            let mut old_spin = None;
             if let Some(old) = views.remove(&key) {
+                if old.view.spin() != 0. {
+                    old_spin = Some((old.view.angle(), old.view.spin()));
+                }
                 sinks.1.borrow_mut().push(old.com_id);
             }
             let am = self.asset_manager_for(&asset_path);
@@ -1677,6 +1702,11 @@ impl IPal3ServiceImpl for Pal3Service {
             let Some(view) = view else {
                 return false;
             };
+            // 换模型不动转角（`FUN_00439230` 不写 `+0xf8`），自转也接着转。
+            if let Some(old) = &old_spin {
+                view.set_angle(old.0);
+                view.set_spin(old.1);
+            }
             views.insert(
                 key,
                 ModelViewSlot {
@@ -1724,6 +1754,12 @@ impl IPal3ServiceImpl for Pal3Service {
             );
         }
         slot.view.finished()
+    }
+
+    fn spin_model_view(&self, key: i32, deg_per_sec: f32) -> () {
+        if let Some(slot) = self.model_views.borrow().get(&key) {
+            slot.view.set_spin(deg_per_sec);
+        }
     }
 
     fn draw_lineup_disc(

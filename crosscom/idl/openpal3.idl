@@ -301,6 +301,13 @@ interface IPal3Service: IUnknown {
         float look_x, float look_y, float yaw, bool frontal, int mode,
         float speed, int serial, float ox, float oy, float scale);
 
+    // Turn the 3D view under `key` about Y at `deg_per_sec` (0 stops) —
+    // `FUN_0043a090(1, 0)`: the 道具 / 装备 page previews spin at the 98°/s
+    // the control is built with, wrapping to 0 past 359°. Call it after
+    // `draw_model_view`; the angle survives a model change, as in the
+    // original.
+    void spin_model_view(int key, float deg_per_sec);
+
     void draw_combat_actor_name(IUiHost ui, int actor_id, float x, float y,
         float size, float r, float g, float b, float a);
     void draw_combat_actor_description(IUiHost ui, int actor_id, float x,

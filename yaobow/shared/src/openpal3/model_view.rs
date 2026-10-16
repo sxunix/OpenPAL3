@@ -6,13 +6,13 @@
 //! 目标（清成透明），再把纹理贴到界面上。逆向记录在 `switch/re/notes/dealer_layout.md`
 //! §6b、`justicebook_page_layout.md` §1。
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 
 use crosscom::ComRc;
 use radiance::comdef::{IEntity, IEntityExt, IScene};
-use radiance::math::Vec3;
+use radiance::math::{Mat44, Vec3};
 use radiance::rendering::{RenderTarget, RenderingEngine};
 use radiance::scene::{CoreScene, ISceneExt, SceneLighting};
 
@@ -27,6 +27,15 @@ use super::scene::{
 pub const TARGET: (u32, u32) = (1024, 768);
 /// 相机的 z（两种摆法里都写死 1600）和斜看时的高（`FUN_00439930` 的第三个参数）。
 const EYE_Z: f32 = 1600.;
+
+/// 自转的速度，度 / 秒：构造函数 `FUN_00439030` 写进 `+0xf4` 的 98（int）。
+pub const SPIN_DEG_PER_SEC: f32 = 98.;
+
+/// 自转一步（`FUN_00439a20` 里 `+0xec == 1` 那一支）：`+0xf8 += +0xf4 × dt`，不小于 359 就归 0。
+pub fn spin_step(angle: f32, deg_per_sec: f32, delta_sec: f32) -> f32 {
+    let a = angle + deg_per_sec * delta_sec;
+    if a < 359. { a } else { 0. }
+}
 
 /// 视图里放什么。
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +121,12 @@ pub struct ModelView {
     entity: ComRc<IEntity>,
     target: RefCell<Option<Box<dyn RenderTarget>>>,
     engine: Rc<RefCell<dyn RenderingEngine>>,
+    /// 绕 Y 轴的角度（度，`+0xf8`）。`yaw` 和自转写的是同一个字段。
+    angle: Cell<f32>,
+    /// 自转速度（度 / 秒），0 不转。原版 `FUN_0043a090(1, 0)` 打开（`+0xec = 1`）。
+    spin: Cell<f32>,
+    /// 转之前的变换。
+    base: Mat44,
 }
 
 impl ModelView {
@@ -159,6 +174,7 @@ impl ModelView {
                 e
             }
         };
+        let base = *entity.transform().borrow().matrix();
         entity
             .transform()
             .borrow_mut()
@@ -191,6 +207,9 @@ impl ModelView {
             entity,
             target: RefCell::new(Some(target)),
             engine,
+            angle: Cell::new(yaw),
+            spin: Cell::new(0.),
+            base,
         })
     }
 
@@ -211,7 +230,34 @@ impl ModelView {
         walk(&self.entity)
     }
 
+    /// 打开 / 关掉自转（`deg_per_sec` 为 0 关）。
+    pub fn set_spin(&self, deg_per_sec: f32) {
+        self.spin.set(deg_per_sec);
+    }
+
+    pub fn spin(&self) -> f32 {
+        self.spin.get()
+    }
+
+    pub fn angle(&self) -> f32 {
+        self.angle.get()
+    }
+
+    /// 改角度。原版换模型（`FUN_00439230`）不动 `+0xf8`，换了物品接着上一个的角度转。
+    pub fn set_angle(&self, degrees: f32) {
+        self.angle.set(degrees);
+        self.entity
+            .transform()
+            .borrow_mut()
+            .set_matrix(self.base)
+            .rotate_axis_angle_local(&Vec3::UP, degrees.to_radians());
+    }
+
     pub fn render(&self, delta_sec: f32) {
+        let spin = self.spin.get();
+        if spin != 0. {
+            self.set_angle(spin_step(self.angle.get(), spin, delta_sec));
+        }
         self.scene.update(delta_sec);
         if let Some(target) = self.target.borrow_mut().as_mut() {
             self.engine
@@ -238,6 +284,14 @@ impl Drop for ModelView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_spin_wraps_to_zero_at_359() {
+        // 每秒 98°：一秒后 98，3.6 秒后 352.8，再走一帧过 359 就回 0（不是减 360）。
+        assert!((spin_step(0., SPIN_DEG_PER_SEC, 1.) - 98.).abs() < 1e-4);
+        assert!((spin_step(350., SPIN_DEG_PER_SEC, 0.05) - 354.9).abs() < 1e-3);
+        assert_eq!(spin_step(355., SPIN_DEG_PER_SEC, 0.05), 0.);
+    }
 
     #[test]
     fn the_two_camera_placements() {
