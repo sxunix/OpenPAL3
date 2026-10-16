@@ -12,7 +12,6 @@
 // is the weapon.
 //
 // Deliberately not reproduced, and why:
-//   * the 3D model preview in the Info panel,
 //   * the attribute-comparison rows (the original shows how a highlighted
 //     piece would change your stats; which four attributes map to its five
 //     rows is still unresolved),
@@ -66,6 +65,15 @@ let TAB_BASE: array<string> = ["Weapon", "Cloth", "Hat", "Shoes", "Adorn"];
 let TAB_MASK: array<int> = [2048, 128, 256, 512, 1024];
 // Tab -> the equipment slot it fills (饰品 fills whichever is free).
 let TAB_SLOT: array<int> = [5, 1, 0, 2, 3];
+
+// 3D preview over the Info panel (`draw_model_view` key; 侠义榜 1/2, 道具页
+// 3). `FUN_00494d70` shows the worn piece of the tab's slot, then swaps in
+// the highlighted candidate when the list has one; either way weapons
+// (ItemType 11) get 228 at (128,262) and everything else 180 at (128,258),
+// tilted from 600. Spins at 98°/s (`FUN_0043a090(1,0)` in `FUN_00496190`).
+let VIEW_EQUIP: int = 4;
+let ITEM_TYPE_WEAPON: int = 11;
+let VIEW_SPIN: float = 98.0;
 
 // Six equipment slots, in `RoleState::equipment` order:
 // 0 帽 · 1 衣 · 2 鞋 · 3 饰品一 · 4 饰品二 · 5 武器.
@@ -317,6 +325,25 @@ pub fn paint_equip_menu(
     if max_scroll > 0 { frac = (scroll as float) / (max_scroll as float); }
     let thumb_y = SB_THUMB_TOP + frac * (SB_THUMB_BOTTOM - SB_THUMB_TOP - SB_THUMB_H);
     chrome.sprite(ui, atlas, SPR_SCROLL + "0.tga", ox + SB_THUMB_X * s, oy + thumb_y * s, s);
+
+    // ---- 3D preview: the highlighted candidate, else the worn piece -------
+    let mut shown = -1;
+    if count > 0 {
+        shown = pal3.inventory_item_id(mask, sel);
+    } else {
+        shown = pal3.equipped_item(actor, TAB_SLOT[tab]);
+    }
+    if shown >= 0 {
+        let mut size = 180.0;
+        let mut look_y = 258.0;
+        if pal3.item_info(shown, 0) == ITEM_TYPE_WEAPON {
+            size = 228.0;
+            look_y = 262.0;
+        }
+        let _v = pal3.draw_model_view(ui, VIEW_EQUIP, "item:" + chrome.int_str(shown),
+            size, 128.0, look_y, 0.0, false, 0, 1.0, 0, ox, oy, s);
+        pal3.spin_model_view(VIEW_EQUIP, VIEW_SPIN);
+    }
 
     // ---- Description of the highlighted piece ----------------------------
     if count > 0 {
