@@ -8,7 +8,9 @@ use crate::GameType;
 const CONFIG_FILE_NAME: &str = "yaobow.toml";
 const ENV_OVERRIDE: &str = "YAOBOW_CONFIG";
 
-fn default_true() -> bool { true }
+fn default_true() -> bool {
+    true
+}
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct GameConfig {
@@ -32,6 +34,11 @@ pub struct GameConfig {
     /// fresh when the slot exists (quick-saved with Y on Switch). 0 = off.
     #[serde(default)]
     pub auto_load_slot: i32,
+    /// Testing aid: the start menu presses 新的故事 by itself on its first
+    /// frame, so the menu → new game path can be driven on a target with no
+    /// input (an emulator on a locked desktop). Off by default.
+    #[serde(default)]
+    pub menu_auto_new_game: bool,
 }
 
 impl Default for GameConfig {
@@ -41,6 +48,7 @@ impl Default for GameConfig {
             enable_movies: true,
             auto_new_game: false,
             auto_load_slot: 0,
+            menu_auto_new_game: false,
         }
     }
 }
@@ -221,8 +229,7 @@ impl YaobowConfig {
             Err(ref e) => log::warn!("{}: metadata unavailable: {}", path.display(), e),
             _ => {}
         }
-        String::from_utf8(buf)
-            .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
+        String::from_utf8(buf).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))
     }
 
     fn try_load_from(path: &std::path::Path) -> Option<Self> {
@@ -267,6 +274,12 @@ impl YaobowConfig {
             .get(game.config_key())
             .map(|g| g.auto_load_slot)
             .unwrap_or(0)
+    }
+
+    pub fn menu_auto_new_game_for(&self, game: GameType) -> bool {
+        self.game
+            .get(game.config_key())
+            .is_some_and(|g| g.menu_auto_new_game)
     }
 
     pub fn auto_new_game_for(&self, game: GameType) -> bool {

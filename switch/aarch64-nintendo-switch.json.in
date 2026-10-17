@@ -15,6 +15,7 @@
     "tier": 3
   },
   "os": "horizon",
+  "tls-model": "emulated",
   "panic-strategy": "abort",
   "position-independent-executables": true,
   "relro-level": "off",
@@ -41,7 +42,7 @@
     ]
   },
   "no-default-libraries": false,
-  "has-thread-local": false,
+  "has-thread-local": true,
   "exe-suffix": ".elf",
   "late-link-args": {
     "gnu-cc": [

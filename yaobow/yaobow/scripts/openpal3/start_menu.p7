@@ -529,6 +529,8 @@ pub struct[radiance.IUiLayer, radiance.IDirector] Pal3StartMenuDirector(
             return null;
         }
 
+        // 测试用：配置了 `menu_auto_new_game` 就第一帧自己按「新的故事」。
+        if self.host.pal3().take_menu_auto_new_game() { self.intent = Intent.NewGame; }
         let code = self.intent;
         self.intent = Intent.None;
         match code {

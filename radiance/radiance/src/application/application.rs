@@ -463,6 +463,32 @@ impl Application {
 
     pub fn set_panic_hook() {
         std::panic::set_hook(Box::new(|panic_info| {
+            // Switch: resolving symbols reads the module's DWARF and aborts on the
+            // console before anything is logged (the first console run lost its
+            // panic message that way). Log the message first, then only raw return
+            // addresses plus an anchor (this function's address), so the trace can
+            // be symbolized offline against the build's .elf with addr2line.
+            #[cfg(target_os = "horizon")]
+            {
+                log::error!("Radiance {}", panic_info);
+                let backtrace = backtrace::Backtrace::new_unresolved();
+                let frames: Vec<String> = backtrace
+                    .frames()
+                    .iter()
+                    .map(|f| format!("{:#x}", f.ip() as usize))
+                    .collect();
+                log::error!(
+                    "backtrace (unresolved; anchor Application::set_panic_hook = {:#x}): {}",
+                    Application::set_panic_hook as usize,
+                    frames.join(" ")
+                );
+                Platform::show_error_dialog(
+                    crate::constants::STR_SORRY_DIALOG_TITLE,
+                    &format!("{}", panic_info),
+                );
+                return;
+            }
+            #[allow(unreachable_code)]
             let backtrace = backtrace::Backtrace::new();
             let msg = format!("Radiance {}\n{:?}", panic_info, backtrace);
             log::error!("{}", &msg);

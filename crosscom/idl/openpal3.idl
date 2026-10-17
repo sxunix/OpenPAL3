@@ -99,6 +99,9 @@ interface IPal3Service: IUnknown {
     // （原版的 `DAT_005cefa9`）。系统页的「储存进度」按它放行。
     bool can_save();
 
+    // 测试用（`menu_auto_new_game`）：开始菜单第一帧自己按「新的故事」。取一次就清。
+    bool take_menu_auto_new_game();
+
     // 存盘点刚要打开系统页的存档（取走即清）。状态界面每帧问一次，是就开到存档。
     bool take_save_point_request();
 

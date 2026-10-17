@@ -210,6 +210,7 @@ pub struct Pal3Service {
     /// 施法浮动用的随机数（MSVC `rand()` 的算法，种子开机定）[近似]。
     magic_rand: Cell<u32>,
     menu_particles: RefCell<super::particles::MenuParticles>,
+    menu_auto_new_game_done: Cell<bool>,
     /// 阵法页：头像条（第 0 格是领队）和每人的设置板，进页面时排好。
     lineup_page: RefCell<Option<LineupPage>>,
     /// 菜单页共用的提示框。
@@ -327,6 +328,7 @@ impl Pal3Service {
             menu_title_request: Cell::new(false),
             magic_use: RefCell::new(None),
             menu_particles: RefCell::new(Default::default()),
+            menu_auto_new_game_done: Cell::new(false),
             magic_rand: Cell::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -1505,6 +1507,11 @@ impl IPal3ServiceImpl for Pal3Service {
 
     fn can_save(&self) -> bool {
         self.can_save_here.get() || self.at_save_point.get()
+    }
+
+    fn take_menu_auto_new_game(&self) -> bool {
+        !self.menu_auto_new_game_done.replace(true)
+            && shared::config::YaobowConfig::load().menu_auto_new_game_for(self.last_game.get())
     }
 
     fn take_save_point_request(&self) -> bool {
