@@ -82,6 +82,7 @@ impl AdventureDirector {
                 agent_walk: None,
                 agent_walk_goal: None,
                 agent_interact: false,
+                quick_saved: std::cell::Cell::new(0),
                 player_jump: None,
                 jump_charge: None,
                 snow: crate::openpal3::scene::Snow::new(),
@@ -234,6 +235,7 @@ impl AdventureDirector {
                 agent_walk: None,
                 agent_walk_goal: None,
                 agent_interact: false,
+                quick_saved: std::cell::Cell::new(0),
                 player_jump: None,
                 jump_charge: None,
                 snow: crate::openpal3::scene::Snow::new(),
@@ -423,6 +425,11 @@ impl AdventureDirector {
     /// 阵法页点了队伍头像（迷宫里，`LineupUI::SelRoleHead` → `PlayerMgr::SetCtrl`）：换操控的主角，
     /// 和迷宫里按 Tab 是同一件事。
     /// 状态菜单（各全屏页）开着没有。
+    /// 刚用快存键（Switch 的 Y、桌面的 1–4）存的档号，取一次就清掉；0 = 没存。
+    pub fn take_quick_saved(&self) -> i32 {
+        self.props.borrow().quick_saved.take()
+    }
+
     pub fn status_menu_open(&self) -> bool {
         self.sce_vm().state().status_renderer().is_menu_open()
     }
@@ -967,6 +974,8 @@ struct AdventureDirectorProps {
     agent_walk_goal: Option<AgentWalkGoal>,
     /// [调试] 下一帧当调查键按下了（agent 走到地方以后）。
     agent_interact: bool,
+    /// 刚用快存键存了第几号档（0 = 没有），宿主拿去补存档缩略图。
+    quick_saved: std::cell::Cell<i32>,
     /// 主角正在跳（`FUN_00414a30` → 行为 4、动作 0）；第二项是跳的动作放出来没有。
     player_jump: Option<(crate::openpal3::scene::player_jump::Jump, bool)>,
     /// [移植] 跳键按住了多久（蓄力）。原版是右键点地面直接给落点，手柄上没有这一下。
@@ -2237,6 +2246,7 @@ impl AdventureDirectorProps {
 
         if save_slot > 0 {
             self.record_for_save();
+            self.quick_saved.set(save_slot);
         }
         self.sce_vm
             .global_state()

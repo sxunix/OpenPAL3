@@ -48,9 +48,50 @@ pub struct SwitchGLRenderingEngine {
     scene_frames: u64,
     first_draw_logged: bool,
     last_object_count: usize,
+    /// Frames presented (scene or not).
+    frames: u64,
+    /// A capture was asked for (`capture_last_frame`); the next frame
+    /// reads its 3D image back before the UI goes on top.
+    capture_pending: bool,
+    /// The capture that frame took, with the frame it came from.
+    captured: Option<(u64, crate::rendering::CapturedFrame)>,
 }
 
 impl SwitchGLRenderingEngine {
+    /// `glReadPixels` the default framebuffer as RGBA8, top row first.
+    fn read_back(&self) -> crate::rendering::CapturedFrame {
+        let (w, h) = self.extent;
+        let row = (w * 4) as usize;
+        let mut raw = vec![0u8; row * h as usize];
+        unsafe {
+            // Let the GPU finish the scene before the copy out.
+            glFinish();
+            glPixelStorei(GL_PACK_ALIGNMENT, 1);
+            glReadPixels(
+                0,
+                0,
+                w as i32,
+                h as i32,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                raw.as_mut_ptr() as *mut _,
+            );
+        }
+        // GL's origin is the bottom-left corner.
+        let mut rgba = Vec::with_capacity(raw.len());
+        for y in (0..h as usize).rev() {
+            rgba.extend_from_slice(&raw[y * row..(y + 1) * row]);
+        }
+        for px in rgba.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+        crate::rendering::CapturedFrame {
+            width: w,
+            height: h,
+            rgba,
+        }
+    }
+
     pub fn new() -> anyhow::Result<Self> {
         let (display, surface, context) = unsafe { init_egl()? };
 
@@ -94,6 +135,9 @@ impl SwitchGLRenderingEngine {
             scene_frames: 0,
             first_draw_logged: false,
             last_object_count: 0,
+            frames: 0,
+            capture_pending: false,
+            captured: None,
         })
     }
 }
@@ -114,6 +158,11 @@ impl RenderingEngine for SwitchGLRenderingEngine {
             let _hitch = crate::perf::hitch::span("gl.scene");
             self.draw_scene(&scene);
         }
+
+        if std::mem::take(&mut self.capture_pending) {
+            self.captured = Some((self.frames, self.read_back()));
+        }
+        self.frames += 1;
 
         let hitch = crate::perf::hitch::span("gl.imgui");
         self.imgui.render(ui_frame, self.extent.0, self.extent.1);
@@ -142,6 +191,20 @@ impl RenderingEngine for SwitchGLRenderingEngine {
 
     fn view_extent(&self) -> (u32, u32) {
         self.extent
+    }
+
+    /// The swapchain image is gone once presented, so a capture is taken
+    /// on request: the first call asks the next frame to read its 3D image
+    /// back (before the UI is drawn over it) and returns `None`; a call
+    /// within two frames of that read returns it. Callers poll.
+    fn capture_last_frame(&mut self) -> Option<crate::rendering::CapturedFrame> {
+        match self.captured.take() {
+            Some((at, frame)) if self.frames - at <= 2 => Some(frame),
+            _ => {
+                self.capture_pending = true;
+                None
+            }
+        }
     }
 
     fn component_factory(&self) -> Rc<dyn ComponentFactory> {

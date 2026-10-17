@@ -204,6 +204,10 @@ pub struct Pal3Service {
     title_load: RefCell<super::system_page::SystemPage>,
     /// 状态菜单打开那一刻抓的画面（原版 `PAL3::m_screenImg`），存档时缩成缩略图。
     menu_snapshot: RefCell<Option<radiance::rendering::CapturedFrame>>,
+    /// 菜单开了以后已经问了几帧截图（Switch 要等一帧）。
+    snapshot_tries: Cell<u8>,
+    /// 快存的档还没补上缩略图：(档号, 已试帧数)。
+    pending_thumb: Cell<Option<(i32, u8)>>,
     menu_was_open: Cell<bool>,
     /// 系统页「离开游戏」要回仙三的开始菜单（`SwitchUIRender(M_COVER)`）。
     menu_title_request: Cell<bool>,
@@ -327,6 +331,8 @@ impl Pal3Service {
             system_page: RefCell::new(Default::default()),
             title_load: RefCell::new(super::system_page::SystemPage::title()),
             menu_snapshot: RefCell::new(None),
+            snapshot_tries: Cell::new(0),
+            pending_thumb: Cell::new(None),
             menu_was_open: Cell::new(false),
             menu_title_request: Cell::new(false),
             magic_use: RefCell::new(None),
@@ -680,15 +686,41 @@ impl Pal3Service {
             }
         }
 
-        // 状态菜单刚打开：上一帧还是没有菜单的画面，抓下来给存档缩略图用。
+        // 状态菜单刚打开：上一帧还是没有菜单的画面，抓下来给存档缩略图用。Switch 的渲染器
+        // 要下一帧才读得回来，所以没抓到就再问几帧（菜单在 3D 画面之后才画，读回的仍是场景）。
         let menu_open = self
             .active_adventure_director_owned()
             .is_some_and(|adv| adv.inner::<AdventureDirector>().status_menu_open());
         if menu_open && !self.menu_was_open.get() {
+            *self.menu_snapshot.borrow_mut() = None;
+            self.snapshot_tries.set(0);
+        }
+        if menu_open && self.menu_snapshot.borrow().is_none() && self.snapshot_tries.get() < 4 {
+            self.snapshot_tries.set(self.snapshot_tries.get() + 1);
             let engine = self.app.engine().borrow().rendering_engine();
             *self.menu_snapshot.borrow_mut() = engine.borrow_mut().capture_last_frame();
         }
         self.menu_was_open.set(menu_open);
+
+        // 快存键存了档：抓当前画面补缩略图（同样可能要等一帧）。
+        if let Some(adv) = self.active_adventure_director_owned() {
+            let slot = adv.inner::<AdventureDirector>().take_quick_saved();
+            if slot > 0 {
+                self.pending_thumb.set(Some((slot, 0)));
+            }
+        }
+        if let Some((slot, tries)) = self.pending_thumb.get() {
+            let engine = self.app.engine().borrow().rendering_engine();
+            let frame = engine.borrow_mut().capture_last_frame();
+            match frame {
+                Some(frame) => {
+                    self.write_thumb_from(slot, &frame);
+                    self.pending_thumb.set(None);
+                }
+                None if tries < 4 => self.pending_thumb.set(Some((slot, tries + 1))),
+                None => self.pending_thumb.set(None),
+            }
+        }
 
         self.refresh_item_use_context();
 
@@ -1019,6 +1051,15 @@ impl Pal3Service {
     fn write_save_thumb(&self, slot: i32) -> Option<image::RgbaImage> {
         let snap = self.menu_snapshot.borrow();
         let frame = snap.as_ref()?;
+        self.write_thumb_from(slot, frame)
+    }
+
+    /// 把一帧画面裁成 4:3、缩到 186×138 写成第 `slot` 号档的缩略图（原版 `PAL3_%04d.JPG`）。
+    fn write_thumb_from(
+        &self,
+        slot: i32,
+        frame: &radiance::rendering::CapturedFrame,
+    ) -> Option<image::RgbaImage> {
         let img = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())?;
         let (w, h) = (frame.width, frame.height);
         let (cw, ch) = if w * 3 > h * 4 {

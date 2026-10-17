@@ -54,6 +54,7 @@ pub const GL_UNSIGNED_INT: GLenum = 0x1405;
 pub const GL_FLOAT: GLenum = 0x1406;
 
 pub const GL_RGBA: GLenum = 0x1908;
+pub const GL_PACK_ALIGNMENT: GLenum = 0x0D05;
 
 pub const GL_TEXTURE_2D: GLenum = 0x0DE1;
 pub const GL_TEXTURE0: GLenum = 0x84C0;
@@ -90,7 +91,17 @@ unsafe extern "C" {
     pub fn glGetIntegerv(pname: GLenum, data: *mut GLint);
     pub fn glDepthMask(flag: GLboolean);
     pub fn glCullFace(mode: GLenum);
-    pub fn glTexSubImage2D(target: GLenum, level: GLint, xoffset: GLint, yoffset: GLint, width: GLsizei, height: GLsizei, format: GLenum, type_: GLenum, pixels: *const core::ffi::c_void);
+    pub fn glTexSubImage2D(
+        target: GLenum,
+        level: GLint,
+        xoffset: GLint,
+        yoffset: GLint,
+        width: GLsizei,
+        height: GLsizei,
+        format: GLenum,
+        type_: GLenum,
+        pixels: *const core::ffi::c_void,
+    );
     pub fn glClearColor(red: GLfloat, green: GLfloat, blue: GLfloat, alpha: GLfloat);
     pub fn glClear(mask: GLbitfield);
     pub fn glEnable(cap: GLenum);
@@ -111,6 +122,17 @@ unsafe extern "C" {
     pub fn glBindTexture(target: GLenum, texture: GLuint);
     pub fn glActiveTexture(texture: GLenum);
     pub fn glTexParameteri(target: GLenum, pname: GLenum, param: GLint);
+    pub fn glReadPixels(
+        x: GLint,
+        y: GLint,
+        width: GLsizei,
+        height: GLsizei,
+        format: GLenum,
+        ty: GLenum,
+        pixels: *mut c_void,
+    );
+    pub fn glPixelStorei(pname: GLenum, param: GLint);
+    pub fn glFinish();
     pub fn glTexImage2D(
         target: GLenum,
         level: GLint,
@@ -153,12 +175,7 @@ unsafe extern "C" {
     pub fn glGenBuffers(n: GLsizei, buffers: *mut GLuint);
     pub fn glDeleteBuffers(n: GLsizei, buffers: *const GLuint);
     pub fn glBindBuffer(target: GLenum, buffer: GLuint);
-    pub fn glBufferData(
-        target: GLenum,
-        size: GLsizeiptr,
-        data: *const c_void,
-        usage: GLenum,
-    );
+    pub fn glBufferData(target: GLenum, size: GLsizeiptr, data: *const c_void, usage: GLenum);
 
     pub fn glCreateShader(ty: GLenum) -> GLuint;
     pub fn glDeleteShader(shader: GLuint);
@@ -211,12 +228,7 @@ unsafe extern "C" {
         stride: GLsizei,
         pointer: *const c_void,
     );
-    pub fn glDrawElements(
-        mode: GLenum,
-        count: GLsizei,
-        ty: GLenum,
-        indices: *const c_void,
-    );
+    pub fn glDrawElements(mode: GLenum, count: GLsizei, ty: GLenum, indices: *const c_void);
 }
 
 // ---------------------------------------------------------------------------
@@ -291,7 +303,12 @@ unsafe extern "C" {
     pub fn eglSwapBuffers(dpy: EGLDisplay, surface: EGLSurface) -> EGLBoolean;
     pub fn eglSwapInterval(dpy: EGLDisplay, interval: EGLint) -> EGLBoolean;
     pub fn eglGetError() -> EGLint;
-    pub fn eglQuerySurface(display: EGLDisplay, surface: EGLSurface, attribute: EGLint, value: *mut EGLint) -> EGLBoolean;
+    pub fn eglQuerySurface(
+        display: EGLDisplay,
+        surface: EGLSurface,
+        attribute: EGLint,
+        value: *mut EGLint,
+    ) -> EGLBoolean;
 }
 
 // ---------------------------------------------------------------------------
