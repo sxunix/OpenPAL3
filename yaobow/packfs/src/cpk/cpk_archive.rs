@@ -18,7 +18,7 @@ type IoErrorKind = std::io::ErrorKind;
 
 #[allow(dead_code)]
 pub struct CpkArchive {
-    reader: Box<dyn SeekRead>,
+    reader: Box<dyn SeekRead + Send>,
     header: CpkHeader,
     pub entries: Vec<CpkTable>,
     crc_to_index: HashMap<u32, usize>,
@@ -26,7 +26,7 @@ pub struct CpkArchive {
 }
 
 impl CpkArchive {
-    pub fn load(mut reader: Box<dyn SeekRead>) -> IoResult<CpkArchive> {
+    pub fn load(mut reader: Box<dyn SeekRead + Send>) -> IoResult<CpkArchive> {
         let header = CpkHeader::read(&mut reader)?;
 
         let buffer = if header.is_pal4() {
@@ -72,12 +72,21 @@ impl CpkArchive {
     }
 
     pub fn open(&mut self, file_name: &[u8]) -> IoResult<MemoryFile> {
+        let index = self.find(file_name)?;
+        self.open_entry(index)
+    }
+
+    /// Index of the file `file_name` names, without reading it: a lookup in
+    /// the CRC table. `NotFound` / `IsADirectory` as [`Self::open`] would.
+    pub fn find(&self, file_name: &[u8]) -> IoResult<usize> {
         let hash = super::crc_checksum(file_name);
         let index = self
             .get_entry_index_by_crc(hash)
             .ok_or(IoError::from(IoErrorKind::NotFound))?;
-
-        self.open_entry(index)
+        if self.entries[index].is_dir() {
+            return Err(IoError::from(IoErrorKind::IsADirectory));
+        }
+        Ok(index)
     }
 
     pub fn open_str(&mut self, file_name: &str) -> IoResult<MemoryFile> {
@@ -97,23 +106,25 @@ impl CpkArchive {
     }
 
     fn open_entry(&mut self, index: usize) -> IoResult<MemoryFile> {
-        let entry = &self.entries[index];
-        if entry.is_dir() {
+        if self.entries[index].is_dir() {
             return Err(IoError::from(IoErrorKind::IsADirectory));
         }
+        Ok(MemoryFile::new(Cursor::new(self.read_entry(index)?)))
+    }
 
+    /// The (decompressed) content of file entry `index`.
+    pub fn read_entry(&mut self, index: usize) -> IoResult<Vec<u8>> {
+        let entry = &self.entries[index];
         self.reader
             .seek(std::io::SeekFrom::Start(entry.start_pos as u64))?;
         let mut content = vec![0; entry.packed_size as usize];
         self.reader.read(&mut content)?;
         if !entry.is_compressed() {
-            Ok(MemoryFile::new(Cursor::new(content)))
+            Ok(content)
         } else {
-            let decompressed_content = self
-                .lzo
+            self.lzo
                 .decompress(&content, entry.origin_size as usize)
-                .or_else(|e| Err(IoError::new(IoErrorKind::InvalidData, e)))?;
-            Ok(MemoryFile::new(Cursor::new(decompressed_content)))
+                .or_else(|e| Err(IoError::new(IoErrorKind::InvalidData, e)))
         }
     }
 

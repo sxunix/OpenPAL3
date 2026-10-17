@@ -1,4 +1,4 @@
-use std::cell::{RefCell, RefMut};
+use std::cell::{Cell, RefCell, RefMut};
 use std::rc::Rc;
 
 use crate::{
@@ -15,12 +15,16 @@ pub struct SwitchGLRenderObject {
     indices: Vec<u32>,
 
     model_matrix: RefCell<Mat44>,
+    /// `local_aabb`, computed once per vertex upload: the draw culls
+    /// against it every frame.
+    aabb: Cell<Option<Option<([f32; 3], [f32; 3])>>>,
 }
 
 impl RenderObject for SwitchGLRenderObject {
     fn update_vertices(&self, updater: &dyn Fn(RefMut<VertexBuffer>)) {
         let _hitch = crate::perf::hitch::span("gl.vertex_update");
         updater(self.vertices.borrow_mut());
+        self.aabb.set(None);
         unsafe {
             let vertices = self.vertices.borrow();
             glBindBuffer(GL_ARRAY_BUFFER, self.buffers[0]);
@@ -42,7 +46,12 @@ impl RenderObject for SwitchGLRenderObject {
     /// geometry through this (the 74 攀爬 command sizes its climb off the
     /// ladder's own height) behaves the same on the Switch.
     fn local_aabb(&self) -> Option<([f32; 3], [f32; 3])> {
-        self.vertices.borrow().aabb_min_max()
+        if let Some(aabb) = self.aabb.get() {
+            return aabb;
+        }
+        let aabb = self.vertices.borrow().aabb_min_max();
+        self.aabb.set(Some(aabb));
+        aabb
     }
 
     /// Frame-animated sheets (`FrameAnimationComponent`) pick their cell
@@ -104,6 +113,7 @@ impl SwitchGLRenderObject {
             material,
             indices,
             model_matrix: RefCell::new(Mat44::new_identity()),
+            aabb: Cell::new(None),
         })
     }
 

@@ -7,7 +7,7 @@ use crate::{
     comdef::{IEntityExt, IScene, ISceneExt},
     imgui::ImguiFrame,
     math::Mat44,
-    rendering::{ComponentFactory, RenderingEngine, VertexComponents},
+    rendering::{ComponentFactory, RenderObject, RenderingEngine, VertexComponents},
     scene::Viewport,
 };
 
@@ -304,23 +304,39 @@ impl SwitchGLRenderingEngine {
                 env
             };
 
-            let objects: Vec<Rc<SwitchGLRenderObject>> = scene
-                .visible_entities()
-                .iter()
-                .filter_map(|e| {
-                    e.get_rendering_component()
-                        .map(|c| (c, e.world_transform().matrix().clone()))
-                })
-                .flat_map(|(c, m)| {
-                    c.switchgl_render_objects()
-                        .iter()
-                        .map(|o| {
-                            o.set_model_matrix(m.clone());
-                            o.clone()
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .collect();
+            // Frustum culling, as the Vulkan backend does: what the camera
+            // can't see is neither drawn nor (textures being uploaded on
+            // first bind) put on the GPU. Objects without bounds always draw.
+            let frustum = scene.camera().frustum();
+            let mut total = 0usize;
+            let objects: Vec<Rc<SwitchGLRenderObject>> = {
+                let _hitch = crate::perf::hitch::span("gl.cull");
+                scene
+                    .visible_entities()
+                    .iter()
+                    .filter_map(|e| {
+                        e.get_rendering_component()
+                            .map(|c| (c, e.world_transform().matrix().clone()))
+                    })
+                    .flat_map(|(c, m)| {
+                        total += c.switchgl_render_objects().len();
+                        c.switchgl_render_objects()
+                            .iter()
+                            .filter(|o| match o.local_aabb() {
+                                Some((lmin, lmax)) => {
+                                    let (wmin, wmax) = crate::math::transform_aabb(lmin, lmax, &m);
+                                    crate::math::aabb_visible(wmin, wmax, &frustum)
+                                }
+                                None => true,
+                            })
+                            .map(|o| {
+                                o.set_model_matrix(m.clone());
+                                o.clone()
+                            })
+                            .collect::<Vec<_>>()
+                    })
+                    .collect()
+            };
 
             self.scene_frames += 1;
             if !objects.is_empty() && !self.first_draw_logged {
@@ -333,13 +349,14 @@ impl SwitchGLRenderingEngine {
                         .or_insert(0) += 1;
                 }
                 log::info!(
-                    "switchgl: first scene frame with {} objects ({} visible entities, frame {}) {:?}",
+                    "switchgl: first scene frame with {} objects, {} in view ({} visible entities, frame {}) {:?}",
+                    total,
                     objects.len(),
                     scene.visible_entities().len(),
                     self.scene_frames,
                     by_shader
                 );
-            } else if objects.len() != self.last_object_count {
+            } else if total != self.last_object_count {
                 let mut by_shader: std::collections::BTreeMap<&str, usize> =
                     std::collections::BTreeMap::new();
                 for o in &objects {
@@ -348,14 +365,15 @@ impl SwitchGLRenderingEngine {
                         .or_insert(0) += 1;
                 }
                 log::info!(
-                    "switchgl: frame {}, objects {} -> {} ({:?})",
+                    "switchgl: frame {}, objects {} -> {}, {} in view ({:?})",
                     self.scene_frames,
                     self.last_object_count,
+                    total,
                     objects.len(),
                     by_shader
                 );
             }
-            self.last_object_count = objects.len();
+            self.last_object_count = total;
 
             for obj in &objects {
                 unsafe {

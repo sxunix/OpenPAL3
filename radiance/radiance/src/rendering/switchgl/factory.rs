@@ -2,6 +2,7 @@ use std::{
     cell::RefCell,
     collections::HashMap,
     rc::{Rc, Weak},
+    sync::Arc,
 };
 
 use imgui::TextureId;
@@ -22,7 +23,8 @@ pub struct SwitchGLComponentFactory {
     /// scene that names the same image shares one upload, and the texture
     /// goes when the last material using it does. Uploading per material
     /// (as before) put the same image on the GPU dozens of times per scene
-    /// load. The Vulkan backend caches by name the same way.
+    /// load. The Vulkan backend caches by name the same way. The upload
+    /// itself waits for the first draw (`SwitchGLTexture::deferred`).
     textures: RefCell<HashMap<String, Weak<SwitchGLTexture>>>,
 }
 
@@ -99,21 +101,15 @@ impl SwitchGLComponentFactory {
         }
     }
 
-    fn texture_for(&self, def: &TextureDef) -> Rc<SwitchGLTexture> {
-        let upload = || {
-            def.with_image(|img| {
-                let image = img.unwrap_or(&super::material::TEXTURE_MISSING);
-                Rc::new(SwitchGLTexture::new(image.width(), image.height(), image))
-            })
-        };
+    fn texture_for(&self, def: &Arc<TextureDef>) -> Rc<SwitchGLTexture> {
         let name = def.name();
         if name.is_empty() {
-            return upload();
+            return Rc::new(SwitchGLTexture::deferred(def.clone()));
         }
         if let Some(t) = self.textures.borrow().get(name).and_then(Weak::upgrade) {
             return t;
         }
-        let t = upload();
+        let t = Rc::new(SwitchGLTexture::deferred(def.clone()));
         let mut textures = self.textures.borrow_mut();
         if textures.len() >= 1024 {
             textures.retain(|_, w| w.strong_count() > 0);

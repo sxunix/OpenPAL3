@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::sync::Arc;
 
 use image::RgbaImage;
 
@@ -28,7 +29,7 @@ impl SwitchGLMaterial {
     pub fn new(
         def: &MaterialDef,
         shader: Rc<SwitchGLShader>,
-        texture_for: impl Fn(&TextureDef) -> Rc<SwitchGLTexture>,
+        texture_for: impl Fn(&Arc<TextureDef>) -> Rc<SwitchGLTexture>,
     ) -> Self {
         let textures = def.textures().iter().map(|t| texture_for(t)).collect();
 

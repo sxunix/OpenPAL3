@@ -48,8 +48,11 @@ pub fn create_entity_from_pol_model_with_texture<P: AsRef<Path>>(
 }
 
 fn load_pol_model<P: AsRef<Path>>(vfs: &MiniFs, path: P, texture: Option<&str>) -> Vec<Geometry> {
-    let mut reader = BufReader::new(vfs.open(&path).unwrap());
-    let pol = read_pol(&mut reader).unwrap();
+    let pol = {
+        let _hitch = radiance::perf::hitch::span("pol.read");
+        let mut reader = BufReader::new(vfs.open(&path).unwrap());
+        read_pol(&mut reader).unwrap()
+    };
     let mut geometries = vec![];
     for mesh in &pol.meshes {
         for material in &mesh.material_info {
@@ -60,12 +63,12 @@ fn load_pol_model<P: AsRef<Path>>(vfs: &MiniFs, path: P, texture: Option<&str>) 
             // path and omit normals so the lightmap pipeline's vertex layout
             // is unchanged.
             let lit = material.texture_count == 1;
-            let geometry = create_geometry(
-                &mesh.vertices,
-                &material.triangles,
-                load_material(&material, vfs, path.as_ref(), texture),
-                lit,
-            );
+            let material_def = {
+                let _hitch = radiance::perf::hitch::span("pol.material");
+                load_material(&material, vfs, path.as_ref(), texture)
+            };
+            let _hitch = radiance::perf::hitch::span("pol.geometry");
+            let geometry = create_geometry(&mesh.vertices, &material.triangles, material_def, lit);
 
             geometries.push(geometry);
         }
@@ -104,6 +107,7 @@ fn load_material<P: AsRef<Path>>(
             model_dir.pop();
             let dds_name = PathBuf::from(name).with_extension("dds");
             let dds_path = model_dir.join(dds_name);
+            let _hitch = radiance::perf::hitch::span("pol.probe");
             if vfs.open(&dds_path).is_ok() {
                 dds_path
             } else {

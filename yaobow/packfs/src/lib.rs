@@ -173,13 +173,13 @@ fn mount_packages_recursive(
 }
 
 #[cfg(any(vita, switch))]
-fn create_reader<P: AsRef<Path>>(path: P) -> anyhow::Result<Box<dyn SeekRead>> {
+fn create_reader<P: AsRef<Path>>(path: P) -> anyhow::Result<Box<dyn SeekRead + Send>> {
     let file = std::fs::File::open(path.as_ref())?;
     Ok(Box::new(file))
 }
 
 #[cfg(any(windows, linux, macos, android))]
-fn create_reader<P: AsRef<Path>>(path: P) -> anyhow::Result<Box<dyn SeekRead>> {
+fn create_reader<P: AsRef<Path>>(path: P) -> anyhow::Result<Box<dyn SeekRead + Send>> {
     let file = std::fs::File::open(path.as_ref())?;
     let mem = unsafe { memmap::MmapOptions::new().map(&file)? };
     Ok(Box::new(std::io::Cursor::new(mem)))

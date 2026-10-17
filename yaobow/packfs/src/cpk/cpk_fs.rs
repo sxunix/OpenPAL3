@@ -3,20 +3,28 @@ use crate::{create_reader, memory_file::MemoryFile};
 use super::{CpkArchive, CpkEntry};
 use encoding::{EncoderTrap, Encoding};
 use mini_fs::{Entries, Entry, EntryKind, Store};
-use std::{cell::RefCell, ffi::OsString, path::Path, rc::Rc};
+use std::{
+    cell::RefCell,
+    ffi::OsString,
+    path::Path,
+    rc::Rc,
+    sync::{Arc, Mutex},
+};
 
 pub struct CpkFs {
-    cpk_archive: RefCell<CpkArchive>,
+    /// Shared with the files `open_path` hands out, which read their entry
+    /// on first use.
+    cpk_archive: Arc<Mutex<CpkArchive>>,
     entry: Option<CpkEntry>,
 }
 
 impl CpkFs {
     pub fn new<P: AsRef<Path>>(cpk_path: P) -> anyhow::Result<CpkFs> {
         let reader = create_reader(cpk_path)?;
-        let cpk_archive = RefCell::new(CpkArchive::load(reader)?);
+        let cpk_archive = Arc::new(Mutex::new(CpkArchive::load(reader)?));
 
         #[cfg(any(windows, linux, macos))]
-        let entry = Some(cpk_archive.borrow_mut().build_directory()?);
+        let entry = Some(cpk_archive.lock().unwrap().build_directory()?);
 
         #[cfg(any(android, vita, switch))]
         let entry = None;
@@ -33,11 +41,15 @@ impl Store for CpkFs {
         // since the crc hashed path was hard-coded with back-slash dir separator
         let path = path.to_string_lossy().replace("/", r"\");
         let path = Path::new(path.chars().as_str());
-        self.cpk_archive.borrow_mut().open(
+        let index = self.cpk_archive.lock().unwrap().find(
             &encoding::all::GBK
                 .encode(&path.to_str().unwrap().to_lowercase(), EncoderTrap::Ignore)
                 .unwrap(),
-        )
+        )?;
+        let archive = self.cpk_archive.clone();
+        Ok(MemoryFile::deferred(move || {
+            archive.lock().unwrap().read_entry(index)
+        }))
     }
 
     fn entries_path(&self, p: &Path) -> std::io::Result<Entries<'_>> {
