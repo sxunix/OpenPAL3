@@ -382,6 +382,40 @@ pub fn paint_head_arrows(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiA
     }
 }
 
+// The member whose plate is under the cursor, or -1.
+pub fn head_at(pal3: box<openpal3.IPal3Service>, ox: float, oy: float, s: float,
+               mx: float, my: float) -> int {
+    let mut present = pal3.party_size();
+    if present < 1 { present = 1; }
+    if present > 4 { present = 4; }
+    let mut h = 0;
+    while h < present {
+        let hb_x = ox + HB_X * s;
+        let hb_y = oy + head_row(h) * s;
+        if mx >= hb_x && mx <= hb_x + HB_W * s && my >= hb_y && my <= hb_y + HB_H * s {
+            return h;
+        }
+        h = h + 1;
+    }
+    return -1;
+}
+
+// 仙术页施法时的 NeedArrow（`CheckNeedTo` 决定谁亮）。
+pub fn paint_magic_arrows(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
+                          pal3: box<openpal3.IPal3Service>, ox: float, oy: float, s: float) {
+    let mut present = pal3.party_size();
+    if present < 1 { present = 1; }
+    if present > 4 { present = 4; }
+    let mut h = 0;
+    while h < present {
+        if pal3.magic_arrow(role_at(pal3, h)) {
+            sprite(ui, atlas, SPR_NEEDARROW,
+                ox + (HB_X + ARROW_DX) * s, oy + (head_row(h) + ARROW_DY) * s, s);
+        }
+        h = h + 1;
+    }
+}
+
 pub fn digit(d: int) -> string {
     if d == 0 { return "0"; } if d == 1 { return "1"; }
     if d == 2 { return "2"; } if d == 3 { return "3"; }

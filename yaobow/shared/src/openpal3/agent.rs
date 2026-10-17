@@ -775,6 +775,20 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "role_vitals" => {
+            // [角色, 精, 气, 神] —— 直接改，测战斗外用道具 / 施法。
+            let actor = int_arg(0).unwrap_or(0).max(0) as u32;
+            director.debug_set_role_vitals(
+                actor,
+                int_arg(1).unwrap_or(1) as i32,
+                int_arg(2).unwrap_or(1) as i32,
+                int_arg(3).unwrap_or(1) as i32,
+            );
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "mouse" => {
             // [x, y, 动作] —— 合成鼠标，坐标是 800×600 的游戏坐标；动作 "move" / "down" / "up" /
             // "click"（左键按下再松开）/ "rclick"。

@@ -380,6 +380,17 @@ impl AdventureDirector {
         p.sce_vm.push_debug_command(cmd, scene_manager);
     }
 
+    /// [调试] 直接改一个人的精、气、神（测战斗外用道具 / 施法）。
+    pub fn debug_set_role_vitals(&self, actor: u32, hp: i32, sp: i32, mp: i32) {
+        let p = self.props.borrow();
+        let state = p.sce_vm.global_state().persistent_state_shared();
+        if let Some(role) = state.borrow_mut().role_mut(actor) {
+            role.hp = hp;
+            role.sp = sp;
+            role.mp = mp;
+        }
+    }
+
     /// [调试] 直接下一条 141（屏幕特效）。
     pub fn debug_screen_effect(&self, effect: i32) {
         let mut p = self.props.borrow_mut();

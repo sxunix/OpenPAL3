@@ -415,6 +415,29 @@ interface IPal3Service: IUnknown {
     // 画 `AssisLang.lang` 第 `index` 条（读法同 `FUN_00457410`）。
     void draw_lang_text(IUiHost ui, int index, float x, float y, float size,
         float r, float g, float b, float a);
+    // 两条接在一起画（`"%s%s"`，仙术页列头）。
+    void draw_lang_pair(IUiHost ui, int first, int second, float x, float y, float size,
+        float r, float g, float b, float a);
+
+    // ---- 仙术页：冒险中施法（规则在 states/magic_use.rs，源码 magicui.cpp） ----
+    // `actor` 学会的这门列在哪个页签（`GetRoleSkill`；0 技 … 6 双），不列 -1。
+    int skill_tab(int actor, int skill_id);
+    // `actor` 学会的这门：field 0 等级（0..3），1 用过几次。
+    int learned_skill(int actor, int skill_id, int field);
+    // 这门现在能不能开始施（`CheckUsable(…, false)`，列表上不能的画灰）。
+    bool magic_usable(int actor, int skill_id);
+    // 双击列表里的一门：查能不能施（不能就弹提示），能就进选人、亮箭头；放 wa002。
+    void magic_begin(int actor, int skill_id);
+    // 正在选人的施术者，不在选人 -1。
+    int magic_user();
+    // 选人时 `actor` 头上亮不亮箭头。
+    bool magic_arrow(int actor);
+    // 选人时鼠标移到 `actor` 的头像上（单体仙术箭头跟过去）。
+    void magic_hover(int actor);
+    // 选人时点了 `actor` 的头像：箭头跟过去、wa001；对同一个人再点一次（原版双击）就施出去。
+    void magic_head_click(int actor);
+    // 退出选人（右键、Esc、换页签）。
+    void magic_cancel();
 
     // Whether this monster has been recorded in the 侠义榜, and the
     // number recorded so far. Nothing marks monsters yet — that happens

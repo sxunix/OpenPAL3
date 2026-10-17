@@ -13,6 +13,7 @@ pub mod inn;
 pub mod item_sort;
 pub mod item_use;
 pub mod lineup_plank;
+pub mod magic_use;
 pub mod poison_walk;
 pub mod killflyer;
 pub mod persistent_state;

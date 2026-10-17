@@ -205,6 +205,10 @@ pub struct Pal3Service {
     menu_was_open: Cell<bool>,
     /// 系统页「离开游戏」要回仙三的开始菜单（`SwitchUIRender(M_COVER)`）。
     menu_title_request: Cell<bool>,
+    /// 仙术页正在选人的那次施法。
+    magic_use: RefCell<Option<MagicUse>>,
+    /// 施法浮动用的随机数（MSVC `rand()` 的算法，种子开机定）[近似]。
+    magic_rand: Cell<u32>,
     /// 阵法页：头像条（第 0 格是领队）和每人的设置板，进页面时排好。
     lineup_page: RefCell<Option<LineupPage>>,
     /// 菜单页共用的提示框。
@@ -320,6 +324,12 @@ impl Pal3Service {
             menu_snapshot: RefCell::new(None),
             menu_was_open: Cell::new(false),
             menu_title_request: Cell::new(false),
+            magic_use: RefCell::new(None),
+            magic_rand: Cell::new(
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map_or(1, |d| d.as_secs() as u32),
+            ),
             lineup_page: RefCell::new(None),
             menu_message: RefCell::new(Default::default()),
             pending_leader: Cell::new(-1),
@@ -869,6 +879,55 @@ impl Pal3Service {
         self.active_adventure_director_owned()
             .map(|adv| adv.inner::<AdventureDirector>().take_title_request())
             .unwrap_or(false)
+    }
+
+    /// AssisLang 第 `n` 条（转义已解）。
+    fn lang_text(&self, n: usize) -> String {
+        self.assis_lang_text(n)
+            .map(|t| shared::openpal3::assis_lang::unescape(&t))
+            .unwrap_or_default()
+    }
+
+    /// 仙术页的提示框（`m_Msg` / `m_Dlg`，都是 `DLG_MSGBOX`，字色 (31,251,255)）。
+    fn show_magic_message(&self, rect: (i32, i32, i32, i32), text: String) {
+        self.menu_message.borrow_mut().show(rect, (0, 0), text);
+    }
+
+    /// 选人时把箭头指到 `actor`：单体仙术——它用得上就只亮它，用不上按 `CheckNeedTo`；
+    /// `click` 时全体仙术把用得上的都亮上（悬停时全体不动）。
+    fn magic_point_at(&self, actor: u32, click: bool) {
+        use shared::openpal3::states::magic_use as mu;
+        let Some(db) = self.active_game_db.borrow().clone() else {
+            return;
+        };
+        let Some(skill_id) = self.magic_use.borrow().as_ref().map(|m| m.skill_id) else {
+            return;
+        };
+        let Some(skill) = db.skill(skill_id) else {
+            return;
+        };
+        let arrows = self.with_persistent_state(None, |s| match skill.target_range_type {
+            1 => Some(if mu::can_use_this(skill, s, &db, actor) {
+                let mut a = [false; fileformats::pal3::gdb::PLAYER_ACTOR_COUNT];
+                if let Some(x) = a.get_mut(actor as usize) {
+                    *x = true;
+                }
+                a
+            } else {
+                mu::need_to(skill, s, &db)
+            }),
+            2 if click => {
+                let mut a = [false; fileformats::pal3::gdb::PLAYER_ACTOR_COUNT];
+                for (k, x) in a.iter_mut().enumerate() {
+                    *x = s.is_in_team(k as u32) && mu::can_use_this(skill, s, &db, k as u32);
+                }
+                Some(a)
+            }
+            _ => None,
+        });
+        if let (Some(arrows), Some(m)) = (arrows, self.magic_use.borrow_mut().as_mut()) {
+            m.arrows = arrows;
+        }
     }
 
     /// `<save_dir>/OpenPAL3/Save/<slot>.<ext>`。
@@ -2501,6 +2560,199 @@ impl IPal3ServiceImpl for Pal3Service {
         }
     }
 
+    fn draw_lang_pair(
+        &self,
+        ui: ComRc<IUiHost>,
+        first: i32,
+        second: i32,
+        x: f32,
+        y: f32,
+        size: f32,
+        r: f32,
+        g: f32,
+        b: f32,
+        a: f32,
+    ) {
+        let text = |i: i32| {
+            usize::try_from(i)
+                .ok()
+                .and_then(|i| self.assis_lang_text(i))
+                .unwrap_or_default()
+        };
+        ui.text_at_sized(x, y, size, r, g, b, a, &(text(first) + &text(second)));
+    }
+
+    fn skill_tab(&self, actor: i32, skill_id: i32) -> i32 {
+        let db = self.active_game_db.borrow();
+        let Some(skill) = db.as_ref().and_then(|db| db.skill(skill_id.max(0) as u32)) else {
+            return -1;
+        };
+        shared::openpal3::states::magic_use::tab_of(skill, actor.max(0) as usize)
+            .map_or(-1, |t| t as i32)
+    }
+
+    fn learned_skill(&self, actor: i32, skill_id: i32, field: i32) -> i32 {
+        self.with_persistent_state(0, |s| {
+            s.role(actor.max(0) as u32)
+                .and_then(|r| r.skills.iter().find(|k| k.id == skill_id as u32))
+                .map_or(0, |k| {
+                    if field == 0 {
+                        k.level as i32
+                    } else {
+                        k.uses as i32
+                    }
+                })
+        })
+    }
+
+    fn magic_usable(&self, actor: i32, skill_id: i32) -> bool {
+        let Some(db) = self.active_game_db.borrow().clone() else {
+            return false;
+        };
+        let Some(skill) = db.skill(skill_id.max(0) as u32) else {
+            return false;
+        };
+        let tab = shared::openpal3::states::magic_use::tab_of(skill, actor.max(0) as usize);
+        self.with_persistent_state(false, |s| {
+            shared::openpal3::states::magic_use::check_usable(
+                skill,
+                s,
+                &db,
+                actor.max(0) as u32,
+                tab == Some(0),
+                false,
+            )
+            .is_ok()
+        })
+    }
+
+    fn magic_begin(&self, actor: i32, skill_id: i32) -> () {
+        use shared::openpal3::states::magic_use::{self as mu, Refusal};
+        let Some(db) = self.active_game_db.borrow().clone() else {
+            return;
+        };
+        let Some(skill) = db.skill(skill_id.max(0) as u32) else {
+            return;
+        };
+        let user = actor.max(0) as u32;
+        let skill_tab = mu::tab_of(skill, user as usize) == Some(0);
+        let checked = self.with_persistent_state(None, |s| {
+            Some(
+                match mu::check_usable(skill, s, &db, user, skill_tab, true) {
+                    Ok(()) => Ok(mu::need_to(skill, s, &db)),
+                    Err(r) => Err(r),
+                },
+            )
+        });
+        match checked {
+            Some(Ok(arrows)) => {
+                *self.magic_use.borrow_mut() = Some(MagicUse {
+                    user,
+                    skill_id: skill.id,
+                    skill_tab,
+                    arrows,
+                    last_click: None,
+                });
+            }
+            Some(Err(r)) => {
+                let (lang, pad) = r.text();
+                self.show_magic_message(MAGIC_MSG_RECT, format!("\n{pad}{}", self.lang_text(lang)));
+                if r == Refusal::NobodyNeeds {
+                    self.play_ui_sound("wa003");
+                }
+            }
+            None => {}
+        }
+        // 双击列表一律 SND_LIST_OK。
+        self.play_ui_sound("wa002");
+    }
+
+    fn magic_user(&self) -> i32 {
+        self.magic_use
+            .borrow()
+            .as_ref()
+            .map_or(-1, |m| m.user as i32)
+    }
+
+    fn magic_arrow(&self, actor: i32) -> bool {
+        self.magic_use
+            .borrow()
+            .as_ref()
+            .and_then(|m| m.arrows.get(actor.max(0) as usize).copied())
+            .unwrap_or(false)
+    }
+
+    fn magic_hover(&self, actor: i32) -> () {
+        self.magic_point_at(actor.max(0) as u32, false);
+    }
+
+    fn magic_head_click(&self, actor: i32) -> () {
+        use shared::openpal3::states::magic_use::{self as mu, Cast};
+        let actor = actor.max(0) as u32;
+        let (again, user, skill_id, skill_tab) = {
+            let m = self.magic_use.borrow();
+            let Some(m) = m.as_ref() else { return };
+            (m.last_click == Some(actor), m.user, m.skill_id, m.skill_tab)
+        };
+        if !again {
+            // 单击（`UIWM_COMMAND`）：箭头跟过去，wa001。
+            self.magic_point_at(actor, true);
+            if let Some(m) = self.magic_use.borrow_mut().as_mut() {
+                m.last_click = Some(actor);
+            }
+            self.play_ui_sound("wa001");
+            return;
+        }
+        // 双击（`UIWM_BTN_DBCLICK` → `UsingMagicRole`）。
+        let Some(db) = self.active_game_db.borrow().clone() else {
+            return;
+        };
+        let Some(skill) = db.skill(skill_id) else {
+            return;
+        };
+        let Some(handle) = self.active_persistent_state.borrow().clone() else {
+            return;
+        };
+        let lang = |n: usize| self.lang_text(n);
+        let mut rand = || {
+            let s = self
+                .magic_rand
+                .get()
+                .wrapping_mul(214013)
+                .wrapping_add(2531011);
+            self.magic_rand.set(s);
+            ((s >> 16) & 0x7fff) as i32
+        };
+        let result = {
+            let Ok(mut state) = handle.try_borrow_mut() else {
+                return;
+            };
+            mu::cast(
+                skill, &mut state, &db, user, actor, skill_tab, &lang, &mut rand,
+            )
+        };
+        match result {
+            Cast::Refused { refusal } => {
+                if refusal {
+                    self.show_magic_message(MAGIC_MSG_RECT, format!("\n        {}", lang(108)));
+                    self.play_ui_sound("wa004");
+                }
+            }
+            Cast::Done { level_up, keep, .. } => {
+                if let Some(text) = level_up {
+                    self.show_magic_message(MAGIC_DLG_RECT, text);
+                }
+                if !keep {
+                    *self.magic_use.borrow_mut() = None;
+                }
+            }
+        }
+    }
+
+    fn magic_cancel(&self) -> () {
+        *self.magic_use.borrow_mut() = None;
+    }
+
     fn draw_lang_text(
         &self,
         ui: ComRc<IUiHost>,
@@ -2922,6 +3174,20 @@ struct ModelViewSlot {
 }
 
 /// 阵法页进页面时排好的头像条和设置板。
+/// 仙术页两个提示框：`m_Msg` (300,200)+218×96、`m_Dlg`（升级）(300,200)+256×156。
+const MAGIC_MSG_RECT: (i32, i32, i32, i32) = (300, 200, 518, 296);
+const MAGIC_DLG_RECT: (i32, i32, i32, i32) = (300, 200, 556, 356);
+
+/// 仙术页选人时的状态（原版 `m_usemagicRole` / `m_LockUse` / 箭头）。
+struct MagicUse {
+    user: u32,
+    skill_id: u32,
+    skill_tab: bool,
+    arrows: [bool; fileformats::pal3::gdb::PLAYER_ACTOR_COUNT],
+    /// 上一次点的头像（再点同一个 = 双击）。
+    last_click: Option<u32>,
+}
+
 struct LineupPage {
     strip: Vec<i32>,
     panels: Vec<(u32, shared::openpal3::states::lineup_plank::Plank)>,

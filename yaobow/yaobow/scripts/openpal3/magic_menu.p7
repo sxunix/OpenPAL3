@@ -10,12 +10,10 @@
 // nine rows of 29 px instead of twelve of 23, NO scrollbar, eight tabs,
 // and a column set that changes per tab.
 //
-// How the tabs filter: the original does not filter live — it pre-sorts
-// each character's skills into eight buckets and a tab just picks one.
-// The code that fills those buckets was not located, so the predicate
-// below is reconstructed from the database, where it partitions all 187
-// skills exactly: no element -> 技, exactly one -> that element's tab,
-// two or more -> 双. [推断, but the partition is exact: 84 + 70 + 33.]
+// How the tabs filter: the original pre-sorts each character's skills into
+// eight buckets (`GetRoleSkill` in magicui.cpp; `IPal3Service::skill_tab`):
+// 特技 (type 0) -> 技; a 仙术 with exactly one of 风雷水火土 -> that tab;
+// anything else -> 双; only skills whose `user[]` has the character.
 //
 // The last tab, 合, is not combo skills but 合成术 (item recipes —
 // `magicui.cpp`'s `IDL_MAGIC_COMLIST`): the character's learnt recipes with
@@ -25,7 +23,13 @@
 // composes — the dialogs and the rules live in Rust (compose_dialog.rs,
 // states/compose.rs).
 //
-// Not reproduced: casting a skill outside combat.
+// Casting outside combat (`magicui.cpp`, rules in states/magic_use.rs): a
+// second click on the selected row (the original's double-click) checks the
+// skill and, if it can go, enters the pick-a-person state — the list stops
+// taking clicks, NeedArrows light up, hovering or clicking a plate moves the
+// arrow (wa001), a second click on the same plate casts. Right click or a
+// tab change backs out. Refusals and the level-up notice come up in the
+// page's message box.
 
 import radiance;
 import shared.openpal3;
@@ -55,12 +59,10 @@ let TAB_Y0: float = 124.0;
 let TAB_W: float = 42.0;   let TAB_H: float = 50.0;
 let TAB_X: array<float> = [229.0, 272.0, 315.0, 358.0, 401.0, 444.0, 487.0, 529.0];
 let TAB_BASE: array<string> = ["Skill", "Shui", "Huo", "Lei", "Feng", "Tu", "Suang", "Combo"];
-// Which element (index into the database's 水火风雷土 array) each tab
-// wants; -1 for the tabs that do not select by a single element. Note the
-// on-screen order is 水火雷风土, not the database's 水火风雷土.
-let TAB_ELEMENT: array<int> = [-1, 0, 1, 3, 2, 4, -1, -1];
 let TAB_SKILL: int = 0;
-let TAB_DUAL: int = 6;
+// Each tab's title header (AssisLang): 技 391, 水 392, 火 393, 雷 394,
+// 风 395, 土 396, 双 397.
+let TAB_TITLE: array<int> = [391, 392, 393, 394, 395, 396, 397, 127];
 let TAB_COMBO: int = 7;
 
 // 合 tab: list columns are three 98s and a 36 (`Com1..3`, `Percent`); the
@@ -104,12 +106,8 @@ let INK_R: float = 0.05; let INK_G: float = 0.12; let INK_B: float = 0.0;
 let NAME_R: float = 1.0; let NAME_G: float = 0.96; let NAME_B: float = 0.56;
 
 // `IPal3Service::skill_info` selectors.
-let SK_TYPE: int = 0;
-let SK_LEVEL: int = 1;
 let SK_SP: int = 2;
 let SK_MP: int = 3;
-let SK_ELEMENTS: int = 5;
-let SK_USE_TIMES: int = 11;
 
 pub let CLOSE: int = -1;
 pub let TO_STATE: int = -2;
@@ -152,9 +150,15 @@ pub fn paint_magic_menu(
     ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
 
     // A compose dialog (or the 5 s wait for its result) takes every click
-    // (`CtlList(false)` and the modal `MUIDialog`).
-    let busy = pal3.compose_busy();
+    // (`CtlList(false)` and the modal `MUIDialog`); so does the page's
+    // message box.
+    let busy = pal3.compose_busy() || pal3.menu_message_open();
     let page_click = click && !busy;
+    // Picking a person for a skill: the list is disabled (`CtlList(false)`).
+    let using = pal3.magic_user() >= 0;
+    let list_click = page_click && !using;
+    // 右键退出选人（`UIWM_RCLICK`）。
+    if using && ui.mouse_down(1) { pal3.magic_cancel(); }
 
     let party = pal3.party_size();
     let mut member = member_of(state);
@@ -173,9 +177,20 @@ pub fn paint_magic_menu(
 
     // The party column doubles as the character selector, same as 装备.
     let picked = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, page_click, true);
-    // Any plate click plays wa001 (`IDB_ROLEHEAD_MAGIC`).
-    if picked >= 0 { pal3.ui_sound(chrome.SND_CLICK); }
-    if picked >= 0 && picked != member {
+    if using {
+        // Picking a person: plates move the arrow / cast instead of
+        // switching character (the service plays the sounds).
+        let over = chrome.head_at(pal3, ox, oy, s, mx, my);
+        if over >= 0 { pal3.magic_hover(chrome.role_at(pal3, over)); }
+        if picked >= 0 { pal3.magic_head_click(chrome.role_at(pal3, picked)); }
+        chrome.paint_magic_arrows(ui, atlas, pal3, ox, oy, s);
+    } else if picked >= 0 {
+        // Any plate click plays wa001 (`IDB_ROLEHEAD_MAGIC`).
+        pal3.ui_sound(chrome.SND_CLICK);
+    }
+    // (Judged on the state before this click: the click that casts can end
+    // the picking, and must not then also switch character.)
+    if picked >= 0 && picked != member && !using {
         member = picked;
         actor = pal3.party_actor_id(member);
         if actor < 0 { actor = 0; }
@@ -197,6 +212,8 @@ pub fn paint_magic_menu(
         if hover && page_click {
             new_tab = i;
             pal3.ui_sound(chrome.SND_CLICK);
+            // 换页签取消施法（`ControlPage`）。
+            pal3.magic_cancel();
         }
     }
     if new_tab != tab {
@@ -250,38 +267,45 @@ pub fn paint_magic_menu(
             if k == sel {
                 chrome.sprite_additive(ui, atlas, SPR_SELECTED, grid_x0, ry0, s);
             }
-            if hover && page_click { sel = k; }
-
-            let ty = ry0 + ROW_TEXT_DY * s;
-            pal3.draw_skill_name(ui, id, grid_x0 + chrome.TXT_MARGIN * s, ty,
-                chrome.TXT * s, INK_R, INK_G, INK_B, 1.0);
-
-            // 技 shows name + one wide column; the element tabs also show
-            // the skill's level and how many more uses it needs.
-            // [We show the 气/神 cost in the `Att` column; what the
-            // original puts there is not yet identified.]
-            let sp = pal3.skill_info(id, SK_SP);
-            let mp = pal3.skill_info(id, SK_MP);
-            let mut cost = "";
-            if sp > 0 { cost = "气" + chrome.int_str(sp); }
-            if mp > 0 {
-                if cost != "" { cost = cost + " "; }
-                cost = cost + "神" + chrome.int_str(mp);
+            if hover && list_click {
+                // A second click on the selected row is the double-click:
+                // try to cast (`UIWM_LB_DBCLICK`).
+                if k == sel { pal3.magic_begin(actor, id); }
+                sel = k;
             }
 
+            // Rows the character cannot cast right now are grey
+            // (`CheckUsable(…, false)` → RGB 127,127,127).
+            let mut ir = INK_R; let mut ig = INK_G; let mut ib = INK_B;
+            if !pal3.magic_usable(actor, id) { ir = 0.5; ig = 0.5; ib = 0.5; }
+            let ty = ry0 + ROW_TEXT_DY * s;
+            pal3.draw_skill_name(ui, id, grid_x0 + chrome.TXT_MARGIN * s, ty,
+                chrome.TXT * s, ir, ig, ib, 1.0);
+
+            // `GetListVal`: the cost column is 气 if any, else 神 (技: if
+            // not negative); the element tabs add the learnt level + 1 and
+            // how many times this character has cast it.
+            let sp = pal3.skill_info(id, SK_SP);
+            let mp = pal3.skill_info(id, SK_MP);
             if tab == TAB_SKILL {
+                let mut cost = "";
+                if sp >= 0 { cost = chrome.int_str(sp); }
+                else { if mp >= 0 { cost = chrome.int_str(mp); } }
                 chrome.widget_text(ui, grid_x0 + COL_SKILL_NAME * s, ry0,
-                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B, cost);
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, ir, ig, ib, cost);
             } else {
+                let mut cost = 0;
+                if sp > 0 { cost = sp; }
+                else { if mp > 0 { cost = mp; } }
                 chrome.widget_text(ui, grid_x0 + COL_MAGIC_NAME * s, ry0,
-                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B, cost);
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, ir, ig, ib, chrome.int_str(cost));
                 chrome.widget_text(ui, grid_x0 + (COL_MAGIC_NAME + COL_MAGIC_ATT) * s, ry0,
-                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B,
-                    chrome.int_str(pal3.skill_info(id, SK_LEVEL)));
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, ir, ig, ib,
+                    chrome.int_str(pal3.learned_skill(actor, id, 0) + 1));
                 chrome.widget_text(ui,
                     grid_x0 + (COL_MAGIC_NAME + COL_MAGIC_ATT + COL_MAGIC_LV) * s, ry0,
-                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B,
-                    chrome.int_str(pal3.skill_info(id, SK_USE_TIMES)));
+                    ROW_TEXT_DY - chrome.TXT_MARGIN, s, ir, ig, ib,
+                    chrome.int_str(pal3.learned_skill(actor, id, 1)));
             }
         }
     }
@@ -295,8 +319,22 @@ pub fn paint_magic_menu(
                 chrome.TXT * s, INK_R, INK_G, INK_B, 1.0);
         }
     } else {
-        chrome.widget_text(ui, ox + HEAD_X * s, oy + HEAD_Y * s, 0.0, s,
-            INK_R, INK_G, INK_B, header_for(tab));
+        // Four header widgets (`m_title`, `ControlPage`): the tab's own
+        // title, then 消耗气 / 消耗神, 等级, 使用次数.
+        let hx = ox + (HEAD_X + chrome.TXT_MARGIN) * s;
+        let hy = oy + (HEAD_Y + chrome.TXT_MARGIN) * s;
+        pal3.draw_lang_text(ui, TAB_TITLE[tab], hx, hy, chrome.TXT * s, INK_R, INK_G, INK_B, 1.0);
+        if tab == TAB_SKILL {
+            pal3.draw_lang_pair(ui, 124, 15, hx + 274.0 * s, hy, chrome.TXT * s,
+                INK_R, INK_G, INK_B, 1.0);
+        } else {
+            pal3.draw_lang_pair(ui, 124, 16, hx + 146.0 * s, hy, chrome.TXT * s,
+                INK_R, INK_G, INK_B, 1.0);
+            pal3.draw_lang_text(ui, 125, hx + 218.0 * s, hy, chrome.TXT * s,
+                INK_R, INK_G, INK_B, 1.0);
+            pal3.draw_lang_pair(ui, 126, 56, hx + 256.0 * s, hy, chrome.TXT * s,
+                INK_R, INK_G, INK_B, 1.0);
+        }
     }
 
     // ---- The selected skill ----------------------------------------------
@@ -331,8 +369,9 @@ pub fn paint_magic_menu(
     let hit = chrome.paint_toolbar(ui, atlas, pal3, ox, oy, cw, ch, s, mx, my, down, page_click,
         chrome.PAGE_MAGIC);
 
-    // The compose dialogs go over everything.
+    // The compose dialogs go over everything, then the message box.
     let _busy = pal3.paint_compose_dialogs(ui, mx, my, down, click, ox, oy, s);
+    let _msg = pal3.paint_menu_message(ui, click, ox, oy, s);
     if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
     if hit == chrome.PAGE_STATE { return TO_STATE; }
     if hit == chrome.PAGE_PROP { return TO_PROP; }
@@ -352,7 +391,7 @@ fn count_in_tab(pal3: box<openpal3.IPal3Service>, actor: int, tab: int) -> int {
     let mut i = 0;
     while i < learned {
         let id = pal3.skill_id(actor, i);
-        if id >= 0 && belongs_to_tab(pal3, id, tab) { n = n + 1; }
+        if id >= 0 && belongs_to_tab(pal3, actor, id, tab) { n = n + 1; }
         i = i + 1;
     }
     return n;
@@ -365,7 +404,7 @@ fn nth_in_tab(pal3: box<openpal3.IPal3Service>, actor: int, tab: int, index: int
     let mut i = 0;
     while i < learned {
         let id = pal3.skill_id(actor, i);
-        if id >= 0 && belongs_to_tab(pal3, id, tab) {
+        if id >= 0 && belongs_to_tab(pal3, actor, id, tab) {
             if n == index { return id; }
             n = n + 1;
         }
@@ -374,36 +413,10 @@ fn nth_in_tab(pal3: box<openpal3.IPal3Service>, actor: int, tab: int, index: int
     return -1;
 }
 
-// Which tab a learned skill shows up under. See the header note for why
-// this is reconstructed rather than read out of the original.
-fn belongs_to_tab(pal3: box<openpal3.IPal3Service>, skill_id: int, tab: int) -> bool {
-    // Combo skills are a separate database table, not learned skills.
+// Which tab a learned skill shows up under (`GetRoleSkill`).
+fn belongs_to_tab(pal3: box<openpal3.IPal3Service>, actor: int, skill_id: int, tab: int) -> bool {
     if tab == TAB_COMBO { return false; }
-
-    let mask = pal3.skill_info(skill_id, SK_ELEMENTS);
-    let n = bit_count(mask);
-    if tab == TAB_SKILL { return n == 0; }
-    if tab == TAB_DUAL { return n >= 2; }
-    if n != 1 { return false; }
-    return mask == pow2(TAB_ELEMENT[tab]);
-}
-
-fn pow2(n: int) -> int {
-    let mut v = 1;
-    let mut i = 0;
-    while i < n { v = v * 2; i = i + 1; }
-    return v;
-}
-
-fn bit_count(mask: int) -> int {
-    let mut n = 0;
-    let mut m = mask;
-    while m > 0 {
-        let half = m / 2;
-        if m - half * 2 == 1 { n = n + 1; }
-        m = half;
-    }
-    return n;
+    return pal3.skill_tab(actor, skill_id) == tab;
 }
 
 fn grid_sprite(tab: int) -> string {
@@ -412,9 +425,4 @@ fn grid_sprite(tab: int) -> string {
     return SPR_GRID_MAGIC;
 }
 
-// The original lays out four separate header widgets per tab; we draw one
-// padded line, the way the other pages' headers work.
-fn header_for(tab: int) -> string {
-    if tab == TAB_SKILL { return "名称                                    消耗"; }
-    return "名称                     消耗        等级    使用次数";
-}
+
