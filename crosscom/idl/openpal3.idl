@@ -533,6 +533,10 @@ interface IPal3DialogRenderer: IUnknown {
     // the indicator blink.
     void render_dialog(IUiHost ui, &str text, float dt);
 
+    // Turn to the next page of the text last rendered: 1 if it had one,
+    // 0 if the page on screen was the last.
+    int next_page();
+
     // Paint the scene-transition curtain/fade for the current frame.
     void render_curtain(IUiHost ui);
 

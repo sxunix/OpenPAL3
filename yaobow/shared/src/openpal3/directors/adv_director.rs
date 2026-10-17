@@ -70,6 +70,7 @@ impl AdventureDirector {
                 scene_manager,
                 sce_vm,
                 camera_rotation: 0.,
+                camera_scene: String::new(),
                 scripted_camera_seeded: false,
                 agent_bridge: None,
                 player_slide_dir: None,
@@ -223,6 +224,7 @@ impl AdventureDirector {
                 scene_manager: scene_manager.clone(),
                 sce_vm,
                 camera_rotation: 0.,
+                camera_scene: String::new(),
                 scripted_camera_seeded: false,
                 agent_bridge: None,
                 player_slide_dir: None,
@@ -927,6 +929,8 @@ struct AdventureDirectorProps {
     scene_manager: ComRc<ISceneManager>,
     sce_vm: SceVm,
     camera_rotation: f32,
+    /// 镜头转角跟着的场景（`场景_块`）；换了就摆回默认朝向。
+    camera_scene: String,
     /// Whether the polar camera's angles have been taken from the live
     /// camera since a script last focused it somewhere. Reset when the
     /// camera goes back to following the player.
@@ -3555,8 +3559,28 @@ impl AdventureDirectorProps {
             return None;
         }
 
-        self.camera_rotation =
-            get_camera_rotation(self.input_engine.clone(), self.camera_rotation, delta_sec);
+        // 转镜头：原版 `RoleCtrl::Update` 只在 `RoleCtrl::s_camera` 开着时收滚轮 / 转向键，
+        // `SceneMgr` 进室内（SCENE_STORYB）关掉、进别的场景打开，而且每次进场景都
+        // `DefaultCamera` 摆回默认镜头。[移植]
+        let (camera_scene, indoor) = self
+            .scene_manager
+            .scn_scene()
+            .map(|s| {
+                let s = s.inner::<crate::openpal3::scene::ScnScene>();
+                (
+                    format!("{}_{}", s.name(), s.sub_name()),
+                    s.scene_type() == 1,
+                )
+            })
+            .unwrap_or_default();
+        if camera_scene != self.camera_scene {
+            self.camera_scene = camera_scene;
+            self.camera_rotation = 0.;
+        }
+        if !indoor {
+            self.camera_rotation =
+                get_camera_rotation(self.input_engine.clone(), self.camera_rotation, delta_sec);
+        }
 
         // [调试] agent 带着主角一格一格走（`agent_walk_to`）。
         if self.agent_walk.is_some() && (locked || frozen) {

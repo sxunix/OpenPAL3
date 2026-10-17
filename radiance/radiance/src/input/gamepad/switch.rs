@@ -112,10 +112,12 @@ impl SwitchGamepadInput {
         let right = self.pad.sticks[1];
 
         axis_states[Axis::LeftStickX as usize].set_value(normalize(left.x));
-        // libnx reports +Y as up; the engine wants +Y down, as on Vita.
-        axis_states[Axis::LeftStickY as usize].set_value(-normalize(left.y));
+        // libnx already reports +Y as up, which is what the engine wants
+        // (Vita flips its 0-at-top byte to get there; gilrs is +Y up too).
+        // Negating it here walked the hero backwards.
+        axis_states[Axis::LeftStickY as usize].set_value(normalize(left.y));
         axis_states[Axis::RightStickX as usize].set_value(normalize(right.x));
-        axis_states[Axis::RightStickY as usize].set_value(-normalize(right.y));
+        axis_states[Axis::RightStickY as usize].set_value(normalize(right.y));
     }
 }
 

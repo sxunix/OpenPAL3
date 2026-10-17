@@ -2413,7 +2413,8 @@ impl IPal3ServiceImpl for Pal3Service {
         }
         slot.last_y = down.then_some(y);
 
-        // 手柄右摇杆上下也调俯角（移植端加的，原版只有鼠标）；方向和往下拖一致。
+        // 手柄右摇杆上下也调俯角（移植端加的，原版只有鼠标）；往下推和往下拖一致
+        // （摇杆 +Y 朝上，所以减）。
         let stick = self
             .input_engine_for_director()
             .borrow()
@@ -2421,7 +2422,7 @@ impl IPal3ServiceImpl for Pal3Service {
             .value();
         if stick.abs() > 0.2 {
             let pitch =
-                slot.disc.pitch() + stick * shared::openpal3::lineup_disc::PAD_PITCH_SPEED * dt;
+                slot.disc.pitch() - stick * shared::openpal3::lineup_disc::PAD_PITCH_SPEED * dt;
             slot.disc.set_pitch(pitch);
         }
 

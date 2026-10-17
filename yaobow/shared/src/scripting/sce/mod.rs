@@ -934,6 +934,12 @@ impl SceState {
         });
     }
 
+    /// Turn the dialog box to the next page of the current text. `true`
+    /// when there was one; `false` when the last page is on screen.
+    pub fn next_dialog_page(&mut self) -> bool {
+        self.dialog_renderer.next_page() != 0
+    }
+
     /// Paint the scene-transition curtain/fade for this frame from the
     /// current `curtain` value. Mirrors the legacy
     /// `DialogBox::fade_window` driven by `SceVm::draw_curtain`.

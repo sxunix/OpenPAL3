@@ -390,9 +390,10 @@ fn add_font_with_lucide(context: &mut Context, size_pixels: f32) {
     // the Switch driver's GL_MAX_TEXTURE_SIZE. The upload "succeeds" but
     // sampling returns black, which made every piece of imgui text (and
     // every solid fill, via the atlas' white texel) invisible in-game.
-    // On Switch: common simplified-Chinese ranges and no oversampling.
+    // On Switch: common simplified Chinese plus the characters PAL3 prints
+    // (`switch_glyphs.txt`), and no oversampling.
     #[cfg(switch)]
-    let (cjk_ranges, oversample_h) = (FontGlyphRanges::chinese_simplified_common(), 1);
+    let (cjk_ranges, oversample_h) = (switch_glyph_ranges(), 1);
     #[cfg(not(switch))]
     let (cjk_ranges, oversample_h) = (FontGlyphRanges::chinese_full(), 3);
 
@@ -429,6 +430,44 @@ fn add_font_with_lucide(context: &mut Context, size_pixels: f32) {
             }),
         },
     ]);
+}
+
+/// Glyph ranges for the Switch atlas: the base Latin / punctuation / kana /
+/// full-width blocks of imgui's Chinese ranges, plus every character listed
+/// in `switch_glyphs.txt`. Built once and leaked, since imgui keeps a
+/// pointer to the ranges for the atlas' lifetime.
+#[cfg(switch)]
+fn switch_glyph_ranges() -> FontGlyphRanges {
+    use std::sync::OnceLock;
+    static RANGES: OnceLock<&'static [u32]> = OnceLock::new();
+    let ranges = RANGES.get_or_init(|| {
+        let mut chars: Vec<u32> = include_str!("switch_glyphs.txt")
+            .lines()
+            .filter(|l| !l.starts_with('#'))
+            .flat_map(|l| l.chars())
+            .map(|c| c as u32)
+            .collect();
+        chars.sort_unstable();
+        chars.dedup();
+        let mut v: Vec<u32> = vec![
+            0x0020, 0x00FF, 0x2000, 0x206F, 0x3000, 0x30FF, 0x31F0, 0x31FF, 0xFF00, 0xFFEF, 0xFFFD,
+            0xFFFD,
+        ];
+        let mut i = 0;
+        while i < chars.len() {
+            let start = chars[i];
+            let mut end = start;
+            while i + 1 < chars.len() && chars[i + 1] == end + 1 {
+                i += 1;
+                end += 1;
+            }
+            v.extend([start, end]);
+            i += 1;
+        }
+        v.push(0);
+        Box::leak(v.into_boxed_slice())
+    });
+    FontGlyphRanges::from_slice(ranges)
 }
 
 /// Ideograph-height ÷ vertical-span ratio of the bundled font
@@ -497,7 +536,7 @@ fn add_game_font_face(context: &mut Context, data: &[u8], size_pixels: f32) -> i
     // the atlas past the Switch driver's texture limit (see
     // add_font_with_lucide).
     #[cfg(switch)]
-    let (ranges, oversample_h) = (FontGlyphRanges::chinese_simplified_common(), 1);
+    let (ranges, oversample_h) = (switch_glyph_ranges(), 1);
     #[cfg(not(switch))]
     let (ranges, oversample_h) = (FontGlyphRanges::chinese_full(), 3);
     context.fonts().add_font(&[FontSource::TtfData {

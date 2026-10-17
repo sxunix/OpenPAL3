@@ -41,11 +41,14 @@ impl SceCommand for SceCommandDlg {
         // the box — end it immediately so automated runs don't stall on
         // dialog. (Still resolves on the next frame, mirroring the keypress
         // path, so adv-input re-enable stays correctly deferred.)
-        self.dlg_end = state.fast_forward()
-            || state.input().get_key_state(Key::Space).pressed()
+        //
+        // A press first turns the page when the text runs past the box
+        // (`UIRoleDialog::Update`: `IfEmpty` ? close : `NextPage`).
+        let clicked = state.input().get_key_state(Key::Space).pressed()
             || state.input().get_key_state(Key::GamePadEast).pressed()
             || state.input().get_key_state(Key::GamePadSouth).pressed()
             || ui.is_mouse_released(MouseButton::Left);
+        self.dlg_end = state.fast_forward() || (clicked && !state.next_dialog_page());
 
         false
     }

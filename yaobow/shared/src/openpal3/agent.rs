@@ -919,6 +919,34 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "dlg" => {
+            // ["文字", 头像("" 不要), 左右(0/1)] —— 弹一句 SCE 对话，看分页和版面。
+            // 头像是控制角色的，和剧本 `DlgFace -1 …` 一样。
+            let text = params
+                .args
+                .first()
+                .and_then(|v| v.as_str())
+                .unwrap_or("景天：\\n什么声音？……有贼？！")
+                .to_string();
+            let face = params.args.get(1).and_then(|v| v.as_str()).unwrap_or("");
+            if !face.is_empty() {
+                let side = int_arg(2).unwrap_or(0) as i32;
+                director.start_debug_command(Box::new(
+                    crate::scripting::sce::commands::SceCommandDlgFace::new(
+                        -1,
+                        face.to_string(),
+                        side,
+                    ),
+                ));
+            }
+            director.start_debug_command(Box::new(
+                crate::scripting::sce::commands::SceCommandDlg::new(text),
+            ));
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "caption" => {
             // ["1A", 行数] —— 86 全屏字幕。
             let name = params

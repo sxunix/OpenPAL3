@@ -355,7 +355,9 @@ pub struct[Element] Sprite(
         return Size(s.width() as float, s.height() as float);
     }
     fn paint(self: ref<Self>, rect: Rect, ui: box<radiance.IUiHost>, ctx: box<UiCtx>) {
-        if self.sprite == null || rect.is_empty() { return; }
+        // A negative width/height is a mirrored blit (PAL3's left dialog
+        // avatar), not an empty rect, so only a zero extent skips the draw.
+        if self.sprite == null || rect.w == 0.0 || rect.h == 0.0 { return; }
         let s = self.sprite!;
         ui.image_rect(s.com_id(), rect.x, rect.y, rect.right(), rect.bottom(),
                       s.u0(), s.v0(), s.u1(), s.v1());
