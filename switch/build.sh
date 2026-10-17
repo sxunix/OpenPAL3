@@ -26,6 +26,22 @@ cargo +nightly fetch --manifest-path "$STD_SRC/Cargo.toml" || {
   exit 1
 }
 
+# The script interpreter is the upstream protosept submodule; fixes it needs
+# for the console ride along as patches here (struct GC: the struct heap
+# never freed, so UI scripts leaked and slowed down frame after frame).
+# Applied once, skipped when already in the working tree.
+for P in "$SWITCHDIR"/patches/protosept-*.patch; do
+  [ -f "$P" ] || continue
+  if git -C "$SWITCHDIR/../radiance/protosept" apply --reverse --check "$P" 2>/dev/null; then
+    continue
+  fi
+  git -C "$SWITCHDIR/../radiance/protosept" apply "$P" || {
+    echo "applying $P to radiance/protosept failed" >&2
+    exit 1
+  }
+  echo "applied $(basename "$P")"
+done
+
 # Self-heal: cargo/rustup cache refreshes silently drop the out-of-repo
 # patches this build needs; re-applying is idempotent and near-free.
 # Output is kept: which copies got patched is the first thing to look at

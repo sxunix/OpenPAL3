@@ -153,7 +153,9 @@ impl CoreRadianceEngine {
         );
 
         let phase_start = std::time::Instant::now();
+        let hitch = crate::perf::hitch::span("input");
         self.input_engine.borrow_mut().update(delta_sec);
+        drop(hitch);
         crate::perf::count(
             "engine.input_update_total_ns",
             phase_start.elapsed().as_nanos() as u64,
@@ -188,6 +190,7 @@ impl CoreRadianceEngine {
         // engine methods doesn't double-borrow `ui_renderer`.
         let ui_renderer = self.ui_renderer.borrow().clone();
         let phase_start = std::time::Instant::now();
+        let ui_hitch = crate::perf::hitch::span("ui_frame");
         let ui_frame = self.ui_manager.update(delta_sec, |ui| {
             // Drive the registered UI layers *before*
             // scene_manager.update so their `render` runs in
@@ -220,7 +223,9 @@ impl CoreRadianceEngine {
                 "engine.scene_update_total_ns",
                 scene_update_start.elapsed().as_nanos() as u64,
             );
+            let hitch = crate::perf::hitch::span("tasks");
             task_manager.update(delta_sec);
+            drop(hitch);
             // Pump the audio engine once per frame so streaming
             // OpenAL sources (BGM, sound effects) keep their decode
             // queues fed without per-caller bookkeeping.
@@ -254,6 +259,7 @@ impl CoreRadianceEngine {
 
             let _ = ui;
         });
+        drop(ui_hitch);
         crate::perf::count(
             "engine.ui_manager_update_total_ns",
             phase_start.elapsed().as_nanos() as u64,

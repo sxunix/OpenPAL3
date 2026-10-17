@@ -81,8 +81,10 @@ pub struct RoleController {
     animations: DashMap<String, ComRc<IAnimatedMeshComponent>>,
     active_anim_name: RefCell<String>,
     idle_anim_name: String,
-    walking_anim_name: String,
-    running_anim_name: String,
+    /// 走、跑用哪个动作，第一次走/跑时才找（`move_anim_name`）：每个角色建出来就把
+    /// 两套动作读进来，一个场景要多读几十个 `.mv3`，Switch 上换场景要多等一秒。
+    walking_anim_name: RefCell<Option<String>>,
+    running_anim_name: RefCell<Option<String>>,
     anim_repeat_mode: RefCell<RoleAnimationRepeatMode>,
     is_active: RefCell<bool>,
     state: RefCell<RoleState>,
@@ -154,33 +156,9 @@ impl RoleController {
             animations.insert(idle_anim_name.to_string(), idle_anim);
         }
 
-        // 走和跑同理——怪物有自己的 z4，NPC 的「跑」原版就是拿走路顶的。
-        let set = ActionSet::of(role_name);
-        let walking_anim = asset_mgr.load_role_anim_first(
-            entity.clone(),
-            role_name,
-            MoveMode::Walk.action_names(set),
-        );
-        let running_anim = asset_mgr.load_role_anim_first(
-            entity.clone(),
-            role_name,
-            MoveMode::Run.action_names(set),
-        );
-
-        let walking_anim_name = walking_anim
-            .map(|(name, _)| name)
-            .unwrap_or(idle_anim_name)
-            .to_string();
-
-        let running_anim_name = running_anim
-            .map(|(name, _)| name)
-            .unwrap_or(walking_anim_name.as_str())
-            .to_string();
-
-        let model_height =
-            mv3_model_height(&asset_mgr, role_name, idle_anim_name).unwrap_or(DEFAULT_MODEL_HEIGHT);
-        let model_radius =
-            mv3_model_radius(&asset_mgr, role_name, idle_anim_name).unwrap_or(DEFAULT_MODEL_RADIUS);
+        let (model_height, model_radius) = mv3_model_extent(&asset_mgr, role_name, idle_anim_name);
+        let model_height = model_height.unwrap_or(DEFAULT_MODEL_HEIGHT);
+        let model_radius = model_radius.unwrap_or(DEFAULT_MODEL_RADIUS);
         // `role.cpp:357`：半径不到 6 的（小鸡那类）直接当成可重叠，不参与碰撞。
         let overlap = i32::from(model_radius < 6.);
 
@@ -191,8 +169,8 @@ impl RoleController {
             animations,
             active_anim_name: RefCell::new(idle_anim_name.to_string()),
             idle_anim_name: idle_anim_name.to_string(),
-            walking_anim_name,
-            running_anim_name,
+            walking_anim_name: RefCell::new(None),
+            running_anim_name: RefCell::new(None),
             anim_repeat_mode: RefCell::new(RoleAnimationRepeatMode::Repeat(1)),
             is_active: RefCell::new(false),
             state: RefCell::new(RoleState::Idle),
@@ -272,7 +250,8 @@ impl RoleController {
         *self.model_name.borrow_mut() = model_name.to_string();
         self.animations.clear();
         self.model_height.set(
-            mv3_model_height(&self.asset_mgr, model_name, &self.idle_anim_name)
+            mv3_model_extent(&self.asset_mgr, model_name, &self.idle_anim_name)
+                .0
                 .unwrap_or(DEFAULT_MODEL_HEIGHT),
         );
         if self.is_active() {
@@ -422,9 +401,43 @@ impl RoleController {
         self.active_anim().value().play(true);
     }
 
+    /// 走（`run == false`）或跑的动作名，头一回用时按角色类型的候选表找、顺手读进来。
+    /// 走和跑同理——怪物有自己的 z4，NPC 的「跑」原版就是拿走路顶的；都没有就站着。
+    fn move_anim_name(&self, run: bool) -> String {
+        let cached = if run {
+            self.running_anim_name.borrow().clone()
+        } else {
+            self.walking_anim_name.borrow().clone()
+        };
+        if let Some(name) = cached {
+            return name;
+        }
+        let role_name = self.model_name.borrow().clone();
+        let set = ActionSet::of(&role_name);
+        let mode = if run { MoveMode::Run } else { MoveMode::Walk };
+        let found = self
+            .asset_mgr
+            .load_role_anim_first(self.entity.clone(), &role_name, mode.action_names(set))
+            .map(|(name, anim)| {
+                self.animations.insert(name.to_string(), anim);
+                name.to_string()
+            });
+        let name = match found {
+            Some(name) => name,
+            None if run => self.move_anim_name(false),
+            None => self.idle_anim_name.clone(),
+        };
+        if run {
+            *self.running_anim_name.borrow_mut() = Some(name.clone());
+        } else {
+            *self.walking_anim_name.borrow_mut() = Some(name.clone());
+        }
+        name
+    }
+
     pub fn run(&self) {
         if *self.state.borrow() != RoleState::Running {
-            let name = self.running_anim_name.clone();
+            let name = self.move_anim_name(true);
             self.play_anim(&name, RoleAnimationRepeatMode::Loop);
             *self.state.borrow_mut() = RoleState::Running;
         }
@@ -440,7 +453,7 @@ impl RoleController {
 
     pub fn walk(&self) {
         if *self.state.borrow() != RoleState::Walking {
-            let name = self.walking_anim_name.clone();
+            let name = self.move_anim_name(false);
             self.play_anim(&name, RoleAnimationRepeatMode::Loop);
             *self.state.borrow_mut() = RoleState::Walking;
         }
@@ -906,37 +919,36 @@ pub const DEFAULT_MODEL_RADIUS: f32 = 12.0;
 ///
 /// 一处还差着：原版取的是**整个动作所有帧**的包围盒
 /// （`m_pCurAction->GetBoundBox()`），这里只量了第 0 帧。
-fn mv3_model_radius(asset_mgr: &Rc<AssetManager>, role_name: &str, action: &str) -> Option<f32> {
-    let path = asset_mgr.mv3_path(role_name, action);
-    let data = asset_mgr.vfs().read_to_end(&path).ok()?;
-    let mv3 = read_mv3(&mut Cursor::new(data)).ok()?;
-    let frame = mv3.models.first()?.frames.first()?;
+fn mv3_model_extent(
+    asset_mgr: &Rc<AssetManager>,
+    role_name: &str,
+    action: &str,
+) -> (Option<f32>, Option<f32>) {
+    let Some(frame) = asset_mgr
+        .vfs()
+        .read_to_end(asset_mgr.mv3_path(role_name, action))
+        .ok()
+        .and_then(|data| read_mv3(&mut Cursor::new(data)).ok())
+        .and_then(|mv3| mv3.models.into_iter().next())
+        .and_then(|m| m.frames.into_iter().next())
+    else {
+        return (None, None);
+    };
     let (mut lx, mut hx, mut lz, mut hz) = (f32::MAX, f32::MIN, f32::MAX, f32::MIN);
+    let (mut ly, mut hy) = (f32::MAX, f32::MIN);
     for v in &frame.vertices {
         lx = lx.min(v.x as f32);
         hx = hx.max(v.x as f32);
+        ly = ly.min(v.y as f32);
+        hy = hy.max(v.y as f32);
         lz = lz.min(v.z as f32);
         hz = hz.max(v.z as f32);
     }
-    if hx <= lx || hz <= lz {
-        return None;
-    }
-    let (dx, dz) = ((hx - lx) * MV3_SCALE, (hz - lz) * MV3_SCALE);
-    Some(0.4 * (dx * dx + dz * dz).sqrt())
-}
-
-/// Measure a role model by the Y extent of its idle animation's first
-/// frame. Cheap enough to do once per role; the file is already in the
-/// package cache by the time this runs.
-fn mv3_model_height(asset_mgr: &Rc<AssetManager>, role_name: &str, action: &str) -> Option<f32> {
-    let path = asset_mgr.mv3_path(role_name, action);
-    let data = asset_mgr.vfs().read_to_end(&path).ok()?;
-    let mv3 = read_mv3(&mut Cursor::new(data)).ok()?;
-    let frame = mv3.models.first()?.frames.first()?;
-    let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-    for v in &frame.vertices {
-        lo = lo.min(v.y as f32);
-        hi = hi.max(v.y as f32);
-    }
-    (hi > lo).then(|| (hi - lo) * MV3_SCALE)
+    // 高：站立动作第 0 帧的 Y 跨度。
+    let height = (hy > ly).then(|| (hy - ly) * MV3_SCALE);
+    let radius = (hx > lx && hz > lz).then(|| {
+        let (dx, dz) = ((hx - lx) * MV3_SCALE, (hz - lz) * MV3_SCALE);
+        0.4 * (dx * dx + dz * dz).sqrt()
+    });
+    (height, radius)
 }

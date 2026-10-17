@@ -133,7 +133,9 @@ impl IApplicationImpl for Application {
             // pending on_loadings the first time engine_ready is
             // observed. Cheap no-op on subsequent ticks.
             let inner = app_rc.inner::<Application>();
+            let hitch = crate::perf::hitch::span("app.drain");
             inner.perform_drain_if_ready();
+            drop(hitch);
 
             let end_time = Instant::now();
             let elapsed = end_time.duration_since(start_time).as_secs_f32();
@@ -150,11 +152,14 @@ impl IApplicationImpl for Application {
             #[cfg(not(switch))]
             let _ = report;
 
+            let hitch = crate::perf::hitch::span("app.components");
             for kv in inner.components.iter() {
                 kv.value().component.on_updating(elapsed);
             }
+            drop(hitch);
 
             if let Some(engine) = inner.radiance_engine.borrow().as_ref() {
+                let _hitch = crate::perf::hitch::span("engine");
                 engine.borrow().update(elapsed);
             }
         };

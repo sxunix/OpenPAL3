@@ -1,0 +1,436 @@
+diff --git a/p7/src/interpreter/context/execution.rs b/p7/src/interpreter/context/execution.rs
+index 87e0a62..171e394 100644
+--- a/p7/src/interpreter/context/execution.rs
++++ b/p7/src/interpreter/context/execution.rs
+@@ -831,16 +831,15 @@ impl Context {
+ 
+                         match resolved_data {
+                             Data::StructRef(ref_id) => {
+-                                let ref_usize = ref_id as usize;
+-                                if ref_usize >= self.heap.len() {
++                                let Some(struct_obj) = self.heap.get(ref_id) else {
+                                     return Err(RuntimeError::VariableNotFound(format!(
+-                                        "struct ref {} out of bounds (heap size {}) at pc {}",
++                                        "struct ref {:#x} is stale or out of bounds (heap size {}) at pc {}",
+                                         ref_id,
+                                         self.heap.len(),
+                                         pc
+                                     )));
+-                                }
+-                                let struct_fields = &self.heap[ref_usize].fields;
++                                };
++                                let struct_fields = &struct_obj.fields;
+                                 if (field_idx as usize) >= struct_fields.len() {
+                                     return Err(RuntimeError::VariableNotFound(format!(
+                                         "field index {} out of bounds (struct has {} fields) at pc {}",
+@@ -897,24 +896,22 @@ impl Context {
+ 
+                     match resolved_ref {
+                         Data::StructRef(ref_id) => {
+-                            let ref_usize = ref_id as usize;
+-                            if ref_usize >= self.heap.len() {
++                            let heap_len = self.heap.len();
++                            let Some(struct_obj) = self.heap.get_mut(ref_id) else {
+                                 return Err(RuntimeError::VariableNotFound(format!(
+-                                    "struct ref {} out of bounds (heap size {}) in Stfield at pc {}",
+-                                    ref_id,
+-                                    self.heap.len(),
+-                                    pc
++                                    "struct ref {:#x} is stale or out of bounds (heap size {}) in Stfield at pc {}",
++                                    ref_id, heap_len, pc
+                                 )));
+-                            }
+-                            if (field_idx as usize) >= self.heap[ref_usize].fields.len() {
++                            };
++                            if (field_idx as usize) >= struct_obj.fields.len() {
+                                 return Err(RuntimeError::VariableNotFound(format!(
+                                     "field index {} out of bounds (struct has {} fields) in Stfield at pc {}",
+                                     field_idx,
+-                                    self.heap[ref_usize].fields.len(),
++                                    struct_obj.fields.len(),
+                                     pc
+                                 )));
+                             }
+-                            self.heap[ref_usize].fields[field_idx as usize] = field_value;
++                            struct_obj.fields[field_idx as usize] = field_value;
+                         }
+                         other => {
+                             return Err(RuntimeError::VariableNotFound(format!(
+@@ -941,13 +938,20 @@ impl Context {
+                     fields.reverse();
+ 
+                     // Allocate struct on heap
+-                    let struct_ref = self.heap.len() as u32;
+-                    self.heap.push(Struct { fields });
++                    let struct_ref = self.heap.alloc(Struct { fields });
+ 
+                     // Push reference onto stack
+                     self.stack_frame_mut()?
+                         .stack
+                         .push(Data::StructRef(struct_ref));
++
++                    // The new struct is on the stack, so it survives a
++                    // collection triggered here.
++                    self.allocation_count += 1;
++                    if self.allocation_count >= self.gc_threshold {
++                        self.collect_garbage()?;
++                        self.allocation_count = 0;
++                    }
+                 }
+                 Instruction::Ret => {
+                     let return_value = self.stack_frame_mut()?.stack.pop();
+@@ -1109,7 +1113,8 @@ impl Context {
+                         .ok_or(RuntimeError::StackUnderflow)?;
+ 
+                     if let Data::StructRef(ref_idx) = struct_ref {
+-                        // Struct heap doesn't have a GC yet, so `generation` is reserved as 0.
++                        // The struct heap's generation travels inside the packed
++                        // `ref_idx` (see `struct_heap`); this field stays 0.
+                         self.stack_frame_mut()?.stack.push(Data::ProtoRefRef {
+                             ref_idx,
+                             generation: 0,
+diff --git a/p7/src/interpreter/context/gc.rs b/p7/src/interpreter/context/gc.rs
+index be86317..ec3db02 100644
+--- a/p7/src/interpreter/context/gc.rs
++++ b/p7/src/interpreter/context/gc.rs
+@@ -4,8 +4,20 @@ use super::Context;
+ use super::data::Data;
+ use crate::errors::RuntimeError;
+ 
++/// Fewest allocations between collections. After each collection the
++/// threshold is re-armed to the number of surviving objects (at least
++/// this), so collection cost stays proportional to allocation.
++pub(super) const MIN_GC_THRESHOLD: usize = 1024;
++
++/// What the mark phase reached: box slots and struct slots.
++#[derive(Default)]
++struct Marks {
++    boxes: HashSet<u32>,
++    structs: HashSet<u32>,
++}
++
+ impl Context {
+-    /// Mark-and-sweep garbage collector for the box heap.
++    /// Mark-and-sweep garbage collector for the box and struct heaps.
+     ///
+     /// Storage is a stable-handle slab ([`super::BoxHeap`]); the sweep
+     /// frees unmarked slots in place rather than compacting. Each freed
+@@ -13,16 +25,26 @@ impl Context {
+     /// (in Rust locals or anywhere else GC can't reach) fails fast on
+     /// dereference instead of silently aliasing the slot's next occupant.
+     pub fn collect_garbage(&mut self) -> Result<(), RuntimeError> {
+-        // Mark phase: identify all reachable boxes
+-        let mut marked = HashSet::new();
++        // Mark phase: identify everything reachable from the roots.
++        let mut marked = Marks::default();
+         self.mark_reachable(&mut marked);
+ 
+-        // Sweep phase: free unmarked slots and run finalizers
+-        self.sweep(&marked)
++        // Structs nothing reaches any more go first (they have no
++        // finalizers), then boxes, which may run finalizers.
++        for idx in self.heap.live_indices() {
++            if !marked.structs.contains(&idx) {
++                self.heap.free(idx);
++            }
++        }
++        let result = self.sweep(&marked.boxes);
++
++        self.gc_threshold =
++            MIN_GC_THRESHOLD.max(self.heap.live_count() + self.box_heap.live_count());
++        result
+     }
+ 
+-    /// Mark phase: traverse all roots and mark reachable boxes
+-    fn mark_reachable(&self, marked: &mut HashSet<u32>) {
++    /// Mark phase: traverse all roots and mark reachable boxes and structs.
++    fn mark_reachable(&self, marked: &mut Marks) {
+         // Mark from all stack frames
+         for frame in &self.stack {
+             // Mark boxes in evaluation stack
+@@ -39,13 +61,6 @@ impl Context {
+             }
+         }
+ 
+-        // Mark from heap-allocated structs (they may contain box references)
+-        for struct_obj in &self.heap {
+-            for data in &struct_obj.fields {
+-                self.mark_data(data, marked);
+-            }
+-        }
+-
+         // Mark from module-level variables (thread-local globals)
+         for vars in &self.module_vars {
+             for data in vars {
+@@ -60,25 +75,20 @@ impl Context {
+         }
+     }
+ 
+-    /// Recursively mark a data value and any boxes it references
+-    fn mark_data(&self, data: &Data, marked: &mut HashSet<u32>) {
++    /// Recursively mark a data value and any boxes and structs it references
++    fn mark_data(&self, data: &Data, marked: &mut Marks) {
+         match data {
+             Data::BoxRef { idx, .. } | Data::ProtoBoxRef { box_idx: idx, .. } => {
+-                // If we haven't marked this box yet, mark it and recursively mark its contents.
+-                // We use `get_unchecked` here: the mark phase walks live reachable references,
+-                // and a stale handle reachable from a dead struct would simply not find a slot.
+-                if marked.insert(*idx)
+-                    && let Some(box_data) = self.box_heap.get_unchecked(*idx)
+-                {
+-                    self.mark_data(box_data, marked);
+-                }
++                self.mark_box(*idx, marked);
+             }
+-            Data::StructRef(idx) => {
+-                if let Some(struct_obj) = self.heap.get(*idx as usize) {
+-                    for field_data in &struct_obj.fields {
+-                        self.mark_data(field_data, marked);
+-                    }
+-                }
++            Data::StructRef(r) => self.mark_struct(*r, marked),
++            // A ref-typed proto view: onto a struct (`RefToProto`, the
++            // generation packed into `ref_idx`) or onto a foreign box. Mark
++            // whichever it is; keeping the other alive by coincidence only
++            // delays its collection.
++            Data::ProtoRefRef { ref_idx, .. } => {
++                self.mark_struct(*ref_idx, marked);
++                self.mark_box(*ref_idx, marked);
+             }
+             Data::Array(elements) => {
+                 for elem in elements.iter() {
+@@ -108,6 +118,29 @@ impl Context {
+         }
+     }
+ 
++    fn mark_box(&self, idx: u32, marked: &mut Marks) {
++        // If we haven't marked this box yet, mark it and recursively mark its contents.
++        // We use `get_unchecked` here: the mark phase walks live reachable references,
++        // and a stale handle reachable from a dead struct would simply not find a slot.
++        if marked.boxes.insert(idx)
++            && let Some(box_data) = self.box_heap.get_unchecked(idx)
++        {
++            self.mark_data(box_data, marked);
++        }
++    }
++
++    fn mark_struct(&self, r: u32, marked: &mut Marks) {
++        let (idx, _) = super::struct_heap::unpack(r);
++        // A stale reference (generation mismatch) reaches nothing.
++        if let Some(struct_obj) = self.heap.get(r)
++            && marked.structs.insert(idx)
++        {
++            for field_data in &struct_obj.fields {
++                self.mark_data(field_data, marked);
++            }
++        }
++    }
++
+     /// Sweep phase: free unmarked slots in place. Owned `Data::Foreign`
+     /// cells trigger their proto's registered finalizer host fn with
+     /// type_tag and handle metadata.
+diff --git a/p7/src/interpreter/context/mod.rs b/p7/src/interpreter/context/mod.rs
+index f269f71..7a0a216 100644
+--- a/p7/src/interpreter/context/mod.rs
++++ b/p7/src/interpreter/context/mod.rs
+@@ -15,8 +15,10 @@ mod execution;
+ pub use execution::encode_return_ty;
+ mod gc;
+ mod modules;
++mod struct_heap;
+ 
+ pub use box_heap::BoxHeap;
++pub use struct_heap::StructHeap;
+ pub use data::*;
+ 
+ /// Registration metadata for an `@foreign` proto. Created via
+@@ -55,7 +57,7 @@ pub struct Context {
+     instance_id: u64,
+     pub stack: Vec<StackFrame>,
+     modules: Vec<Module>,
+-    pub heap: Vec<Struct>,
++    pub heap: StructHeap,
+     pub box_heap: BoxHeap,
+     // GC state
+     allocation_count: usize,
+@@ -141,10 +143,12 @@ impl Context {
+             instance_id: NEXT_CONTEXT_ID.fetch_add(1, Ordering::Relaxed),
+             stack: vec![StackFrame::new()],
+             modules: Vec::new(),
+-            heap: Vec::new(),
++            heap: StructHeap::new(),
+             box_heap: BoxHeap::new(),
+             allocation_count: 0,
+-            gc_threshold: 100, // Run GC after every 100 allocations
++            // Collect after this many allocations; re-armed after each
++            // collection in proportion to what survived (`collect_garbage`).
++            gc_threshold: gc::MIN_GC_THRESHOLD,
+             vtable: HashMap::new(),
+             host_functions: HashMap::new(),
+             imported_modules: HashMap::new(),
+diff --git a/p7/src/interpreter/context/struct_heap.rs b/p7/src/interpreter/context/struct_heap.rs
+new file mode 100644
+index 0000000..fd1cb96
+--- /dev/null
++++ b/p7/src/interpreter/context/struct_heap.rs
+@@ -0,0 +1,116 @@
++//! Slab storage for heap-allocated structs, collected by the GC.
++//!
++//! Structs used to live in a plain `Vec` that only ever grew: every
++//! `NewStruct` appended, nothing was freed, and the mark phase walked the
++//! whole vector as roots. A UI script that builds a few `Rect`s per frame
++//! therefore leaked memory and made every collection slower than the last
++//! (the PAL3 start menu went from 20 to 40 ms a frame in half a minute).
++//!
++//! Like [`super::box_heap::BoxHeap`], slots are stable and reused through a
++//! free list. `Data::StructRef` stays a single `u32`: the low
++//! [`IDX_BITS`] bits are the slot, the high bits a generation that is bumped
++//! on free, so a reference that outlived its struct fails on dereference
++//! instead of reading whatever was allocated in the slot next.
++
++use super::data::Struct;
++
++/// Slot bits of a packed struct reference; the rest is the generation.
++pub const IDX_BITS: u32 = 24;
++const IDX_MASK: u32 = (1 << IDX_BITS) - 1;
++const GEN_MASK: u32 = (1 << (32 - IDX_BITS)) - 1;
++
++pub fn pack(idx: u32, generation: u32) -> u32 {
++    (generation & GEN_MASK) << IDX_BITS | (idx & IDX_MASK)
++}
++
++pub fn unpack(r: u32) -> (u32, u32) {
++    (r & IDX_MASK, r >> IDX_BITS)
++}
++
++#[derive(Default)]
++pub struct StructHeap {
++    slots: Vec<Option<Struct>>,
++    gens: Vec<u32>,
++    free_list: Vec<u32>,
++    live_count: usize,
++}
++
++impl std::fmt::Debug for StructHeap {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        f.debug_struct("StructHeap")
++            .field("slots", &self.slots.len())
++            .field("live", &self.live_count)
++            .finish()
++    }
++}
++
++impl StructHeap {
++    pub fn new() -> Self {
++        Self::default()
++    }
++
++    /// Store `value` and return its packed reference.
++    pub fn alloc(&mut self, value: Struct) -> u32 {
++        self.live_count += 1;
++        if let Some(idx) = self.free_list.pop() {
++            self.slots[idx as usize] = Some(value);
++            pack(idx, self.gens[idx as usize])
++        } else {
++            let idx = self.slots.len() as u32;
++            assert!(idx <= IDX_MASK, "p7: struct heap exhausted");
++            self.slots.push(Some(value));
++            self.gens.push(0);
++            pack(idx, 0)
++        }
++    }
++
++    /// The live struct behind packed reference `r`, if it is still the
++    /// one `r` was minted for.
++    pub fn get(&self, r: u32) -> Option<&Struct> {
++        let (idx, generation) = unpack(r);
++        if self.gens.get(idx as usize)? & GEN_MASK != generation {
++            return None;
++        }
++        self.slots[idx as usize].as_ref()
++    }
++
++    pub fn get_mut(&mut self, r: u32) -> Option<&mut Struct> {
++        let (idx, generation) = unpack(r);
++        if self.gens.get(idx as usize)? & GEN_MASK != generation {
++            return None;
++        }
++        self.slots[idx as usize].as_mut()
++    }
++
++    /// Slot count, live or not (for error messages).
++    pub fn len(&self) -> usize {
++        self.slots.len()
++    }
++
++    pub fn is_empty(&self) -> bool {
++        self.live_count == 0
++    }
++
++    pub fn live_count(&self) -> usize {
++        self.live_count
++    }
++
++    /// Indices of all live slots.
++    pub fn live_indices(&self) -> Vec<u32> {
++        self.slots
++            .iter()
++            .enumerate()
++            .filter_map(|(i, s)| s.as_ref().map(|_| i as u32))
++            .collect()
++    }
++
++    pub fn free(&mut self, idx: u32) {
++        let i = idx as usize;
++        if self.slots.get(i).is_some_and(Option::is_some) {
++            self.slots[i] = None;
++            self.gens[i] = self.gens[i].wrapping_add(1);
++            self.free_list.push(idx);
++            self.live_count -= 1;
++        }
++    }
++}
+diff --git a/p7/tests/runtime_values.rs b/p7/tests/runtime_values.rs
+index 006ba9e..63e439d 100644
+--- a/p7/tests/runtime_values.rs
++++ b/p7/tests/runtime_values.rs
+@@ -113,3 +113,39 @@ fn shared_nullable_payloads_clone_shallowly_but_compare_by_value() {
+     let elements = inner.array_elements().expect("array payload");
+     assert_eq!(elements, &[Data::string("value")]);
+ }
++
++#[test]
++fn gc_collects_unreachable_structs_and_keeps_reachable_ones() {
++    use p7::interpreter::context::Struct;
++    let mut ctx = Context::new();
++    // A struct reached through a box that is reached through a root, and
++    // one nothing reaches.
++    let kept = ctx.heap.alloc(Struct {
++        fields: vec![Data::Int(1)],
++    });
++    let dropped = ctx.heap.alloc(Struct {
++        fields: vec![Data::Int(2)],
++    });
++    let (b, g) = ctx.box_heap.alloc(Data::StructRef(kept));
++    ctx.stack[0].stack.push(Data::BoxRef {
++        idx: b,
++        generation: g,
++    });
++
++    ctx.collect_garbage().expect("gc should run");
++
++    assert_eq!(
++        ctx.heap.get(kept).map(|s| s.fields.clone()),
++        Some(vec![Data::Int(1)])
++    );
++    assert!(ctx.heap.get(dropped).is_none());
++
++    // The freed slot is reused, and the old reference does not see the
++    // new occupant.
++    let reused = ctx.heap.alloc(Struct {
++        fields: vec![Data::Int(3)],
++    });
++    assert_ne!(reused, dropped);
++    assert!(ctx.heap.get(dropped).is_none());
++    assert_eq!(ctx.heap.live_count(), 2);
++}
