@@ -1198,6 +1198,28 @@ original. Menu sounds: every page's toolbar plays wa001; 道具 tabs wa001,
 entering 选人 wa002, a one-target item refused on a character wa004;
 装备 plates and tabs wa001, wearing wa002, refused wa004.
 
-Still silent / not drawn: the 仙术, 阵法, 御剑, 侠义榜 and 系统 pages'
-own sounds; the 仙术 page's 3D preview (160/(110,268), model source not
-yet identified) and the 御剑 page's sword and 龙晶石 views.
+Still silent: the 仙术, 阵法, 御剑, 侠义榜 and 系统 pages' own sounds.
+
+合成术 (2026-10-17): the 仙术 page's last tab is not combo skills but item
+recipes (magicui.cpp's IDL_MAGIC_COMLIST; recipe table FUN_00487480, rates
+at 0xc01fb0), and it is the only tab with a 3D preview — the selected
+recipe's product. SCE 111 now opens the original's who-learns-it picker
+(ChoseCompose; six recipes per person), the save keeps who learnt what and
+each person's rate, and the tab lists materials and rate; a second click
+on the selected row composes: not-enough box or are-you-sure box, +0.01
+rate, roll out of 1024, materials consumed either way (the original's
+quirks kept: the third material is never checked, a used-up stack skips
+the next one), 5 s, then the result box. The original also scatters
+particles on success and failure but never draws them.
+
+御剑 (2026-10-17): the sword and 龙晶石 3D views. The sword zooms in from
+half-width 1000 to 100 (its camera offset fixed at 100, so it grows in
+from near the middle) while spinning back from −1080°, then turns half a
+round; the 阴/阳 button turns it another 180° once that is done and 景天
+holds the 魔剑. J131Src/J131Dst turned out to be the 魔剑 purification
+textures; unpurged, J131Src is the model's own J131.tga.
+
+Engine: the texture descriptor pool lacked FREE_DESCRIPTOR_SET, so freeing
+UI textures was invalid usage and MoltenVK then handed out sets still in
+use — a message box's frame turning into a button image or magenta after a
+UI with its own textures closed. Fixed.
