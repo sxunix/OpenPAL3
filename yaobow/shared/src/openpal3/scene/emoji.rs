@@ -155,10 +155,14 @@ pub fn build_emoji(
     let height = actor_height * EMOJI_HEIGHT_RATIO;
     let base_y = actor_height + EMOJI_CLEARANCE;
     let width = height * frame_w as f32 / frame_h as f32;
+    // One texture name per sheet: the texture store is keyed by name, and
+    // a shared one gave every later bubble the first sheet loaded (the
+    // opening's 惊 — every 心 / 汗 / 乱 after it came out as a strip of
+    // red exclamation marks cut at the wrong frame size).
     let entity = build_frame_animated_billboard(
         factory,
         atlas,
-        "actor_emoji",
+        &format!("actor_emoji_{id:02}"),
         width,
         base_y,
         base_y + height,

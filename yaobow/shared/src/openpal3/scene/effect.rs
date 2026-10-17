@@ -335,10 +335,18 @@ fn build_flame(
         image::imageops::replace(&mut atlas, fr, col * fw, row * fh);
     }
 
+    // The texture store is keyed by name, so the name has to say which
+    // frames these are: a shared literal handed every later flame the
+    // first one's atlas.
+    let texture_name = format!(
+        "effect_flame:{}:{}",
+        dir.display(),
+        frame_files.first().map(String::as_str).unwrap_or_default()
+    );
     let entity = build_frame_animated_billboard(
         factory,
         atlas,
-        "effect_flame",
+        &texture_name,
         width,
         base_y,
         base_y + height,
@@ -371,7 +379,7 @@ fn build_glow(
     Some(build_frame_animated_billboard(
         factory,
         atlas,
-        "effect_glow",
+        &format!("effect_glow:{}", path.display()),
         size,
         center_y - half,
         center_y + half,
