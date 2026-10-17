@@ -312,6 +312,15 @@ interface IPal3Service: IUnknown {
     // command handlers do (`FUN_0053df70(name, 1)` + `FUN_0053e2e0`).
     void ui_sound(&str name);
 
+    // The 御剑 page's two 3D views (sword_views.rs): the sword with its
+    // zoom-and-spin entrance and 180° turns, and the spinning 龙晶石.
+    // `flip` = the 阴/阳 button was clicked this frame; returns whether that
+    // click took (it doesn't while the entrance or a turn is still running,
+    // or when 景天 isn't holding the 魔剑) and plays wa001 / wa004.
+    bool draw_sword_views(IUiHost ui, bool flip, float ox, float oy, float scale);
+    // Which face the 阴/阳 button shows: true 阴 (Lunar), false 阳 (Positive).
+    bool sword_lunar();
+
     // ---- 合成术 (the 仙术 page's 合 tab; rules in states/compose.rs) ----
     // How many recipes `actor_id` has learnt, and which recipe (0..7, in
     // the recipe table's order — `MagicUI::RealCom`) the `index`-th is.

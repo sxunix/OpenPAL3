@@ -31,6 +31,18 @@ const EYE_Z: f32 = 1600.;
 /// 自转的速度，度 / 秒：构造函数 `FUN_00439030` 写进 `+0xf4` 的 98（int）。
 pub const SPIN_DEG_PER_SEC: f32 = 98.;
 
+/// 转到目标角一步（`FUN_00439a20` 里 `+0xec == 2` 那一支，源码 `UI3DCtrl::Update` 的 case 2）：
+/// 角度照样加 `速度 × dt`；目标本来就比当前角小的话，一越过目标就**归 0**，否则停在目标上。
+/// 返回 (新角度, 转完没有)。
+pub fn turn_step(angle: f32, target: f32, deg_per_sec: f32, delta_sec: f32) -> (f32, bool) {
+    let a = angle + deg_per_sec * delta_sec;
+    if a > target {
+        (if target < angle { 0. } else { target }, true)
+    } else {
+        (a, false)
+    }
+}
+
 /// 自转一步（`FUN_00439a20` 里 `+0xec == 1` 那一支）：`+0xf8 += +0xf4 × dt`，不小于 359 就归 0。
 pub fn spin_step(angle: f32, deg_per_sec: f32, delta_sec: f32) -> f32 {
     let a = angle + deg_per_sec * delta_sec;
@@ -127,6 +139,12 @@ pub struct ModelView {
     spin: Cell<f32>,
     /// 转之前的变换。
     base: Mat44,
+    /// 建的时候的相机（平移就按它的半宽算定了，`SetOriginPt`）。
+    camera: ViewCamera,
+    /// 模式 2 的目标角（`+0xfc`）；`None` 不在转。
+    turn_target: Cell<Option<f32>>,
+    /// 上一次模式 2 转完了（`+0xf0`，`IsRotateTo`）。
+    turned: Cell<bool>,
 }
 
 impl ModelView {
@@ -210,6 +228,9 @@ impl ModelView {
             angle: Cell::new(yaw),
             spin: Cell::new(0.),
             base,
+            camera,
+            turn_target: Cell::new(None),
+            turned: Cell::new(false),
         })
     }
 
@@ -253,9 +274,38 @@ impl ModelView {
             .rotate_axis_angle_local(&Vec3::UP, degrees.to_radians());
     }
 
+    /// 只改正交半宽（`UI3DCtrl::SetOrthosize`）：相机的平移是建的时候按当时的半宽定的，不跟着变——
+    /// 御剑页的剑从 1000 缩到 100，就是这样从画面中间附近一边变大一边走到位的。
+    pub fn set_ortho(&self, size: f32) {
+        let (e, t) = self.camera.eye_target();
+        let d = ((e[0] - t[0]).powi(2) + (e[1] - t[1]).powi(2) + (e[2] - t[2]).powi(2)).sqrt();
+        self.scene.camera_mut().set_fov43(2. * (size / d).atan());
+    }
+
+    /// 模式 2（`SetRotateMode(2, deg)`）：从当前角再转 `deg` 度，转的速度 `deg_per_sec`。
+    /// 原版还有一步「与 360 对齐」，但那是浮点 `x / 360 × 360`，等于没做。
+    pub fn turn_by(&self, deg: f32, deg_per_sec: f32) {
+        self.spin.set(deg_per_sec);
+        self.turn_target.set(Some(self.angle.get() + deg));
+        self.turned.set(false);
+    }
+
+    /// 上一次 [`Self::turn_by`] 转完了没有。
+    pub fn turned(&self) -> bool {
+        self.turned.get()
+    }
+
     pub fn render(&self, delta_sec: f32) {
         let spin = self.spin.get();
-        if spin != 0. {
+        if let Some(target) = self.turn_target.get() {
+            let (a, done) = turn_step(self.angle.get(), target, spin, delta_sec);
+            self.set_angle(a);
+            if done {
+                self.turn_target.set(None);
+                self.turned.set(true);
+                self.spin.set(0.);
+            }
+        } else if spin != 0. {
             self.set_angle(spin_step(self.angle.get(), spin, delta_sec));
         }
         self.scene.update(delta_sec);
@@ -284,6 +334,15 @@ impl Drop for ModelView {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turning_stops_on_the_target_or_snaps_to_zero() {
+        // 0 → 180，每秒 98：一秒后 98，再过一秒越过 180，停在 180。
+        assert_eq!(turn_step(0., 180., 98., 1.), (98., false));
+        assert_eq!(turn_step(98., 180., 98., 1.), (180., true));
+        // 目标比当前小（原版那一支）：一加就越过，角度归 0。
+        assert_eq!(turn_step(200., 180., 98., 0.1), (0., true));
+    }
 
     #[test]
     fn the_spin_wraps_to_zero_at_359() {

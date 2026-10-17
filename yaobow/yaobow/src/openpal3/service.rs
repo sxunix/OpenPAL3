@@ -195,6 +195,8 @@ pub struct Pal3Service {
     model_views: RefCell<HashMap<i32, ModelViewSlot>>,
     /// 仙术页「合」页签的合成流程和对话框。
     compose_dialogs: RefCell<super::compose_dialog::ComposeDialogs>,
+    /// 御剑页的剑和龙晶石。
+    sword_views: RefCell<super::sword_views::SwordViews>,
     lineup_disc: RefCell<Option<LineupDiscSlot>>,
     /// Script-side factory (`IPal3ScriptFactory`) QI'd from the
     /// reverse-wrapped app root. Used by `create_director` to mint
@@ -296,6 +298,7 @@ impl Pal3Service {
             texture_sinks: RefCell::new(None),
             model_views: RefCell::new(HashMap::new()),
             compose_dialogs: RefCell::new(Default::default()),
+            sword_views: RefCell::new(Default::default()),
             lineup_disc: RefCell::new(None),
             script_factory: RefCell::new(None),
             last_asset_path: RefCell::new(None),
@@ -1785,6 +1788,34 @@ impl IPal3ServiceImpl for Pal3Service {
 
     fn ui_sound(&self, name: &str) -> () {
         self.play_ui_sound(name);
+    }
+
+    fn draw_sword_views(
+        &self,
+        ui: ComRc<IUiHost>,
+        flip: bool,
+        ox: f32,
+        oy: f32,
+        scale: f32,
+    ) -> bool {
+        let Some(asset_path) = self.last_asset_path.borrow().clone() else {
+            return false;
+        };
+        let Some(sinks) = self.texture_sinks.borrow().clone() else {
+            return false;
+        };
+        let am = self.asset_manager_for(&asset_path);
+        let has_sword = self.equipped_item(0, 5) == super::sword_views::MAGIC_SWORD as i32;
+        let register = |id: i64, tex: imgui::TextureId| sinks.0.borrow_mut().push((id, tex));
+        let sound = |name: &str| self.play_ui_sound(name);
+        let canvas = super::sword_views::Canvas { ox, oy, scale };
+        self.sword_views
+            .borrow_mut()
+            .paint(&ui, &am, &register, &canvas, flip, has_sword, &sound)
+    }
+
+    fn sword_lunar(&self) -> bool {
+        self.sword_views.borrow().lunar()
     }
 
     fn compose_count(&self, actor_id: i32) -> i32 {

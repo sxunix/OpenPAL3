@@ -267,3 +267,23 @@ for i in 0..n:
 - `%d/%d` 计数器的两个数分别是什么。
 - `Positive` / `Lunar` 两个 204×64 按钮与 10 个小按钮的联动关系
   （是全局阴阳切换，还是逐元素？）。
+
+## 3D 视图（源码 `gamemainui/swordui.cpp`、`ui/ui3dctrl.cpp`）
+
+- 剑 `Sword.pol`：`SetOrthosize(100)` 后 `SetOriginPt(392, 400)`（正看，相机平移按半宽 100 定死）。
+  页面每次打开（`UIWM_ACTIVE`）：`m_Orthosize = 1000`，每帧 `-= 500·dt` 到 100，只改半宽不改平移，所以剑从
+  画面中间附近一边变大一边走到位；同时 `rot` 从 −1080 每帧 `+= 460·dt` 到 0（`SetRotate(rot)` 直接写角度）。
+  到 0 后 `SetRotSpeed(98)`、`SetRotate(0)`、`SetRotateMode(2, 180)`，再用每秒 98° 转半圈。
+- 阴/阳按钮（`Sword\Lunar0/1/2`、`Positive0/1/2`，(291,466) 200×60，打开时是阴）：入场完了
+  （`m_CanCtrlBtn`）、景天拿着魔剑 6603（`m_bHasWeapon`）、上一次转完（`IsRotateTo`）才翻面——
+  `SetRotateMode(2, 180)`，放 wa001；否则 wa004。
+- 模式 2（`UI3DCtrl::Update` case 2，exe `FUN_00439a20`）：角度加 `速度·dt`；越过目标就停在目标上，但目标本来
+  就比当前角小时归 0。`SetRotateMode` 里那步「与 360 对齐」是浮点 `x/360*360`，等于没做。
+- 龙晶石 `ljs.POL`：`SetOrthosize(460)`、`SetOriginPt(730, 152)`（exe；源码写 726）、`SetRotateMode(1, 0)`。
+- **J131Src / J131Dst 是魔剑净化的贴图**（解决上面那条「未解决」）：`PurgeEffect` 把每个五灵阴/阳面的一块
+  从 Dst 拷进 Src 的对应位置（阴面 `Purge_rectB`、阳面 `Purge_rectA`，各 5 块，110 宽）。一块都没净化时
+  `MergeSrcData(..., bNone=true)` 直接返回 Src——`J131Src.tga` 和模型自带的 `J131.tga` 逐像素相同。
+- 进净化模式（`SwitchPurge(true)`）两个视图都藏起来。
+
+移植端：`yaobow/src/openpal3/sword_views.rs`（`IPal3Service::draw_sword_views` / `sword_lunar`）。
+净化还没做，所以剑一直是原贴图、也没有净化模式。

@@ -11,6 +11,10 @@
 //   * its list shows four columns (名称 / 数量 / 古董价值 / 半价), and the
 //     last two come straight off the item's database row.
 //
+// The sword and the 龙晶石 are 3D views drawn by the service
+// (`draw_sword_views`, sword_views.rs): the sword's entrance and its 180°
+// turns on the 阴/阳 button follow `swordui.cpp`.
+//
 // This page is DISPLAY-ONLY for now. The 炼化 action itself is not
 // implemented: the original runs it through two confirmation dialogs whose
 // callbacks are not in the init function, so what it consumes and what it
@@ -237,9 +241,24 @@ pub fn paint_sword_menu(
         sel = 0;
     }
 
-    // 阴/阳 mode button — both variants share the same rect; the original
-    // shows Lunar by default.
-    chrome.sprite(ui, atlas, SPR_MODE + "Lunar0.tga", ox + MODE_X * s, oy + MODE_Y * s, s);
+    // 阴/阳 mode button — both variants share the same rect, 200x60; the
+    // page opens on Lunar. A click turns the 3D sword round 180° (and swaps
+    // the button) once its entrance is over and the last turn has finished,
+    // and only while 景天 holds the 魔剑; otherwise wa004
+    // (`IDB_SWORD_CTRLLUNAR` / `…POSITIVE`).
+    let mode_x = ox + MODE_X * s;
+    let mode_y = oy + MODE_Y * s;
+    let on_mode = mx >= mode_x && mx <= mode_x + MODE_W * s && my >= mode_y && my <= mode_y + MODE_H * s;
+    // The sword and the 龙晶石 (sword_views.rs), over the frame art.
+    let _took = pal3.draw_sword_views(ui, on_mode && click, ox, oy, s);
+    let mut mode_base = "Positive";
+    if pal3.sword_lunar() { mode_base = "Lunar"; }
+    let mut mode_variant = "0";
+    if on_mode {
+        mode_variant = "1";
+        if down { mode_variant = "2"; }
+    }
+    chrome.sprite(ui, atlas, SPR_MODE + mode_base + mode_variant + ".tga", mode_x, mode_y, s);
 
     // ---- Equipment list --------------------------------------------------
     let mask = TAB_MASK[tab];
