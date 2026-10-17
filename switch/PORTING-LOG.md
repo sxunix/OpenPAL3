@@ -1223,3 +1223,21 @@ Engine: the texture descriptor pool lacked FREE_DESCRIPTOR_SET, so freeing
 UI textures was invalid usage and MoltenVK then handed out sets still in
 use — a message box's frame turning into a button image or magenta after a
 UI with its own textures closed. Fixed.
+
+御剑净化 (2026-10-17): the purification screen from swordui.cpp — basket
+of 古董 by 古 value, preview and confirm dialogs, the purge textures on
+the sword's faces, the 魔剑's attack and element bonus in effective stats.
+
+Page sounds (2026-10-17): 阵法's right-hand buttons are per-person 托管
+switches (lineupui.cpp), not formation slots — AI/攻击 lock and unlock the
+rest, written back at once; clicking a head outside a maze shows AssisLang
+351 in the menu message box (wa003), inside one swaps the leader (wa001).
+仙术 head plates and tabs wa001; 侠义榜 opening, bookmarks and page turns
+wa016; 系统 pager wa016 / wa004 at the ends, save plaque wa016 / wa003 when
+refused, load plaque wa016, save wa029, load wa030.
+
+Sorting (2026-10-17): the 道具 and 装备 sort buttons. 使用序 is no sort —
+the order items were got, which the save now records (old saves: unrecorded
+items count as earlier, by id); 价格序 by price; 功能序 by item id;
+ascending. Each page keeps its setting for the run; wa001, and the 道具
+page refuses with wa004 while an item is being used.
