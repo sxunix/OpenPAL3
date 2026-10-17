@@ -303,6 +303,16 @@ fn build_registered_proto(spec: ProtoSpec) -> Result<RegisteredProto, HostError>
         });
         let userdata_ptr: &'static MethodUserdata = Box::leak(userdata);
 
+        #[cfg(target_os = "horizon")]
+        {
+            // 闭包里记的是 `ffi_cif` 的地址，所以 `Cif` 要先放到堆上、地址固定以后再做闭包
+            // （libffi-rs 的 `Closure::new` 也是先 `Box::new(cif)`）。
+            let pinned: &'static Cif = Box::leak(Box::new(cif.clone()));
+            if let Some(code) = jit_closure::make(pinned, &method.ret, userdata_ptr) {
+                method_codes.push(code);
+                continue;
+            }
+        }
         let closure = match method.ret {
             RetKind::Void => Closure::new(cif, method_thunk_void, userdata_ptr),
             RetKind::Int | RetKind::Bool => Closure::new(cif, method_thunk_int, userdata_ptr),
@@ -318,6 +328,8 @@ fn build_registered_proto(spec: ProtoSpec) -> Result<RegisteredProto, HostError>
         let _ = leaked;
         method_codes.push(code);
     }
+    #[cfg(target_os = "horizon")]
+    jit_closure::commit();
     let method_codes: &'static [*const c_void] = Box::leak(method_codes.into_boxed_slice());
 
     let additional_query_uuids: &'static [[u8; 16]] =
@@ -1197,4 +1209,128 @@ unsafe fn marshal_arg_in(
 #[allow(dead_code)]
 fn _import_anchor() {
     let _ = std::mem::size_of::<c_long>();
+}
+
+/// Switch（horizon）：堆内存不可执行，libffi 默认把闭包跳板放在 `malloc` 出来的内存里，真机上一调用就
+/// Instruction Abort（Ryujinx 不检查执行权限，所以模拟器上看不出来）。这里改从 libnx 的 JIT 区分配：
+/// `jitCreate` 给同一段内存一个可写地址（rw）和一个可执行地址（rx），跳板写进 rw、函数指针用 rx，写完
+/// `jitTransitionToExecutable` 刷数据缓存、作废指令缓存。区域按需再开一块，从不释放（闭包本来就是泄漏的）。
+#[cfg(target_os = "horizon")]
+mod jit_closure {
+    use super::{
+        MethodUserdata, RetKind, method_thunk_float, method_thunk_int, method_thunk_ptr,
+        method_thunk_void,
+    };
+    use libffi::low::{CodePtr, ffi_closure, prep_closure};
+    use libffi::middle::Cif;
+    use std::ffi::c_void;
+    use std::sync::Mutex;
+
+    /// libnx `Jit`（`switch/kernel/jit.h`）。
+    #[repr(C)]
+    struct Jit {
+        kind: u32,
+        size: usize,
+        src_addr: *mut c_void,
+        rx_addr: *mut c_void,
+        rw_addr: *mut c_void,
+        is_executable: bool,
+        handle: u64,
+    }
+
+    unsafe extern "C" {
+        fn jitCreate(j: *mut Jit, size: usize) -> u32;
+        fn jitTransitionToWritable(j: *mut Jit) -> u32;
+        fn jitTransitionToExecutable(j: *mut Jit) -> u32;
+    }
+
+    const REGION: usize = 256 * 1024;
+
+    struct Arena {
+        regions: Vec<Box<Jit>>,
+        used: usize,
+        dirty: bool,
+    }
+
+    unsafe impl Send for Arena {}
+
+    static ARENA: Mutex<Arena> = Mutex::new(Arena {
+        regions: Vec::new(),
+        used: REGION,
+        dirty: false,
+    });
+
+    /// 分一块 `size` 字节：返回 (rw, rx)。
+    fn alloc(size: usize) -> Option<(*mut c_void, *const c_void)> {
+        let size = (size + 15) & !15;
+        let mut a = ARENA.lock().ok()?;
+        if a.used + size > REGION {
+            let mut j = Box::new(Jit {
+                kind: 0,
+                size: 0,
+                src_addr: std::ptr::null_mut(),
+                rx_addr: std::ptr::null_mut(),
+                rw_addr: std::ptr::null_mut(),
+                is_executable: false,
+                handle: 0,
+            });
+            let rc = unsafe { jitCreate(j.as_mut(), REGION) };
+            if rc != 0 {
+                log::error!("jitCreate failed: {rc:#x}; falling back to libffi's own closures");
+                return None;
+            }
+            log::info!("jit closure region: rw {:p} rx {:p}", j.rw_addr, j.rx_addr);
+            a.regions.push(j);
+            a.used = 0;
+        }
+        let used = a.used;
+        let j = a.regions.last_mut()?;
+        if j.is_executable {
+            unsafe { jitTransitionToWritable(j.as_mut()) };
+        }
+        let rw = unsafe { (j.rw_addr as *mut u8).add(used) } as *mut c_void;
+        let rx = unsafe { (j.rx_addr as *const u8).add(used) } as *const c_void;
+        a.used += size;
+        a.dirty = true;
+        Some((rw, rx))
+    }
+
+    /// 在 JIT 区里做一个闭包，返回可执行地址。失败返回 `None`（调用方退回 `Closure::new`）。
+    pub(super) fn make(
+        cif: &'static Cif,
+        ret: &RetKind,
+        userdata: &'static MethodUserdata,
+    ) -> Option<*const c_void> {
+        let (rw, rx) = alloc(std::mem::size_of::<ffi_closure>())?;
+        let closure = rw as *mut ffi_closure;
+        let code = CodePtr::from_ptr(rx);
+        let cif = cif.as_raw_ptr();
+        let ok = unsafe {
+            match ret {
+                RetKind::Void => prep_closure(closure, cif, method_thunk_void, userdata, code),
+                RetKind::Int | RetKind::Bool => {
+                    prep_closure(closure, cif, method_thunk_int, userdata, code)
+                }
+                RetKind::Float | RetKind::OptionalFloat => {
+                    prep_closure(closure, cif, method_thunk_float, userdata, code)
+                }
+                RetKind::OptionalForeign { .. } | RetKind::Foreign { .. } => {
+                    prep_closure(closure, cif, method_thunk_ptr, userdata, code)
+                }
+            }
+        };
+        ok.ok().map(|_| rx)
+    }
+
+    /// 写完一批：刷缓存、切到可执行。
+    pub(super) fn commit() {
+        let Ok(mut a) = ARENA.lock() else { return };
+        if !a.dirty {
+            return;
+        }
+        a.dirty = false;
+        for j in a.regions.iter_mut() {
+            unsafe { jitTransitionToExecutable(j.as_mut()) };
+        }
+    }
 }

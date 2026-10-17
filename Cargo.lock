@@ -1097,6 +1097,7 @@ dependencies = [
  "crosscom",
  "crosscom-ccidl",
  "libffi",
+ "log",
  "p7",
  "uuid 0.8.2",
 ]
