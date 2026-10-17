@@ -407,6 +407,14 @@ impl AdventureDirector {
         }
     }
 
+    /// 阵法页点了队伍头像（迷宫里，`LineupUI::SelRoleHead` → `PlayerMgr::SetCtrl`）：换操控的主角，
+    /// 和迷宫里按 Tab 是同一件事。
+    pub fn set_leader_from_menu(&self, role: i32) {
+        let mut p = self.props.borrow_mut();
+        let scene_manager = p.scene_manager.clone();
+        crate::scripting::sce::commands::set_ctrl(&scene_manager, p.sce_vm.state_mut(), role);
+    }
+
     pub fn start_debug_bigmap(&self) {
         let mut p = self.props.borrow_mut();
         let scene_manager = p.scene_manager.clone();

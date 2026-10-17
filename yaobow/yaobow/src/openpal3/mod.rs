@@ -1,5 +1,6 @@
 mod compose_dialog;
 mod debug_layer;
+mod menu_message;
 mod sce_proc_hooks;
 pub mod service;
 mod sword_page;

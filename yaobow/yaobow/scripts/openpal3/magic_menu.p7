@@ -173,6 +173,8 @@ pub fn paint_magic_menu(
 
     // The party column doubles as the character selector, same as 装备.
     let picked = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, page_click, true);
+    // Any plate click plays wa001 (`IDB_ROLEHEAD_MAGIC`).
+    if picked >= 0 { pal3.ui_sound(chrome.SND_CLICK); }
     if picked >= 0 && picked != member {
         member = picked;
         actor = pal3.party_actor_id(member);
@@ -191,7 +193,11 @@ pub fn paint_magic_menu(
         if i == tab { variant = "1"; }
         else { if hover { variant = "2"; } }
         chrome.sprite(ui, atlas, SPR_TAB + TAB_BASE[i] + variant + ".tga", tx0, ty0, s);
-        if hover && page_click { new_tab = i; }
+        // Any tab click plays wa001 (`IDB_LIST_CTRL`).
+        if hover && page_click {
+            new_tab = i;
+            pal3.ui_sound(chrome.SND_CLICK);
+        }
     }
     if new_tab != tab {
         tab = new_tab;

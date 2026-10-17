@@ -371,6 +371,26 @@ interface IPal3Service: IUnknown {
     // `PersistentState::reread_lineup_for_page`）。
     void lineup_page_opened();
 
+    // The 阵法 page's portrait strip and settings planks (`lineupui.cpp`),
+    // laid out when the page opens: the leader in slot 0 / the first plank,
+    // the other members in role order. -1 past the end.
+    int lineup_strip_role(int slot);
+    int lineup_panel_role(int k);
+    // A plank button (0 攻击 1 特技 2 仙术 3 物品 4 全力/万全 5 AI): bit 0
+    // pressed, bit 1 clickable.
+    int lineup_button_state(int actor_id, int button);
+    // Click one: toggles it per the original's rules and writes the
+    // character's 托管 settings back; wa001, or wa004 when locked.
+    void lineup_button_click(int actor_id, int button);
+    // Click a portrait: outside a maze 「非迷宫，不可更换队列」(wa003);
+    // in one, that character becomes the leader (wa001).
+    void lineup_head_click(int slot);
+
+    // The shared message box pages open from the service; draw it last.
+    // True while it is up (the page ignores clicks then).
+    bool paint_menu_message(IUiHost ui, bool click, float ox, float oy, float scale);
+    bool menu_message_open();
+
     // ---- 御剑页「御剑飞行」（`yjfx`，0xa00571） ----
     // 按钮显不显示：opcode 138 开的标志（`DAT_00de625a`）。
     bool sword_flight_unlocked();

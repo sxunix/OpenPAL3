@@ -8,6 +8,18 @@
 不拉伸；文本 rect 四边内缩 8、字号档 1 = 16px 字格、单行 rect 高恒为 8+16+8 = 32）。
 **底部工具栏与退出键见 `item_page_layout.md` 第 6 节**，本页数字完全相同。
 
+> **更正（2026-10-17，对照参考源码 `gamemainui/lineupui.cpp`）**：下文把右侧六个按钮叫「阵位按钮」
+> 是错的。它们是每人一块的**托管设置板**（`LINEUP_TYPE`：0 攻击、1 特技、2 仙术、3 物品、
+> 4 全力/万全、5 AI），跟五灵阵位无关；`Lineup<n>1.tga` 是「按下」态。语义：
+> - 进页（`CheckLineupPlank`）：AI 开的人六格全能点、为真的按下；AI 关的人只有 AI 能点、全弹起。
+> - 点一格：不能点 → wa004；能点 → 切换，wa001。点 AI 或攻击：按下时六格全能点、AI+攻击都按下；
+>   弹起时全清、只剩 AI 能点（攻击弹起也会关 AI，照原样）。
+> - 写回（`WriteBackMgr`）：按下的格为真；第 4 格按下 = `bAINegative`「万全」。
+> - 点头像（`SelRoleHead`）：非迷宫弹 `DLG_MSGBOX` AssisLang 351「非迷宫，不可更换队列」+ wa003，
+>   框 (300,200,500,300)、`SetTextOffset(0,8)`；迷宫里点的人和第 0 格对调、`PlayerMgr::SetCtrl`、
+>   wa001。**设置板不跟着换位置**——只有开页时按「队长在前、其余按角色号」摆一次。
+> 移植：`shared/src/openpal3/states/lineup_plank.rs`、`yaobow/src/openpal3/menu_message.rs`。
+
 入口：
 - `FUN_00483650` —— 页面 init（框架、顶部五个队伍槽、zhenlie 竖幅、3D 五灵盘、
   确认对话框）。

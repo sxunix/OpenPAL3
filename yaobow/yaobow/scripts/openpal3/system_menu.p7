@@ -148,11 +148,19 @@ pub fn paint_system_menu(
         }
 
         if click && hover && selectable {
+            // SND_SYS_SAVE wa029 / SND_SYS_LOAD wa030 (`SystemUI::Update`, after
+            // the original's are-you-sure box).
             if m == 1 {
-                if pal3.save_current(slot) { return -1; }
+                if pal3.save_current(slot) {
+                    pal3.ui_sound("wa029");
+                    return -1;
+                }
             }
             if m == 2 {
-                if pal3.request_load_slot(slot) { return -1; }
+                if pal3.request_load_slot(slot) {
+                    pal3.ui_sound("wa030");
+                    return -1;
+                }
             }
         }
     }
@@ -160,11 +168,23 @@ pub fn paint_system_menu(
     // ---- Pager -----------------------------------------------------------
     ui.text_at_small(ox + (PGUP_X - 62.0) * s, oy + (PAGER_Y + 2.0) * s,
         0.8, 0.8, 0.7, 1.0, int_str(page + 1) + " / " + int_str(pages));
+    // `MoveUp` / `MoveDw`: SND_TALK_PAGE wa016 when the list moves, wa004 at
+    // either end.
     if tri_button(ui, atlas, SYS + "pgup", ox + PGUP_X * s, oy + PAGER_Y * s, s, mx, my, down, click) {
-        if page > 0 { page = page - 1; }
+        if page > 0 {
+            page = page - 1;
+            pal3.ui_sound("wa016");
+        } else {
+            pal3.ui_sound("wa004");
+        }
     }
     if tri_button(ui, atlas, SYS + "pgdw", ox + PGDW_X * s, oy + PAGER_Y * s, s, mx, my, down, click) {
-        if page < pages - 1 { page = page + 1; }
+        if page < pages - 1 {
+            page = page + 1;
+            pal3.ui_sound("wa016");
+        } else {
+            pal3.ui_sound("wa004");
+        }
     }
 
     // ---- Right sidebar ---------------------------------------------------
@@ -193,12 +213,20 @@ pub fn paint_system_menu(
     // active-mode latch, like the original's stuck-down button.
     if plaque_button(ui, atlas, SYS + "Save", side_cx, oy + SIDE_SAVE_Y * s, s,
         mx, my, down, click, m == 1) {
-        if !pal3.can_save() { m = 3; }
-        else { m = if m == 1 { 0 } else { 1 }; }
+        // Refused (maze): AssisLang 343 + SND_MENU_POP wa003; otherwise
+        // SND_TALK_PAGE wa016 (`IDB_SYSTEM_SAVE`).
+        if !pal3.can_save() {
+            m = 3;
+            pal3.ui_sound("wa003");
+        } else {
+            m = if m == 1 { 0 } else { 1 };
+            pal3.ui_sound("wa016");
+        }
     }
     if plaque_button(ui, atlas, SYS + "Load", side_cx, oy + SIDE_LOAD_Y * s, s,
         mx, my, down, click, m == 2) {
         m = if m == 2 { 0 } else { 2 };
+        pal3.ui_sound("wa016");
     }
 
     // 离开游戏 seal.

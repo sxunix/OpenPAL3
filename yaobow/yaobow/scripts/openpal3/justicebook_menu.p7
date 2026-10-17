@@ -89,8 +89,13 @@ pub let TO_ARRAY: int = -8;
 // Pgdw, 2 back / Pgup): it picks the book's CVD (`close` / `pgdw` /
 // `pgup`, `FUN_00480600` keeps the loaded one in `this+0x27bc4`).
 pub fn pack(category: int, page: int) -> int { return category * 1000 + page; }
-pub fn turn_of(state: int) -> int { return state / 10000; }
-fn place_of(state: int) -> int { return state - turn_of(state) * 10000; }
+// Set once the page has been drawn: the frame it is missing is the one the
+// page opened on (the status menu hands a fresh page 0).
+let OPENED: int = 100000;
+pub fn turn_of(state: int) -> int { return (state - (state / OPENED) * OPENED) / 10000; }
+fn place_of(state: int) -> int {
+    return state - (state / OPENED) * OPENED - turn_of(state) * 10000;
+}
 pub fn category_of(state: int) -> int { return place_of(state) / 1000; }
 pub fn page_of(state: int) -> int { return place_of(state) - category_of(state) * 1000; }
 
@@ -120,6 +125,10 @@ pub fn paint_justicebook_menu(
     let oy = canvas.y;
 
     ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
+
+    // Opening the book plays the page sound (`UIWM_ACTIVE` → `OpenBook`,
+    // SND_TALK_PAGE wa016); so do a bookmark click and every page turn.
+    if state < OPENED { pal3.ui_sound("wa016"); }
 
     let mut category = category_of(state);
     if category < 0 || category > 5 { category = 0; }
@@ -168,7 +177,10 @@ pub fn paint_justicebook_menu(
                else { if hover { name = SPR_TAB + TAB_BASE[i] + "2.tga"; } } }
         chrome.sprite(ui, atlas, name, bx, by, s);
 
-        if hover && click { new_category = i; }
+        if hover && click {
+            new_category = i;
+            pal3.ui_sound("wa016");
+        }
     }
     if new_category != category {
         category = new_category;
@@ -263,7 +275,9 @@ pub fn paint_justicebook_menu(
     let mut new_turn = turn;
     if new_place > old_place { new_turn = 1; }
     if new_place < old_place { new_turn = 2; }
-    return new_turn * 10000 + new_place;
+    // A turn within the open bookmark (a bookmark click already played it).
+    if new_place != old_place && category == category_of(state) { pal3.ui_sound("wa016"); }
+    return OPENED + new_turn * 10000 + new_place;
 }
 
 // How many recorded monsters have this `CombatActorType`.

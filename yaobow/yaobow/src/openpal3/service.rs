@@ -199,6 +199,12 @@ pub struct Pal3Service {
     sword_page: RefCell<super::sword_page::SwordPage>,
     /// 上一帧右键按着没有（御剑页要右键按下的那一下）。
     sword_rdown: Cell<bool>,
+    /// 阵法页：头像条（第 0 格是领队）和每人的设置板，进页面时排好。
+    lineup_page: RefCell<Option<LineupPage>>,
+    /// 菜单页共用的提示框。
+    menu_message: RefCell<super::menu_message::MenuMessage>,
+    /// 阵法页点头像换领队，下一帧交给导演（-1 没有）。
+    pending_leader: Cell<i32>,
     lineup_disc: RefCell<Option<LineupDiscSlot>>,
     /// Script-side factory (`IPal3ScriptFactory`) QI'd from the
     /// reverse-wrapped app root. Used by `create_director` to mint
@@ -302,6 +308,9 @@ impl Pal3Service {
             compose_dialogs: RefCell::new(Default::default()),
             sword_page: RefCell::new(Default::default()),
             sword_rdown: Cell::new(false),
+            lineup_page: RefCell::new(None),
+            menu_message: RefCell::new(Default::default()),
+            pending_leader: Cell::new(-1),
             lineup_disc: RefCell::new(None),
             script_factory: RefCell::new(None),
             last_asset_path: RefCell::new(None),
@@ -514,6 +523,7 @@ impl Pal3Service {
     }
 
     fn play_ui_sound(&self, name: &str) {
+        log::debug!("界面音效 {name}");
         let Some(asset_path) = self.last_asset_path.borrow().clone() else {
             return;
         };
@@ -639,6 +649,14 @@ impl Pal3Service {
         }
 
         self.refresh_item_use_context();
+
+        let leader = self.pending_leader.replace(-1);
+        if leader >= 0 {
+            if let Some(adv) = self.active_adventure_director_owned() {
+                adv.inner::<AdventureDirector>()
+                    .set_leader_from_menu(leader);
+            }
+        }
 
         if self.pending_bigmap.replace(false) {
             if let Some(adv) = self.active_adventure_director_owned() {
@@ -2275,7 +2293,146 @@ impl IPal3ServiceImpl for Pal3Service {
         };
         if let Ok(mut state) = state.try_borrow_mut() {
             state.reread_lineup_for_page();
+            // `SetLineupUI`：领队放第 0 格、第一块板，其余在队的按角色号往后排。
+            let in_team: Vec<u32> = (0..5).filter(|&r| state.is_in_team(r)).collect();
+            let ctrl = state.controlled_role();
+            let head = if ctrl >= 0 && state.is_in_team(ctrl as u32) {
+                ctrl as u32
+            } else {
+                in_team.first().copied().unwrap_or(0)
+            };
+            let order: Vec<u32> = std::iter::once(head)
+                .chain(in_team.iter().copied().filter(|&r| r != head))
+                .collect();
+            let panels: Vec<(u32, shared::openpal3::states::lineup_plank::Plank)> = order
+                .iter()
+                .map(|&r| {
+                    let d = state.role(r).map(|x| x.delegation).unwrap_or_default();
+                    (r, shared::openpal3::states::lineup_plank::Plank::load(&d))
+                })
+                .collect();
+            // 原版离开页面时整块写回（`WriteBackMgr`）；板子没动过的话等于进页面时就写回。
+            for (r, plank) in &panels {
+                if let Some(role) = state.role_mut(*r) {
+                    role.delegation = plank.delegation();
+                }
+            }
+            *self.lineup_page.borrow_mut() = Some(LineupPage {
+                strip: order.iter().map(|&r| r as i32).collect(),
+                panels,
+            });
         }
+    }
+
+    fn lineup_strip_role(&self, slot: i32) -> i32 {
+        let page = self.lineup_page.borrow();
+        page.as_ref()
+            .and_then(|p| p.strip.get(usize::try_from(slot).ok()?).copied())
+            .unwrap_or(-1)
+    }
+
+    fn lineup_panel_role(&self, k: i32) -> i32 {
+        let page = self.lineup_page.borrow();
+        page.as_ref()
+            .and_then(|p| p.panels.get(usize::try_from(k).ok()?).map(|x| x.0 as i32))
+            .unwrap_or(-1)
+    }
+
+    fn lineup_button_state(&self, actor_id: i32, button: i32) -> i32 {
+        let page = self.lineup_page.borrow();
+        let Some(plank) = page.as_ref().and_then(|p| {
+            p.panels
+                .iter()
+                .find(|x| x.0 as i32 == actor_id)
+                .map(|x| x.1)
+        }) else {
+            return 0;
+        };
+        let b = button.max(0) as usize;
+        i32::from(plank.pushed(b)) | (i32::from(plank.enabled(b)) << 1)
+    }
+
+    fn lineup_button_click(&self, actor_id: i32, button: i32) -> () {
+        let delegation = {
+            let mut page = self.lineup_page.borrow_mut();
+            let Some(plank) = page.as_mut().and_then(|p| {
+                p.panels
+                    .iter_mut()
+                    .find(|x| x.0 as i32 == actor_id)
+                    .map(|x| &mut x.1)
+            }) else {
+                return;
+            };
+            if !plank.click(button.max(0) as usize) {
+                self.play_ui_sound("wa004");
+                return;
+            }
+            plank.delegation()
+        };
+        self.play_ui_sound("wa001");
+        // 原版离开页面时才写回（`WriteBackMgr`），这里每点一下就写，结果一样。
+        let handle = self.active_persistent_state.borrow();
+        if let Some(state) = handle.as_ref() {
+            if let Ok(mut state) = state.try_borrow_mut() {
+                if let Some(role) = state.role_mut(actor_id as u32) {
+                    role.delegation = delegation;
+                }
+            }
+        }
+    }
+
+    fn lineup_head_click(&self, slot: i32) -> () {
+        let Ok(slot) = usize::try_from(slot) else {
+            return;
+        };
+        let role = self.lineup_strip_role(slot as i32);
+        if role < 0 {
+            return;
+        }
+        if !self.item_use_ctx.get().in_maze {
+            let text = format!(
+                "\n{}",
+                self.assis_lang_text(351)
+                    .map(|t| shared::openpal3::assis_lang::unescape(&t))
+                    .unwrap_or_default()
+            );
+            self.menu_message
+                .borrow_mut()
+                .show((300, 200, 500, 300), (0, 8), text);
+            self.play_ui_sound("wa003");
+            return;
+        }
+        // `SelRoleHead`：点的人换到第 0 格，原领队换到他那一格；设置板不动。
+        if let Some(page) = self.lineup_page.borrow_mut().as_mut() {
+            page.strip.swap(0, slot);
+        }
+        self.pending_leader.set(role);
+        self.play_ui_sound("wa001");
+    }
+
+    fn menu_message_open(&self) -> bool {
+        self.menu_message.borrow().busy()
+    }
+
+    fn paint_menu_message(
+        &self,
+        ui: ComRc<IUiHost>,
+        click: bool,
+        ox: f32,
+        oy: f32,
+        scale: f32,
+    ) -> bool {
+        let Some(asset_path) = self.last_asset_path.borrow().clone() else {
+            return false;
+        };
+        let Some(sinks) = self.texture_sinks.borrow().clone() else {
+            return false;
+        };
+        let am = self.asset_manager_for(&asset_path);
+        let register = |id: i64, tex: imgui::TextureId| sinks.0.borrow_mut().push((id, tex));
+        self.menu_message
+            .borrow_mut()
+            .paint(&ui, &am, &register, (ox, oy, scale), click)
     }
 
     fn monster_seen(&self, actor_id: i32) -> bool {
@@ -2516,6 +2673,12 @@ struct ModelViewSlot {
     com_id: i64,
     serial: i32,
     last: std::time::Instant,
+}
+
+/// 阵法页进页面时排好的头像条和设置板。
+struct LineupPage {
+    strip: Vec<i32>,
+    panels: Vec<(u32, shared::openpal3::states::lineup_plank::Plank)>,
 }
 
 /// 阵法页的五灵盘。

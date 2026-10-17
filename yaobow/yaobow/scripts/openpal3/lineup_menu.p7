@@ -10,8 +10,8 @@
 //   * no party plate column — its `Frame.tga` is narrower (153 px at
 //     x=631, against 195/197 at x=592 elsewhere) to make room,
 //   * a `RoleFrame` strip across the top with five portrait slots,
-//   * one panel per party member down the right side, each carrying six
-//     阵位 buttons in 2 columns x 3 rows.
+//   * one settings plank per party member down the right side, each with
+//     the six 托管 (auto-battle) switches in 2 columns x 3 rows.
 //
 // The 五灵 formation itself is 3D in the original (`wl.pol`, the party
 // standing on it, `pointer.cvd` markers on the empty positions); the
@@ -19,7 +19,19 @@
 // Clicking the disc works as in the original (`0x485230`): click a
 // character to select it (the disc spins it to the front), click another
 // to swap, or an empty marker to move there — the service handles that
-// from the same mouse state. The 阵位 buttons below still work too.
+// from the same mouse state.
+//
+// The planks are not 阵位 buttons (an earlier reading had them so): in the
+// original's source (`lineupui.cpp`) they are `IDB_LINEUP_STATE[角色][LT_*]`
+// push buttons — 攻击 特技 全力/万全 down the left, 物品 仙术 AI down the
+// right — writing the character's 托管 flags (`bAutoCtrl`, `bAIAttack`, …).
+// The rules (AI unlocks the rest, releasing 攻击 drops everything) are in
+// states/lineup_plank.rs; the service keeps the planks.
+//
+// The portrait strip: the leader in slot 0 (its `_lead` art, the head
+// button while hovered), the others after it. Clicking a portrait outside a
+// maze says 「非迷宫，不可更换队列」; in a maze it makes that character
+// the leader (`SelRoleHead`).
 //
 // A character's position is stored as the button's index 0..5. On the
 // way back to the role record the original writes index + 1
@@ -63,9 +75,9 @@ let PANEL_STEP: float = 124.0;
 let PLANK_UP_DX: float = 40.0; let PLANK_UP_DY: float = 0.0;
 let PLANK_DW_DX: float = 44.0; let PLANK_DW_DY: float = 118.0;
 let NAME_DX: float = 50.0; let NAME_DY: float = 18.0;
-// The six 阵位 buttons, 74x26 each, 2 columns x 3 rows. The array index
-// is scrambled against the screen position: left column is 0,1,4 and
-// right column 3,2,5 top to bottom.
+// The six 托管 switches, 74x26 each, 2 columns x 3 rows (`AdjustPlank`):
+// left column 0 攻击, 1 特技, 4 全力/万全; right column 3 物品, 2 仙术,
+// 5 AI. Art `Lineup<n>0` released, `Lineup<n>1` pressed.
 let BTN_W: float = 74.0; let BTN_H: float = 26.0;
 let BTN_COL_DX: float = 73.0;
 let BTN_DY0: float = 42.0;
@@ -74,6 +86,9 @@ let BTN_INDEX: array<int> = [0, 3, 1, 2, 4, 5];
 
 // The character names the original pulls from its string table.
 let ROLE_NAME: array<string> = ["景天", "雪见", "龙葵", "紫萱", "长卿"];
+// The leader's static art in slot 0 (`MU_LINEUP_ROLELEAD`).
+let LEAD_ART: array<string> = ["jingtian", "xuejian", "longkui", "zixuan", "changqing"];
+let SPR_LEAD_DIR: string = "ui/GameMainUI/Lineup/";
 
 let INK_R: float = 0.05; let INK_G: float = 0.12; let INK_B: float = 0.0;
 let NAME_R: float = 1.0; let NAME_G: float = 0.98; let NAME_B: float = 0.12;
@@ -128,23 +143,35 @@ pub fn paint_lineup_menu(
     chrome.sprite(ui, atlas, SPR_ROLEFRAME, ox + RF_X * s, oy + RF_Y * s, s);
     chrome.sprite(ui, atlas, SPR_ZHENLIE, ox + ZL_X * s, oy + ZL_Y * s, s);
 
+    // A message box takes every click until it closes.
+    let page_click = click && !pal3.menu_message_open();
+
     // ---- Top strip: the party's portraits ---------------------------------
-    let party = pal3.party_size();
+    // Every slot gets `NoBody` first; the strip's heads go on top.
     for i in Range(0, 5) {
-        let sx = ox + TOP_SLOT_X[i] * s;
-        let sy = oy + TOP_SLOT_Y * s;
-        if i < party {
-            let role = chrome.role_at(pal3, i);
-            chrome.sprite(ui, atlas, SPR_HEAD + chrome.int_str(role) + "0.tga", sx, sy, s);
-        } else {
-            chrome.sprite(ui, atlas, SPR_NOBODY, sx, sy, s);
+        chrome.sprite(ui, atlas, SPR_NOBODY, ox + TOP_SLOT_X[i] * s, oy + TOP_SLOT_Y * s, s);
+    }
+    for i in Range(0, 5) {
+        let role = pal3.lineup_strip_role(i);
+        if role >= 0 {
+            let sx = ox + TOP_SLOT_X[i] * s;
+            let sy = oy + TOP_SLOT_Y * s;
+            let hover = mx >= sx && mx <= sx + TOP_SLOT_W * s && my >= sy && my <= sy + TOP_SLOT_H * s;
+            let mut v = "0";
+            if hover { v = if down { "2" } else { "1" }; }
+            if i == 0 && !hover {
+                chrome.sprite(ui, atlas, SPR_LEAD_DIR + LEAD_ART[role] + "_lead.tga", sx, sy, s);
+            } else {
+                chrome.sprite(ui, atlas, SPR_HEAD + chrome.int_str(role) + v + ".tga", sx, sy, s);
+            }
+            if hover && page_click { pal3.lineup_head_click(i); }
         }
     }
 
-    // ---- One panel per party member --------------------------------------
+    // ---- One settings plank per party member ------------------------------
     let mut m = 0;
-    while m < party {
-        let role = chrome.role_at(pal3, m);
+    while pal3.lineup_panel_role(m) >= 0 {
+        let role = pal3.lineup_panel_role(m);
         let px = PANEL_X;
         let py = PANEL_Y0 + (m as float) * PANEL_STEP;
 
@@ -155,7 +182,6 @@ pub fn paint_lineup_menu(
         chrome.widget_text(ui, ox + (px + NAME_DX) * s, oy + (py + NAME_DY) * s, 0.0, s,
             NAME_R, NAME_G, NAME_B, name_of(role));
 
-        let here = pal3.lineup_position(role);
         for b in Range(0, 6) {
             let col = b - (b / 2) * 2;
             let row = b / 2;
@@ -163,15 +189,16 @@ pub fn paint_lineup_menu(
             let by = oy + (py + BTN_DY0 + (row as float) * BTN_ROW_STEP) * s;
             let n = BTN_INDEX[b];
 
-            // `Lineup<n>1.tga` is the selected art, `<n>0` the normal one.
+            // `Lineup<n>1.tga` pressed, `<n>0` released (`UIPushButton`).
+            let st = pal3.lineup_button_state(role, n);
             let mut variant = "0";
-            if n == here { variant = "1"; }
+            if st % 2 == 1 { variant = "1"; }
             chrome.sprite(ui, atlas, SPR_SLOT + chrome.int_str(n) + variant + ".tga", bx, by, s);
 
-            if click
+            if page_click
                 && mx >= bx && mx <= bx + BTN_W * s
                 && my >= by && my <= by + BTN_H * s {
-                let _ = pal3.set_lineup_position(role, n);
+                pal3.lineup_button_click(role, n);
             }
         }
 
@@ -179,8 +206,9 @@ pub fn paint_lineup_menu(
     }
 
     // ---- Bottom action toolbar -------------------------------------------
-    let hit = chrome.paint_toolbar(ui, atlas, pal3, ox, oy, cw, ch, s, mx, my, down, click,
+    let hit = chrome.paint_toolbar(ui, atlas, pal3, ox, oy, cw, ch, s, mx, my, down, page_click,
         chrome.PAGE_ARRAY);
+    let _msg = pal3.paint_menu_message(ui, click, ox, oy, s);
     if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
     if hit == chrome.PAGE_STATE { return TO_STATE; }
     if hit == chrome.PAGE_PROP { return TO_PROP; }
