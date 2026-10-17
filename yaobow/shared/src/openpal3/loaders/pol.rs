@@ -94,8 +94,10 @@ fn load_material<P: AsRef<Path>>(
                     .is_ok()
                     || vfs.open(dir.join(n)).is_ok()
             };
+            // `*` 开头的是调用方事先放进 `TextureStore` 的合成图（御剑页按净化状态拼的魔剑贴图），
+            // 包里没有这个文件。
             let name = &match texture {
-                Some(t) if i == 0 && exists(t) => t.to_string(),
+                Some(t) if i == 0 && (t.starts_with('*') || exists(t)) => t.to_string(),
                 _ => own,
             };
             let mut model_dir = path.as_ref().to_owned();

@@ -173,7 +173,7 @@ pub fn usable(
         return true;
     }
 
-    let eff = attributes::effective(role, db);
+    let eff = attributes::effective(role, db, state.magic_sword());
     let mut need = item
         .attribute_impact_type
         .iter()
@@ -254,7 +254,7 @@ pub fn default_target(
         let Some(role) = state.role(actor_id) else {
             continue;
         };
-        let eff = attributes::effective(role, db);
+        let eff = attributes::effective(role, db, state.magic_sword());
         let mut need = 0i32;
         for slot in 0..ATTRIBUTE_SLOTS {
             let value = item.attribute_impact_value[slot] as i32;
@@ -419,7 +419,7 @@ fn apply_generic(
 ) {
     let eff = state
         .role(actor_id)
-        .map(|r| attributes::effective(r, db))
+        .map(|r| attributes::effective(r, db, state.magic_sword()))
         .unwrap_or_default();
     let Some(role) = state.role_mut(actor_id) else {
         return;
@@ -501,7 +501,7 @@ pub(crate) fn clamp_current(state: &mut PersistentState, actor_id: u32, db: &Gam
     let Some(role) = state.role(actor_id) else {
         return;
     };
-    let eff = attributes::effective(role, db);
+    let eff = attributes::effective(role, db, state.magic_sword());
     let Some(role) = state.role_mut(actor_id) else {
         return;
     };

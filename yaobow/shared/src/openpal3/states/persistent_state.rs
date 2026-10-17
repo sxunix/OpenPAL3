@@ -238,6 +238,9 @@ pub struct PersistentState {
     /// 每人每方的熟练度（成功率，`PlayerMgr::com_quantum[配方][角色]`，也进存档）。
     #[serde(default = "initial_compose_rates")]
     compose_rates: [[f32; compose::ROLE_COUNT]; compose::RECIPE_COUNT],
+    /// 魔剑的净化状态（御剑页），见 [`super::sword_purge`]。
+    #[serde(default)]
+    magic_sword: super::sword_purge::MagicSword,
     /// 山洞之狼（SCE 112）赢过几次。原版是 `DAT_00bfda44`，前四次各发一件
     /// 奖品，之后就只有对白。
     #[serde(default)]
@@ -397,6 +400,7 @@ impl PersistentState {
             huaying_mode: 0,
             compose_learnt: Default::default(),
             compose_rates: compose::INITIAL_RATE,
+            magic_sword: Default::default(),
             cave_wolf_wins: 0,
             hockshop_capital: 0,
             hockshop_mode: 0,
@@ -731,6 +735,24 @@ impl PersistentState {
         }
         self.compose_learnt[role][recipe] = true;
         true
+    }
+
+    pub fn magic_sword(&self) -> &super::sword_purge::MagicSword {
+        &self.magic_sword
+    }
+
+    pub fn magic_sword_mut(&mut self) -> &mut super::sword_purge::MagicSword {
+        &mut self.magic_sword
+    }
+
+    /// `actor_id` 穿戴之后的属性（[`super::attributes::effective`]，带上魔剑的加成）。
+    pub fn effective_stats(
+        &self,
+        actor_id: u32,
+        db: &super::game_db::GameDb,
+    ) -> Option<super::attributes::EffectiveStats> {
+        self.role(actor_id)
+            .map(|r| super::attributes::effective(r, db, &self.magic_sword))
     }
 
     /// `role` 合 `recipe` 的熟练度。

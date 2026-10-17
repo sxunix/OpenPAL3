@@ -54,6 +54,10 @@ pub struct SwordViews {
     /// `m_is3dLunar`：按钮显示「阴」。
     lunar: bool,
     last: Option<Instant>,
+    /// 剑的贴图（按净化状态拼好、事先放进 `TextureStore` 的合成名；`None` 用模型自带的）。
+    texture: Option<String>,
+    /// 换贴图重建时要接着用的 (角度, 转完没有)。
+    rebuild_angle: Option<(f32, bool)>,
 }
 
 impl Default for SwordViews {
@@ -67,6 +71,8 @@ impl Default for SwordViews {
             },
             lunar: true,
             last: None,
+            texture: None,
+            rebuild_angle: None,
         }
     }
 }
@@ -83,16 +89,38 @@ impl SwordViews {
         self.lunar
     }
 
+    /// 入场完了（`m_CanCtrlBtn`）。
+    pub fn ready(&self) -> bool {
+        self.stage == Stage::Ready
+    }
+
+    /// 上一次翻面转完了（`IsRotateTo`）。
+    pub fn turned(&self) -> bool {
+        self.sword.as_ref().is_some_and(|s| s.view.turned())
+    }
+
+    /// 换剑的贴图（净化后）：下一帧按新贴图重建，角度接着用。
+    pub fn set_sword_texture(&mut self, texture: Option<String>) {
+        if self.texture == texture {
+            return;
+        }
+        self.texture = texture;
+        if let Some(old) = self.sword.take() {
+            self.rebuild_angle = Some((old.view.angle(), old.view.turned()));
+        }
+    }
+
     fn build(
         am: &std::rc::Rc<AssetManager>,
         path: &str,
         size: f32,
         x: i32,
         y: i32,
+        texture: Option<String>,
     ) -> Option<Slot> {
         let source = ModelSource::Pol {
             path: path.into(),
-            texture: None,
+            texture,
         };
         let camera = ViewCamera {
             size,
@@ -117,6 +145,7 @@ impl SwordViews {
         canvas: &Canvas,
         flip: bool,
         has_sword: bool,
+        visible: bool,
         sound: &dyn Fn(&str),
     ) -> bool {
         let now = Instant::now();
@@ -132,10 +161,16 @@ impl SwordViews {
         }
         let dt = dt.min(0.1);
         if self.sword.is_none() {
-            self.sword = Self::build(am, SWORD_POL, SWORD_SIZE, 392, 400);
+            self.sword = Self::build(am, SWORD_POL, SWORD_SIZE, 392, 400, self.texture.clone());
+            if let (Some(s), Some((angle, turned))) = (&self.sword, self.rebuild_angle.take()) {
+                s.view.set_angle(angle);
+                if turned {
+                    s.view.mark_turned();
+                }
+            }
         }
         if self.ljs.is_none() {
-            self.ljs = Self::build(am, LJS_POL, 460., 730, 152);
+            self.ljs = Self::build(am, LJS_POL, 460., 730, 152, None);
             if let Some(l) = &self.ljs {
                 l.view.set_spin(SPIN_DEG_PER_SEC);
             }
@@ -169,8 +204,13 @@ impl SwordViews {
             }
         }
 
-        // 龙晶石先建、先画，剑在它上面（两个视图的画面不重叠）。
+        // 龙晶石先建、先画，剑在它上面（两个视图的画面不重叠）。净化界面里两个都不画
+        // （`m_enable = false`），但转动照样走（`UI3DCtrl::Update` 不看 `m_enable`）。
         for slot in [&self.ljs, &self.sword].into_iter().flatten() {
+            if !visible {
+                slot.view.advance(dt);
+                continue;
+            }
             slot.view.render(dt);
             let Some(tex) = slot.view.texture_id() else {
                 continue;

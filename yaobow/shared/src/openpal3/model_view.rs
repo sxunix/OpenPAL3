@@ -290,12 +290,30 @@ impl ModelView {
         self.turned.set(false);
     }
 
+    /// 当作已经转完（重建之后接着用）。
+    pub fn mark_turned(&self) {
+        self.turn_target.set(None);
+        self.spin.set(0.);
+        self.turned.set(true);
+    }
+
     /// 上一次 [`Self::turn_by`] 转完了没有。
     pub fn turned(&self) -> bool {
         self.turned.get()
     }
 
     pub fn render(&self, delta_sec: f32) {
+        self.advance(delta_sec);
+        self.scene.update(delta_sec);
+        if let Some(target) = self.target.borrow_mut().as_mut() {
+            self.engine
+                .borrow_mut()
+                .render_scene_to_target(self.scene.clone(), target.as_mut());
+        }
+    }
+
+    /// 只推进转动，不画（控件藏着时原版照样转）。
+    pub fn advance(&self, delta_sec: f32) {
         let spin = self.spin.get();
         if let Some(target) = self.turn_target.get() {
             let (a, done) = turn_step(self.angle.get(), target, spin, delta_sec);
@@ -307,12 +325,6 @@ impl ModelView {
             }
         } else if spin != 0. {
             self.set_angle(spin_step(self.angle.get(), spin, delta_sec));
-        }
-        self.scene.update(delta_sec);
-        if let Some(target) = self.target.borrow_mut().as_mut() {
-            self.engine
-                .borrow_mut()
-                .render_scene_to_target(self.scene.clone(), target.as_mut());
         }
     }
 

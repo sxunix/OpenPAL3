@@ -195,8 +195,10 @@ pub struct Pal3Service {
     model_views: RefCell<HashMap<i32, ModelViewSlot>>,
     /// 仙术页「合」页签的合成流程和对话框。
     compose_dialogs: RefCell<super::compose_dialog::ComposeDialogs>,
-    /// 御剑页的剑和龙晶石。
-    sword_views: RefCell<super::sword_views::SwordViews>,
+    /// 御剑页（剑、龙精石、五灵、净化）。
+    sword_page: RefCell<super::sword_page::SwordPage>,
+    /// 上一帧右键按着没有（御剑页要右键按下的那一下）。
+    sword_rdown: Cell<bool>,
     lineup_disc: RefCell<Option<LineupDiscSlot>>,
     /// Script-side factory (`IPal3ScriptFactory`) QI'd from the
     /// reverse-wrapped app root. Used by `create_director` to mint
@@ -298,7 +300,8 @@ impl Pal3Service {
             texture_sinks: RefCell::new(None),
             model_views: RefCell::new(HashMap::new()),
             compose_dialogs: RefCell::new(Default::default()),
-            sword_views: RefCell::new(Default::default()),
+            sword_page: RefCell::new(Default::default()),
+            sword_rdown: Cell::new(false),
             lineup_disc: RefCell::new(None),
             script_factory: RefCell::new(None),
             last_asset_path: RefCell::new(None),
@@ -1790,32 +1793,79 @@ impl IPal3ServiceImpl for Pal3Service {
         self.play_ui_sound(name);
     }
 
-    fn draw_sword_views(
+    fn paint_sword_page(
         &self,
         ui: ComRc<IUiHost>,
-        flip: bool,
+        mx: f32,
+        my: f32,
+        down: bool,
+        click: bool,
         ox: f32,
         oy: f32,
         scale: f32,
-    ) -> bool {
+    ) -> i32 {
         let Some(asset_path) = self.last_asset_path.borrow().clone() else {
-            return false;
+            return 0;
         };
         let Some(sinks) = self.texture_sinks.borrow().clone() else {
-            return false;
+            return 0;
         };
         let am = self.asset_manager_for(&asset_path);
-        let has_sword = self.equipped_item(0, 5) == super::sword_views::MAGIC_SWORD as i32;
+        let rdown = ui.mouse_down(1);
+        let rclick = rdown && !self.sword_rdown.replace(rdown);
+        let input = super::sword_page::Input {
+            mx,
+            my,
+            down,
+            click,
+            rclick,
+            wheel: ui.mouse_wheel(),
+        };
+        let yjfx = self.sword_flight_unlocked();
         let register = |id: i64, tex: imgui::TextureId| sinks.0.borrow_mut().push((id, tex));
-        let sound = |name: &str| self.play_ui_sound(name);
         let canvas = super::sword_views::Canvas { ox, oy, scale };
-        self.sword_views
-            .borrow_mut()
-            .paint(&ui, &am, &register, &canvas, flip, has_sword, &sound)
-    }
-
-    fn sword_lunar(&self) -> bool {
-        self.sword_views.borrow().lunar()
+        let Some(db) = self.active_game_db.borrow().clone() else {
+            return 0;
+        };
+        let Some(handle) = self.active_persistent_state.borrow().clone() else {
+            return 0;
+        };
+        let lang = |n: usize| {
+            self.assis_lang_text(n)
+                .map(|t| shared::openpal3::assis_lang::unescape(&t))
+                .unwrap_or_default()
+        };
+        // 御剑飞行要再借一次存档（`fly_sword` 自己借），所以页面里只记下「点了」，出来再问。
+        let fly_requested = Cell::new(false);
+        let out = {
+            let Ok(mut state) = handle.try_borrow_mut() else {
+                return 0;
+            };
+            let sound = |name: &str| self.play_ui_sound(name);
+            let fly = || {
+                fly_requested.set(true);
+                0
+            };
+            let mut ctx = super::sword_page::Ctx {
+                state: &mut state,
+                db: &db,
+                lang: &lang,
+                sound: &sound,
+                yjfx,
+                fly: &fly,
+            };
+            self.sword_page
+                .borrow_mut()
+                .paint(&ui, &am, &register, &canvas, &input, &mut ctx)
+        };
+        let mut flags = i32::from(out.locked);
+        if fly_requested.get() {
+            match self.fly_sword() {
+                0 => flags |= 2,
+                n => self.sword_page.borrow_mut().refuse_flight(n, &lang),
+            }
+        }
+        flags
     }
 
     fn compose_count(&self, actor_id: i32) -> i32 {

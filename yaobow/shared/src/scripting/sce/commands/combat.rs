@@ -1511,7 +1511,7 @@ impl SceCommandCombat {
                 let Some(combat_id) = combat_id_of_party_member(actor_id) else {
                     continue;
                 };
-                let eff = attributes::effective(role, &db);
+                let eff = attributes::effective(role, &db, persistent.magic_sword());
 
                 let mut c = Combatant::new(combat_id, Side::Party);
                 // 托管开关：`FUN_004ed250` 从冒险记录 `+0x294..+0x299` 拷进 `+0x568..+0x56d`。

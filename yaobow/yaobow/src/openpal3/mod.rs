@@ -2,7 +2,9 @@ mod compose_dialog;
 mod debug_layer;
 mod sce_proc_hooks;
 pub mod service;
+mod sword_page;
 mod sword_views;
+mod ui_draw;
 
 use shared::GameType;
 

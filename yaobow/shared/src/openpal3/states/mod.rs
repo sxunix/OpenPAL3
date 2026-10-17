@@ -20,3 +20,4 @@ pub mod ski;
 pub mod ski_path;
 pub mod skills;
 pub mod smelting;
+pub mod sword_purge;

@@ -11,6 +11,11 @@
 //! * for slots 7..=11 (五灵 水火风雷土) a flat +1 if the item carries that
 //!   element at all.
 //!
+//! The 魔剑 (6603) is special-cased there (`cmp esi, 0x19cb`): its holder
+//! also gets the sword's own 武 (`g_dwWeaponWU`, `[0x58615c]`) and +1 in the
+//! element of the sword's current block (`SwordUI::m_PurgeNum`, `[0x5d0750]`)
+//! — see [`super::sword_purge`].
+//!
 //! The offsets it reads (`item + 0x277`, `+ 0x284`, `+ 0x26b`) land
 //! exactly on our parsed `GameItemInfo`'s `attribute_impact_type`,
 //! `attribute_impact_value` and `element_attributes`, which is one more
@@ -20,6 +25,7 @@ use fileformats::pal3::gdb::GameItemInfo;
 
 use super::game_db::GameDb;
 use super::persistent_state::RoleState;
+use super::sword_purge::{DEMON_SWORD, MagicSword};
 
 /// 精 气 神 武 防 速 运, then 水 火 风 雷 土.
 pub const ATTRIBUTE_SLOTS: usize = 12;
@@ -64,8 +70,9 @@ pub struct EffectiveStats {
     pub elements: [i32; 5],
 }
 
-/// Sum the level-derived base with every equipped piece.
-pub fn effective(role: &RoleState, db: &GameDb) -> EffectiveStats {
+/// Sum the level-derived base with every equipped piece. `sword` is the
+/// 魔剑's purification state, which counts for whoever holds it.
+pub fn effective(role: &RoleState, db: &GameDb, sword: &MagicSword) -> EffectiveStats {
     let mut totals = [0i32; ATTRIBUTE_SLOTS];
     for item_id in role.equipment.iter().copied().filter(|id| *id != 0) {
         let Some(item) = db.item(item_id) else {
@@ -73,6 +80,11 @@ pub fn effective(role: &RoleState, db: &GameDb) -> EffectiveStats {
         };
         for (slot, total) in totals.iter_mut().enumerate() {
             *total += item_bonus(item, slot);
+        }
+        if item_id == DEMON_SWORD {
+            let (wu, element) = sword.bonus();
+            totals[SLOT_ATTACK] += wu;
+            totals[FIRST_ELEMENT_SLOT + element] += 1;
         }
     }
 
