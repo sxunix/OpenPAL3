@@ -200,6 +200,8 @@ pub struct Pal3Service {
     /// 上一帧右键按着没有（御剑页要右键按下的那一下）。
     sword_rdown: Cell<bool>,
     system_page: RefCell<super::system_page::SystemPage>,
+    /// 开始菜单「旧的回忆」：系统页的读档版式。
+    title_load: RefCell<super::system_page::SystemPage>,
     /// 状态菜单打开那一刻抓的画面（原版 `PAL3::m_screenImg`），存档时缩成缩略图。
     menu_snapshot: RefCell<Option<radiance::rendering::CapturedFrame>>,
     menu_was_open: Cell<bool>,
@@ -323,6 +325,7 @@ impl Pal3Service {
             sword_page: RefCell::new(Default::default()),
             sword_rdown: Cell::new(false),
             system_page: RefCell::new(Default::default()),
+            title_load: RefCell::new(super::system_page::SystemPage::title()),
             menu_snapshot: RefCell::new(None),
             menu_was_open: Cell::new(false),
             menu_title_request: Cell::new(false),
@@ -2245,9 +2248,82 @@ impl IPal3ServiceImpl for Pal3Service {
                     flags |= 2;
                 }
                 Action::Volumes(effects, music) => audio.set_group_volumes(effects, music),
+                Action::Back => {}
             }
         }
         flags
+    }
+
+    fn paint_title_load(
+        &self,
+        ui: ComRc<IUiHost>,
+        mx: f32,
+        my: f32,
+        down: bool,
+        click: bool,
+        ox: f32,
+        oy: f32,
+        scale: f32,
+        fresh: bool,
+    ) -> i32 {
+        use super::system_page::{Action, NOTES};
+        let Some(asset_path) = self.last_asset_path.borrow().clone() else {
+            return -1;
+        };
+        let Some(sinks) = self.texture_sinks.borrow().clone() else {
+            return -1;
+        };
+        let am = self.asset_manager_for(&asset_path);
+        if fresh {
+            // `UITitle_JDHY` 开页：读所有存档摘要，定位到上次存 / 读的那条（`SeekNote`）。
+            let briefs = (0..NOTES).map(|i| self.save_brief(i as i32 + 1)).collect();
+            self.title_load
+                .borrow_mut()
+                .activate(briefs, false, self.read_save_seek(), (1., 1.));
+        }
+        let lang = |n: usize| {
+            self.assis_lang_text(n)
+                .map(|t| shared::openpal3::assis_lang::unescape(&t))
+                .unwrap_or_default()
+        };
+        let sound = |name: &str| self.play_ui_sound(name);
+        let thumb = |i: usize| {
+            image::open(Self::save_file(i as i32 + 1, "png"))
+                .ok()
+                .map(|img| img.to_rgba8())
+        };
+        let ctx = super::system_page::Ctx {
+            am: &am,
+            lang: &lang,
+            sound: &sound,
+            thumb: &thumb,
+            play_time: 0.,
+            money: 0,
+            boat_maze: false,
+        };
+        let input = super::system_page::Input {
+            mx,
+            my,
+            down,
+            click,
+            wheel: ui.mouse_wheel(),
+        };
+        let register = |id: i64, tex: imgui::TextureId| sinks.0.borrow_mut().push((id, tex));
+        let out = self
+            .title_load
+            .borrow_mut()
+            .paint(&ui, &register, (ox, oy, scale), &input, &ctx);
+        for action in out.actions {
+            match action {
+                Action::Load(i) => {
+                    self.write_save_seek(i);
+                    return i as i32 + 1;
+                }
+                Action::Back => return -1,
+                _ => {}
+            }
+        }
+        0
     }
 
     fn compose_count(&self, actor_id: i32) -> i32 {

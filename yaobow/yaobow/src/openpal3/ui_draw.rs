@@ -77,10 +77,24 @@ impl Pics {
 
 /// 这一帧按下了键盘上的 `key` 没有（imgui 帧外调用恒为 false）。
 pub fn key_pressed(key: imgui::Key) -> bool {
-    unsafe {
+    use imgui::Key;
+    // 手柄上对应的键（A 确定、B 取消、十字键、L / R 翻页，和其余移植界面一样）。
+    let pad = match key {
+        Key::Enter => Some(Key::GamepadFaceDown),
+        Key::Escape => Some(Key::GamepadFaceRight),
+        Key::UpArrow => Some(Key::GamepadDpadUp),
+        Key::DownArrow => Some(Key::GamepadDpadDown),
+        Key::LeftArrow => Some(Key::GamepadDpadLeft),
+        Key::RightArrow => Some(Key::GamepadDpadRight),
+        Key::PageUp => Some(Key::GamepadL1),
+        Key::PageDown => Some(Key::GamepadR1),
+        _ => None,
+    };
+    let pressed = |k: Key| unsafe {
         !imgui::sys::igGetCurrentContext().is_null()
-            && imgui::sys::igIsKeyPressed_Bool(key as imgui::sys::ImGuiKey, false)
-    }
+            && imgui::sys::igIsKeyPressed_Bool(k as imgui::sys::ImGuiKey, false)
+    };
+    pressed(key) || pad.is_some_and(pressed)
 }
 
 /// 这一帧画在哪。

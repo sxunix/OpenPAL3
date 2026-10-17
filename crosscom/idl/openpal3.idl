@@ -340,6 +340,14 @@ interface IPal3Service: IUnknown {
     int paint_system_page(IUiHost ui, float mx, float my, bool down, bool click,
         float ox, float oy, float scale, bool fresh);
 
+    // The start menu's 旧的回忆 (load) screen (gameui/UITitle_JDHY.cpp):
+    // the same 36 save notes as the System page, load-only, on its own
+    // background. `fresh` on the first frame after it opens. Returns 0
+    // while it runs, -1 when its exit button (or Esc / B) was pressed, or
+    // the 1-based slot the player confirmed loading.
+    int paint_title_load(IUiHost ui, float mx, float my, bool down, bool click,
+        float ox, float oy, float scale, bool fresh);
+
     // ---- 合成术 (the 仙术 page's 合 tab; rules in states/compose.rs) ----
     // How many recipes `actor_id` has learnt, and which recipe (0..7, in
     // the recipe table's order — `MagicUI::RealCom`) the `index`-th is.

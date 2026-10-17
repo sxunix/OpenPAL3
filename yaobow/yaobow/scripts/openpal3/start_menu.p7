@@ -10,11 +10,9 @@
 // `gui.paint_root`. The tree is a `gui.Stack` of a screen-local
 // `Pal3Cover` hosting element (the cover art + 3-state buttons + drifting
 // clouds + sliding taiji discs, letterbox-fit into the viewport — the
-// PAL3 analog of the lib's `UiLayout`) and, in load mode, a declarative
-// `gui.ListView` of `gui.TextButton` save rows. The cross-frame press
-// latch lives in `self.ctx: gui.UiCtx` (keyed by cover `WID_*` for
-// buttons and `SLOT_KEY_BASE + slot` for save rows), replacing the old
-// hand-rolled `pressed_wid` / `pressed_slot` int fields.
+// PAL3 analog of the lib's `UiLayout`). The cross-frame press latch lives
+// in `self.ctx: gui.UiCtx` (keyed by cover `WID_*`). Load mode replaces
+// the cover with the original 旧的回忆 screen (`paint_load`).
 //
 // Buttons functional in v1:
 //   * 前尘一梦 (`btn_qianchenyimeng`) — New Game
@@ -183,18 +181,11 @@ let BTN_A_BABITONGYOU_BASE: string    = "ui/menu/btn_yxxx";
 let BTN_A_ZHIZUOQUN_BASE: string      = "ui/menu/btn_xjtm";
 let BTN_A_LIKAIYOUXI_BASE: string     = "ui/menu/btn_lkyx";
 
-// Load-mode overlay. PAL3's original load UI lives outside the cover
-// atlases — we paint a translucent panel over the cover and list the
-// available JSON save slots. Click a populated row to boot the
-// adventure director with that slot pre-loaded.
-let LOAD_PANEL_X: float         = 200.0;
-let LOAD_PANEL_Y: float         = 120.0;
-let LOAD_PANEL_W: float         = 400.0;
-let LOAD_PANEL_H: float         = 360.0;
-let LOAD_ROW_HEIGHT: float      = 50.0;
-let LOAD_ROW_INSET_Y: float     = 60.0;
-let LOAD_BACK_X: float          = 580.0;
-let LOAD_BACK_Y: float          = 470.0;
+// Load mode (旧的回忆) is the original `UITitle_JDHY` screen, painted by
+// the service (`IPal3Service::paint_title_load`, yaobow/src/openpal3/
+// system_page.rs) on the original 800x600 canvas, letterbox-fit.
+let LOAD_CANVAS_W: float = 800.0;
+let LOAD_CANVAS_H: float = 600.0;
 
 // Numeric synthetic "window ids" used by `dispatch_click` so a single
 // press-latch slot can track any of the 6 cover buttons. One id per
@@ -206,11 +197,6 @@ let WID_XINDEGUSHI: int     = 3;
 let WID_BABITONGYOU: int    = 4;
 let WID_ZHIZUOQUN: int      = 5;
 let WID_LIKAIYOUXI: int     = 6;
-let WID_LOAD_BACK: int      = 100;
-
-// Press-latch key namespace for synthetic save-slot rows, kept disjoint
-// from the cover `WID_*` ids (which share the single `gui.UiCtx` latch).
-let SLOT_KEY_BASE: int      = 1000000;
 
 pub struct[radiance.IUiLayer, radiance.IDirector] Pal3StartMenuDirector(
     pub host: box<yaobow_services.IYaobowHostContext>,
@@ -256,8 +242,12 @@ pub struct[radiance.IUiLayer, radiance.IDirector] Pal3StartMenuDirector(
     // Cross-frame press latch for the declarative widget tree (the
     // pressed widget's key, or NO_PRESS). Replaces the old
     // `pressed_wid` / `pressed_slot` int fields — keyed by cover
-    // `WID_*` for buttons and `SLOT_KEY_BASE + slot` for save rows.
+    // `WID_*` for buttons.
     pub ctx: box<gui.UiCtx>,
+    // Load screen: mouse button last frame (clicks are rising edges) and
+    // whether the next frame is its first (reread the saves).
+    pub prev_down: bool = false,
+    pub load_fresh: bool = true,
 ) {
     pub fn activate(self: refmut<Self>) -> int {
         // When an intro movie is queued we postpone BGM start until
@@ -366,8 +356,12 @@ pub struct[radiance.IUiLayer, radiance.IDirector] Pal3StartMenuDirector(
         // overlay) and painted via `gui.paint_root`, which advances the
         // shared press latch in `self.ctx`.
         ui.window_fullscreen("##pal3_start_menu", IMGUI_NO_BACKGROUND, () => {
-            let root = self.build(ui);
-            gui.paint_root(root, ui, self.ctx);
+            if self.mode == MODE_LOAD && self.intro == null && self.atlas != null {
+                self.paint_load(ui);
+            } else {
+                let root = self.build(ui);
+                gui.paint_root(root, ui, self.ctx);
+            }
         });
         0
     }
@@ -397,10 +391,6 @@ pub struct[radiance.IUiLayer, radiance.IDirector] Pal3StartMenuDirector(
             ax, bx, (wid: int) => { self.dispatch_click(wid); },
         );
 
-        if self.mode == MODE_LOAD {
-            let items: array<box<gui.Element>> = [cover, self.build_load_overlay(ui)];
-            return gui.Stack(items);
-        }
         let items: array<box<gui.Element>> = [cover];
         return gui.Stack(items);
     }
@@ -430,63 +420,32 @@ pub struct[radiance.IUiLayer, radiance.IDirector] Pal3StartMenuDirector(
         return gui.Stack(lines);
     }
 
-    // Load-mode overlay: a title, a `ListView` of clickable save rows,
-    // and a Back affordance — all anchored at the cover's letterbox-fit
-    // panel rect. Mirrors PAL4's synthetic save-slot list.
-    pub fn build_load_overlay(self: refmut<Self>, ui: box<radiance.IUiHost>) -> box<gui.Element> {
-        let atlas = self.atlas!;
-        let native = native_size(atlas);
-        let viewport = gui.Rect(0.0, 0.0,
-            ui.display_size_x() as float, ui.display_size_y() as float);
-        let fitted = viewport.fit(native);
-        let scale = viewport.fit_scale(native);
-        let origin_x = fitted.x;
-        let origin_y = fitted.y;
+    // 旧的回忆 (`UITitle_JDHY`): the service paints the 36 save notes and
+    // their dialogs; a confirmed note loads, its exit button (or Esc / B)
+    // goes back to the cover.
+    pub fn paint_load(self: refmut<Self>, ui: box<radiance.IUiHost>) {
+        let lw = ui.display_size_x() as float;
+        let lh = ui.display_size_y() as float;
+        if lw <= 0.0 || lh <= 0.0 { return; }
+        let viewport = gui.Rect(0.0, 0.0, lw, lh);
+        let native = gui.Size(LOAD_CANVAS_W, LOAD_CANVAS_H);
+        let canvas = viewport.fit(native);
+        let s = viewport.fit_scale(native);
+        ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 1.0);
 
-        let title_x = origin_x + (LOAD_PANEL_X + 20.0) * scale;
-        let title_y = origin_y + (LOAD_PANEL_Y + 8.0) * scale;
-
-        // The service now surfaces the original's 36 slots for the
-        // in-game System page; this flat title-screen list shows the
-        // first 8 until it grows the original's pager.
-        let mut slot_count = self.host.pal3().save_slot_count();
-        if slot_count > 8 { slot_count = 8; }
-        let list_x = origin_x + (LOAD_PANEL_X + 30.0) * scale;
-        let list_y = origin_y + (LOAD_PANEL_Y + LOAD_ROW_INSET_Y) * scale;
-        let list_w = (LOAD_PANEL_W - 60.0) * scale;
-        let list_h = (slot_count as float) * LOAD_ROW_HEIGHT * scale;
-
-        let back_x = origin_x + LOAD_BACK_X * scale;
-        let back_y = origin_y + LOAD_BACK_Y * scale;
-
-        let items: array<box<gui.Element>> = [
-            gui.Positioned(title_x, title_y, 360.0, 24.0,
-                gui.Text("== Load Game ==", gui.Color.PARCHMENT)),
-            gui.Positioned(list_x, list_y, list_w, list_h,
-                gui.ListView(slot_count, (i: int) => self.slot_row(i), 0.0)),
-            gui.Positioned(back_x, back_y, 120.0, 24.0,
-                gui.TextButton(WID_LOAD_BACK, "[ Back ]", true,
-                    () => { self.go_main(); }, gui.Color.gray(0.85))),
-        ];
-        return gui.Stack(items);
-    }
-
-    // Build one save-slot row widget (declarative `ListView` item
-    // builder). Populated rows render white + clickable (loads on
-    // release); empty rows render greyed + inert. The press-latch key is
-    // namespaced by `SLOT_KEY_BASE` so it never collides with a cover
-    // `WID_*`.
-    pub fn slot_row(self: refmut<Self>, idx: int) -> box<gui.Element> {
-        let slot = idx + 1;
-        let exists = self.host.pal3().save_slot_exists(slot);
-        let key = SLOT_KEY_BASE + slot;
-        if exists {
-            let label = "Slot " + int_to_str(slot);
-            return gui.TextButton(key, label, true,
-                () => { self.fire_load_slot(slot); }, gui.Color.WHITE);
+        let mx = ui.mouse_pos_x();
+        let my = ui.mouse_pos_y();
+        let down = ui.mouse_down(0);
+        let click = down && !self.prev_down;
+        self.prev_down = down;
+        let r = self.host.pal3().paint_title_load(
+            ui, mx, my, down, click, canvas.x, canvas.y, s, self.load_fresh);
+        self.load_fresh = false;
+        if r < 0 {
+            self.go_main();
+        } else if r > 0 {
+            self.fire_load_slot(r);
         }
-        let label = "Slot " + int_to_str(slot) + " - (empty)";
-        return gui.TextButton(key, label, false, () => {}, gui.Color.DISABLED);
     }
 
     // --- Click handlers (mutate intent/mode; drained in `update`) -------
@@ -499,7 +458,12 @@ pub struct[radiance.IUiLayer, radiance.IDirector] Pal3StartMenuDirector(
         // hover/press feedback but are intentionally inert in v1.
         if wid == WID_XINDEGUSHI { self.intent = Intent.NewGame; return; }
         if wid == WID_LIKAIYOUXI { self.intent = Intent.Exit;     return; }
-        if wid == WID_JIUDEHUIYI { self.mode = MODE_LOAD;         return; }
+        if wid == WID_JIUDEHUIYI {
+            self.mode = MODE_LOAD;
+            self.load_fresh = true;
+            self.prev_down = true;
+            return;
+        }
     }
 
     pub fn fire_load_slot(self: refmut<Self>, slot: int) {

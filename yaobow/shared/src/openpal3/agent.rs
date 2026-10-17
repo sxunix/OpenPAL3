@@ -655,7 +655,43 @@ fn handle_teleport(ctx: &Pal3DispatchCtx, params: TeleportParams) -> AgentRespon
 /// Both exist so an automation driver can reach a scripted beat without
 /// playing up to it; commands whose only effect is on screen cannot be
 /// checked any other way.
+/// `mouse`：[x, y, 动作] —— 合成鼠标（见 `handle_script_eval`）。
+fn synthetic_mouse(params: ScriptEvalParams) -> AgentResponse {
+    // [x, y, 动作] —— 合成鼠标，坐标是 800×600 的游戏坐标；动作 "move" / "down" / "up" /
+    // "click"（左键按下再松开）/ "rclick"。
+    use radiance::imgui::{SyntheticMouse, queue_synthetic_mouse};
+    let x = params.args.first().and_then(|v| v.as_f64()).unwrap_or(400.) as f32;
+    let y = params.args.get(1).and_then(|v| v.as_f64()).unwrap_or(300.) as f32;
+    let action = params
+        .args
+        .get(2)
+        .and_then(|v| v.as_str())
+        .unwrap_or("move");
+    queue_synthetic_mouse(SyntheticMouse::Move800(x, y));
+    match action {
+        "down" => queue_synthetic_mouse(SyntheticMouse::Button(0, true)),
+        "up" => queue_synthetic_mouse(SyntheticMouse::Button(0, false)),
+        "click" => {
+            queue_synthetic_mouse(SyntheticMouse::Button(0, true));
+            queue_synthetic_mouse(SyntheticMouse::Button(0, false));
+        }
+        "rclick" => {
+            queue_synthetic_mouse(SyntheticMouse::Button(1, true));
+            queue_synthetic_mouse(SyntheticMouse::Button(1, false));
+        }
+        _ => {}
+    }
+    AgentResponse::Script(ScriptEvalResponse {
+        function: params.function,
+        result: None,
+    })
+}
+
 fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentResponse {
+    // 合成鼠标不靠冒险导演：开始菜单（「旧的回忆」）也要点。
+    if params.function == "mouse" {
+        return synthetic_mouse(params);
+    }
     let Some(director) = ctx.director else {
         return AgentResponse::err(AgentError::conflict(
             "no active adventure director — start a New Game first",
@@ -789,36 +825,7 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
-        "mouse" => {
-            // [x, y, 动作] —— 合成鼠标，坐标是 800×600 的游戏坐标；动作 "move" / "down" / "up" /
-            // "click"（左键按下再松开）/ "rclick"。
-            use radiance::imgui::{SyntheticMouse, queue_synthetic_mouse};
-            let x = params.args.first().and_then(|v| v.as_f64()).unwrap_or(400.) as f32;
-            let y = params.args.get(1).and_then(|v| v.as_f64()).unwrap_or(300.) as f32;
-            let action = params
-                .args
-                .get(2)
-                .and_then(|v| v.as_str())
-                .unwrap_or("move");
-            queue_synthetic_mouse(SyntheticMouse::Move800(x, y));
-            match action {
-                "down" => queue_synthetic_mouse(SyntheticMouse::Button(0, true)),
-                "up" => queue_synthetic_mouse(SyntheticMouse::Button(0, false)),
-                "click" => {
-                    queue_synthetic_mouse(SyntheticMouse::Button(0, true));
-                    queue_synthetic_mouse(SyntheticMouse::Button(0, false));
-                }
-                "rclick" => {
-                    queue_synthetic_mouse(SyntheticMouse::Button(1, true));
-                    queue_synthetic_mouse(SyntheticMouse::Button(1, false));
-                }
-                _ => {}
-            }
-            AgentResponse::Script(ScriptEvalResponse {
-                function: params.function,
-                result: None,
-            })
-        }
+        "mouse" => synthetic_mouse(params),
         "killflyer" => {
             // [] —— 直接开一局打苍蝇（105）。
             director.start_debug_command(Box::new(

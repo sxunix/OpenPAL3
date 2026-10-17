@@ -8,6 +8,11 @@
 //!   读取 → 「读这个吗」/「空记录」，船迷宫（m04、m05）里不能读；
 //! - 右边框里两条竖的音量条：左边音乐（往下拖变大）、右边音效（往上拖变大），拖的时候直接改音量；
 //! - 「离开游戏」问一句（AssisLang 261），是就回标题。
+//!
+//! 开始菜单「旧的回忆」（`gameui/UITitle_JDHY.cpp`）是同一套存档条，只换了版式（[`Layout::Title`]）：
+//! 全屏 `UI\Menu\JDHY\background.tga`，存档条从 (80, 64) 排，翻页键和滑块在 702 / 708，
+//! 上下装饰条在 108，右下角 `ui\Menu\Sub_Exit` 退回标题；只能读，没有储存 / 读取按钮、音量条和
+//! 时间金钱牌；确认框在 (250, 200)、空档提示框在 (300, 200)。
 
 use crosscom::ComRc;
 use radiance::comdef::IUiHost;
@@ -45,6 +50,9 @@ const DLG_INK: [u8; 3] = [219, 219, 0];
 const DLG_AT: (i32, i32) = (250, 200);
 
 const SYS: &str = "UI\\GameMainUI\\System\\";
+/// 「旧的回忆」的背景和退出按钮（`TITLE_JDHY_BACKGROUND`、`MENU_TEX_SUBEXIT`）。
+const TITLE_BG: &str = "UI\\Menu\\JDHY\\background.tga";
+const TITLE_EXIT: &str = "ui\\Menu\\Sub_Exit";
 const HEADS: [&str; 5] = ["jt", "xj", "lk", "zx", "cq"];
 
 /// 一条存档的摘要（`ArcBrief`）。
@@ -54,6 +62,54 @@ pub struct Brief {
     pub money: i32,
     pub scene: String,
     pub team: [bool; 5],
+}
+
+/// 用在哪：游戏里的系统页，还是开始菜单的「旧的回忆」。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Layout {
+    System,
+    Title,
+}
+
+/// 两种版式里挪了位置的那些。
+struct Geo {
+    item: (i32, i32),
+    pgup: Rect,
+    pgdw: Rect,
+    topbar: (i32, i32),
+    bottombar: (i32, i32),
+    exit: Rect,
+}
+
+impl Layout {
+    fn geo(self) -> Geo {
+        match self {
+            Layout::System => Geo {
+                item: (ITEM_X, ITEM_Y),
+                pgup: PGUP_BTN,
+                pgdw: PGDW_BTN,
+                topbar: TOPBAR,
+                bottombar: BOTTOMBAR,
+                exit: EXIT_BTN,
+            },
+            // `UITitle_JDHY::Create` / `AdjustNoteItem`。
+            Layout::Title => Geo {
+                item: (80, 64),
+                pgup: (702, 62, 727, 90),
+                pgdw: (702, 528, 727, 556),
+                topbar: (108, 46),
+                bottombar: (108, 526),
+                exit: (745, 537, 745 + 56, 537 + 62),
+            },
+        }
+    }
+
+    fn slide_bk(self) -> Rect {
+        match self {
+            Layout::System => (640, 66, 654, 503),
+            Layout::Title => (708, 90, 722, 527),
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -205,6 +261,8 @@ pub enum Action {
     Save(usize),
     Load(usize),
     Title,
+    /// 开始菜单的读档页按了退出。
+    Back,
     /// 音效、音乐音量 0..1。
     Volumes(f32, f32),
 }
@@ -217,6 +275,7 @@ pub struct Out {
 }
 
 pub struct SystemPage {
+    layout: Layout,
     briefs: Vec<Option<Brief>>,
     shown: [Shown; NOTES],
     mode: Mode,
@@ -242,6 +301,7 @@ impl Default for SystemPage {
         let mut effect = Drag::new((744, 136, 764, 444), (26, 30), 15, -20, 2, 100.);
         effect.right = true;
         Self {
+            layout: Layout::System,
             briefs: vec![None; NOTES],
             shown: [Shown::default(); NOTES],
             mode: Mode::Save,
@@ -285,6 +345,16 @@ fn thumb_name(i: usize) -> String {
 }
 
 impl SystemPage {
+    /// 开始菜单「旧的回忆」用的版式。
+    pub fn title() -> Self {
+        let mut page = Self {
+            layout: Layout::Title,
+            ..Self::default()
+        };
+        page.slide.bk = Layout::Title.slide_bk();
+        page
+    }
+
     /// `UIWM_ACTIVE`：读所有存档摘要（`LoadAllNote`），能存就进储存、不能就进读取，`Reset`。
     pub fn activate(
         &mut self,
@@ -346,8 +416,9 @@ impl SystemPage {
     }
 
     fn item_rect(&self, i: i32) -> Rect {
-        let top = ITEM_Y + (i - self.first) * ITEM_H;
-        (ITEM_X, top, ITEM_X + ITEM_W, top + ITEM_H)
+        let (x, y) = self.layout.geo().item;
+        let top = y + (i - self.first) * ITEM_H;
+        (x, top, x + ITEM_W, top + ITEM_H)
     }
 
     /// `CheckItemShow`。
@@ -447,7 +518,12 @@ impl SystemPage {
         let text = format!("\n{pad}{}", (ctx.lang)(lang));
         // `m_YesNo.DoModel(false)`：存 / 读的确认框点按钮不出声；其余的框出声。
         let sound = !(kind == Kind::YesNo && matches!(asking, Asking::Save | Asking::Load));
-        self.dialog.show(kind, DLG_AT, text, DLG_INK, sound);
+        // 「旧的回忆」的两个框各有位置：`m_YesNo` 在 (250, 200)、`m_MsgBox` 在 (300, 200)。
+        let at = match (self.layout, kind) {
+            (Layout::Title, Kind::Yes) => (300, 200),
+            _ => DLG_AT,
+        };
+        self.dialog.show(kind, at, text, DLG_INK, sound);
         self.asking = Some(asking);
         (ctx.sound)("wa003");
     }
@@ -523,18 +599,24 @@ impl SystemPage {
             if self.sel < self.first {
                 self.move_down(true, ctx);
             }
-        } else if key_pressed(Key::PageUp) {
+        } else if self.layout == Layout::System && key_pressed(Key::PageUp) {
             // [推断] 原版只在「战斗场景类型」且不能存时拦；移植端存不了就拦。
             if !self.save_enabled {
                 self.refuse_save(ctx);
             } else {
                 self.switch_mode(Mode::Save, ctx);
             }
-        } else if key_pressed(Key::PageDown) {
+        } else if self.layout == Layout::System && key_pressed(Key::PageDown) {
             self.switch_mode(Mode::Load, ctx);
         } else if key_pressed(Key::Enter) {
             self.confirm(ctx);
         }
+    }
+
+    /// 读档页（[`Layout::Title`]）的退出：原版只有右下角那个按钮，[移植] Esc / 手柄 B 也算。
+    fn title_back(&mut self, input: &Input, over: &dyn Fn(Rect) -> bool) -> bool {
+        self.layout == Layout::Title
+            && (key_pressed(imgui::Key::Escape) || (input.click && over(self.layout.geo().exit)))
     }
 
     pub fn paint(
@@ -566,6 +648,11 @@ impl SystemPage {
             } else if input.wheel < 0. {
                 self.move_up(true, ctx);
             }
+            if self.title_back(input, &over) {
+                (ctx.sound)("wa016");
+                out.actions.push(Action::Back);
+                return out;
+            }
             if input.click {
                 // 选存档（`CheckSelItem`）：点中已选中的那条 = 双击。
                 for i in self.first..(self.first + SHOW).min(NOTES as i32) {
@@ -578,10 +665,13 @@ impl SystemPage {
                         break;
                     }
                 }
-                if over(PGUP_BTN) {
+                let geo = self.layout.geo();
+                let system = self.layout == Layout::System;
+                if over(geo.pgup) {
                     self.move_down(true, ctx);
-                } else if over(PGDW_BTN) {
+                } else if over(geo.pgdw) {
                     self.move_up(true, ctx);
+                } else if !system {
                 } else if over(SAVE_BTN) {
                     if self.save_enabled {
                         self.switch_mode(Mode::Save, ctx);
@@ -611,8 +701,9 @@ impl SystemPage {
                         self.curpos = (self.curpos - 1).max(1);
                     }
                 }
-                let m = self.music.update(mx, my, input.down, dy);
-                let e = self.effect.update(mx, my, input.down, dy);
+                let system = self.layout == Layout::System;
+                let m = system && self.music.update(mx, my, input.down, dy);
+                let e = system && self.effect.update(mx, my, input.down, dy);
                 if m || e {
                     out.actions.push(Action::Volumes(
                         self.effect.val / 100.,
@@ -694,6 +785,12 @@ impl SystemPage {
             ));
         }
         names.push("UI\\GameMainUI\\Communal\\TimeMoney.tga".into());
+        if self.layout == Layout::Title {
+            names.push(TITLE_BG.into());
+            for i in 0..3 {
+                names.push(format!("{TITLE_EXIT}{i}.tga"));
+            }
+        }
         self.pics.preload(am, &names);
         let sel = self.sel as usize;
         if self.briefs[sel].is_some() && !self.thumb_tried[sel] {
@@ -718,45 +815,66 @@ impl SystemPage {
             p.blit_rect(pic(&format!("{base}{state}.tga")), r);
         };
 
-        // 右侧边框、时间金钱牌（本页不画 Frame_Line，原版那行注释掉了）。
-        p.blit(pic("Frame.tga"), FRAME.0, FRAME.1);
-        p.blit(
-            self.pics.peek("UI\\GameMainUI\\Communal\\TimeMoney.tga"),
-            TIMEMONEY.0,
-            TIMEMONEY.1,
-        );
-        p.text(
-            (MONEY_RECT.0 + 8) as f32,
-            (MONEY_RECT.1 + 8) as f32,
-            INK,
-            &ctx.money.to_string(),
-        );
-        p.text(
-            (TIME_RECT.0 + 8) as f32,
-            (TIME_RECT.1 + 8) as f32,
-            INK,
-            &clock(ctx.play_time),
-        );
-
-        p.blit(pic("TopBar.tga"), TOPBAR.0, TOPBAR.1);
-        p.blit(pic("BottomBar.tga"), BOTTOMBAR.0, BOTTOMBAR.1);
-
-        // 储存 / 读取（`UIPushButton`）：按下的是 1，悬停且没按下换 `on` 图，禁用的不亮悬停。
-        for (base, r, mode, enabled) in [
-            ("Save", SAVE_BTN, Mode::Save, self.save_enabled),
-            ("Load", LOAD_BTN, Mode::Load, true),
-        ] {
-            let pushed = self.mode == mode;
-            let name = if pushed {
-                format!("{base}1.tga")
-            } else if enabled && !locked && inside(r) {
-                format!("{base}on.tga")
-            } else {
-                format!("{base}0.tga")
-            };
-            p.blit_rect(pic(&name), r);
+        let geo = self.layout.geo();
+        let system = self.layout == Layout::System;
+        if !system {
+            p.blit(self.pics.peek(TITLE_BG), 0, 0);
         }
-        tri("ExitGame", EXIT_BTN);
+        // 右侧边框、时间金钱牌（本页不画 Frame_Line，原版那行注释掉了）。
+        if system {
+            p.blit(pic("Frame.tga"), FRAME.0, FRAME.1);
+            p.blit(
+                self.pics.peek("UI\\GameMainUI\\Communal\\TimeMoney.tga"),
+                TIMEMONEY.0,
+                TIMEMONEY.1,
+            );
+            p.text(
+                (MONEY_RECT.0 + 8) as f32,
+                (MONEY_RECT.1 + 8) as f32,
+                INK,
+                &ctx.money.to_string(),
+            );
+            p.text(
+                (TIME_RECT.0 + 8) as f32,
+                (TIME_RECT.1 + 8) as f32,
+                INK,
+                &clock(ctx.play_time),
+            );
+        }
+
+        p.blit(pic("TopBar.tga"), geo.topbar.0, geo.topbar.1);
+        p.blit(pic("BottomBar.tga"), geo.bottombar.0, geo.bottombar.1);
+        if !system {
+            let state = if locked || !inside(geo.exit) {
+                0
+            } else if input.down {
+                2
+            } else {
+                1
+            };
+            p.blit_rect(
+                self.pics.peek(&format!("{TITLE_EXIT}{state}.tga")),
+                geo.exit,
+            );
+        }
+        if system {
+            // 储存 / 读取（`UIPushButton`）：按下的是 1，悬停且没按下换 `on` 图，禁用的不亮悬停。
+            for (base, r, mode, enabled) in [
+                ("Save", SAVE_BTN, Mode::Save, self.save_enabled),
+                ("Load", LOAD_BTN, Mode::Load, true),
+            ] {
+                let pushed = self.mode == mode;
+                let name = if pushed {
+                    format!("{base}1.tga")
+                } else if enabled && !locked && inside(r) {
+                    format!("{base}on.tga")
+                } else {
+                    format!("{base}0.tga")
+                };
+                p.blit_rect(pic(&name), r);
+            }
+            tri("ExitGame", EXIT_BTN);
+        }
 
         // 存档条。
         let lang = |n: usize| (ctx.lang)(n);
@@ -830,8 +948,8 @@ impl SystemPage {
             }
         }
 
-        tri("pgup", PGUP_BTN);
-        tri("pgdw", PGDW_BTN);
+        tri("pgup", geo.pgup);
+        tri("pgdw", geo.pgdw);
 
         let scroll = |state: u8| {
             self.pics.peek(&format!(
@@ -840,6 +958,9 @@ impl SystemPage {
         };
         p.blit_rect(pic("hdt.tga"), self.slide.bk);
         p.blit_rect(scroll(self.slide.state), self.slide.handle());
+        if !system {
+            return;
+        }
         p.blit(pic("MusicText.tga"), MUSIC_TEXT.0, MUSIC_TEXT.1);
         p.blit(pic("MusicEffectText.tga"), EFFECT_TEXT.0, EFFECT_TEXT.1);
         p.blit_rect(pic("MusicBar.tga"), self.music.bk);
