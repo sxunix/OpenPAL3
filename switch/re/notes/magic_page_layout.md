@@ -281,8 +281,8 @@ y 恒 **124..174**（比道具/装备页低 1px），每个 42×50，贴图 41×
 - 「是」→ `ComboFinal`：熟练度 +0.01（封顶 1，写回）；`CUtil::Probability((int)(q×100))` = `rand%1024 < f2i(10.24×cent)`；
   成功先加一件成品（≤99），再扣材料；失败也扣。扣法是边按下标走背包边删，扣空的格子删掉后下一格被跳过（照原样）。
   放 wa025，列表锁 5 秒，然后弹「合成成功！/合成失败！」（88/89）加「得到/失去 X [数量N]」，放 wa006/wa007。
-- `SetComParEffect` 给成败都设了 98 个粒子，但整份源码没有一处 Render 它们——看不见，不做。
+- `SetComParEffect` 给成败都设了 98 个粒子，等结果的 5 秒里（`bIsMotion`）`MagicUI::Render` 一直画、灭了就地
+  再放（`PAR_RISE_HELIX`，(88,206) 80×80）。**更正**：先前写的「没有一处 Render 它们」是看漏了 Render。
 
 移植端：规则 `states/compose.rs`，选人框 `commands/compose_picker.rs`，页面流程和对话框
-`yaobow/src/openpal3/compose_dialog.rs`，页面 `magic_menu.p7`。背包在移植端按物品号排序，跳格跳到哪一格
-和原版（按拿到先后）不一定一样 [近似]。
+`yaobow/src/openpal3/compose_dialog.rs`，页面 `magic_menu.p7`。背包按拿到的先后走（`inventory_ids`），跳格和原版一致。

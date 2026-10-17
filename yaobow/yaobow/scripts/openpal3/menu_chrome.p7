@@ -216,6 +216,10 @@ pub fn paint_toolbar(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas
     let ex_variant = if on_exit { (if down { "2" } else { "1" }) } else { "0" };
     blit(ui, atlas, SPR_EXIT + ex_variant + ".tga", ex_x0, ex_y0, ex_x0 + EX_W * s, ex_y0 + EX_H * s);
 
+    // 界面粒子：鼠标下那个能点的按钮绕一圈火花（`UIWM_MOUSEON` → `SetParEffect`）；
+    // 道具 / 仙术页再画头像上的那组（用道具、施法时放的）。
+    pal3.paint_menu_particles(ui, hit, current == PAGE_PROP || current == PAGE_MAGIC, ox, oy, s);
+
     if click {
         if on_exit {
             pal3.ui_sound(SND_CLICK);

@@ -167,6 +167,11 @@ impl ComposeDialogs {
         self.stage != Stage::Idle
     }
 
+    /// 点了「是」、正等 5 秒出结果（`bIsMotion`）——合成粒子这时在冒。
+    pub fn working(&self) -> bool {
+        self.stage == Stage::Working
+    }
+
     fn set(&mut self, stage: Stage) {
         self.stage = stage;
         self.time = 0.;
@@ -215,11 +220,12 @@ impl ComposeDialogs {
                         qty
                     );
                 }
+                // 背包按拿到的先后走（原版 `m_items` 的顺序），跳格跳到哪一格才和原版一样。
                 let order: Vec<(u32, u32)> = ctx
                     .state
-                    .inventory()
-                    .iter()
-                    .map(|(&k, &v)| (k, v))
+                    .inventory_ids()
+                    .into_iter()
+                    .map(|k| (k, ctx.state.item_count(k)))
                     .collect();
                 let n = compose::lost_count_label(r, com_num);
                 for (id, take) in compose::consumption(r, com_num, &order) {

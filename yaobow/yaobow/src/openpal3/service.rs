@@ -209,6 +209,7 @@ pub struct Pal3Service {
     magic_use: RefCell<Option<MagicUse>>,
     /// 施法浮动用的随机数（MSVC `rand()` 的算法，种子开机定）[近似]。
     magic_rand: Cell<u32>,
+    menu_particles: RefCell<super::particles::MenuParticles>,
     /// 阵法页：头像条（第 0 格是领队）和每人的设置板，进页面时排好。
     lineup_page: RefCell<Option<LineupPage>>,
     /// 菜单页共用的提示框。
@@ -325,6 +326,7 @@ impl Pal3Service {
             menu_was_open: Cell::new(false),
             menu_title_request: Cell::new(false),
             magic_use: RefCell::new(None),
+            menu_particles: RefCell::new(Default::default()),
             magic_rand: Cell::new(
                 std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
@@ -879,6 +881,24 @@ impl Pal3Service {
         self.active_adventure_director_owned()
             .map(|adv| adv.inner::<AdventureDirector>().take_title_request())
             .unwrap_or(false)
+    }
+
+    /// 在 `role` 的头像上放一组粒子（头像位置按他在队里的排位：第 0 个 y=62，之后 182 起每个 +122；
+    /// 头像在牌上 (+25, +10)，65×86）。
+    fn spawn_head_particles(&self, role: u32, kind: super::particles::HeadKind) {
+        let order: Vec<u32> = self.with_persistent_state(vec![], |s| s.team().to_vec());
+        let Some(m) = order.iter().position(|&r| r == role) else {
+            return;
+        };
+        let row = if m == 0 {
+            62
+        } else {
+            182 + (m as i32 - 1) * 122
+        };
+        let head = (686 + 25, row + 10, 686 + 25 + 65, row + 10 + 86);
+        self.menu_particles
+            .borrow_mut()
+            .spawn_head(role as usize, head, kind);
     }
 
     /// AssisLang 第 `n` 条（转义已解）。
@@ -1685,7 +1705,35 @@ impl IPal3ServiceImpl for Pal3Service {
             return 0;
         };
 
-        match item_use::apply(item, &mut state, actor_id as u32, &db, &ctx) {
+        let outcome = item_use::apply(item, &mut state, actor_id as u32, &db, &ctx);
+        if outcome != UseOutcome::Rejected {
+            // `MainPropUI::SetParEffect(role, color)`：色按道具加的是精（黄）、气（绿）、神（蓝），否则紫；
+            // 全体的道具是用完之后还用得上的人才冒（原版在施用之后才 `CanUseThis`）。
+            let v = &item.attribute_impact_value;
+            let color = if v[0] != 0 {
+                [168, 168, 28]
+            } else if v[1] != 0 {
+                [88, 168, 28]
+            } else if v[2] != 0 {
+                [28, 88, 168]
+            } else {
+                [138, 84, 224]
+            };
+            let targets: Vec<u32> = if item.target_range_type == 2 {
+                (0..5u32)
+                    .filter(|&a| {
+                        state.is_in_team(a) && item_use::usable(item, &state, a, &db, &ctx)
+                    })
+                    .collect()
+            } else {
+                vec![actor_id as u32]
+            };
+            drop(state);
+            for t in targets {
+                self.spawn_head_particles(t, super::particles::HeadKind::Item(color));
+            }
+        }
+        match outcome {
             UseOutcome::Rejected => 0,
             UseOutcome::Applied => 1,
             UseOutcome::RunProcByName(name) => {
@@ -2274,6 +2322,9 @@ impl IPal3ServiceImpl for Pal3Service {
         let register = |id: i64, tex: imgui::TextureId| sinks.0.borrow_mut().push((id, tex));
         self.with_compose_ctx(|dialogs, ctx| {
             dialogs.paint(&ui, &am, &register, &frame, ctx);
+            self.menu_particles
+                .borrow_mut()
+                .set_compose(dialogs.working());
             dialogs.busy()
         })
         .unwrap_or(false)
@@ -2582,6 +2633,28 @@ impl IPal3ServiceImpl for Pal3Service {
         ui.text_at_sized(x, y, size, r, g, b, a, &(text(first) + &text(second)));
     }
 
+    fn paint_menu_particles(
+        &self,
+        ui: ComRc<IUiHost>,
+        toolbar_hover: i32,
+        heads: bool,
+        ox: f32,
+        oy: f32,
+        scale: f32,
+    ) -> () {
+        let Some(asset_path) = self.last_asset_path.borrow().clone() else {
+            return;
+        };
+        let Some(sinks) = self.texture_sinks.borrow().clone() else {
+            return;
+        };
+        let am = self.asset_manager_for(&asset_path);
+        let register = |id: i64, tex: imgui::TextureId| sinks.0.borrow_mut().push((id, tex));
+        let mut fx = self.menu_particles.borrow_mut();
+        fx.toolbar_hover(toolbar_hover);
+        fx.paint(&ui, &am, &register, (ox, oy, scale), true, heads);
+    }
+
     fn skill_tab(&self, actor: i32, skill_id: i32) -> i32 {
         let db = self.active_game_db.borrow();
         let Some(skill) = db.as_ref().and_then(|db| db.skill(skill_id.max(0) as u32)) else {
@@ -2738,7 +2811,14 @@ impl IPal3ServiceImpl for Pal3Service {
                     self.play_ui_sound("wa004");
                 }
             }
-            Cast::Done { level_up, keep, .. } => {
+            Cast::Done {
+                targets,
+                level_up,
+                keep,
+            } => {
+                for t in targets {
+                    self.spawn_head_particles(t, super::particles::HeadKind::Magic);
+                }
                 if let Some(text) = level_up {
                     self.show_magic_message(MAGIC_DLG_RECT, text);
                 }

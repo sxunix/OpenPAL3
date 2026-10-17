@@ -28,6 +28,7 @@ use shared::openpal3::states::sword_purge::{
     self as sp, BLOCKS, Basket, DEMON_SWORD, DRAGON_STONE, Refusal, WeaponSkill,
 };
 
+use super::sword_fx::SwordFx;
 use super::sword_views::{Canvas, SwordViews};
 use super::ui_draw::{Painter, Pics, Rect, pad_bytes};
 
@@ -184,6 +185,14 @@ pub struct SwordPage {
     sort: Option<u8>,
     skills: Option<Vec<WeaponSkill>>,
     sword_texture: Option<Option<String>>,
+    fx: SwordFx,
+    /// 上一帧入场转完没有（转完那一刻放一次星星）。
+    was_ready: bool,
+    /// 剑上现在显示的那张贴图（正向、未翻转），净化时从它渐变到新的。
+    shown: Option<image::RgbaImage>,
+    /// 刻字渐显（`UpdateMergeData(…, 5)`）：目标图、目标名、走了几步。
+    fade: Option<(image::RgbaImage, String, u32)>,
+    fade_clock: shared::openpal3::ui_particle::StepClock,
 }
 
 impl Default for SwordPage {
@@ -199,6 +208,11 @@ impl Default for SwordPage {
             sort: None,
             skills: None,
             sword_texture: None,
+            fx: SwordFx::default(),
+            was_ready: false,
+            shown: None,
+            fade: None,
+            fade_clock: Default::default(),
         }
     }
 }
@@ -274,24 +288,99 @@ impl SwordPage {
         self.remark_out = has_weapon;
         self.purge = None;
         self.dialog = None;
+        self.fx.reset();
+        self.was_ready = false;
+        // 再开页面时已净化的块直接贴上（`UpdateMergeData(…, true)`），不渐显。
+        self.fade = None;
+        self.shown = None;
     }
 
-    /// 按净化状态准备剑的贴图（`CheckWSkill`）；一块都没净化时用模型自带的。
-    fn sword_texture(&mut self, am: &AssetManager, ctx: &Ctx) -> Option<String> {
+    /// 按净化状态准备剑的贴图（`CheckWSkill`）；一块都没净化时用模型自带的。新净化的那块从原图每帧每个
+    /// 通道向刻字图靠 5（`PurgeEffect::UpdateMergeData(…, 5)`，60 步 / 秒推进），渐变的每一步换一张临时名
+    /// 的贴图；页面刚打开时直接贴上。
+    fn sword_texture(&mut self, am: &AssetManager, ctx: &Ctx, dt: f32) -> Option<String> {
         let sword = ctx.state.magic_sword();
         let any = (0..BLOCKS).any(|b| sword.face_purged(b, true) || sword.face_purged(b, false));
+        let dir = "/basedata/basedata/ui/GameMainUI/Sword/Data";
+        let steps = self.fade_clock.tick(dt);
         if !any {
+            self.shown = None;
             return None;
         }
         let key = sp::purge_texture_key(sword);
-        let dir = "/basedata/basedata/ui/GameMainUI/Sword/Data";
-        let src = am.read_picture(format!("{dir}/J131Src.tga"))?;
-        let dst = am.read_picture(format!("{dir}/J131Dst.tga"))?;
-        // `read_picture` 给的是正向（自上而下）的图，材质载 `.tga` 时拿的是文件里自下而上的行序，
-        // 拼好后整张翻过来再交给 `TextureStore`。
-        let img = image::imageops::flip_vertical(&sp::purge_texture(&src, &dst, sword));
-        radiance::rendering::TextureStore::get_or_update(&format!("{dir}/{key}"), || Some(img));
-        Some(key)
+        let current = self.sword_texture.clone().flatten();
+        let settled = self.fade.is_none() && current.as_deref() == Some(key.as_str());
+        if settled {
+            if self.shown.is_none() {
+                // 重开页面后记下现在贴着的图，下一次净化从它渐变。
+                let src = am.read_picture(format!("{dir}/J131Src.tga"))?;
+                let dst = am.read_picture(format!("{dir}/J131Dst.tga"))?;
+                self.shown = Some(sp::purge_texture(&src, &dst, sword));
+            }
+            return Some(key);
+        }
+        if self.fade.as_ref().is_none_or(|f| f.1 != key) {
+            let src = am.read_picture(format!("{dir}/J131Src.tga"))?;
+            let dst = am.read_picture(format!("{dir}/J131Dst.tga"))?;
+            let target = sp::purge_texture(&src, &dst, sword);
+            match self.shown.take() {
+                // 刚打开、或者第一次净化之前没贴过：起点是原图（模型自带的 J131 就是它）。
+                Some(from) => {
+                    self.shown = Some(from);
+                    self.fade = Some((target, key.clone(), 0));
+                }
+                None if current.is_none() && self.sword_texture.is_some() => {
+                    self.shown = Some(src);
+                    self.fade = Some((target, key.clone(), 0));
+                }
+                None => {
+                    let img = image::imageops::flip_vertical(&target);
+                    radiance::rendering::TextureStore::get_or_update(
+                        &format!("{dir}/{key}"),
+                        || Some(img),
+                    );
+                    self.shown = Some(target);
+                    return Some(key);
+                }
+            }
+        }
+        let (target, key, n) = self.fade.take()?;
+        let mut shown = self.shown.take()?;
+        if steps == 0 {
+            self.shown = Some(shown);
+            self.fade = Some((target, key, n));
+            return current;
+        }
+        let mut done = true;
+        for _ in 0..steps {
+            done = true;
+            for (s, t) in shown.pixels_mut().zip(target.pixels()) {
+                for c in 0..4 {
+                    let (a, b) = (s[c] as i32, t[c] as i32);
+                    if a != b {
+                        s[c] = if a > b {
+                            (a - 5).max(b)
+                        } else {
+                            (a + 5).min(b)
+                        } as u8;
+                        done &= s[c] as i32 == b;
+                    }
+                }
+            }
+        }
+        let n = n + 1;
+        let name = if done {
+            key.clone()
+        } else {
+            format!("{key}#fade{n}")
+        };
+        let img = image::imageops::flip_vertical(&shown);
+        radiance::rendering::TextureStore::get_or_update(&format!("{dir}/{name}"), || Some(img));
+        self.shown = Some(shown);
+        if !done {
+            self.fade = Some((target, key, n));
+        }
+        Some(name)
     }
 
     pub fn paint(
@@ -316,7 +405,7 @@ impl SwordPage {
         let dt = dt.min(0.1);
         let skills = self.weapon_skills(ctx.db);
 
-        let tex = self.sword_texture(am, ctx);
+        let tex = self.sword_texture(am, ctx, dt.min(0.1));
         if self.sword_texture.as_ref() != Some(&tex) {
             self.views.set_sword_texture(tex.clone());
             self.sword_texture = Some(tex);
@@ -382,6 +471,14 @@ impl SwordPage {
             );
         }
         self.paint_dialog(&p, am);
+        // 魔剑粒子在最上面（`SwordUI::Render` 在 `UIFrameWnd::Render` 之后画），只在主画面画。
+        self.fx.paint(
+            &p,
+            am,
+            dt,
+            self.purge.is_none() && has_weapon,
+            self.views.lunar(),
+        );
         out
     }
 
@@ -406,6 +503,7 @@ impl SwordPage {
         }
         ctx.state.remove_item(DRAGON_STONE, 1);
         (ctx.sound)("wa027");
+        self.fx.purge();
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -567,9 +665,15 @@ impl SwordPage {
 
         // ---- 点 ----
         let flip = click && over(MODE);
-        let _ = self
+        let turned = self
             .views
             .paint(ui, am, register, canvas, flip, has_weapon, true, ctx.sound);
+        // 入场转完、翻面：星星一齐冒（`SetSwordEffect`）。
+        let ready = self.views.ready();
+        if turned || (ready && !self.was_ready) {
+            self.fx.burst();
+        }
+        self.was_ready = ready;
         let ljs = ctx.state.item_count(DRAGON_STONE);
         p.paragraph(LJS_NUM, NUMBER_INK, &format!("{} {}", lang(97), ljs));
 

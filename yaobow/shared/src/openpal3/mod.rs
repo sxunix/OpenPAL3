@@ -17,4 +17,5 @@ pub mod scene;
 pub mod ski_view;
 pub mod states;
 pub mod ui_atlas;
+pub mod ui_particle;
 pub mod ui_tex;

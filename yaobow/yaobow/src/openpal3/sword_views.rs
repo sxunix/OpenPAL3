@@ -161,7 +161,9 @@ impl SwordViews {
         }
         let dt = dt.min(0.1);
         if self.sword.is_none() {
+            let t0 = Instant::now();
             self.sword = Self::build(am, SWORD_POL, SWORD_SIZE, 392, 400, self.texture.clone());
+            log::debug!("剑模型重建 {:.1} ms", t0.elapsed().as_secs_f32() * 1000.);
             if let (Some(s), Some((angle, turned))) = (&self.sword, self.rebuild_angle.take()) {
                 s.view.set_angle(angle);
                 if turned {

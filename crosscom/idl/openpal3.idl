@@ -419,6 +419,10 @@ interface IPal3Service: IUnknown {
     void draw_lang_pair(IUiHost ui, int first, int second, float x, float y, float size,
         float r, float g, float b, float a);
 
+    // 菜单页的界面粒子（particles.rs）：`toolbar_hover` 是鼠标下能点的工具栏按钮（0..7，没有 -1），
+    // `heads` 时也画头像粒子（道具 / 仙术页）；合成等结果时的那组也在这里画。
+    void paint_menu_particles(IUiHost ui, int toolbar_hover, bool heads, float ox, float oy, float scale);
+
     // ---- 仙术页：冒险中施法（规则在 states/magic_use.rs，源码 magicui.cpp） ----
     // `actor` 学会的这门列在哪个页签（`GetRoleSkill`；0 技 … 6 双），不列 -1。
     int skill_tab(int actor, int skill_id);

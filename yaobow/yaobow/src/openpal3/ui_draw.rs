@@ -182,6 +182,15 @@ impl Painter<'_> {
         }
     }
 
+    /// 加法混合整张拉进 rect，顶点色 `rgba`（界面粒子，`ui_par_tex_color.gbf`）。
+    pub fn additive_tinted(&self, p: Option<&Pic>, r: Rect, rgba: [u8; 4]) {
+        if let Some(p) = p {
+            let rr = (r.0 as f32, r.1 as f32, r.2 as f32, r.3 as f32);
+            let c = rgba.map(|v| v as f32 / 255.);
+            self.quad(p, rr, (0., 0., 1., 1.), Some(c));
+        }
+    }
+
     /// 横向三段条（`UIFlexBar::HORIZONTAL`）：贴图切成宽 `cap` 的三列，左右各一段，中间拉伸。
     pub fn bar(&self, p: Option<&Pic>, r: Rect, cap: i32) {
         let Some(p) = p else { return };
