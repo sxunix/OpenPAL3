@@ -161,13 +161,19 @@ interface IPal3Service: IUnknown {
     // `type_mask` filters by item type: bit N selects `ItemType` N
     // (1 治疗 · 2 投掷 · 3 仙宝 · 4 古董 · 5 矿石 · 6 剧情 · 7 衣服 ·
     // 8 帽子 · 9 鞋子 · 10 饰品 · 11 武器 · 12 尸块). Pass -1 for every
-    // type. Stacks are listed in ascending item id.
+    // type. `sort` is the original's `PlayerItemSortFun` key (-1 none:
+    // the order the items were got; 0 price; 3 item id), ascending.
 
     // Number of distinct item stacks matching `type_mask`.
     int inventory_size(int type_mask);
 
     // Item id of the `index`-th matching stack, or -1.
-    int inventory_item_id(int type_mask, int index);
+    int inventory_item_id(int type_mask, int sort, int index);
+
+    // A page's sort setting (`m_SortState`; `page` 0 道具, 1 装备). Kept
+    // for the whole run like the original's page objects, not saved.
+    int inventory_sort(int page);
+    void set_inventory_sort(int page, int sort);
 
     // How many of `item_id` are held.
     int item_count(int item_id);

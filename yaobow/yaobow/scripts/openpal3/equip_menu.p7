@@ -118,6 +118,9 @@ let SORT_Y: float = 492.0;
 let SORT_W: float = 94.0; let SORT_H: float = 20.0;
 let SORT_X: array<float> = [271.0, 373.0, 475.0];
 let SORT_BASE: array<string> = ["Use", "Price", "Func"];
+// `m_SortState` per button: none, SORT_PRICE, SORT_FUNC (see item_menu.p7).
+let SORT_BY: array<int> = [-1, 0, 3];
+let SORT_PAGE: int = 1;
 
 let INK_R: float = 0.05; let INK_G: float = 0.12; let INK_B: float = 0.0;
 
@@ -262,6 +265,7 @@ pub fn paint_equip_menu(
     // ---- List ------------------------------------------------------------
     let mask = TAB_MASK[tab];
     let count = pal3.inventory_size(mask);
+    let sort = pal3.inventory_sort(SORT_PAGE);
 
     let mut max_scroll = count - ROWS;
     if max_scroll < 0 { max_scroll = 0; }
@@ -281,7 +285,7 @@ pub fn paint_equip_menu(
 
         let index = scroll + k;
         if index < count {
-            let item_id = pal3.inventory_item_id(mask, index);
+            let item_id = pal3.inventory_item_id(mask, sort, index);
             if item_id >= 0 {
                 let hover = mx >= grid_x0 && mx <= grid_x0 + 258.0 * s
                     && my >= ry0 && my <= ry0 + LIST_ROW_H * s;
@@ -342,7 +346,7 @@ pub fn paint_equip_menu(
     // ---- 3D preview: the highlighted candidate, else the worn piece -------
     let mut shown = -1;
     if count > 0 {
-        shown = pal3.inventory_item_id(mask, sel);
+        shown = pal3.inventory_item_id(mask, sort, sel);
     } else {
         shown = pal3.equipped_item(actor, TAB_SLOT[tab]);
     }
@@ -360,7 +364,7 @@ pub fn paint_equip_menu(
 
     // ---- Description of the highlighted piece ----------------------------
     if count > 0 {
-        let item_id = pal3.inventory_item_id(mask, sel);
+        let item_id = pal3.inventory_item_id(mask, sort, sel);
         if item_id >= 0 {
             pal3.draw_item_description(ui, item_id,
                 ox + (DESC_X + chrome.TXT_MARGIN) * s,
@@ -378,13 +382,20 @@ pub fn paint_equip_menu(
         }
     }
 
-    // ---- Sort buttons (drawn, inert) ------------------------------------
+    // ---- Sort buttons ----------------------------------------------------
+    // 使用序 / 价格序 / 功能序 (`IDB_MEQUIP_SORT_*`): set the page's sort and
+    // refill, wa001 — no refusal on this page. Row and scroll stay put.
     for i in Range(0, 3) {
         let sx0 = ox + SORT_X[i] * s;
         let sy0 = oy + SORT_Y * s;
         let hover = mx >= sx0 && mx <= sx0 + SORT_W * s && my >= sy0 && my <= sy0 + SORT_H * s;
-        let variant = if hover { "2" } else { "0" };
+        let mut variant = "0";
+        if hover { variant = if down { "2" } else { "1" }; }
         chrome.sprite(ui, atlas, SPR_SORT + SORT_BASE[i] + variant + ".tga", sx0, sy0, s);
+        if hover && click {
+            pal3.set_inventory_sort(SORT_PAGE, SORT_BY[i]);
+            pal3.ui_sound(chrome.SND_CLICK);
+        }
     }
 
     // ---- Bottom action toolbar -------------------------------------------

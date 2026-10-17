@@ -10,6 +10,7 @@ pub mod global_state;
 pub mod growth;
 pub mod hockshop;
 pub mod inn;
+pub mod item_sort;
 pub mod item_use;
 pub mod lineup_plank;
 pub mod poison_walk;

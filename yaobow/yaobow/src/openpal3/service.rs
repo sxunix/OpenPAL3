@@ -205,6 +205,8 @@ pub struct Pal3Service {
     menu_message: RefCell<super::menu_message::MenuMessage>,
     /// 阵法页点头像换领队，下一帧交给导演（-1 没有）。
     pending_leader: Cell<i32>,
+    /// 道具页、装备页各自的排序（`m_SortState`，-1 不排序）。
+    inventory_sort: [Cell<i32>; 2],
     lineup_disc: RefCell<Option<LineupDiscSlot>>,
     /// Script-side factory (`IPal3ScriptFactory`) QI'd from the
     /// reverse-wrapped app root. Used by `create_director` to mint
@@ -311,6 +313,7 @@ impl Pal3Service {
             lineup_page: RefCell::new(None),
             menu_message: RefCell::new(Default::default()),
             pending_leader: Cell::new(-1),
+            inventory_sort: [Cell::new(-1), Cell::new(-1)],
             lineup_disc: RefCell::new(None),
             script_factory: RefCell::new(None),
             last_asset_path: RefCell::new(None),
@@ -912,21 +915,29 @@ impl Pal3Service {
     /// Item stacks matching `type_mask` (bit N = `ItemType` N; -1 for
     /// everything), ascending by item id. Items the database doesn't know
     /// are dropped rather than shown as blanks.
-    fn matching_stacks(&self, type_mask: i32) -> Vec<u32> {
+    /// 背包里类型匹配的物品，按获得先后（`TypeArrayBuild`），再按 `sort` 排（`TypeArraySort`）。
+    fn matching_stacks(&self, type_mask: i32, sort: i32) -> Vec<u32> {
         let db = self.active_game_db.borrow();
         let Some(db) = db.as_ref() else {
             return Vec::new();
         };
         self.with_persistent_state(Vec::new(), |s| {
-            s.inventory()
-                .keys()
-                .copied()
+            let mut ids: Vec<u32> = s
+                .inventory_ids()
+                .into_iter()
                 .filter(|id| {
                     db.item(*id)
                         .map(|item| type_mask & (1 << item.item_type as i32) != 0)
                         .unwrap_or(false)
                 })
-                .collect()
+                .collect();
+            shared::openpal3::states::item_sort::sort_items(
+                &mut ids,
+                sort,
+                |id| db.item(id),
+                |id| s.item_count(id),
+            );
+            ids
         })
     }
 
@@ -1301,17 +1312,29 @@ impl IPal3ServiceImpl for Pal3Service {
     }
 
     fn inventory_size(&self, type_mask: i32) -> i32 {
-        self.matching_stacks(type_mask).len() as i32
+        self.matching_stacks(type_mask, -1).len() as i32
     }
 
-    fn inventory_item_id(&self, type_mask: i32, index: i32) -> i32 {
+    fn inventory_item_id(&self, type_mask: i32, sort: i32, index: i32) -> i32 {
         if index < 0 {
             return -1;
         }
-        self.matching_stacks(type_mask)
+        self.matching_stacks(type_mask, sort)
             .get(index as usize)
             .map(|id| *id as i32)
             .unwrap_or(-1)
+    }
+
+    fn inventory_sort(&self, page: i32) -> i32 {
+        self.inventory_sort
+            .get(page.max(0) as usize)
+            .map_or(-1, |c| c.get())
+    }
+
+    fn set_inventory_sort(&self, page: i32, sort: i32) -> () {
+        if let Some(c) = self.inventory_sort.get(page.max(0) as usize) {
+            c.set(sort);
+        }
     }
 
     fn item_count(&self, item_id: i32) -> i32 {

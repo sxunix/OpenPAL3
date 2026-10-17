@@ -210,6 +210,9 @@ x 间隔 **24**（`+0x18`），最后一个是 **23**（`+0x17`）——
 | 0xa00334 | (373,492,467,512) | `Communal\SortPrice` |
 | 0xa00335 | (475,492,569,512) | `Communal\SortFunc` |
 
+行为同道具页第 4 节（`mainequipui.cpp` `IDB_MEQUIP_SORT_*`），自己一份 `m_SortState`；
+本页**不拒绝**，三个都直接 wa001。
+
 ## 7. 穿装备 / 脱装备（FUN_00469eb0）
 
 签名：`FUN_00469eb0(角色号 param_1, 槽号 param_2, 物品下标 param_3)`。

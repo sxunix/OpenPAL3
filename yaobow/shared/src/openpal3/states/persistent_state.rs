@@ -191,6 +191,10 @@ pub struct PersistentState {
     /// Item id → count. Ordered so saves diff cleanly.
     #[serde(default)]
     inventory: BTreeMap<u32, u32>,
+    /// 背包里各件物品的先后（原版 `Inventory::m_items` 的顺序：新物品 `push_back` 到末尾，已有的只加数量，
+    /// 用光了 `erase`）。物品页、装备页不排序时就按这个列。
+    #[serde(default)]
+    inventory_order: Vec<u32>,
     #[serde(default)]
     money: i32,
     /// Favour towards each playable character, keyed by actor id.
@@ -388,6 +392,7 @@ impl PersistentState {
             roles: HashMap::new(),
             team: Vec::new(),
             inventory: BTreeMap::new(),
+            inventory_order: Vec::new(),
             money: 0,
             favor: HashMap::new(),
             play_time: 0.,
@@ -1140,7 +1145,30 @@ impl PersistentState {
         if count == 0 {
             return;
         }
-        *self.inventory.entry(item_id).or_insert(0) += count;
+        let held = self.inventory.entry(item_id).or_insert(0);
+        if *held == 0 {
+            self.inventory_order.retain(|id| *id != item_id);
+            self.inventory_order.push(item_id);
+        }
+        *held += count;
+    }
+
+    /// 背包里的物品 id，按获得的先后（[`Self::inventory_order`]）。没记过先后的（这个字段加上之前的存档里
+    /// 就有的）当作更早拿到的，按 id 排在最前。
+    pub fn inventory_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self
+            .inventory
+            .keys()
+            .copied()
+            .filter(|id| !self.inventory_order.contains(id))
+            .collect();
+        ids.extend(
+            self.inventory_order
+                .iter()
+                .copied()
+                .filter(|id| self.inventory.contains_key(id)),
+        );
+        ids
     }
 
     /// 46 增加物品（exe 0x435830）的背包那一半。数据库里没有这件就什么都不做，返回 `None`；否则返回它的名字
@@ -1219,6 +1247,7 @@ impl PersistentState {
         *held -= removed;
         if *held == 0 {
             self.inventory.remove(&item_id);
+            self.inventory_order.retain(|id| *id != item_id);
         }
         removed
     }
@@ -1523,6 +1552,23 @@ mod tests {
             (s.item_count(6123), s.item_count(8150), s.item_count(6427)),
             (1, 0, 0)
         );
+    }
+
+    #[test]
+    fn inventory_keeps_the_order_items_were_got() {
+        let mut state = PersistentState::new("test".into());
+        state.add_item(300, 1);
+        state.add_item(100, 2);
+        state.add_item(300, 1);
+        state.add_item(200, 1);
+        assert_eq!(state.inventory_ids(), [300, 100, 200]);
+        state.remove_item(300, 2);
+        state.add_item(300, 1);
+        assert_eq!(state.inventory_ids(), [100, 200, 300]);
+        // 字段加上之前的存档：没记过先后的当作更早拿到的。
+        state.inventory.insert(250, 1);
+        state.inventory.insert(50, 1);
+        assert_eq!(state.inventory_ids(), [50, 250, 100, 200, 300]);
     }
 
     #[test]

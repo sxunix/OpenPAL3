@@ -176,6 +176,16 @@ rect 高 32 = 8 + 16 + 8，正好一行 —— 与文本模型完全吻合
 
 间隔 8px（365→373→…）。
 
+**排序行为**（参考源码 `mainpropui.cpp` `IDB_MPROP_SORT_*` + `playermgr.h` `PlayerItemSortFun`）：
+- 「使用序」= `m_SortState = -1` 不排序，按 `Inventory::m_items` 的先后（新物品 `push_back`、
+  已有的只加数量、用光 `erase`）；「价格序」= `SORT_PRICE` 按 `price`；「功能序」= `SORT_FUNC`
+  实际按物品 id。都升序、`std::sort`（不稳定；32 件内 MSVC 走插入排序，相等项保持原序）。
+- `m_SortState` 是页面对象的成员，只在构造时置 -1，之后每次 `FillList` 都按它排——关页再开、
+  换分页都不变，直到再点按钮。排序后行号和滚动位置不变（`FillList` 记下再恢复）。
+- 音效：成功 wa001；`m_IsCanUse`（物品正在使用流程里）时三个都拒绝，wa004。
+- 移植：`shared/src/openpal3/states/item_sort.rs`；先后存在 `PersistentState::inventory_order`
+  （旧存档没有这一项，当作更早拿到的、按 id 排在前）[移植]；选人态当作 `m_IsCanUse` [推断]。
+
 ## 5. 顶部队伍条（FUN_004999d0 / FUN_00499cc0）
 
 道具页把队伍画在**顶部**（状态页画在右侧）。init 对 i = 0..4 各调一次：

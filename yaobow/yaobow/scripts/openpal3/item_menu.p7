@@ -9,7 +9,6 @@
 // inset) lives in menu_chrome.p7.
 //
 // Not yet reproduced from the original, and called out where it matters:
-//   * the three sort buttons draw but do not sort,
 //   * the second Info line (the original shows something under the
 //     description; which value is still unidentified).
 
@@ -89,6 +88,10 @@ let SORT_Y: float = 492.0;
 let SORT_W: float = 94.0; let SORT_H: float = 20.0;
 let SORT_X: array<float> = [271.0, 373.0, 475.0];
 let SORT_BASE: array<string> = ["Use", "Price", "Func"];
+// `m_SortState` per button: none (the order items were got), SORT_PRICE,
+// SORT_FUNC (item id). The service keeps it per page for the whole run.
+let SORT_BY: array<int> = [-1, 0, 3];
+let SORT_PAGE: int = 0;
 
 // Text colour of the list and the description: RGB(0x0c,0x1f,0x00).
 let INK_R: float = 0.05; let INK_G: float = 0.12; let INK_B: float = 0.0;
@@ -181,6 +184,7 @@ pub fn paint_item_menu(
     // ---- List ------------------------------------------------------------
     let mask = TAB_MASK[tab];
     let count = pal3.inventory_size(mask);
+    let sort = pal3.inventory_sort(SORT_PAGE);
 
     // Clamp the view after a tab switch or after items were consumed.
     let mut max_scroll = count - ROWS;
@@ -200,7 +204,7 @@ pub fn paint_item_menu(
     // mode the plates are the click target, and the ones the original
     // would light up carry a NeedArrow.
     let mut sel_item = -1;
-    if count > 0 { sel_item = pal3.inventory_item_id(mask, sel); }
+    if count > 0 { sel_item = pal3.inventory_item_id(mask, sort, sel); }
     if sel_item < 0 { using = false; }
     let plate = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, click, using);
     if using {
@@ -229,7 +233,7 @@ pub fn paint_item_menu(
 
         let index = scroll + k;
         if index < count {
-            let item_id = pal3.inventory_item_id(mask, index);
+            let item_id = pal3.inventory_item_id(mask, sort, index);
             if item_id >= 0 {
                 let hover = mx >= grid_x0 && mx <= grid_x0 + 256.0 * s
                     && my >= ry0 && my <= ry0 + ROW_H * s;
@@ -292,7 +296,7 @@ pub fn paint_item_menu(
 
     // ---- Selected item's description ------------------------------------
     if count > 0 {
-        let item_id = pal3.inventory_item_id(mask, sel);
+        let item_id = pal3.inventory_item_id(mask, sort, sel);
         if item_id >= 0 {
             let kind = pal3.item_info(item_id, 0);
             let mut size = 160.0;
@@ -318,13 +322,26 @@ pub fn paint_item_menu(
         }
     }
 
-    // ---- Sort buttons (drawn, inert) ------------------------------------
+    // ---- Sort buttons ----------------------------------------------------
+    // 使用序 / 价格序 / 功能序 (`IDB_MPROP_SORT_*`): set the page's sort and
+    // refill, wa001. While an item is being used (`m_IsCanUse`, here the
+    // 选人 state [推断]) every one refuses with wa004. Row and scroll stay
+    // where they were, as `FillList` keeps them.
     for i in Range(0, 3) {
         let sx0 = ox + SORT_X[i] * s;
         let sy0 = oy + SORT_Y * s;
         let hover = mx >= sx0 && mx <= sx0 + SORT_W * s && my >= sy0 && my <= sy0 + SORT_H * s;
-        let variant = if hover { "2" } else { "0" };
+        let mut variant = "0";
+        if hover { variant = if down { "2" } else { "1" }; }
         chrome.sprite(ui, atlas, SPR_SORT + SORT_BASE[i] + variant + ".tga", sx0, sy0, s);
+        if hover && click {
+            if using {
+                pal3.ui_sound(chrome.SND_REFUSE);
+            } else {
+                pal3.set_inventory_sort(SORT_PAGE, SORT_BY[i]);
+                pal3.ui_sound(chrome.SND_CLICK);
+            }
+        }
     }
 
     // ---- Bottom action toolbar -------------------------------------------
