@@ -991,6 +991,13 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "bodies" => {
+            // [] —— 场景里每个角色推开时用的参数（半径、可重叠、层、激活、能不能站），查穿人用。
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: Some(director.debug_bodies()),
+            })
+        }
         "reachable" => {
             // [x, y, z, x, y, z, …] —— 主角从现在的位置能不能走到这些点（走路、梯子 / 藤、换层区、
             // 跳；含物件挡路；不出这个块）。`points` 按顺序给每个点的结果。

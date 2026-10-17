@@ -343,6 +343,36 @@ impl AdventureDirector {
         p.sce_vm.push_debug_command(cmd, scene_manager);
     }
 
+    /// agent `bodies`：`enforce_non_overlap` 看到的每个角色。
+    pub fn debug_bodies(&self) -> serde_json::Value {
+        use crate::openpal3::scene::{RoleController, ScnScene};
+        let p = self.props.borrow();
+        let Some(scn) = p.scene_manager.scn_scene() else {
+            return serde_json::Value::Null;
+        };
+        let scene = scn.inner::<ScnScene>();
+        let list: Vec<serde_json::Value> = scene
+            .role_entities()
+            .into_iter()
+            .filter_map(|e| {
+                let rc = RoleController::get_role_controller(e.clone())?;
+                let rc = rc.inner::<RoleController>();
+                let p = e.transform().borrow().position();
+                Some(serde_json::json!({
+                    "name": e.name(),
+                    "pos": [p.x, p.y, p.z],
+                    "radius": rc.model_radius(),
+                    "overlap": rc.overlap(),
+                    "layer": rc.nav_layer(),
+                    "active": rc.is_active(),
+                    "visible": e.visible(),
+                    "walkable": scene.walkable_at(rc.nav_layer(), &p),
+                }))
+            })
+            .collect();
+        serde_json::Value::Array(list)
+    }
+
     /// Open the big map (102 13) right here, so it can be looked at without
     /// playing up to a scripted exit.
     /// [调试] 主角为什么不听输入：脚本锁、飞行、冻结计数、物件锁（登记着的物件序号、类型、状态）、agent 走路。
@@ -3602,16 +3632,23 @@ impl AdventureDirectorProps {
                 self.scene_manager.scene().unwrap(),
             )
         };
-        self.move_role(
-            self.scene_manager.clone(),
-            delta_sec,
-            &moving_direction,
-            throw,
-        );
-        self.step_footstep((moving_direction.norm() > 0.5).then(|| player_mode(throw)));
-        if !locked {
-            self.enforce_non_overlap();
+        // 一帧太长（真机上卡一下就是 0.1–0.4 秒）时把这一帧的移动拆成几小步，每步后都推一次人：
+        // 跑速一帧走出去几十个单位，一步就能越过 NPC 的中心，推开的方向随之变成往前推，人就穿过去了。
+        // 每步不超过 1/30 秒（跑速 200 时不到 7 个单位，比人的半径小得多）。[移植]
+        let substeps = (delta_sec * 30.).ceil().clamp(1., 12.) as usize;
+        let step_sec = delta_sec / substeps as f32;
+        for _ in 0..substeps {
+            self.move_role(
+                self.scene_manager.clone(),
+                step_sec,
+                &moving_direction,
+                throw,
+            );
+            if !locked {
+                self.enforce_non_overlap();
+            }
         }
+        self.step_footstep((moving_direction.norm() > 0.5).then(|| player_mode(throw)));
         // 主角脚下的场景物件（`FUN_00422e40` → `FUN_00420b40`）。
         if !frozen && !locked {
             self.player_on_object(delta_sec);

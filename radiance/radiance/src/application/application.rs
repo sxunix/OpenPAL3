@@ -498,6 +498,9 @@ impl Application {
                     Application::set_panic_hook as usize,
                     frames.join(" ")
                 );
+                // The Switch log is buffered; get the panic onto the card
+                // before the dialog (which may never return).
+                log::logger().flush();
                 Platform::show_error_dialog(
                     crate::constants::STR_SORRY_DIALOG_TITLE,
                     &format!("{}", panic_info),

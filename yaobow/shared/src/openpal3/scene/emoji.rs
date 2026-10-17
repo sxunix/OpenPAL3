@@ -122,12 +122,13 @@ pub fn build_emoji(
     let mut bytes = vec![];
     file.read_to_end(&mut bytes).ok()?;
     // The format has to be named: TGA has no magic number, so
-    // `load_from_memory`'s sniffing always fails on these sheets.
-    // Flipped like every other PAL3 texture the scene loads (see
-    // `effect::load_texture`), so the atlas rows line up with the
-    // billboard's v = 0 at the top.
+    // `load_from_memory`'s sniffing always fails on these sheets. Unlike
+    // the `.dds` scene textures, no flip: the sheets are bottom-left-origin
+    // TGAs (descriptor 0x08) and the decoder already returns them upright,
+    // which is what the billboard's v = 0-at-the-top wants. Flipping them
+    // as well drew every bubble upside down (the 惊's dot on top).
     let sheet = match image::load_from_memory_with_format(&bytes, image::ImageFormat::Tga) {
-        Ok(img) => img.flipv().to_rgba8(),
+        Ok(img) => img.to_rgba8(),
         Err(e) => {
             log::warn!("emoji {id}: {} 解不开 ({e})", path.display());
             return None;
@@ -136,9 +137,8 @@ pub fn build_emoji(
 
     // The sheet is padded to a power of two and the frames sit against
     // its **bottom** edge, not its top: `EM_06.tga` is 128 x 64 with the
-    // four hearts occupying rows 23..64. In the raw image the strip is
-    // therefore at `y = height - frame_h`; after the flip above it lands
-    // at `y = 0`.
+    // four hearts occupying rows 23..64, i.e. the strip starts at
+    // `y = height - frame_h`.
     let used_w = frame_w * frames;
     if sheet.width() < used_w || sheet.height() < frame_h {
         log::warn!(
@@ -150,7 +150,8 @@ pub fn build_emoji(
         );
         return None;
     }
-    let atlas = image::imageops::crop_imm(&sheet, 0, 0, used_w, frame_h).to_image();
+    let atlas =
+        image::imageops::crop_imm(&sheet, 0, sheet.height() - frame_h, used_w, frame_h).to_image();
 
     let height = actor_height * EMOJI_HEIGHT_RATIO;
     let base_y = actor_height + EMOJI_CLEARANCE;

@@ -227,10 +227,78 @@ fn init_logger(agent_sink: Option<AgentLogSink>) {
             let logger = simplelog::WriteLogger::new(
                 simplelog::LevelFilter::Info,
                 simplelog::Config::default(),
-                file,
+                SdLog::start(file),
             );
             let _ = simplelog::CombinedLogger::init(vec![logger]);
         }
+    }
+}
+
+/// Log writer for the Switch SD card. simplelog writes every record as
+/// several small `write`s, and on the console each one is a filesystem
+/// round trip: a single log line cost ~100 ms of the frame that wrote it
+/// (a button press, each SCE command, the renderer's object-count line),
+/// which is most of the remaining stutter in the logs from real hardware.
+/// Records go to memory instead; a background thread writes them out once
+/// a second, and `flush` (the panic hook calls it) writes synchronously.
+#[cfg(switch)]
+#[derive(Clone)]
+struct SdLog {
+    pending: std::sync::Arc<std::sync::Mutex<Vec<u8>>>,
+    file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
+    /// No writer thread: `write` itself writes out every 4 KiB.
+    inline: bool,
+}
+
+#[cfg(switch)]
+impl SdLog {
+    fn start(file: std::fs::File) -> Self {
+        let mut log = Self {
+            pending: Default::default(),
+            file: std::sync::Arc::new(std::sync::Mutex::new(file)),
+            inline: false,
+        };
+        let writer = log.clone();
+        let spawned = std::thread::Builder::new()
+            .name("sdlog".to_string())
+            .spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(1));
+                    let _ = writer.write_out();
+                }
+            });
+        log.inline = spawned.is_err();
+        log
+    }
+
+    fn write_out(&self) -> std::io::Result<()> {
+        use std::io::Write;
+        let mut file = self.file.lock().unwrap();
+        let bytes = std::mem::take(&mut *self.pending.lock().unwrap());
+        if !bytes.is_empty() {
+            file.write_all(&bytes)?;
+            file.flush()?;
+        }
+        Ok(())
+    }
+}
+
+#[cfg(switch)]
+impl std::io::Write for SdLog {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let len = {
+            let mut pending = self.pending.lock().unwrap();
+            pending.extend_from_slice(buf);
+            pending.len()
+        };
+        if self.inline && len >= 4096 {
+            self.write_out()?;
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.write_out()
     }
 }
 
@@ -279,4 +347,3 @@ fn _force_level_imports() {
 #[used]
 #[unsafe(export_name = "_newlib_heap_size_user")]
 pub static _NEWLIB_HEAP_SIZE_USER: u32 = 216 * 1024 * 1024;
-
