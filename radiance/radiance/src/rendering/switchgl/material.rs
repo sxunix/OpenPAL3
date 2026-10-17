@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use image::RgbaImage;
 
-use crate::rendering::{BlendMode, CullMode, DepthMode, MaterialDef, MaterialParams};
+use crate::rendering::{BlendMode, CullMode, DepthMode, MaterialDef, MaterialParams, TextureDef};
 
 use super::{shader::SwitchGLShader, texture::SwitchGLTexture};
 
@@ -23,17 +23,14 @@ impl std::fmt::Debug for SwitchGLMaterial {
 }
 
 impl SwitchGLMaterial {
-    pub fn new(def: &MaterialDef, shader: Rc<SwitchGLShader>) -> Self {
-        let textures = def
-            .textures()
-            .iter()
-            .map(|t| {
-                t.with_image(|img| {
-                    let image = img.unwrap_or(&TEXTURE_MISSING);
-                    Rc::new(SwitchGLTexture::new(image.width(), image.height(), image))
-                })
-            })
-            .collect();
+    /// `texture_for` resolves each of the material's textures to its GL
+    /// object (shared by name, see `SwitchGLComponentFactory`).
+    pub fn new(
+        def: &MaterialDef,
+        shader: Rc<SwitchGLShader>,
+        texture_for: impl Fn(&TextureDef) -> Rc<SwitchGLTexture>,
+    ) -> Self {
+        let textures = def.textures().iter().map(|t| texture_for(t)).collect();
 
         Self {
             name: def.debug_name().to_string(),
@@ -90,7 +87,7 @@ impl SwitchGLMaterial {
 }
 
 lazy_static::lazy_static! {
-    static ref TEXTURE_MISSING: RgbaImage =
+    pub(super) static ref TEXTURE_MISSING: RgbaImage =
         image::load_from_memory(radiance_assets::TEXTURE_MISSING_TEXTURE_FILE)
             .unwrap()
             .to_rgba8();

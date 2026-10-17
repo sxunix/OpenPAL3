@@ -368,8 +368,15 @@ impl SceCommandLoadScene {
             .unwrap();
 
         log::info!("sce: LoadScene {}/{}", self.name, self.sub_name);
+        let started = std::time::Instant::now();
         scene_manager.pop_scene();
         scene_manager.push_scene(state.asset_mgr().load_scn(&self.name, &self.sub_name));
+        log::info!(
+            "LoadScene {}/{}: scene built in {} ms",
+            self.name,
+            self.sub_name,
+            started.elapsed().as_millis()
+        );
         // 新场景里找不到主角（数据问题）就别崩，留一条错误日志。
         if let Some(e) = scene_manager.get_resolved_role(state, -1) {
             let r = RoleController::get_role_controller(e.clone()).unwrap();
@@ -396,7 +403,28 @@ impl SceCommandLoadScene {
             state.global_state_mut().play_default_bgm();
         }
 
+        // `SceneMgr` 换场景：`DefaultCamera(场景类型)`，镜头没被脚本拿走（`IsFree`）
+        // 就重新锁到主角。不这样的话上一场景脚本留下的镜头状态会带进新场景——
+        // 永安当出门到渝州街上镜头停在原点，只看得到景天的脚。[移植]
+        {
+            let kind = scene_manager
+                .scn_scene()
+                .map(|s| s.inner::<crate::openpal3::scene::ScnScene>().scene_type() as i32)
+                .unwrap_or(0);
+            let camera = state.global_state_mut().camera_mut();
+            camera.set_default(kind);
+            if camera.follow_player() {
+                camera.set_focus(crate::openpal3::states::camera::Focus::Player);
+            }
+        }
+
         state.try_call_proc_by_name(&format!("_{}_{}", self.name, self.sub_name));
+        log::info!(
+            "LoadScene {}/{}: done in {} ms",
+            self.name,
+            self.sub_name,
+            started.elapsed().as_millis()
+        );
 
         // The original engine fades around every scene load itself — the
         // door procs carry no Fade commands (verified in Q01). When the

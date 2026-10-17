@@ -13,7 +13,7 @@ use crate::{
         states::{global_state::GlobalState, persistent_state::PersistentState},
     },
     scripting::sce::vm::{SceExecutionOptions, SceVm},
-    utils::{get_camera_rotation, get_moving_direction_and_throw},
+    utils::{camera_yaw_input, get_moving_direction_and_throw},
 };
 
 use crosscom::ComRc;
@@ -69,8 +69,6 @@ impl AdventureDirector {
                 input_engine,
                 scene_manager,
                 sce_vm,
-                camera_rotation: 0.,
-                camera_scene: String::new(),
                 scripted_camera_seeded: false,
                 agent_bridge: None,
                 player_slide_dir: None,
@@ -223,8 +221,6 @@ impl AdventureDirector {
                 input_engine,
                 scene_manager: scene_manager.clone(),
                 sce_vm,
-                camera_rotation: 0.,
-                camera_scene: String::new(),
                 scripted_camera_seeded: false,
                 agent_bridge: None,
                 player_slide_dir: None,
@@ -928,9 +924,6 @@ struct AdventureDirectorProps {
     input_engine: Rc<RefCell<dyn InputEngine>>,
     scene_manager: ComRc<ISceneManager>,
     sce_vm: SceVm,
-    camera_rotation: f32,
-    /// 镜头转角跟着的场景（`场景_块`）；换了就摆回默认朝向。
-    camera_scene: String,
     /// Whether the polar camera's angles have been taken from the live
     /// camera since a script last focused it somewhere. Reset when the
     /// camera goes back to following the player.
@@ -3174,7 +3167,7 @@ impl AdventureDirectorProps {
         let Some(role_controller) = RoleController::get_role_controller(role.clone()) else {
             return;
         };
-        let mut position = role.transform().borrow().position();
+        let position = role.transform().borrow().position();
 
         let nav_layer = role_controller.inner::<RoleController>().nav_layer();
 
@@ -3236,29 +3229,8 @@ impl AdventureDirectorProps {
                 .global_state_mut()
                 .persistent_state_mut()
                 .set_position(dest);
-
-            position = dest
         } else if self.object_walk.is_none() && self.player_jump.is_none() {
             role_controller.inner::<RoleController>().idle();
-        }
-
-        // The default follow rig, left exactly as it was so nothing moves
-        // on screen while no script has taken the camera over. A script
-        // that focuses the camera elsewhere, or turns following off with
-        // CameraFollowPlayer(0), is served by `apply_scripted_camera`.
-        let script_has_camera = !matches!(
-            self.sce_vm.global_state().camera().focus(),
-            crate::openpal3::states::camera::Focus::Player
-        ) || !self.sce_vm.global_state().camera().follow_player();
-        if !script_has_camera {
-            let scene = scene_manager.scene().unwrap();
-            scene
-                .camera_mut()
-                .transform_mut()
-                .set_position(&Vec3::new(400., 400., 400.))
-                .rotate_axis_angle(&Vec3::UP, self.camera_rotation)
-                .translate(&position)
-                .look_at(&position);
         }
     }
 
@@ -3270,7 +3242,11 @@ impl AdventureDirectorProps {
     /// command swings the view onto its target without also changing the
     /// framing — which is what `FUN_0041c170` and friends do: they write
     /// the target pointer and nothing else.
-    fn apply_scripted_camera(&mut self) {
+    ///
+    /// Locked on the player, the camera is the original `RoleCamera::Update`
+    /// while free (`CameraFollowPlayer`/`CameraDefault` on) and stays put
+    /// while a script holds it.
+    fn apply_scripted_camera(&mut self, delta_sec: f32) {
         use crate::openpal3::states::camera::{Focus, polar_of};
 
         // 栈顶是小游戏压上来的普通场景（鉴定 104）时没有角色可解析，
@@ -3283,6 +3259,7 @@ impl AdventureDirectorProps {
         let target = match &focus {
             Focus::Player => {
                 self.scripted_camera_seeded = false;
+                self.follow_player_camera(delta_sec);
                 return;
             }
             Focus::Point(p) => Some(*p),
@@ -3330,6 +3307,38 @@ impl AdventureDirectorProps {
             .transform_mut()
             .set_position(&position)
             .look_at(&target);
+    }
+
+    /// `RoleCamera::Update` locked on the controlled role: only while the
+    /// camera is free; the spring, room clamp and placement are in
+    /// [`Pal3Camera::follow`](crate::openpal3::states::camera::Pal3Camera::follow).
+    fn follow_player_camera(&mut self, delta_sec: f32) {
+        if !self.sce_vm.global_state().camera().follow_player() {
+            return;
+        }
+        let Some(scn) = self.scene_manager.scn_scene() else {
+            return;
+        };
+        let room = {
+            let s = scn.inner::<crate::openpal3::scene::ScnScene>();
+            (s.scene_type() == 1).then(|| s.nav_bounds())
+        };
+        let Some(role) = self
+            .scene_manager
+            .get_resolved_role(self.sce_vm.state(), -1)
+        else {
+            return;
+        };
+        let target = role.transform().borrow().position();
+        let Some(scene) = self.scene_manager.scene() else {
+            return;
+        };
+        let camera = self.sce_vm.global_state_mut().camera_mut();
+        camera.follow(target, delta_sec, room);
+        let (position, look_at, fov) = (camera.position(), camera.look_at(), camera.fov());
+        let mut c = scene.camera_mut();
+        c.set_fov43(fov.to_radians());
+        c.transform_mut().set_position(&position).look_at(&look_at);
     }
 
     /// 野外遇敌：主角停下（`FUN_004181e0` 调在主角身上），按撞上的怪开一场野外战斗。战斗命令一初始化就关掉
@@ -3409,7 +3418,7 @@ impl AdventureDirectorProps {
         // Has to run before the input guard: during a cutscene the ADV
         // director stops updating the world, but the script's camera
         // still needs to be applied every frame.
-        self.apply_scripted_camera();
+        self.apply_scripted_camera(delta_sec);
 
         // Scenery slid by opcode 90 keeps moving during a cutscene, when
         // the world sim below is not running.
@@ -3560,26 +3569,18 @@ impl AdventureDirectorProps {
         }
 
         // 转镜头：原版 `RoleCtrl::Update` 只在 `RoleCtrl::s_camera` 开着时收滚轮 / 转向键，
-        // `SceneMgr` 进室内（SCENE_STORYB）关掉、进别的场景打开，而且每次进场景都
-        // `DefaultCamera` 摆回默认镜头。[移植]
-        let (camera_scene, indoor) = self
+        // `SceneMgr` 进室内（SCENE_STORYB）关掉、进别的场景打开；转角每次进场景由
+        // `Default` 摆回默认。[移植]
+        let indoor = self
             .scene_manager
             .scn_scene()
-            .map(|s| {
-                let s = s.inner::<crate::openpal3::scene::ScnScene>();
-                (
-                    format!("{}_{}", s.name(), s.sub_name()),
-                    s.scene_type() == 1,
-                )
-            })
-            .unwrap_or_default();
-        if camera_scene != self.camera_scene {
-            self.camera_scene = camera_scene;
-            self.camera_rotation = 0.;
-        }
+            .is_some_and(|s| s.inner::<crate::openpal3::scene::ScnScene>().scene_type() == 1);
         if !indoor {
-            self.camera_rotation =
-                get_camera_rotation(self.input_engine.clone(), self.camera_rotation, delta_sec);
+            let delta = camera_yaw_input(self.input_engine.clone(), delta_sec);
+            if delta != 0. {
+                let camera = self.sce_vm.global_state_mut().camera_mut();
+                camera.set_yaw(camera.yaw() + delta);
+            }
         }
 
         // [调试] agent 带着主角一格一格走（`agent_walk_to`）。

@@ -138,6 +138,12 @@ impl IApplicationImpl for Application {
             let end_time = Instant::now();
             let elapsed = end_time.duration_since(start_time).as_secs_f32();
             start_time = end_time;
+            // Hitches on the console are hard to see from here; the log
+            // line lands right after whatever the slow frame was doing.
+            #[cfg(switch)]
+            if elapsed > 0.1 {
+                log::info!("slow frame: {} ms", (elapsed * 1000.) as u32);
+            }
 
             for kv in inner.components.iter() {
                 kv.value().component.on_updating(elapsed);

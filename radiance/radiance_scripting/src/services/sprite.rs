@@ -20,8 +20,9 @@
 //! texture the GPU is still sampling.
 
 use std::cell::RefCell;
+use std::collections::{HashMap, VecDeque};
 use std::io::{BufReader, Read};
-use std::rc::Rc;
+use std::rc::{Rc, Weak};
 
 use crosscom::ComRc;
 use mini_fs::{MiniFs, StoreExt};
@@ -155,13 +156,27 @@ impl IAtlasPageImpl for AtlasPage {
 pub struct SpriteService {
     vfs: Rc<MiniFs>,
     cache: Rc<RefCell<ImguiTextureCache>>,
+    /// Pages by vfs path while anything still holds them, plus the last
+    /// few loaded kept alive: a dialog loads a portrait per line and
+    /// flips between a handful of them, and reading + decoding + uploading
+    /// a 256x512 TGA each time stalls a frame on the Switch.
+    pages: RefCell<HashMap<String, Weak<AtlasPageInner>>>,
+    recent: RefCell<VecDeque<Rc<AtlasPageInner>>>,
 }
+
+/// How many recently loaded pages `SpriteService` keeps alive.
+const RECENT_PAGES: usize = 24;
 
 ComObject_SpriteService!(super::SpriteService);
 
 impl SpriteService {
     pub fn create(vfs: Rc<MiniFs>, cache: Rc<RefCell<ImguiTextureCache>>) -> ComRc<ISpriteService> {
-        ComRc::from_object(Self { vfs, cache })
+        ComRc::from_object(Self {
+            vfs,
+            cache,
+            pages: RefCell::new(HashMap::new()),
+            recent: RefCell::new(VecDeque::new()),
+        })
     }
 
     fn read(&self, path: &str) -> Option<Vec<u8>> {
@@ -169,6 +184,29 @@ impl SpriteService {
         let mut bytes = Vec::new();
         BufReader::new(file).read_to_end(&mut bytes).ok()?;
         Some(bytes)
+    }
+
+    /// The page for `path`: the live one if it is still loaded, otherwise
+    /// a fresh upload. Either way it joins the recently-used set.
+    fn page(&self, path: &str) -> Option<Rc<AtlasPageInner>> {
+        let live = self.pages.borrow().get(path).and_then(Weak::upgrade);
+        let page = match live {
+            Some(p) => p,
+            None => {
+                let p = self.upload(path)?;
+                let mut pages = self.pages.borrow_mut();
+                if pages.len() >= 256 {
+                    pages.retain(|_, w| w.strong_count() > 0);
+                }
+                pages.insert(path.to_string(), Rc::downgrade(&p));
+                p
+            }
+        };
+        let mut recent = self.recent.borrow_mut();
+        recent.retain(|p| !Rc::ptr_eq(p, &page));
+        recent.push_front(page.clone());
+        recent.truncate(RECENT_PAGES);
+        Some(page)
     }
 
     /// Read + decode + upload `path`, returning the shared page backing.
@@ -222,7 +260,7 @@ impl SpriteService {
 
 impl ISpriteServiceImpl for SpriteService {
     fn load_sprite(&self, vfs_path: &str) -> Option<ComRc<ISprite>> {
-        let inner = self.upload(vfs_path)?;
+        let inner = self.page(vfs_path)?;
         Some(Sprite::create(
             inner.clone(),
             inner.width,
@@ -235,7 +273,7 @@ impl ISpriteServiceImpl for SpriteService {
     }
 
     fn load_atlas_page(&self, vfs_path: &str) -> Option<ComRc<IAtlasPage>> {
-        let inner = self.upload(vfs_path)?;
+        let inner = self.page(vfs_path)?;
         Some(AtlasPage::from_inner(inner))
     }
 }

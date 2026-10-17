@@ -63,7 +63,12 @@ pub struct AssetManager {
     /// 渲染引擎，界面里要画离屏小场景（买装备页的物品预览）时用。宿主建好
     /// 资源管理器后塞进来；测试和编辑器里可能没有。
     renderer: std::cell::RefCell<Option<Rc<std::cell::RefCell<dyn RenderingEngine>>>>,
+    /// 最近读过的音效（`/snd/*.wav`，最多 [`SND_CACHE`] 个）。脚步、表情、按钮音
+    /// 反复放同几个文件，每次都从 SD 卡读一遍在 Switch 上会卡一下。
+    snd_cache: std::cell::RefCell<std::collections::VecDeque<(String, Rc<Vec<u8>>)>>,
 }
+
+const SND_CACHE: usize = 32;
 
 impl AssetManager {
     pub fn new(factory: Rc<dyn ComponentFactory>, vfs: Rc<MiniFs>) -> Self {
@@ -91,6 +96,7 @@ impl AssetManager {
             movie_effect_path: PathBuf::from("/movie/movie/2deffect"),
             snd_path: PathBuf::from("/snd"),
             vfs,
+            snd_cache: std::cell::RefCell::new(std::collections::VecDeque::new()),
         }
     }
 
@@ -686,8 +692,18 @@ impl AssetManager {
     }
 
     pub fn load_snd_data(&self, snd_name: &str) -> io::Result<Vec<u8>> {
+        let mut cache = self.snd_cache.borrow_mut();
+        if let Some(i) = cache.iter().position(|(n, _)| n == snd_name) {
+            let entry = cache.remove(i).unwrap();
+            let data = entry.1.as_ref().clone();
+            cache.push_front(entry);
+            return Ok(data);
+        }
         let path = self.snd_path.join(snd_name).with_extension("wav");
-        self.vfs.read_to_end(path)
+        let data = self.vfs.read_to_end(path)?;
+        cache.push_front((snd_name.to_string(), Rc::new(data.clone())));
+        cache.truncate(SND_CACHE);
+        Ok(data)
     }
 
     /// 场景物件模型文件在哪（找法和 [`crate::openpal3::scene::ScnScene`] 载入物件时一样：`_` 开头的在场景目录，

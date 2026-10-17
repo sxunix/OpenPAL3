@@ -53,6 +53,14 @@ impl SceCommand for SceCommandRoleSetPos {
             .persistent_state_mut()
             .set_position(position);
 
+        // `Role::SetPosition(tilex, tilez)`: moving the controlled role puts
+        // a free camera straight onto it (`FlushSpring`).
+        let controlled = state.global_state().role_controlled();
+        let camera = state.global_state_mut().camera_mut();
+        if (self.role_id == -1 || self.role_id == controlled) && camera.follow_player() {
+            camera.request_flush();
+        }
+
         true
     }
 }

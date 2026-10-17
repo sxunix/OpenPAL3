@@ -74,6 +74,12 @@ pub struct Pal3Camera {
     /// again by `CameraFollowPlayer(1)`.
     follow_player: bool,
     stack: Vec<Saved>,
+    /// Horizontal field of view at 4:3, degrees (`gbCamera::SetFOV`; set
+    /// by `Default`). 30 until the first `Default` — the engine camera's.
+    fov: f32,
+    /// `FlushSpring` asked for: put the look-at point straight on the
+    /// target next frame instead of springing towards it.
+    flush: bool,
 }
 
 /// Distance of yaobow's default follow camera, which sits at the offset
@@ -95,6 +101,8 @@ impl Default for Pal3Camera {
             focus: Focus::Player,
             follow_player: true,
             stack: vec![],
+            fov: 30.,
+            flush: true,
         }
     }
 }
@@ -226,12 +234,91 @@ impl Pal3Camera {
         self.stack.len()
     }
 
+    pub fn fov(&self) -> f32 {
+        self.fov
+    }
+
+    /// `RoleCamera::Default(type)` (gamebase/rolecamera.cpp): the stock
+    /// shot per scene type, looking at the origin until the spring brings
+    /// it onto the target, and a pending `FlushSpring`. Type 0 is outdoors
+    /// (`SCENE_STORYA`), 1 indoors (`SCENE_STORYB`), 2 and 3 the indoor
+    /// shot from the other side and straight on. Other values change
+    /// nothing but the flush, as in the original's switch. [移植]
+    pub fn set_default(&mut self, kind: i32) {
+        let preset = match kind {
+            0 => Some((26., 1144., -52.65_f32, -0.53)),
+            1 => Some((24.05, 688., 33.24, -0.34)),
+            2 => Some((24.05, 688., -33.24, -0.34)),
+            3 => Some((24.05, 688., 0., -0.34)),
+            _ => None,
+        };
+        if let Some((fov, distance, yaw_deg, pitch)) = preset {
+            self.fov = fov;
+            self.distance = distance;
+            self.yaw = yaw_deg.to_radians();
+            self.pitch = pitch;
+            self.roll = 0.;
+            self.look_at = Vec3::new(0., 0., 0.);
+            self.recompute_position();
+        }
+        self.flush = true;
+    }
+
+    /// `FlushSpring` on the next follow step.
+    pub fn request_flush(&mut self) {
+        self.flush = true;
+    }
+
+    /// One `RoleCamera::Update` step while free and locked on `target`
+    /// (the role's feet): the look-at point hangs on a spring (constant
+    /// 4.6, rest length 20) and snaps onto the target once it would pass
+    /// it; indoors the target is raised by the room height (32) and
+    /// `UpdateRoomMode` keeps the look-at point 120 inside the nav bounds.
+    /// Then the camera is placed behind it (`ComputeInfo(TRUE)`). [移植]
+    pub fn follow(&mut self, target: Vec3, delta_sec: f32, room: Option<(Vec3, Vec3)>) {
+        let mut target = target;
+        if room.is_some() {
+            target.y += 32.;
+        }
+        if std::mem::take(&mut self.flush) {
+            self.look_at = target;
+        } else {
+            let disp = Vec3::sub(&self.look_at, &target);
+            let len = disp.norm();
+            if len > 0.05 {
+                let old_dir = Vec3::scalar_mul(1. / len, &disp);
+                let force = 4.6 * (20. - len);
+                self.look_at = Vec3::add(
+                    &self.look_at,
+                    &Vec3::scalar_mul(force * delta_sec, &old_dir),
+                );
+                let new_dir = Vec3::sub(&self.look_at, &target);
+                if Vec3::dot(&old_dir, &new_dir) <= 0. {
+                    self.look_at = target;
+                }
+            }
+        }
+        if let Some((min, max)) = room {
+            const SIZE: f32 = 120.;
+            self.look_at.x = clip(self.look_at.x, min.x + SIZE, max.x - SIZE);
+            self.look_at.z = clip(self.look_at.z, min.z + SIZE, max.z - SIZE);
+        }
+        self.recompute_position();
+    }
+
     /// Aim at `target` while keeping the current angles and distance —
     /// what the per-frame camera does once a focus target is resolved.
     pub fn look_at_target(&mut self, target: Vec3) {
         self.look_at = target;
         self.recompute_position();
     }
+}
+
+/// The original's `clip(val, min, max)` (pal3/gbext.h): high bound first,
+/// so a range narrower than the room margin pins to `min`.
+fn clip(v: f32, lo: f32, hi: f32) -> f32 {
+    let v = if v > hi { hi } else { v };
+    if v < lo { lo } else { v }
 }
 
 #[cfg(test)]

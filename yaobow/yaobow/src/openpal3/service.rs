@@ -1379,8 +1379,13 @@ impl IPal3ServiceImpl for Pal3Service {
                     slot,
                 )
             {
+                let started = std::time::Instant::now();
                 if let Some(d) = self.load_adventure_director(asset_path, slot) {
-                    log::info!("PAL3: resumed from save slot {}", slot);
+                    log::info!(
+                        "PAL3: resumed from save slot {} in {} ms",
+                        slot,
+                        started.elapsed().as_millis()
+                    );
                     return d;
                 }
                 log::info!("PAL3: save slot {} missing, starting a new game", slot);

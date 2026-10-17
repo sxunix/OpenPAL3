@@ -128,40 +128,31 @@ pub fn get_moving_direction(input: Rc<RefCell<dyn InputEngine>>, scene: ComRc<IS
     get_moving_direction_and_throw(input, scene).0
 }
 
-pub fn get_camera_rotation(
-    input: Rc<RefCell<dyn InputEngine>>,
-    mut current_rotation: f32,
-    delta_sec: f32,
-) -> f32 {
+/// How far to turn the camera's yaw this frame (radians), from the
+/// rotate keys, the right stick and the mouse wheel.
+///
+/// The wheel is the original binding (`RoleCtrl::Update`:
+/// `DegToRad(wheel) · 0.08` per DirectInput delta, one notch = 120, capped
+/// at ±1.57); keys and stick turn at a steady rate (port addition).
+pub fn camera_yaw_input(input: Rc<RefCell<dyn InputEngine>>, delta_sec: f32) -> f32 {
     let input = input.borrow();
     const CAMERA_ROTATE_SPEED: f32 = 1.5;
+    let mut delta = 0.;
 
     if input.get_key_state(Key::A).is_down() {
-        current_rotation -= CAMERA_ROTATE_SPEED * delta_sec;
+        delta -= CAMERA_ROTATE_SPEED * delta_sec;
     }
 
     if input.get_key_state(Key::D).is_down() {
-        current_rotation += CAMERA_ROTATE_SPEED * delta_sec;
+        delta += CAMERA_ROTATE_SPEED * delta_sec;
     }
 
     let right_x = input.get_axis_state(Axis::RightStickX).value();
     let right_x = if right_x.abs() < 0.1 { 0. } else { right_x };
+    delta += CAMERA_ROTATE_SPEED * delta_sec * right_x;
 
-    current_rotation -= CAMERA_ROTATE_SPEED * delta_sec * right_x;
-
-    // Mouse wheel matches the original PC binding (滚轮 = 转换视觉).
     // `get_mouse_wheel` reports detents accumulated over the last engine
-    // update, so this steps per tick rather than per frame.
-    const WHEEL_ROTATE_STEP: f32 = 0.12;
-    current_rotation -= input.get_mouse_wheel() * WHEEL_ROTATE_STEP;
-
-    if current_rotation < 0. {
-        current_rotation += std::f32::consts::PI * 2.;
-    }
-
-    if current_rotation > std::f32::consts::PI * 2. {
-        current_rotation -= std::f32::consts::PI * 2.;
-    }
-
-    current_rotation
+    // update.
+    let wheel = (input.get_mouse_wheel() * 120_f32.to_radians() * 0.08).clamp(-1.57, 1.57);
+    delta + wheel
 }

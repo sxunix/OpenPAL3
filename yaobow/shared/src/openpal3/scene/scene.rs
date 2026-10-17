@@ -149,6 +149,13 @@ impl ScnScene {
         self.nav.layer(layer)
     }
 
+    /// Bounds of nav layer 0 — `Scene::GetAABB` (gamebase/scene.cpp) is
+    /// `m_nav.m_tilelayer[0]`'s min / max.
+    pub fn nav_bounds(&self) -> (Vec3, Vec3) {
+        let map = &self.nav.nav_file.maps[0];
+        (map.min_coord, map.max_coord)
+    }
+
     pub fn nav_min_coord(&self, layer: usize) -> Vec3 {
         self.nav.nav_file.maps[self.nav_layer(layer)].min_coord
     }
