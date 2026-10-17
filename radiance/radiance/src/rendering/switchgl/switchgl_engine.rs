@@ -446,6 +446,22 @@ unsafe fn draw_object(obj: &SwitchGLRenderObject, view: &Mat44, proj: &Mat44, en
 
         let params = material.params();
         glUniform4fv(shader.uniform_tint(), 1, params.tint.as_ptr());
+        // Per-material UV affine (frame-animated sheets such as the emote
+        // bubbles, scrolling effects) -- grass reads the slot as wind
+        // strength/speed. TerrainSplat's slot means world->tile scale for
+        // its own shader, which this backend approximates with the lit one,
+        // so it keeps the identity.
+        let uv_xform = if shader.name() == "TerrainSplat" {
+            [1.0, 1.0, 0.0, 0.0]
+        } else {
+            [
+                params.uv_scale[0],
+                params.uv_scale[1],
+                params.uv_offset[0],
+                params.uv_offset[1],
+            ]
+        };
+        glUniform4fv(shader.uniform_uv_xform(), 1, uv_xform.as_ptr());
         glUniform4fv(
             shader.uniform_material_misc(),
             1,

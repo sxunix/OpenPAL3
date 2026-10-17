@@ -45,6 +45,12 @@ impl RenderObject for SwitchGLRenderObject {
         self.vertices.borrow().aabb_min_max()
     }
 
+    /// Frame-animated sheets (`FrameAnimationComponent`) pick their cell
+    /// through this; the draw uploads it as `uvXform`.
+    fn set_uv_xform(&self, scale: [f32; 2], offset: [f32; 2]) {
+        self.material.update_uv_xform(scale, offset);
+    }
+
     /// Materials are per render object on this backend (no cache), so the
     /// tint can live on the material; the draw uploads it every frame.
     fn set_alpha(&self, alpha: f32) {

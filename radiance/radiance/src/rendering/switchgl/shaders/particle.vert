@@ -5,6 +5,7 @@
 uniform mat4 modelMatrix;
 uniform mat4 viewMatrix;
 uniform mat4 projectionMatrix;
+uniform vec4 uvXform;         // xy = scale, zw = offset
 uniform vec4 tint;
 
 attribute vec3 position;
@@ -17,7 +18,7 @@ varying vec4 v_color;
 void main() {
     vec4 mvPosition = viewMatrix * (modelMatrix * vec4(position, 1.0));
     gl_Position = projectionMatrix * mvPosition;
-    v_texcoord = texcoord;
+    v_texcoord = texcoord * uvXform.xy + uvXform.zw;
 
     // 别拿 packed 当变量名：它是 GLSL ES 1.00 的保留字，上机会编不过。
     float rgb24 = texcoord2.x;

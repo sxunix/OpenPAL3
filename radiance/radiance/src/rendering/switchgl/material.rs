@@ -59,6 +59,14 @@ impl SwitchGLMaterial {
         self.params.get()
     }
 
+    /// The UV affine `uv = texcoord * scale + offset` (`set_uv_xform`).
+    pub fn update_uv_xform(&self, scale: [f32; 2], offset: [f32; 2]) {
+        let mut p = self.params.get();
+        p.uv_scale = scale;
+        p.uv_offset = offset;
+        self.params.set(p);
+    }
+
     /// Rewrite only the tint's alpha lane (135/136 actor fade).
     pub fn update_tint_alpha(&self, alpha: f32) {
         let mut p = self.params.get();

@@ -131,6 +131,10 @@ impl SwitchGLShader {
         }
     }
 
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
     pub fn program(&self) -> u32 {
         self.program
     }
