@@ -1,358 +1,73 @@
-// PAL3 in-game system (系统) page — reproduced from the original's own
-// `ui\GameMainUI\System\*` atlas art, opened from the state menu's bottom
-// toolbar "System" button.
+// PAL3 in-game 系统 (system) page — standalone overlay, reached from any
+// other full-screen page's toolbar, or straight from a save point.
 //
-// Layout reconstructed from the sprites' own shapes (verified against the
-// UI_opt.tli manifest and the shipped save format):
-//   · main area: TopBar rail, 4 `Note` scroll rows (609x92 each — the
-//     save-slot entries; the black square at the row's right end is the
-//     original's 64x64 screenshot well), BottomBar rail, pgup/pgdw
-//     triangles. 9 pages x 4 rows = the original's 36 slots.
-//   · right sidebar: the `Frame` strip (114x504), holding the vertical
-//     储存 (`cc`) / 读取 (`dq`) page title, the 储存进度/读取进度 plaque
-//     buttons and the 离开游戏 seal button. (The original also mounts the
-//     音乐/音效 volume bars here — not wired yet, so not drawn.)
-// Exact sidebar/pager positions inside those regions are authored, not
-// extracted — the packed PAL3.exe hides the originals.
+// The page body lives in Rust (`IPal3Service::paint_system_page`,
+// yaobow/src/openpal3/system_page.rs), following the original's source
+// `gamemainui/SystemUI.cpp`: the 36 save notes (five showing, scrolled by
+// the pgup/pgdw keys, the slider and the wheel), the 储存进度/读取进度
+// push buttons, the 音乐/音效 bars, 离开游戏 and the dialogs. This script
+// draws the dimmed backdrop and the toolbar.
 //
-// The `mode` parameter threads page + sub-mode in one int: mode%10 is
-// 0 browse / 1 save / 2 load / 3 the 「迷宫中不可随时存盘」 box, mode/10 is
-// the 0-based page. Return value
-// is the next encoded mode; -1 closes the page. Slot rows act on click
-// per sub-mode (save: any slot; load: populated slots only; browse:
-// inert). Clicking outside backs out of a sub-mode first, then closes.
-//
-// Button art variants: `<name>0` normal, `<name>on`/`<name>1` hover and
-// pressed for Save/Load (pressed doubles as the active-mode latch),
-// `ExitGame0/1/2` and `pgup0/1/2`/`pgdw0/1/2` normal/hover/pressed.
-// Native sizes come from the sprites themselves; only positions are
-// authored, in the same 800x600 reference space as the other screens.
+// State: 0 or 1 = the page has just opened (1 = from a save point; the
+// service's `can_save` already knows), OPENED while it runs; the TO_*
+// values switch page, CLOSE shuts the menu (a load went ahead, or the
+// game goes back to the title). While a dialog is up the toolbar does
+// nothing (`OnMessage` returns early on a modal dialog).
 
 import radiance;
 import shared.openpal3;
 import radiance_scripting.ui as gui;
+import yaobow.openpal3.menu_chrome as chrome;
 
-let REF_W: float = 800.0;
-let REF_H: float = 600.0;
+pub let CLOSE: int = -1;
+pub let TO_STATE: int = -2;
+pub let TO_PROP: int = -4;
+pub let TO_EQUIP: int = -5;
+pub let TO_MAGIC: int = -6;
+pub let TO_ARRAY: int = -7;
+pub let TO_BOOK: int = -8;
+pub let TO_SWORD: int = -9;
+let OPENED: int = 2;
 
-let ROWS_PER_PAGE: int = 4;
-
-// Main list area (Note rows are 609 wide).
-let LIST_X: float     = 30.0;
-let LIST_TOP: float   = 92.0;
-let ROW_STEP: float   = 100.0;   // 92 native + 8 gap
-let TOPBAR_Y: float   = 66.0;
-let BOTTOM_Y: float   = 496.0;
-
-// Pager on the BottomBar's right stretch.
-let PGUP_X: float  = 540.0;
-let PGDW_X: float  = 600.0;
-let PAGER_Y: float = 499.0;
-
-// Right sidebar (Frame is 114x504, vertically centred).
-let SIDE_X: float      = 666.0;
-let SIDE_TITLE_Y: float = 78.0;
-let SIDE_SAVE_Y: float  = 180.0;
-let SIDE_LOAD_Y: float  = 228.0;
-let SIDE_EXIT_Y: float  = 440.0;
-
-let SYS: string = "ui/GameMainUI/System/";
-
-// 「储存进度」在迷宫里（不是从存盘点打开的）按下去：系统页自己的提示框弹 AssisLang 343
-// 「迷宫中不可随时存盘」（exe 0x4b2fd8 起：`"\n%s"` 排版，`FUN_004a1530(1)` 弹出）。
-// [推断] 框的位置、字色没逆，借御剑页那个框 (288,200)-(488,312)、RGB(255,251,31)。
-let LANG_NO_SAVE: int = 343;
-let MB_X0: float = 288.0; let MB_Y0: float = 200.0;
-let MB_X1: float = 488.0; let MB_Y1: float = 312.0;
-let TXT: float = 16.0;
-let TXT_MARGIN: float = 8.0;
+// `paint_system_page` flags.
+let LOCKED: int = 1;
+let SHUT: int = 2;
 
 pub fn paint_system_menu(
     ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>,
     pal3: box<openpal3.IPal3Service>,
-    mx: float, my: float, down: bool, click_in: bool, mode: int,
+    mx: float, my: float, down: bool, click: bool, state: int,
 ) -> int {
     let lw = ui.display_size_x() as float;
     let lh = ui.display_size_y() as float;
-    if lw <= 0.0 || lh <= 0.0 { return mode; }
-
-    let mut page = mode / 10;
-    let mut m = mode - page * 10;
-    // 提示框开着时，点一下只是关掉它。
-    let click = click_in && m != 3;
-    if m == 3 && click_in { m = 0; }
-    let count = pal3.save_slot_count();
-    let mut pages = count / ROWS_PER_PAGE;
-    if pages * ROWS_PER_PAGE < count { pages = pages + 1; }
-    if page >= pages { page = pages - 1; }
-    if page < 0 { page = 0; }
+    if lw <= 0.0 || lh <= 0.0 { return state; }
 
     let viewport = gui.Rect(0.0, 0.0, lw, lh);
-    let native = gui.Size(REF_W, REF_H);
+    let native = gui.Size(chrome.REF_W, chrome.REF_H);
     let canvas = viewport.fit(native);
     let s = viewport.fit_scale(native);
+    let cw = canvas.w;
+    let ch = canvas.h;
     let ox = canvas.x;
     let oy = canvas.y;
 
     ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
 
-    // ---- Main area rails -------------------------------------------------
-    // TopBar/BottomBar (584/583 wide) centred over the 609-wide rows.
-    blit_at(ui, atlas, SYS + "TopBar.tga", ox + (LIST_X + 12.0) * s, oy + TOPBAR_Y * s, s);
-    blit_at(ui, atlas, SYS + "BottomBar.tga", ox + (LIST_X + 12.0) * s, oy + BOTTOM_Y * s, s);
+    let fresh = state != OPENED;
+    let flags = pal3.paint_system_page(ui, mx, my, down, click, ox, oy, s, fresh);
+    if (flags / SHUT) % 2 == 1 { return CLOSE; }
+    let locked = flags % 2 == LOCKED;
 
-    // ---- Slot rows -------------------------------------------------------
-    let mut list_x1 = ox + LIST_X * s;
-    let mut list_y1 = oy + LIST_TOP * s;
-    for i in Range(0, ROWS_PER_PAGE) {
-        let slot = page * ROWS_PER_PAGE + i + 1;
-        if slot > count { continue; }
-        let exists = pal3.save_slot_exists(slot);
-        let selectable = m == 1 || (m == 2 && exists);
-
-        let rx0 = ox + LIST_X * s;
-        let ry0 = oy + (LIST_TOP + (i as float) * ROW_STEP) * s;
-        let onote = atlas.sprite(SYS + "Note0.tga");
-        let mut rw = 609.0 * s;
-        let mut rh = 92.0 * s;
-        if onote != null {
-            let sp = onote!;
-            rw = (sp.width() as float) * s;
-            rh = (sp.height() as float) * s;
-        }
-        let rx1 = rx0 + rw;
-        let ry1 = ry0 + rh;
-        if rx1 > list_x1 { list_x1 = rx1; }
-        if ry1 > list_y1 { list_y1 = ry1; }
-        let hover = mx >= rx0 && mx <= rx1 && my >= ry0 && my <= ry1;
-
-        // Note0 rest / Note1 hover / Note2 pressed (selectable rows only).
-        let mut note = SYS + "Note0.tga";
-        if hover && selectable {
-            note = SYS + (if down { "Note2" } else { "Note1" }) + ".tga";
-        }
-        blit_at(ui, atlas, note, rx0, ry0, s);
-
-        // Row text: slot number left of centre, metadata beside it. The
-        // dark square at the row's right end stays empty until we record
-        // save screenshots like the original did.
-        let mut tr = 0.85; let mut tg = 0.85; let mut tb = 0.75;
-        if m != 0 && !selectable { tr = 0.45; tg = 0.45; tb = 0.45; }
-        if hover && selectable { tr = 1.0; tg = 1.0; tb = 0.7; }
-        let ty = ry0 + rh * 0.38;
-        ui.text_at_small(rx0 + 70.0 * s, ty, tr, tg, tb, 1.0, "进度 " + int_str(slot));
-        if exists {
-            pal3.draw_slot_label(ui, slot, rx0 + 190.0 * s, ty, tr, tg, tb, 1.0);
-        } else {
-            ui.text_at_small(rx0 + 190.0 * s, ty, 0.5, 0.5, 0.5, 1.0, "—— 空 ——");
-        }
-
-        if click && hover && selectable {
-            // SND_SYS_SAVE wa029 / SND_SYS_LOAD wa030 (`SystemUI::Update`, after
-            // the original's are-you-sure box).
-            if m == 1 {
-                if pal3.save_current(slot) {
-                    pal3.ui_sound("wa029");
-                    return -1;
-                }
-            }
-            if m == 2 {
-                if pal3.request_load_slot(slot) {
-                    pal3.ui_sound("wa030");
-                    return -1;
-                }
-            }
-        }
-    }
-
-    // ---- Pager -----------------------------------------------------------
-    ui.text_at_small(ox + (PGUP_X - 62.0) * s, oy + (PAGER_Y + 2.0) * s,
-        0.8, 0.8, 0.7, 1.0, int_str(page + 1) + " / " + int_str(pages));
-    // `MoveUp` / `MoveDw`: SND_TALK_PAGE wa016 when the list moves, wa004 at
-    // either end.
-    if tri_button(ui, atlas, SYS + "pgup", ox + PGUP_X * s, oy + PAGER_Y * s, s, mx, my, down, click) {
-        if page > 0 {
-            page = page - 1;
-            pal3.ui_sound("wa016");
-        } else {
-            pal3.ui_sound("wa004");
-        }
-    }
-    if tri_button(ui, atlas, SYS + "pgdw", ox + PGDW_X * s, oy + PAGER_Y * s, s, mx, my, down, click) {
-        if page < pages - 1 {
-            page = page + 1;
-            pal3.ui_sound("wa016");
-        } else {
-            pal3.ui_sound("wa004");
-        }
-    }
-
-    // ---- Right sidebar ---------------------------------------------------
-    let mut side_x0 = ox + SIDE_X * s;
-    let mut side_y0 = oy + 48.0 * s;
-    let mut side_x1 = side_x0 + 114.0 * s;
-    let mut side_y1 = side_y0 + 504.0 * s;
-    let ofr = atlas.sprite(SYS + "Frame.tga");
-    if ofr != null {
-        let fr = ofr!;
-        let fw = (fr.width() as float) * s;
-        let fh = (fr.height() as float) * s;
-        side_y0 = oy + (REF_H * s - fh) * 0.5;
-        side_x1 = side_x0 + fw;
-        side_y1 = side_y0 + fh;
-        ui.image_rect(fr.com_id(), side_x0, side_y0, side_x1, side_y1,
-            fr.u0(), fr.v0(), fr.u1(), fr.v1());
-    }
-    let side_cx = (side_x0 + side_x1) * 0.5;
-
-    // Vertical page title: 储存 (cc) in save mode, 读取 (dq) in load mode.
-    if m == 1 { blit_centred(ui, atlas, SYS + "cc.tga", side_cx, oy + SIDE_TITLE_Y * s, s); }
-    if m == 2 { blit_centred(ui, atlas, SYS + "dq.tga", side_cx, oy + SIDE_TITLE_Y * s, s); }
-
-    // 储存进度 / 读取进度 plaques. The pressed variant doubles as the
-    // active-mode latch, like the original's stuck-down button.
-    if plaque_button(ui, atlas, SYS + "Save", side_cx, oy + SIDE_SAVE_Y * s, s,
-        mx, my, down, click, m == 1) {
-        // Refused (maze): AssisLang 343 + SND_MENU_POP wa003; otherwise
-        // SND_TALK_PAGE wa016 (`IDB_SYSTEM_SAVE`).
-        if !pal3.can_save() {
-            m = 3;
-            pal3.ui_sound("wa003");
-        } else {
-            m = if m == 1 { 0 } else { 1 };
-            pal3.ui_sound("wa016");
-        }
-    }
-    if plaque_button(ui, atlas, SYS + "Load", side_cx, oy + SIDE_LOAD_Y * s, s,
-        mx, my, down, click, m == 2) {
-        m = if m == 2 { 0 } else { 2 };
-        pal3.ui_sound("wa016");
-    }
-
-    // 离开游戏 seal.
-    let oex = atlas.sprite(SYS + "ExitGame0.tga");
-    if oex != null {
-        let sp = oex!;
-        let bw = (sp.width() as float) * s;
-        let bh = (sp.height() as float) * s;
-        let bx0 = side_cx - bw * 0.5;
-        let by0 = oy + SIDE_EXIT_Y * s;
-        let hover = mx >= bx0 && mx <= bx0 + bw && my >= by0 && my <= by0 + bh;
-        let mut name = SYS + "ExitGame0.tga";
-        if hover { name = SYS + (if down { "ExitGame2" } else { "ExitGame1" }) + ".tga"; }
-        blit(ui, atlas, name, bx0, by0, bx0 + bw, by0 + bh);
-        if click && hover { pal3.exit_app(); }
-    }
-
-    // ---- Dismissal -------------------------------------------------------
-    let on_list = mx >= ox + LIST_X * s && mx <= list_x1
-        && my >= oy + TOPBAR_Y * s && my <= oy + (BOTTOM_Y + 40.0) * s;
-    let on_side = mx >= side_x0 && mx <= side_x1 && my >= side_y0 && my <= side_y1;
-    if click && !on_list && !on_side {
-        if m != 0 { m = 0; }
-        else { return -1; }
-    }
-
-    if m == 3 {
-        let bx0 = ox + MB_X0 * s;
-        let by0 = oy + MB_Y0 * s;
-        let bx1 = ox + MB_X1 * s;
-        let by1 = oy + MB_Y1 * s;
-        ui.fill_rect(bx0, by0, bx1, by1, 0.0, 0.0, 0.0, 0.75);
-        ui.fill_rect(bx0, by0, bx1, by0 + s, 0.8, 0.75, 0.5, 1.0);
-        ui.fill_rect(bx0, by1 - s, bx1, by1, 0.8, 0.75, 0.5, 1.0);
-        ui.fill_rect(bx0, by0, bx0 + s, by1, 0.8, 0.75, 0.5, 1.0);
-        ui.fill_rect(bx1 - s, by0, bx1, by1, 0.8, 0.75, 0.5, 1.0);
-        // "\n%s"：空一行再写。
-        pal3.draw_lang_text(ui, LANG_NO_SAVE,
-            bx0 + TXT_MARGIN * s, by0 + (TXT_MARGIN + TXT) * s,
-            TXT * s, 1.0, 251.0 / 255.0, 31.0 / 255.0, 1.0);
-    }
-
-    return page * 10 + m;
-}
-
-// Draw `name` at its native (scaled) size with its top-left at (x, y).
-fn blit_at(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, name: string,
-        x: float, y: float, s: float) {
-    let osp = atlas.sprite(name);
-    if osp == null { return; }
-    let sp = osp!;
-    let w = (sp.width() as float) * s;
-    let h = (sp.height() as float) * s;
-    ui.image_rect(sp.com_id(), x, y, x + w, y + h, sp.u0(), sp.v0(), sp.u1(), sp.v1());
-}
-
-// Draw `name` at native (scaled) size horizontally centred on `cx`.
-fn blit_centred(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, name: string,
-        cx: float, y: float, s: float) {
-    let osp = atlas.sprite(name);
-    if osp == null { return; }
-    let sp = osp!;
-    let w = (sp.width() as float) * s;
-    let h = (sp.height() as float) * s;
-    ui.image_rect(sp.com_id(), cx - w * 0.5, y, cx + w * 0.5, y + h,
-        sp.u0(), sp.v0(), sp.u1(), sp.v1());
-}
-
-// 3-state (0/1/2 = rest/hover/pressed) triangle pager button; true on click.
-fn tri_button(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, base: string,
-        x: float, y: float, s: float,
-        mx: float, my: float, down: bool, click: bool) -> bool {
-    let osp = atlas.sprite(base + "0.tga");
-    if osp == null { return false; }
-    let sp = osp!;
-    let w = (sp.width() as float) * s;
-    let h = (sp.height() as float) * s;
-    let hover = mx >= x && mx <= x + w && my >= y && my <= y + h;
-    let mut name = base + "0.tga";
-    if hover { name = base + (if down { "2" } else { "1" }) + ".tga"; }
-    blit(ui, atlas, name, x, y, x + w, y + h);
-    return click && hover;
-}
-
-// Save/Load plaque (0 rest / on hover / 1 pressed). `active` latches the
-// pressed art to mark the current sub-mode. True on click.
-fn plaque_button(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, base: string,
-        cx: float, y: float, s: float,
-        mx: float, my: float, down: bool, click: bool, active: bool) -> bool {
-    let osp = atlas.sprite(base + "0.tga");
-    if osp == null { return false; }
-    let sp = osp!;
-    let w = (sp.width() as float) * s;
-    let h = (sp.height() as float) * s;
-    let x = cx - w * 0.5;
-    let hover = mx >= x && mx <= x + w && my >= y && my <= y + h;
-    let mut name = base + "0.tga";
-    if active || (hover && down) { name = base + "1.tga"; }
-    else { if hover { name = base + "on.tga"; } }
-    blit(ui, atlas, name, x, y, x + w, y + h);
-    return click && hover;
-}
-
-fn blit(ui: box<radiance.IUiHost>, atlas: box<openpal3.IPal3UiAtlas>, name: string,
-        x0: float, y0: float, x1: float, y1: float) {
-    let osp = atlas.sprite(name);
-    if osp == null { return; }
-    let sp = osp!;
-    ui.image_rect(sp.com_id(), x0, y0, x1, y1, sp.u0(), sp.v0(), sp.u1(), sp.v1());
-}
-
-fn int_str(n: int) -> string {
-    if n == 0 { return "0"; }
-    let mut v = n;
-    let mut out: string = "";
-    while v > 0 {
-        let d = v - (v / 10) * 10;
-        out = digit(d) + out; v = v / 10;
-    }
-    return out;
-}
-
-fn digit(d: int) -> string {
-    if d == 0 { return "0"; } if d == 1 { return "1"; }
-    if d == 2 { return "2"; } if d == 3 { return "3"; }
-    if d == 4 { return "4"; } if d == 5 { return "5"; }
-    if d == 6 { return "6"; } if d == 7 { return "7"; }
-    if d == 8 { return "8"; } return "9";
+    // ---- Bottom action toolbar -------------------------------------------
+    let hit = chrome.paint_toolbar(ui, atlas, pal3, ox, oy, cw, ch, s, mx, my, down,
+        click && !locked, chrome.PAGE_SYSTEM);
+    if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
+    if hit == chrome.PAGE_STATE { return TO_STATE; }
+    if hit == chrome.PAGE_PROP { return TO_PROP; }
+    if hit == chrome.PAGE_EQUIP { return TO_EQUIP; }
+    if hit == chrome.PAGE_MAGIC { return TO_MAGIC; }
+    if hit == chrome.PAGE_ARRAY { return TO_ARRAY; }
+    if hit == chrome.PAGE_SWORD { return TO_SWORD; }
+    if hit == chrome.PAGE_BOOK { return TO_BOOK; }
+    return OPENED;
 }

@@ -147,6 +147,10 @@ impl AdventureDirector {
             p_state.longkui_mode(),
         );
 
+        // 存档里的音量套回去（`Archive.cpp:291` `Set2D/3D/MusicMasterVolume`）。
+        let [effects, music] = p_state.volumes();
+        audio_engine.set_group_volumes(effects, music);
+
         let mut global_state = GlobalState::new(
             asset_mgr.clone(),
             audio_engine.clone(),
@@ -409,6 +413,11 @@ impl AdventureDirector {
 
     /// 阵法页点了队伍头像（迷宫里，`LineupUI::SelRoleHead` → `PlayerMgr::SetCtrl`）：换操控的主角，
     /// 和迷宫里按 Tab 是同一件事。
+    /// 状态菜单（各全屏页）开着没有。
+    pub fn status_menu_open(&self) -> bool {
+        self.sce_vm().state().status_renderer().is_menu_open()
+    }
+
     pub fn set_leader_from_menu(&self, role: i32) {
         let mut p = self.props.borrow_mut();
         let scene_manager = p.scene_manager.clone();

@@ -23,6 +23,18 @@ pub trait AudioEngine {
     /// at startup from the persisted user config.
     fn set_master_volume(&self, _volume: f32) {}
 
+    /// Volume of the two source groups, each a linear gain in `[0.0, 1.0]`
+    /// multiplied into every source of that group on top of its own gain:
+    /// effects (every source by default, video audio included) and music
+    /// (sources marked with [`AudioSource::set_music`]). PAL3's system
+    /// page drives these (`Set2DMasterVolume` / `SetMusicMasterVolume`).
+    fn set_group_volumes(&self, _effects: f32, _music: f32) {}
+
+    /// `(effects, music)` as last set; `(1.0, 1.0)` by default.
+    fn group_volumes(&self) -> (f32, f32) {
+        (1., 1.)
+    }
+
     /// Per-frame tick. The engine implementation walks every live
     /// source it has minted and forwards the tick (e.g. unqueues
     /// drained OpenAL streaming buffers, feeds fresh decoded samples,
@@ -70,6 +82,9 @@ pub trait AudioSource: Send + Sync {
     /// non-spatial nodes such as BGM/UI.
     fn set_position(&mut self, _position: [f32; 3]) {}
     fn set_gain(&mut self, _gain: f32) {}
+    /// Put the source in the music group (see
+    /// [`AudioEngine::set_group_volumes`]); sources start as effects.
+    fn set_music(&mut self, _music: bool) {}
     fn set_relative(&mut self, _relative: bool) {}
     fn set_reference_distance(&mut self, _distance: f32) {}
     fn set_rolloff_factor(&mut self, _factor: f32) {}

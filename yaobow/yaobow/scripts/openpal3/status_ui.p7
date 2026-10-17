@@ -101,6 +101,8 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
     pub prev_down: bool = false,
     // System-menu page (-1 closed; see system_menu.paint_system_menu).
     pub sys_mode: int = -1,
+    // 上一帧全屏菜单开着没有。
+    pub shown_last: bool = false,
     // 道具 page state (-1 closed; otherwise item_menu's packed state).
     pub prop_state: int = -1,
     // 装备 page state (-1 closed; otherwise equip_menu's packed state).
@@ -219,6 +221,15 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
             self.book_state = -1;
             self.sys_mode = 1;
         }
+        // 全屏菜单刚打开的这一帧先不画：屏幕上留一帧没有菜单的场景，service 下一帧
+        // 把它抓下来当存档缩略图（原版进界面前抓 `PAL3::m_screenImg`）。
+        let any_now = self.is_menu_open();
+        if any_now && !self.shown_last {
+            self.shown_last = true;
+            self.prev_down = down;
+            return 0;
+        }
+        self.shown_last = any_now;
         let sys_was_open = self.sys_mode >= 0;
         let prop_was_open = self.prop_state >= 0;
         let equip_was_open = self.equip_state >= 0;
@@ -372,8 +383,32 @@ pub struct[openpal3.IPal3StatusRenderer] Pal3StatusRendererImpl(
                 self.equip_state = r;
             }
         } else if sys_was_open {
-            self.sys_mode = system_menu.paint_system_menu(
+            let r = system_menu.paint_system_menu(
                 ui, self.atlas, self.pal3, pmx, pmy, down, click, self.sys_mode);
+            if r == system_menu.TO_STATE {
+                self.sys_mode = -1;
+                self.menu_open = true;
+            } else if r == system_menu.TO_PROP {
+                self.sys_mode = -1;
+                self.prop_state = 0;
+            } else if r == system_menu.TO_EQUIP {
+                self.sys_mode = -1;
+                self.equip_state = 0;
+            } else if r == system_menu.TO_MAGIC {
+                self.sys_mode = -1;
+                self.magic_state = 0;
+            } else if r == system_menu.TO_ARRAY {
+                self.sys_mode = -1;
+                self.array_state = 0;
+            } else if r == system_menu.TO_SWORD {
+                self.sys_mode = -1;
+                self.sword_state = 0;
+            } else if r == system_menu.TO_BOOK {
+                self.sys_mode = -1;
+                self.book_state = 0;
+            } else {
+                self.sys_mode = r;
+            }
         } else if prop_was_open {
             let r = item_menu.paint_item_menu(
                 ui, self.atlas, self.pal3, pmx, pmy, down, click, self.prop_state);

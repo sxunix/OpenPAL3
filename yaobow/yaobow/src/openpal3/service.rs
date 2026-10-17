@@ -199,6 +199,12 @@ pub struct Pal3Service {
     sword_page: RefCell<super::sword_page::SwordPage>,
     /// 上一帧右键按着没有（御剑页要右键按下的那一下）。
     sword_rdown: Cell<bool>,
+    system_page: RefCell<super::system_page::SystemPage>,
+    /// 状态菜单打开那一刻抓的画面（原版 `PAL3::m_screenImg`），存档时缩成缩略图。
+    menu_snapshot: RefCell<Option<radiance::rendering::CapturedFrame>>,
+    menu_was_open: Cell<bool>,
+    /// 系统页「离开游戏」要回仙三的开始菜单（`SwitchUIRender(M_COVER)`）。
+    menu_title_request: Cell<bool>,
     /// 阵法页：头像条（第 0 格是领队）和每人的设置板，进页面时排好。
     lineup_page: RefCell<Option<LineupPage>>,
     /// 菜单页共用的提示框。
@@ -310,6 +316,10 @@ impl Pal3Service {
             compose_dialogs: RefCell::new(Default::default()),
             sword_page: RefCell::new(Default::default()),
             sword_rdown: Cell::new(false),
+            system_page: RefCell::new(Default::default()),
+            menu_snapshot: RefCell::new(None),
+            menu_was_open: Cell::new(false),
+            menu_title_request: Cell::new(false),
             lineup_page: RefCell::new(None),
             menu_message: RefCell::new(Default::default()),
             pending_leader: Cell::new(-1),
@@ -643,13 +653,25 @@ impl Pal3Service {
         let save_slot = self.pending_save_slot.replace(-1);
         if save_slot > 0 {
             if let Some(adv) = self.active_adventure_director_owned() {
-                adv.inner::<AdventureDirector>()
-                    .sce_vm()
-                    .global_state()
-                    .persistent_state()
-                    .save(save_slot);
+                // 音量跟着存档走（`Archive` 的 soundOffset 段）。
+                let (effects, music) = self.app.engine().borrow().audio_engine().group_volumes();
+                let director = adv.inner::<AdventureDirector>();
+                let vm = director.sce_vm();
+                let state = vm.global_state().persistent_state_shared();
+                state.borrow_mut().set_volumes([effects, music]);
+                state.borrow().save(save_slot);
             }
         }
+
+        // 状态菜单刚打开：上一帧还是没有菜单的画面，抓下来给存档缩略图用。
+        let menu_open = self
+            .active_adventure_director_owned()
+            .is_some_and(|adv| adv.inner::<AdventureDirector>().status_menu_open());
+        if menu_open && !self.menu_was_open.get() {
+            let engine = self.app.engine().borrow().rendering_engine();
+            *self.menu_snapshot.borrow_mut() = engine.borrow_mut().capture_last_frame();
+        }
+        self.menu_was_open.set(menu_open);
 
         self.refresh_item_use_context();
 
@@ -679,6 +701,19 @@ impl Pal3Service {
                         drop(vm);
                         director.use_treasure_mouse();
                     }
+                }
+            }
+        }
+
+        if self.menu_title_request.replace(false) {
+            let asset_path = self.last_asset_path.borrow().clone();
+            let factory = self.script_factory.borrow().clone();
+            if let (Some(asset_path), Some(factory)) = (asset_path, factory) {
+                let menu = factory.make_pal3_start_menu(&asset_path);
+                if let Some(director) = menu.query_interface::<IDirector>() {
+                    let sm = self.app.engine().borrow().scene_manager().clone();
+                    sm.set_director(director);
+                    log::info!("系统页：离开游戏，回开始菜单");
                 }
             }
         }
@@ -834,6 +869,100 @@ impl Pal3Service {
         self.active_adventure_director_owned()
             .map(|adv| adv.inner::<AdventureDirector>().take_title_request())
             .unwrap_or(false)
+    }
+
+    /// `<save_dir>/OpenPAL3/Save/<slot>.<ext>`。
+    fn save_file(slot: i32, ext: &str) -> std::path::PathBuf {
+        ydirs::save_dir()
+            .join(PAL3_APP_NAME)
+            .join("Save")
+            .join(format!("{slot}.{ext}"))
+    }
+
+    /// 第 `slot` 个档的摘要（`Archive::LoadBrief`）：时间、钱、场景名、谁在队里。
+    fn save_brief(&self, slot: i32) -> Option<super::system_page::Brief> {
+        if !self.save_slot_exists(slot) {
+            return None;
+        }
+        let content = std::fs::read_to_string(Self::save_file(slot, "json")).ok()?;
+        let v: serde_json::Value = serde_json::from_str(&content).ok()?;
+        let scene = v.get("scene").and_then(|s| s.as_str()).unwrap_or("");
+        let sub = v.get("sub_scene").and_then(|s| s.as_str()).unwrap_or("");
+        let mut team = [false; 5];
+        for id in v
+            .get("team")
+            .and_then(|t| t.as_array())
+            .into_iter()
+            .flatten()
+        {
+            if let Some(k) = id.as_u64().filter(|&k| k < 5) {
+                team[k as usize] = true;
+            }
+        }
+        Some(super::system_page::Brief {
+            time: v.get("play_time").and_then(|t| t.as_f64()).unwrap_or(0.) as f32,
+            money: v.get("money").and_then(|m| m.as_i64()).unwrap_or(0) as i32,
+            scene: self.scene_display_name(scene, sub).unwrap_or_default(),
+            team,
+        })
+    }
+
+    /// 正在玩的这一局的摘要（刚存的那条照它显示）。
+    fn current_brief(&self) -> Option<super::system_page::Brief> {
+        let (time, money, scene, sub, team) = self.with_persistent_state(None, |s| {
+            let mut team = [false; 5];
+            for k in 0..5 {
+                team[k] = s.is_in_team(k as u32);
+            }
+            Some((
+                s.play_time(),
+                s.money(),
+                s.scene_name().unwrap_or_default(),
+                s.sub_scene_name().unwrap_or_default(),
+                team,
+            ))
+        })?;
+        Some(super::system_page::Brief {
+            time,
+            money,
+            scene: self.scene_display_name(&scene, &sub).unwrap_or_default(),
+            team,
+        })
+    }
+
+    /// 把开菜单时抓的画面存成第 `slot` 个档的缩略图（原版 `Save\PAL3_%04d.JPG`，整屏 JPEG）：
+    /// 取中间 4:3 那块，缩到 186×138（存档条上画成 93×69）[移植]。
+    fn write_save_thumb(&self, slot: i32) -> Option<image::RgbaImage> {
+        let snap = self.menu_snapshot.borrow();
+        let frame = snap.as_ref()?;
+        let img = image::RgbaImage::from_raw(frame.width, frame.height, frame.rgba.clone())?;
+        let (w, h) = (frame.width, frame.height);
+        let (cw, ch) = if w * 3 > h * 4 {
+            (h * 4 / 3, h)
+        } else {
+            (w, w * 3 / 4)
+        };
+        let crop = image::imageops::crop_imm(&img, (w - cw) / 2, (h - ch) / 2, cw, ch).to_image();
+        let thumb = image::imageops::resize(&crop, 186, 138, image::imageops::FilterType::Triangle);
+        if let Err(e) = thumb.save(Self::save_file(slot, "png")) {
+            log::warn!("存档缩略图写不进去: {e}");
+        }
+        Some(thumb)
+    }
+
+    /// 上次存 / 读的是第几条（0 起；原版记在注册表 `PAL3_SAVE\SEEK`）。
+    fn read_save_seek(&self) -> usize {
+        std::fs::read_to_string(Self::save_file(0, "seek").with_file_name("seek"))
+            .ok()
+            .and_then(|s| s.trim().parse().ok())
+            .unwrap_or(0)
+    }
+
+    fn write_save_seek(&self, index: usize) {
+        let path = Self::save_file(0, "seek").with_file_name("seek");
+        if let Err(e) = std::fs::write(path, index.to_string()) {
+            log::warn!("存档序号写不进去: {e}");
+        }
     }
 
     fn active_adventure_director(
@@ -1909,6 +2038,99 @@ impl IPal3ServiceImpl for Pal3Service {
         flags
     }
 
+    fn paint_system_page(
+        &self,
+        ui: ComRc<IUiHost>,
+        mx: f32,
+        my: f32,
+        down: bool,
+        click: bool,
+        ox: f32,
+        oy: f32,
+        scale: f32,
+        fresh: bool,
+    ) -> i32 {
+        use super::system_page::{Action, NOTES};
+        let Some(asset_path) = self.last_asset_path.borrow().clone() else {
+            return 0;
+        };
+        let Some(sinks) = self.texture_sinks.borrow().clone() else {
+            return 0;
+        };
+        let am = self.asset_manager_for(&asset_path);
+        let audio = self.app.engine().borrow().audio_engine();
+        if fresh {
+            let briefs = (0..NOTES).map(|i| self.save_brief(i as i32 + 1)).collect();
+            self.system_page.borrow_mut().activate(
+                briefs,
+                self.can_save(),
+                self.read_save_seek(),
+                audio.group_volumes(),
+            );
+        }
+        let lang = |n: usize| {
+            self.assis_lang_text(n)
+                .map(|t| shared::openpal3::assis_lang::unescape(&t))
+                .unwrap_or_default()
+        };
+        let sound = |name: &str| self.play_ui_sound(name);
+        let thumb = |i: usize| {
+            image::open(Self::save_file(i as i32 + 1, "png"))
+                .ok()
+                .map(|img| img.to_rgba8())
+        };
+        let (play_time, money, scene) = self.with_persistent_state((0., 0, String::new()), |s| {
+            (s.play_time(), s.money(), s.scene_name().unwrap_or_default())
+        });
+        let ctx = super::system_page::Ctx {
+            am: &am,
+            lang: &lang,
+            sound: &sound,
+            thumb: &thumb,
+            play_time,
+            money,
+            boat_maze: scene.eq_ignore_ascii_case("m04") || scene.eq_ignore_ascii_case("m05"),
+        };
+        let input = super::system_page::Input {
+            mx,
+            my,
+            down,
+            click,
+            wheel: ui.mouse_wheel(),
+        };
+        let register = |id: i64, tex: imgui::TextureId| sinks.0.borrow_mut().push((id, tex));
+        let out =
+            self.system_page
+                .borrow_mut()
+                .paint(&ui, &register, (ox, oy, scale), &input, &ctx);
+        let mut flags = i32::from(out.locked);
+        for action in out.actions {
+            match action {
+                Action::Save(i) => {
+                    let slot = i as i32 + 1;
+                    self.save_current(slot);
+                    let thumb = self.write_save_thumb(slot);
+                    self.write_save_seek(i);
+                    if let Some(brief) = self.current_brief() {
+                        self.system_page.borrow_mut().saved(i, brief, thumb, &am);
+                    }
+                }
+                Action::Load(i) => {
+                    if self.request_load_slot(i as i32 + 1) {
+                        self.write_save_seek(i);
+                        flags |= 2;
+                    }
+                }
+                Action::Title => {
+                    self.menu_title_request.set(true);
+                    flags |= 2;
+                }
+                Action::Volumes(effects, music) => audio.set_group_volumes(effects, music),
+            }
+        }
+        flags
+    }
+
     fn compose_count(&self, actor_id: i32) -> i32 {
         if actor_id < 0 {
             return 0;
@@ -2605,6 +2827,7 @@ impl IPal3ServiceImpl for Pal3Service {
         }))
         .ok()?;
         let mut source = audio_engine.create_source();
+        source.set_music(true);
         source.set_data(data, AudioCodec::Mp3);
         Some(AudioSource::create(source))
     }

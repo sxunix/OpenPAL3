@@ -328,6 +328,15 @@ interface IPal3Service: IUnknown {
     int paint_sword_page(IUiHost ui, float mx, float my, bool down, bool click,
         float ox, float oy, float scale);
 
+    // The 系统 page body (system_page.rs, from SystemUI.cpp): the 36 save
+    // notes, 储存/读取, the slider, the 音乐/音效 bars, 离开游戏 and their
+    // dialogs. `fresh` on the first frame after the page opens (its
+    // UIWM_ACTIVE: reread every save, pick 储存 or 读取). Returns bit 0 =
+    // locked (a dialog is up: the toolbar does nothing), bit 1 = close the
+    // menu (a load went ahead, or 离开游戏 back to the title).
+    int paint_system_page(IUiHost ui, float mx, float my, bool down, bool click,
+        float ox, float oy, float scale, bool fresh);
+
     // ---- 合成术 (the 仙术 page's 合 tab; rules in states/compose.rs) ----
     // How many recipes `actor_id` has learnt, and which recipe (0..7, in
     // the recipe table's order — `MagicUI::RealCom`) the `index`-th is.

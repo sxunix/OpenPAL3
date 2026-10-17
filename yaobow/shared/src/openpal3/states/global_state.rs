@@ -72,7 +72,8 @@ impl GlobalState {
         audio_engine: Rc<dyn AudioEngine>,
         persistent_state: Rc<RefCell<PersistentState>>,
     ) -> Self {
-        let bgm_source = audio_engine.create_source();
+        let mut bgm_source = audio_engine.create_source();
+        bgm_source.set_music(true);
         let video_player = asset_mgr.component_factory().create_video_player();
         let sound_sources = vec![];
         let music_path = "/basedata/basedata/datascript/music.txt";

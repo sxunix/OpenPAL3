@@ -60,6 +60,27 @@ impl Pics {
     pub fn peek(&self, name: &str) -> Option<&Pic> {
         self.cache.get(name).and_then(|p| p.as_ref())
     }
+
+    /// 用一张现成的图（存档缩略图）顶掉 `name` 这个名字。
+    pub fn insert_image(&mut self, am: &AssetManager, name: &str, image: image::RgbaImage) {
+        let pic = Pic {
+            com_id: super::service::next_ui_texture_com_id(),
+            sprite: am.sprite_from_image(image),
+        };
+        self.cache.insert(name.to_string(), Some(pic));
+    }
+
+    pub fn forget(&mut self, name: &str) {
+        self.cache.remove(name);
+    }
+}
+
+/// 这一帧按下了键盘上的 `key` 没有（imgui 帧外调用恒为 false）。
+pub fn key_pressed(key: imgui::Key) -> bool {
+    unsafe {
+        !imgui::sys::igGetCurrentContext().is_null()
+            && imgui::sys::igIsKeyPressed_Bool(key as imgui::sys::ImGuiKey, false)
+    }
 }
 
 /// 这一帧画在哪。

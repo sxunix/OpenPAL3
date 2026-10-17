@@ -4,7 +4,16 @@ use super::{
 };
 use super::{AudioEngine, AudioSource, AudioSourceState};
 use alto::{Alto, AltoResult, Context, Mono, Source, Stereo};
+use std::sync::atomic::{AtomicU32, Ordering};
 use std::sync::{Arc, Mutex, Weak};
+
+/// `[effects, music]` group volumes as `f32` bits, shared by the engine
+/// and every source it minted.
+type GroupVolumes = Arc<[AtomicU32; 2]>;
+
+fn group_volume(volumes: &GroupVolumes, music: bool) -> f32 {
+    f32::from_bits(volumes[music as usize].load(Ordering::Relaxed))
+}
 
 pub struct OpenAlAudioEngine {
     context: Arc<Context>,
@@ -20,12 +29,14 @@ pub struct OpenAlAudioEngine {
     /// — the video player ships its audio source to a background
     /// thread.
     sources: Mutex<Vec<Weak<dyn OpenAlSourceTickable>>>,
+    volumes: GroupVolumes,
 }
 
 impl AudioEngine for OpenAlAudioEngine {
     fn create_source(&self) -> Box<dyn AudioMemorySource> {
         let inner = Arc::new(Mutex::new(OpenAlAudioMemorySource::new(
             self.context.clone(),
+            self.volumes.clone(),
         )));
         self.sources
             .lock()
@@ -37,6 +48,7 @@ impl AudioEngine for OpenAlAudioEngine {
     fn create_custom_decoder_source(&self) -> Box<dyn AudioCustomDecoderSource> {
         let inner = Arc::new(Mutex::new(OpenAlAudioCustomDecoderSource::new(
             self.context.clone(),
+            self.volumes.clone(),
         )));
         self.sources
             .lock()
@@ -72,6 +84,20 @@ impl AudioEngine for OpenAlAudioEngine {
         };
         let _ = self.context.set_gain(gain);
     }
+
+    fn set_group_volumes(&self, effects: f32, music: f32) {
+        let clamp = |v: f32| if v.is_finite() { v.clamp(0., 1.) } else { 1. };
+        self.volumes[0].store(clamp(effects).to_bits(), Ordering::Relaxed);
+        self.volumes[1].store(clamp(music).to_bits(), Ordering::Relaxed);
+        // Sources pick the new volume up on their next tick.
+    }
+
+    fn group_volumes(&self) -> (f32, f32) {
+        (
+            group_volume(&self.volumes, false),
+            group_volume(&self.volumes, true),
+        )
+    }
 }
 
 impl OpenAlAudioEngine {
@@ -90,6 +116,10 @@ impl OpenAlAudioEngine {
         Self {
             context,
             sources: Mutex::new(Vec::new()),
+            volumes: Arc::new([
+                AtomicU32::new(1f32.to_bits()),
+                AtomicU32::new(1f32.to_bits()),
+            ]),
         }
     }
 }
@@ -114,6 +144,7 @@ trait OpenAlSourceTickable: Send + Sync {
 impl<T: Send + Sync + 'static> OpenAlSourceTickable for Mutex<OpenAlAudioSource<T>> {
     fn tick(&self) {
         if let Ok(mut s) = self.try_lock() {
+            s.apply_gain();
             s.update();
         }
     }
@@ -125,6 +156,12 @@ pub struct OpenAlAudioSource<T: Send + Sync> {
     decoder: Option<Box<dyn Decoder>>,
     state: AudioSourceState,
     looping: bool,
+    /// The caller's own gain; what reaches OpenAL is this times the group
+    /// volume.
+    gain: f32,
+    music: bool,
+    volumes: GroupVolumes,
+    applied_gain: f32,
     _marker: std::marker::PhantomData<T>,
 }
 
@@ -230,7 +267,13 @@ impl<T: Send + Sync> AudioSource for OpenAlAudioSource<T> {
     }
 
     fn set_gain(&mut self, gain: f32) {
-        let _ = self.streaming_source.set_gain(gain);
+        self.gain = gain;
+        self.apply_gain();
+    }
+
+    fn set_music(&mut self, music: bool) {
+        self.music = music;
+        self.apply_gain();
     }
 
     fn set_relative(&mut self, relative: bool) {
@@ -251,16 +294,31 @@ impl<T: Send + Sync> AudioSource for OpenAlAudioSource<T> {
 }
 
 impl<T: Send + Sync> OpenAlAudioSource<T> {
-    pub fn new(context: Arc<Context>) -> Self {
+    fn new(context: Arc<Context>, volumes: GroupVolumes) -> Self {
         let streaming_source = context.new_streaming_source().unwrap();
 
-        Self {
+        let mut s = Self {
             context,
             streaming_source,
             decoder: None,
             state: AudioSourceState::Stopped,
             looping: false,
+            gain: 1.,
+            music: false,
+            volumes,
+            applied_gain: 1.,
             _marker: std::marker::PhantomData,
+        };
+        s.apply_gain();
+        s
+    }
+
+    /// Push `gain × group volume` to OpenAL when it changed.
+    fn apply_gain(&mut self) {
+        let gain = self.gain * group_volume(&self.volumes, self.music);
+        if gain != self.applied_gain {
+            self.applied_gain = gain;
+            let _ = self.streaming_source.set_gain(gain);
         }
     }
 
@@ -346,6 +404,9 @@ impl AudioSource for EngineOwnedMemorySource {
     fn set_gain(&mut self, gain: f32) {
         self.inner.lock().unwrap().set_gain(gain);
     }
+    fn set_music(&mut self, music: bool) {
+        self.inner.lock().unwrap().set_music(music);
+    }
     fn set_relative(&mut self, relative: bool) {
         self.inner.lock().unwrap().set_relative(relative);
     }
@@ -398,6 +459,9 @@ impl AudioSource for EngineOwnedCustomDecoderSource {
     }
     fn set_gain(&mut self, gain: f32) {
         self.inner.lock().unwrap().set_gain(gain);
+    }
+    fn set_music(&mut self, music: bool) {
+        self.inner.lock().unwrap().set_music(music);
     }
     fn set_relative(&mut self, relative: bool) {
         self.inner.lock().unwrap().set_relative(relative);

@@ -121,6 +121,10 @@ pub struct RoleState {
 /// 角色记录里的状态字节数（`COMBAT_STATE_COUNT`）。
 pub const STATE_BYTES: usize = 31;
 
+fn full_volumes() -> [f32; 2] {
+    [1., 1.]
+}
+
 fn zero_states() -> [u8; STATE_BYTES] {
     [0; STATE_BYTES]
 }
@@ -195,6 +199,10 @@ pub struct PersistentState {
     /// 用光了 `erase`）。物品页、装备页不排序时就按这个列。
     #[serde(default)]
     inventory_order: Vec<u32>,
+    /// 存档时的音效、音乐音量（原版 `Archive` 的 soundOffset 段：2D、3D、音乐三个，2D 和 3D 系统页总是一起设，
+    /// 这里合成一个音效），读档时套回去。
+    #[serde(default = "full_volumes")]
+    volumes: [f32; 2],
     #[serde(default)]
     money: i32,
     /// Favour towards each playable character, keyed by actor id.
@@ -393,6 +401,7 @@ impl PersistentState {
             team: Vec::new(),
             inventory: BTreeMap::new(),
             inventory_order: Vec::new(),
+            volumes: full_volumes(),
             money: 0,
             favor: HashMap::new(),
             play_time: 0.,
@@ -1250,6 +1259,17 @@ impl PersistentState {
             self.inventory_order.retain(|id| *id != item_id);
         }
         removed
+    }
+
+    // ---- sound ----
+
+    /// `[音效, 音乐]`，0..1。
+    pub fn volumes(&self) -> [f32; 2] {
+        self.volumes
+    }
+
+    pub fn set_volumes(&mut self, volumes: [f32; 2]) {
+        self.volumes = volumes;
     }
 
     // ---- money, favour, clock ----
