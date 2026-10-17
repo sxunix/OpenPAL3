@@ -394,8 +394,18 @@ impl DescriptorManager {
             .ty(vk::DescriptorType::COMBINED_IMAGE_SAMPLER);
 
         let pool_sizes = [sampler_pool_size];
+        // `FREE_DESCRIPTOR_SET` is required: released UI textures (`Sprite`
+        // drops, via the imgui release queue) go back through
+        // `free_texture_descriptor_set`. Freeing from a pool without the flag
+        // is invalid usage; MoltenVK frees anyway but its next allocations
+        // rewind onto sets that are still bound, so a new texture's write
+        // shows up in an old one (a message-box frame turning into a button
+        // image, or magenta).
         let create_info = vk::DescriptorPoolCreateInfo::default()
-            .flags(vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND)
+            .flags(
+                vk::DescriptorPoolCreateFlags::UPDATE_AFTER_BIND
+                    | vk::DescriptorPoolCreateFlags::FREE_DESCRIPTOR_SET,
+            )
             .pool_sizes(&pool_sizes)
             .max_sets(MAX_DESCRIPTOR_SET_COUNT);
 
