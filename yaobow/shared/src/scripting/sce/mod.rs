@@ -118,6 +118,8 @@ pub struct SceState {
     jump_icon: Option<[f32; 2]>,
     /// 图标的帧（`ui\scene\tiao%d.tga`，第一次显示时按编号一直读到没有），和已经显示了多久。
     jump_icon_frames: Option<Vec<std::rc::Rc<radiance::rendering::Sprite>>>,
+    /// 左下角司南和小地图。
+    scene_map: crate::openpal3::scene_map::SceneMapHud,
     jump_icon_clock: f32,
     /// 头顶飘的扣精数（`HeadMsg` 类型 0）：（文字, 出来了几秒）。位置每帧跟着受控主角，导演投影后
     /// 放进 [`Self::number_labels`]。
@@ -248,6 +250,7 @@ impl SceState {
             note_frame: Vec::new(),
             jump_icon: None,
             jump_icon_frames: None,
+            scene_map: Default::default(),
             jump_icon_clock: 0.,
             head_numbers: vec![],
             number_labels: vec![],
@@ -976,6 +979,49 @@ impl SceState {
         self.ui.with_ui_host(|ui_host| {
             renderer.render_status(ui_host.clone(), delta_sec);
         });
+    }
+
+    /// 左下角司南和小地图（`UISceneMap`）。和右上角头像一样只在玩家能操作时画。
+    pub fn render_scene_map(
+        &mut self,
+        ui: &imgui::Ui,
+        delta_sec: f32,
+        scene_manager: &ComRc<ISceneManager>,
+    ) {
+        use crate::openpal3::directors::SceneManagerExtensions;
+        use crate::openpal3::scene::{RoleController, ScnScene};
+        use radiance::comdef::IEntityExt;
+        use radiance::input::Key;
+        let Some(scn) = scene_manager.scn_scene() else {
+            return;
+        };
+        let Some(role) = scene_manager.get_resolved_role(self, -1) else {
+            return;
+        };
+        let player_pos = role.transform().borrow().position();
+        let player_facing = ScnScene::facing_of(&role);
+        let player_layer = RoleController::get_role_controller(role)
+            .map_or(0, |rc| rc.inner::<RoleController>().nav_layer());
+        let camera_yaw = self.global_state.camera().yaw().to_degrees();
+        let toggle_key = {
+            let input = self.input();
+            input.get_key_state(Key::GamePadMinus).pressed()
+                || input.get_key_state(Key::M).pressed()
+        };
+        let asset_mgr = self.asset_mgr.clone();
+        self.scene_map.render(
+            ui,
+            delta_sec,
+            &asset_mgr,
+            crate::openpal3::scene_map::SceneMapInput {
+                scene: &scn.inner::<ScnScene>(),
+                player_pos,
+                player_facing,
+                player_layer,
+                camera_yaw,
+                toggle_key,
+            },
+        );
     }
 
     /// The scripted status indicator/menu renderer. Exposed so the agent

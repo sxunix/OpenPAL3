@@ -20,6 +20,7 @@ impl Texture for SwitchGLTexture {
 
 impl SwitchGLTexture {
     pub fn new(width: u32, height: u32, pixels: &[u8]) -> Self {
+        let _hitch = crate::perf::hitch::span("gl.texture_upload");
         let mut texture_id = 0;
 
         unsafe {

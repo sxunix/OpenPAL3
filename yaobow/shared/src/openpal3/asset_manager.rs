@@ -349,6 +349,7 @@ impl AssetManager {
         role_name: &str,
         action_name: &str,
     ) -> Option<ComRc<IAnimatedMeshComponent>> {
+        let _hitch = radiance::perf::hitch::span("role.mv3");
         let dir = self.basedata_path.join("ROLE").join(role_name);
         let path = dir.join(action_name).with_extension("mv3");
         if let Ok(anim) = create_animated_mesh_from_mv3(
@@ -454,6 +455,7 @@ impl AssetManager {
         is_night: bool,
         index: u16,
     ) -> Option<ComRc<IEntity>> {
+        let _hitch = radiance::perf::hitch::span("scn.pol");
         let folder = self.scene_path.join(cpk_name).join(scn_name);
         let mut paths = vec![];
         if is_night {
@@ -485,6 +487,7 @@ impl AssetManager {
         is_night: bool,
         index: u16,
     ) -> Option<ComRc<IEntity>> {
+        let _hitch = radiance::perf::hitch::span("scn.cvd");
         let folder = self.scene_path.join(cpk_name).join(scn_name);
         let mut paths = vec![];
         if is_night {
@@ -699,6 +702,7 @@ impl AssetManager {
             cache.push_front(entry);
             return Ok(data);
         }
+        let _hitch = radiance::perf::hitch::span("snd.read");
         let path = self.snd_path.join(snd_name).with_extension("wav");
         let data = self.vfs.read_to_end(path)?;
         cache.push_front((snd_name.to_string(), Rc::new(data.clone())));

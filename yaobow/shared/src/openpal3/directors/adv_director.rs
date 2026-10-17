@@ -3341,6 +3341,86 @@ impl AdventureDirectorProps {
         c.transform_mut().set_position(&position).look_at(&look_at);
     }
 
+    /// `SceneMgr` 每帧（玩家能操作、没有物件锁时）把人推开：场景 NPC 两两之间、主角之间、
+    /// 主角对 NPC，各调一次 `Role::EnforceNonOverlap`——只挪调用的那一方，沿两人连线推到
+    /// 半径和的 1.1 倍，推到的格子能走才挪；不在同一层、任一方标了可重叠
+    /// （半径不到 6 的小动物、脚本 RoleOverlap）不推。原版 NPC 还要在视野里（`m_bInView`），
+    /// 这里不查。[移植]
+    fn enforce_non_overlap(&mut self) {
+        use crate::openpal3::scene::{RoleController, ScnScene};
+        use crate::openpal3::states::compose::ROLE_COUNT;
+        let Some(scn) = self.scene_manager.scn_scene() else {
+            return;
+        };
+        let scene = scn.inner::<ScnScene>();
+        struct Body {
+            entity: ComRc<radiance::comdef::IEntity>,
+            id: i32,
+            party: bool,
+            layer: usize,
+            radius: f32,
+        }
+        let bodies: Vec<Body> = scene
+            .role_entities()
+            .into_iter()
+            .filter_map(|e| {
+                let id: i32 = e.name().strip_prefix("ROLE_")?.parse().ok()?;
+                let rc = RoleController::get_role_controller(e.clone())?;
+                let rc = rc.inner::<RoleController>();
+                (rc.is_active() && rc.overlap() == 0).then(|| Body {
+                    entity: e.clone(),
+                    id,
+                    party: (0..ROLE_COUNT as i32).contains(&id),
+                    layer: rc.nav_layer(),
+                    radius: rc.model_radius(),
+                })
+            })
+            .collect();
+        let controlled = self.sce_vm.global_state().role_controlled();
+        let mut moved_player = None;
+        let mut push = |a: &Body, b: &Body| {
+            if a.layer != b.layer {
+                return;
+            }
+            let pa = a.entity.transform().borrow().position();
+            let pb = b.entity.transform().borrow().position();
+            let offset = Vec3::sub(&pa, &pb);
+            let dist = offset.norm();
+            let sum = a.radius + b.radius;
+            if dist > sum || dist <= f32::EPSILON {
+                return;
+            }
+            let s = (sum * 1.1 - dist) / dist;
+            let next = Vec3::add(&pa, &Vec3::scalar_mul(s, &offset));
+            if scene.walkable_at(a.layer, &next) {
+                a.entity.transform().borrow_mut().set_position(&next);
+                if a.id == controlled {
+                    moved_player = Some(next);
+                }
+            }
+        };
+        let (party, npcs): (Vec<&Body>, Vec<&Body>) = bodies.iter().partition(|b| b.party);
+        for i in 0..npcs.len() {
+            for j in (i + 1..npcs.len()).rev() {
+                push(npcs[i], npcs[j]);
+            }
+        }
+        for i in 0..party.len() {
+            for j in (i + 1..party.len()).rev() {
+                push(party[i], party[j]);
+            }
+            for npc in &npcs {
+                push(party[i], npc);
+            }
+        }
+        if let Some(p) = moved_player {
+            self.sce_vm
+                .global_state_mut()
+                .persistent_state_mut()
+                .set_position(p);
+        }
+    }
+
     /// 野外遇敌：主角停下（`FUN_004181e0` 调在主角身上），按撞上的怪开一场野外战斗。战斗命令一初始化就关掉
     /// 冒险输入，所以不会一帧里连撞几次。
     fn check_field_encounter(&mut self) -> bool {
@@ -3519,6 +3599,9 @@ impl AdventureDirectorProps {
             throw,
         );
         self.step_footstep((moving_direction.norm() > 0.5).then(|| player_mode(throw)));
+        if !locked {
+            self.enforce_non_overlap();
+        }
         // 主角脚下的场景物件（`FUN_00422e40` → `FUN_00420b40`）。
         if !frozen && !locked {
             self.player_on_object(delta_sec);

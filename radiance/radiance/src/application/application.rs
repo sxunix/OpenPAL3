@@ -140,10 +140,15 @@ impl IApplicationImpl for Application {
             start_time = end_time;
             // Hitches on the console are hard to see from here; the log
             // line lands right after whatever the slow frame was doing.
+            // The tally is the previous frame's: that is the one `elapsed`
+            // measured.
+            let report = crate::perf::hitch::take_report();
             #[cfg(switch)]
             if elapsed > 0.1 {
-                log::info!("slow frame: {} ms", (elapsed * 1000.) as u32);
+                log::info!("slow frame: {} ms | {}", (elapsed * 1000.) as u32, report);
             }
+            #[cfg(not(switch))]
+            let _ = report;
 
             for kv in inner.components.iter() {
                 kv.value().component.on_updating(elapsed);

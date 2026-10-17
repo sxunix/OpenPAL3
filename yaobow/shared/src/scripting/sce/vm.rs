@@ -22,6 +22,17 @@ pub trait SceProcHooks {
     fn proc_end(&self, sce_name: &str, proc_id: u32, global_state: &mut GlobalState);
 }
 
+/// Log a script command whose frame step ran long (it shows up in the
+/// console's hitch report as part of `director`, this says which one).
+fn note_slow_command(cmd: &dyn SceCommand, started: std::time::Instant) {
+    let ms = started.elapsed().as_millis();
+    if ms >= 20 {
+        let name = cmd.debug();
+        let name = name.split([' ', '(', '{']).next().unwrap_or("");
+        log::info!("slow sce command: {} {} ms", name, ms);
+    }
+}
+
 pub struct SceVm {
     state: SceState,
     active_commands: Vec<Box<dyn SceCommand>>,
@@ -111,14 +122,20 @@ impl SceVm {
                 match self.state.get_next_cmd() {
                     Some(mut cmd) => {
                         log::info!("sce: {}", cmd.debug());
+                        let started = std::time::Instant::now();
                         cmd.initialize(self.scene_manager.clone(), &mut self.state);
-                        if !cmd.update(self.scene_manager.clone(), ui, &mut self.state, delta_sec) {
+                        let done =
+                            cmd.update(self.scene_manager.clone(), ui, &mut self.state, delta_sec);
+                        note_slow_command(&*cmd, started);
+                        if !done {
                             self.active_commands.push(cmd);
                         }
                     }
                     None => {
                         self.state.global_state_mut().set_adv_input_enabled(true);
                         self.state.render_status(delta_sec);
+                        self.state
+                            .render_scene_map(ui, delta_sec, &self.scene_manager);
                         return None;
                     }
                 };
@@ -129,8 +146,12 @@ impl SceVm {
             }
         } else {
             let state = &mut self.state;
-            self.active_commands
-                .retain_mut(|cmd| !cmd.update(self.scene_manager.clone(), ui, state, delta_sec));
+            self.active_commands.retain_mut(|cmd| {
+                let started = std::time::Instant::now();
+                let done = cmd.update(self.scene_manager.clone(), ui, state, delta_sec);
+                note_slow_command(&**cmd, started);
+                !done
+            });
         }
 
         None

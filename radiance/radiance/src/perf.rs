@@ -485,3 +485,69 @@ mod tests {
         assert_eq!(format_duration_ns(1_500_000), "1.50ms");
     }
 }
+
+/// Always-on per-frame stopwatch for hitch reports on the console, where
+/// no profiler can attach. Spans add their wall time to a per-frame tally;
+/// the application loop takes the tally every frame and prints it only
+/// when the frame ran long. Nested spans each count in full.
+pub mod hitch {
+    use std::cell::RefCell;
+    use std::time::Instant;
+
+    thread_local! {
+        static FRAME: RefCell<Vec<(&'static str, u64, u32)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    pub struct Span {
+        name: &'static str,
+        start: Instant,
+    }
+
+    pub fn span(name: &'static str) -> Span {
+        Span {
+            name,
+            start: Instant::now(),
+        }
+    }
+
+    impl Drop for Span {
+        fn drop(&mut self) {
+            add(self.name, self.start.elapsed().as_nanos() as u64);
+        }
+    }
+
+    pub fn add(name: &'static str, ns: u64) {
+        FRAME.with(|f| {
+            let Ok(mut f) = f.try_borrow_mut() else {
+                return;
+            };
+            match f.iter_mut().find(|e| e.0 == name) {
+                Some(e) => {
+                    e.1 += ns;
+                    e.2 += 1;
+                }
+                None => f.push((name, ns, 1)),
+            }
+        });
+    }
+
+    /// Drain this frame's tally as `name=ms(xcalls)` entries, longest
+    /// first, dropping anything under a millisecond.
+    pub fn take_report() -> String {
+        let mut entries = FRAME.with(|f| std::mem::take(&mut *f.borrow_mut()));
+        entries.sort_by(|a, b| b.1.cmp(&a.1));
+        entries
+            .iter()
+            .filter(|e| e.1 >= 1_000_000)
+            .take(12)
+            .map(|(name, ns, calls)| {
+                if *calls > 1 {
+                    format!("{}={}ms(x{})", name, ns / 1_000_000, calls)
+                } else {
+                    format!("{}={}ms", name, ns / 1_000_000)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+}

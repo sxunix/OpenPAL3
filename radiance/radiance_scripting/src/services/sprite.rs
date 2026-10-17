@@ -214,7 +214,11 @@ impl SpriteService {
     /// with a headerless-TGA fallback, plus the D3D9 bottom-up `.dds`
     /// vertical flip.
     fn upload(&self, path: &str) -> Option<Rc<AtlasPageInner>> {
-        let bytes = match self.read(path) {
+        let hitch = radiance::perf::hitch::span("sprite.read");
+        let bytes = self.read(path);
+        drop(hitch);
+        let _hitch = radiance::perf::hitch::span("sprite.decode+upload");
+        let bytes = match bytes {
             Some(b) => b,
             None => {
                 log::warn!("SpriteService: cannot read {}", path);

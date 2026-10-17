@@ -51,13 +51,16 @@ impl ISceneManagerImpl for DefaultSceneManager {
     fn update(&self, delta_sec: f32) {
         let d = self.director.borrow().clone();
         if let Some(d) = d {
+            let hitch = crate::perf::hitch::span("director");
             let new_director = d.update(delta_sec);
+            drop(hitch);
             if let Some(new) = new_director {
                 self.replace_director(Some(new));
             }
         }
 
         if let Some(s) = self.scene() {
+            let _hitch = crate::perf::hitch::span("scene.entities");
             s.update(delta_sec);
         }
     }

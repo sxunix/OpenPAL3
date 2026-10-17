@@ -48,6 +48,7 @@ impl GilrsInput {
             Button::DPadLeft => Key::GamePadDPadLeft,
             Button::DPadRight => Key::GamePadDPadRight,
             Button::LeftTrigger => Key::GamePadLeftShoulder,
+            Button::Select => Key::GamePadMinus,
             _ => Key::Unknown,
         }
     }

@@ -144,7 +144,9 @@ impl CoreRadianceEngine {
     pub fn update(&self, delta_sec: f32) {
         let frame_start = std::time::Instant::now();
         let phase_start = std::time::Instant::now();
+        let _hitch = crate::perf::hitch::span("frame.begin");
         self.rendering_engine.borrow_mut().begin_frame();
+        drop(_hitch);
         crate::perf::count(
             "engine.begin_frame_total_ns",
             phase_start.elapsed().as_nanos() as u64,
@@ -168,6 +170,7 @@ impl CoreRadianceEngine {
             // `Context` double-borrow while `draw_ui` is mid-frame). This
             // mutates the atlas and sets the dirty flag, so it must run
             // before the rebuild check + the next `NewFrame`.
+            let _hitch = crate::perf::hitch::span("font_atlas");
             imgui_context.apply_pending_game_font();
             if imgui_context.take_atlas_dirty() {
                 self.rendering_engine
@@ -206,10 +209,13 @@ impl CoreRadianceEngine {
                         layers.insert(0, layer);
                     }
                 }
+                let _hitch = crate::perf::hitch::span("ui.layers");
                 renderer.render_frame(layers, delta_sec);
             }
             let scene_update_start = std::time::Instant::now();
+            let hitch = crate::perf::hitch::span("director+scene");
             scene_manager.update(delta_sec);
+            drop(hitch);
             crate::perf::count(
                 "engine.scene_update_total_ns",
                 scene_update_start.elapsed().as_nanos() as u64,
@@ -218,7 +224,9 @@ impl CoreRadianceEngine {
             // Pump the audio engine once per frame so streaming
             // OpenAL sources (BGM, sound effects) keep their decode
             // queues fed without per-caller bookkeeping.
+            let hitch = crate::perf::hitch::span("audio");
             audio_engine.update(delta_sec);
+            drop(hitch);
 
             // Push the listener pose from the active scene's camera so
             // 3D-spatialized audio sources pan/attenuate relative to the
@@ -291,7 +299,9 @@ impl CoreRadianceEngine {
             }
         };
 
+        let hitch = crate::perf::hitch::span("render");
         rendering_engine.render(scene, viewport, ui_frame);
+        drop(hitch);
         drop(rendering_engine);
         crate::perf::count(
             "engine.scene_render_total_ns",
@@ -299,7 +309,9 @@ impl CoreRadianceEngine {
         );
 
         let phase_start = std::time::Instant::now();
+        let hitch = crate::perf::hitch::span("present");
         self.rendering_engine.borrow_mut().end_frame();
+        drop(hitch);
         crate::perf::count(
             "engine.end_frame_total_ns",
             phase_start.elapsed().as_nanos() as u64,

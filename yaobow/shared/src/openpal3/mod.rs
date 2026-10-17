@@ -14,6 +14,7 @@ pub mod lineup_disc;
 pub mod loaders;
 pub mod model_view;
 pub mod scene;
+pub mod scene_map;
 pub mod ski_view;
 pub mod states;
 pub mod ui_atlas;

@@ -39,6 +39,10 @@ pub struct GameConfig {
     /// input (an emulator on a locked desktop). Off by default.
     #[serde(default)]
     pub menu_auto_new_game: bool,
+    /// Testing aid: a dialog line closes itself after this many seconds
+    /// (0 = never), so scripted scenes run on with no input. Off by default.
+    #[serde(default)]
+    pub auto_advance_dialog: f32,
 }
 
 impl Default for GameConfig {
@@ -49,6 +53,7 @@ impl Default for GameConfig {
             auto_new_game: false,
             auto_load_slot: 0,
             menu_auto_new_game: false,
+            auto_advance_dialog: 0.,
         }
     }
 }
@@ -280,6 +285,12 @@ impl YaobowConfig {
         self.game
             .get(game.config_key())
             .is_some_and(|g| g.menu_auto_new_game)
+    }
+
+    pub fn auto_advance_dialog_for(&self, game: GameType) -> f32 {
+        self.game
+            .get(game.config_key())
+            .map_or(0., |g| g.auto_advance_dialog)
     }
 
     pub fn auto_new_game_for(&self, game: GameType) -> bool {

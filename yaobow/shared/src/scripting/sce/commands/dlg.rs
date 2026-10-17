@@ -8,6 +8,15 @@ pub struct SceCommandDlg {
     text: String,
     dlg_end: bool,
     adv_input_enabled: bool,
+    shown: f32,
+}
+
+/// `auto_advance_dialog` from the config (testing aid), read once.
+fn auto_advance_after() -> f32 {
+    static AFTER: std::sync::OnceLock<f32> = std::sync::OnceLock::new();
+    *AFTER.get_or_init(|| {
+        crate::config::YaobowConfig::load().auto_advance_dialog_for(crate::GameType::PAL3)
+    })
 }
 
 impl SceCommand for SceCommandDlg {
@@ -44,7 +53,14 @@ impl SceCommand for SceCommandDlg {
         //
         // A press first turns the page when the text runs past the box
         // (`UIRoleDialog::Update`: `IfEmpty` ? close : `NextPage`).
-        let clicked = state.input().get_key_state(Key::Space).pressed()
+        self.shown += delta_sec;
+        let after = auto_advance_after();
+        let auto = after > 0. && self.shown >= after;
+        if auto {
+            self.shown = 0.;
+        }
+        let clicked = auto
+            || state.input().get_key_state(Key::Space).pressed()
             || state.input().get_key_state(Key::GamePadEast).pressed()
             || state.input().get_key_state(Key::GamePadSouth).pressed()
             || ui.is_mouse_released(MouseButton::Left);
@@ -60,6 +76,7 @@ impl SceCommandDlg {
             text: text.replace("\\n", "\n"),
             dlg_end: false,
             adv_input_enabled: false,
+            shown: 0.,
         }
     }
 }

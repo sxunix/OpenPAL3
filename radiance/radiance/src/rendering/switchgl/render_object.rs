@@ -19,6 +19,7 @@ pub struct SwitchGLRenderObject {
 
 impl RenderObject for SwitchGLRenderObject {
     fn update_vertices(&self, updater: &dyn Fn(RefMut<VertexBuffer>)) {
+        let _hitch = crate::perf::hitch::span("gl.vertex_update");
         updater(self.vertices.borrow_mut());
         unsafe {
             let vertices = self.vertices.borrow();
@@ -62,6 +63,7 @@ impl SwitchGLRenderObject {
         material: Rc<SwitchGLMaterial>,
         host_dynamic: bool,
     ) -> anyhow::Result<Self> {
+        let _hitch = crate::perf::hitch::span("gl.buffers");
         let mut buffers = [0u32; 2];
 
         unsafe {

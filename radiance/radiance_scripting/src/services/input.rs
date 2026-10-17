@@ -152,6 +152,7 @@ fn key_from_i32(keycode: i32) -> Key {
         50 => Key::GamePadDPadRight,
         51 => Key::Tab,
         52 => Key::GamePadLeftShoulder,
+        53 => Key::GamePadMinus,
         _ => Key::Unknown,
     }
 }

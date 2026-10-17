@@ -235,7 +235,9 @@ impl TextureStore {
         if let Some(t) = store.get(name) {
             t.clone()
         } else {
+            let hitch = crate::perf::hitch::span("tex.decode");
             let mut image = update();
+            drop(hitch);
             let alpha_kind = match alpha {
                 // Keep channels verbatim, classify Opaque (no premultiply).
                 AlphaHandling::Raw => AlphaKind::Opaque,

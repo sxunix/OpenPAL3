@@ -108,6 +108,8 @@ pub enum Key {
     Tab,
     /// 手柄左肩键（Switch 的 L、Xbox 的 LB）。
     GamePadLeftShoulder,
+    /// 手柄「-」键（Switch 的 −、Xbox 的 Back）。
+    GamePadMinus,
     Unknown,
 }
 
@@ -175,6 +177,7 @@ impl Key {
             "gamepaddpadright" => Self::GamePadDPadRight,
             "tab" => Self::Tab,
             "gamepadleftshoulder" => Self::GamePadLeftShoulder,
+            "gamepadminus" => Self::GamePadMinus,
             _ => return None,
         })
     }

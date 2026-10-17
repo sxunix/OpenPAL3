@@ -323,6 +323,7 @@ impl<T: Send + Sync> OpenAlAudioSource<T> {
     }
 
     fn play_internal(&mut self) {
+        let _hitch = crate::perf::hitch::span("al.decode+queue");
         for _ in 0..20 {
             let frame = self.decoder.as_mut().unwrap().fetch_samples();
             match frame {
@@ -353,6 +354,7 @@ type OpenAlAudioMemorySource = OpenAlAudioSource<_MemorySource>;
 
 impl AudioMemorySource for OpenAlAudioMemorySource {
     fn set_data(&mut self, data: Vec<u8>, codec_hint: Codec) {
+        let _hitch = crate::perf::hitch::span("al.set_data");
         self.decoder = Some(create_decoder(data, codec_hint));
     }
 }

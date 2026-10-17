@@ -42,6 +42,7 @@ impl SwitchGLShader {
     }
 
     pub fn new(shader: ShaderProgram) -> anyhow::Result<Self> {
+        let _hitch = crate::perf::hitch::span("gl.shader_compile");
         let data = get_shader_program_data(shader);
         log::info!("loading shader {}", data.name);
 
