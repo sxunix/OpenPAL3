@@ -190,39 +190,6 @@ impl SceCommandEnableFeature {
     }
 }
 
-/// 111 学会合成术 — `LAB_00437040`.
-///
-/// The original opens a modal picker (`FUN_0047e030`) with one row per
-/// party member and blocks until it closes. There is no compose system
-/// here yet, so the recipe is recorded and the script carries on; the
-/// picker is what is missing, not the recipe.
-#[derive(Debug, Clone)]
-pub struct SceCommandLearnCompose {
-    recipe_id: i32,
-}
-
-impl SceCommand for SceCommandLearnCompose {
-    fn update(
-        &mut self,
-        _scene_manager: ComRc<ISceneManager>,
-        _ui: &Ui,
-        state: &mut SceState,
-        _delta_sec: f32,
-    ) -> bool {
-        state
-            .global_state_mut()
-            .persistent_state_mut()
-            .learn_compose(self.recipe_id as u32);
-        true
-    }
-}
-
-impl SceCommandLearnCompose {
-    pub fn new(recipe_id: i32) -> Self {
-        Self { recipe_id }
-    }
-}
-
 /// 龙葵是 `ROLE_2`（`ScnScene::map_role_id` 把 2 映到模型 105）。
 pub const LONGKUI_ROLE_ID: i32 = 2;
 /// 蓝龙葵（0x586194）。

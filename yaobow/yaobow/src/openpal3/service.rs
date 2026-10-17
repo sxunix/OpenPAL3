@@ -193,6 +193,8 @@ pub struct Pal3Service {
     >,
     /// `draw_model_view` 的视图，按脚本给的 key 存。
     model_views: RefCell<HashMap<i32, ModelViewSlot>>,
+    /// 仙术页「合」页签的合成流程和对话框。
+    compose_dialogs: RefCell<super::compose_dialog::ComposeDialogs>,
     lineup_disc: RefCell<Option<LineupDiscSlot>>,
     /// Script-side factory (`IPal3ScriptFactory`) QI'd from the
     /// reverse-wrapped app root. Used by `create_director` to mint
@@ -293,6 +295,7 @@ impl Pal3Service {
             texture_cache: RefCell::new(None),
             texture_sinks: RefCell::new(None),
             model_views: RefCell::new(HashMap::new()),
+            compose_dialogs: RefCell::new(Default::default()),
             lineup_disc: RefCell::new(None),
             script_factory: RefCell::new(None),
             last_asset_path: RefCell::new(None),
@@ -480,6 +483,30 @@ impl Pal3Service {
     }
 
     /// 菜单里的界面音效（`FUN_0053df70(名字, 1)`），放一遍。
+    /// 合成流程要的东西都借好（存档可写、数据库、语言表、音效），交给 `f`。
+    fn with_compose_ctx<T>(
+        &self,
+        f: impl FnOnce(&mut super::compose_dialog::ComposeDialogs, &mut super::compose_dialog::Ctx) -> T,
+    ) -> Option<T> {
+        let db = self.active_game_db.borrow().clone()?;
+        let handle = self.active_persistent_state.borrow().clone()?;
+        let mut state = handle.try_borrow_mut().ok()?;
+        let lang = |n: usize| {
+            self.assis_lang_text(n)
+                .map(|t| shared::openpal3::assis_lang::unescape(&t))
+                .unwrap_or_default()
+        };
+        let sound = |name: &str| self.play_ui_sound(name);
+        let mut ctx = super::compose_dialog::Ctx {
+            state: &mut state,
+            db: &db,
+            lang: &lang,
+            sound: &sound,
+        };
+        let mut dialogs = self.compose_dialogs.borrow_mut();
+        Some(f(&mut dialogs, &mut ctx))
+    }
+
     fn play_ui_sound(&self, name: &str) {
         let Some(asset_path) = self.last_asset_path.borrow().clone() else {
             return;
@@ -1712,7 +1739,7 @@ impl IPal3ServiceImpl for Pal3Service {
                 ModelViewSlot {
                     model: model.to_string(),
                     view,
-                    com_id: next_model_view_com_id(),
+                    com_id: next_ui_texture_com_id(),
                     serial: i32::MIN,
                     last: std::time::Instant::now(),
                 },
@@ -1758,6 +1785,95 @@ impl IPal3ServiceImpl for Pal3Service {
 
     fn ui_sound(&self, name: &str) -> () {
         self.play_ui_sound(name);
+    }
+
+    fn compose_count(&self, actor_id: i32) -> i32 {
+        if actor_id < 0 {
+            return 0;
+        }
+        self.with_persistent_state(0, |s| s.compose_recipes_of(actor_id as usize).len() as i32)
+    }
+
+    fn compose_recipe(&self, actor_id: i32, index: i32) -> i32 {
+        if actor_id < 0 || index < 0 {
+            return -1;
+        }
+        self.with_persistent_state(-1, |s| {
+            s.compose_recipes_of(actor_id as usize)
+                .get(index as usize)
+                .map_or(-1, |&r| r as i32)
+        })
+    }
+
+    fn compose_info(&self, recipe: i32, field: i32) -> i32 {
+        use shared::openpal3::states::compose::RECIPES;
+        let Some(r) = usize::try_from(recipe).ok().and_then(|k| RECIPES.get(k)) else {
+            return 0;
+        };
+        match field {
+            0 => r.product as i32,
+            1..=3 => r.materials[field as usize - 1] as i32,
+            _ => 0,
+        }
+    }
+
+    fn compose_rate(&self, actor_id: i32, recipe: i32) -> i32 {
+        if actor_id < 0 || recipe < 0 {
+            return 0;
+        }
+        self.with_persistent_state(0, |s| {
+            shared::openpal3::states::compose::rate_percent(
+                s.compose_rate(actor_id as usize, recipe as usize),
+            )
+        })
+    }
+
+    fn compose_busy(&self) -> bool {
+        self.compose_dialogs.borrow().busy()
+    }
+
+    fn compose_start(&self, actor_id: i32, recipe: i32) -> () {
+        if actor_id < 0 || recipe < 0 {
+            return;
+        }
+        self.with_compose_ctx(|dialogs, ctx| {
+            dialogs.start(ctx, actor_id as usize, recipe as usize)
+        });
+    }
+
+    fn paint_compose_dialogs(
+        &self,
+        ui: ComRc<IUiHost>,
+        mx: f32,
+        my: f32,
+        down: bool,
+        click: bool,
+        ox: f32,
+        oy: f32,
+        scale: f32,
+    ) -> bool {
+        let Some(asset_path) = self.last_asset_path.borrow().clone() else {
+            return false;
+        };
+        let Some(sinks) = self.texture_sinks.borrow().clone() else {
+            return false;
+        };
+        let am = self.asset_manager_for(&asset_path);
+        let frame = super::compose_dialog::Frame {
+            ox,
+            oy,
+            scale,
+            mx,
+            my,
+            down,
+            click,
+        };
+        let register = |id: i64, tex: imgui::TextureId| sinks.0.borrow_mut().push((id, tex));
+        self.with_compose_ctx(|dialogs, ctx| {
+            dialogs.paint(&ui, &am, &register, &frame, ctx);
+            dialogs.busy()
+        })
+        .unwrap_or(false)
     }
 
     fn spin_model_view(&self, key: i32, deg_per_sec: f32) -> () {
@@ -1811,7 +1927,7 @@ impl IPal3ServiceImpl for Pal3Service {
             }
             *slot = Some(LineupDiscSlot {
                 disc,
-                com_id: next_model_view_com_id(),
+                com_id: next_ui_texture_com_id(),
                 last: std::time::Instant::now(),
                 last_y: None,
                 prev_down: false,
@@ -2334,7 +2450,8 @@ struct LineupDiscSlot {
     sounds: Vec<Box<dyn radiance::audio::AudioMemorySource>>,
 }
 
-fn next_model_view_com_id() -> i64 {
+/// 界面纹理表里外部纹理的 id（3D 视图、合成对话框的贴图），和 `next_handle_com_id` 的负数区段错开。
+pub(crate) fn next_ui_texture_com_id() -> i64 {
     use std::sync::atomic::{AtomicI64, Ordering};
     static NEXT: AtomicI64 = AtomicI64::new(0);
     -1_000_000_000 - NEXT.fetch_add(1, Ordering::Relaxed)

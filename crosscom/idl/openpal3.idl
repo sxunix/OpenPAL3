@@ -312,6 +312,29 @@ interface IPal3Service: IUnknown {
     // command handlers do (`FUN_0053df70(name, 1)` + `FUN_0053e2e0`).
     void ui_sound(&str name);
 
+    // ---- 合成术 (the 仙术 page's 合 tab; rules in states/compose.rs) ----
+    // How many recipes `actor_id` has learnt, and which recipe (0..7, in
+    // the recipe table's order — `MagicUI::RealCom`) the `index`-th is.
+    int compose_count(int actor_id);
+    int compose_recipe(int actor_id, int index);
+    // A recipe's product (field 0) and its three materials (1..3, 0 = none).
+    int compose_info(int recipe, int field);
+    // `actor_id`'s success rate on `recipe`, as the list shows it: percent,
+    // truncated.
+    int compose_rate(int actor_id, int recipe);
+    // A double-click on a recipe: "not enough materials" if so, else the
+    // are-you-sure box.
+    void compose_start(int actor_id, int recipe);
+    // Whether a compose dialog is up or a result pending (checked before
+    // the page handles its own clicks).
+    bool compose_busy();
+    // Advance and draw the compose dialogs over the 800x600 canvas at
+    // (ox, oy) scaled by `scale`; `mx`/`my` the cursor, `down` the left
+    // button held, `click` its rising edge. True while a dialog is up or a
+    // result is pending — the page ignores clicks then.
+    bool paint_compose_dialogs(IUiHost ui, float mx, float my, bool down,
+        bool click, float ox, float oy, float scale);
+
     void draw_combat_actor_name(IUiHost ui, int actor_id, float x, float y,
         float size, float r, float g, float b, float a);
     void draw_combat_actor_description(IUiHost ui, int actor_id, float x,

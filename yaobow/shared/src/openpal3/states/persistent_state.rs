@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use crate::openpal3::combat::ai::Delegation;
 use crate::ydirs;
 
+use super::compose;
 use super::game_db::{
     BASE_FAVOR, FAVOR_ACTOR_IDS, GameDb, MAX_LEVEL, PLAYER_ACTOR_IDS, combat_id_of_party_member,
 };
@@ -124,6 +125,10 @@ fn zero_states() -> [u8; STATE_BYTES] {
     [0; STATE_BYTES]
 }
 
+fn initial_compose_rates() -> [[f32; compose::ROLE_COUNT]; compose::RECIPE_COUNT] {
+    compose::INITIAL_RATE
+}
+
 impl RoleState {
     /// Seed a character at its starting level.
     ///
@@ -226,9 +231,13 @@ pub struct PersistentState {
     /// keeps it in `DAT_00c10ccc` and writes it to the save file.
     #[serde(default)]
     huaying_mode: i32,
-    /// 合成术 recipes the party has learnt — opcode 111.
+    /// 合成术：每个角色学会了哪几个配方（`MagicUI::m_ComSkill[角色][配方]`，原版存档的 misc
+    /// 段里原样存着）。SCE 111 选人学会，见 [`super::compose`]。
     #[serde(default)]
-    compose_recipes: BTreeSet<u32>,
+    compose_learnt: [[bool; compose::RECIPE_COUNT]; compose::ROLE_COUNT],
+    /// 每人每方的熟练度（成功率，`PlayerMgr::com_quantum[配方][角色]`，也进存档）。
+    #[serde(default = "initial_compose_rates")]
+    compose_rates: [[f32; compose::ROLE_COUNT]; compose::RECIPE_COUNT],
     /// 山洞之狼（SCE 112）赢过几次。原版是 `DAT_00bfda44`，前四次各发一件
     /// 奖品，之后就只有对白。
     #[serde(default)]
@@ -386,7 +395,8 @@ impl PersistentState {
             controlled_role: 0,
             player_layer: 0,
             huaying_mode: 0,
-            compose_recipes: BTreeSet::new(),
+            compose_learnt: Default::default(),
+            compose_rates: compose::INITIAL_RATE,
             cave_wolf_wins: 0,
             hockshop_capital: 0,
             hockshop_mode: 0,
@@ -694,12 +704,52 @@ impl PersistentState {
         self.huaying_mode = mode;
     }
 
-    pub fn learn_compose(&mut self, recipe_id: u32) -> bool {
-        self.compose_recipes.insert(recipe_id)
+    /// `role` 学会了配方 `recipe` 没有。
+    pub fn compose_learnt(&self, role: usize, recipe: usize) -> bool {
+        self.compose_learnt
+            .get(role)
+            .and_then(|r| r.get(recipe))
+            .copied()
+            .unwrap_or(false)
     }
 
-    pub fn compose_recipes(&self) -> &BTreeSet<u32> {
-        &self.compose_recipes
+    /// `role` 学会的配方号，按配方表的顺序（`MagicUI::RealCom`）。
+    pub fn compose_recipes_of(&self, role: usize) -> Vec<usize> {
+        (0..compose::RECIPE_COUNT)
+            .filter(|&k| self.compose_learnt(role, k))
+            .collect()
+    }
+
+    /// 让 `role` 学会 `recipe`（`ChoseCompose::SetSpecifyCompose`）：已经学满 6 个就不行，
+    /// 返回 `false`；学过的再学一次也算成功（原版不查）。
+    pub fn learn_compose(&mut self, role: usize, recipe: usize) -> bool {
+        if role >= compose::ROLE_COUNT || recipe >= compose::RECIPE_COUNT {
+            return false;
+        }
+        if self.compose_recipes_of(role).len() >= compose::MAX_LEARNT {
+            return false;
+        }
+        self.compose_learnt[role][recipe] = true;
+        true
+    }
+
+    /// `role` 合 `recipe` 的熟练度。
+    pub fn compose_rate(&self, role: usize, recipe: usize) -> f32 {
+        self.compose_rates
+            .get(recipe)
+            .and_then(|r| r.get(role))
+            .copied()
+            .unwrap_or(0.)
+    }
+
+    pub fn set_compose_rate(&mut self, role: usize, recipe: usize, rate: f32) {
+        if let Some(v) = self
+            .compose_rates
+            .get_mut(recipe)
+            .and_then(|r| r.get_mut(role))
+        {
+            *v = rate;
+        }
     }
 
     /// Fill in the party from the game database if it hasn't been set up

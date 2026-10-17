@@ -193,7 +193,7 @@ opcode 119 的三个脚本 id 参数不在自己的 proc 里。原版把整个�
 | 108 | `004370c0` | int | ScriptVarSetAppraisalsResultCommand | ✓ SceCommandGetAppr | 取出鉴定小游戏的结果并设置给变量 |
 | 109 | `00436fb0` | int | FeatureEnableSwordPurifyingCommand | ✓ SceCommandEnableFeature | 打开或关闭魔剑养成功能， |
 | 110 | `00436fe0` | int | FeatureEnableJusticeBookCommand | ✓ SceCommandEnableFeature | 打开或关闭降妖谱功能， |
-| 111 | `00437040` | int | PlayerLearnComposeCommand | ✓ SceCommandLearnCompose | 学会合成术， |
+| 111 | `00437040` | int | PlayerLearnComposeCommand | ✓ SceCommandLearnCompose | 学会合成术：参数是成品物品号，弹选人框（`ChoseCompose`），点谁谁学会（每人最多 6 个），见 magic_page_layout.md §9 |
 | 112 | `00437c20` | （无） | MiniGameStartCaveExperienceCommand | ✓ SceCommandMiniGameCaveExperience（导演里跑计时与抓人）| 进入山洞初体验游戏（山洞之狼）|
 | 113 | `00437c30` | （无） | MiniGameStartHideFightCommand | ✓ SceCommandStartHideFight | 使当前场景进入<当铺&刺使府夜间特殊战斗关>状态 |
 | 114 | `00437c40` | （无） | — | —  |  |

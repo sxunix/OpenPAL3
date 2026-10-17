@@ -17,9 +17,15 @@
 // skills exactly: no element -> 技, exactly one -> that element's tab,
 // two or more -> 双. [推断, but the partition is exact: 84 + 70 + 33.]
 //
-// Not reproduced: the 合击 tab (combo skills live in their own database
-// table and are not "learned", so nothing is wired to it yet), the 3D
-// preview in the Info panel, and casting a skill outside combat.
+// The last tab, 合, is not combo skills but 合成术 (item recipes —
+// `magicui.cpp`'s `IDL_MAGIC_COMLIST`): the character's learnt recipes with
+// their three materials and success rate. Selecting one shows the product's
+// name, description and its spinning 3D model in the Info panel (the only
+// tab with a 3D preview); a second click on it (the original's double-click)
+// composes — the dialogs and the rules live in Rust (compose_dialog.rs,
+// states/compose.rs).
+//
+// Not reproduced: casting a skill outside combat.
 
 import radiance;
 import shared.openpal3;
@@ -56,6 +62,16 @@ let TAB_ELEMENT: array<int> = [-1, 0, 1, 3, 2, 4, -1, -1];
 let TAB_SKILL: int = 0;
 let TAB_DUAL: int = 6;
 let TAB_COMBO: int = 7;
+
+// 合 tab: list columns are three 98s and a 36 (`Com1..3`, `Percent`); the
+// header labels (AssisLang 127..130) sit at +0, +94, +192, +290.
+let COM_COL: array<float> = [0.0, 98.0, 196.0, 294.0];
+let COM_HEAD_X: array<float> = [0.0, 94.0, 192.0, 290.0];
+let LANG_COM_HEAD: int = 127;
+// 3D preview: `SetOrthosize(160)`, `SetOriginPt(110, 268, 600)`,
+// `SetRotateMode(1, 0)` — the product of the selected recipe.
+let VIEW_MAGIC: int = 5;
+let VIEW_SPIN: float = 98.0;
 
 // Nine rows at (232, 207+29k, 565, 236+29k); the list rect is
 // (232,207,566,485) and the row height the widget reports is 30.
@@ -135,6 +151,11 @@ pub fn paint_magic_menu(
 
     ui.fill_rect(0.0, 0.0, lw, lh, 0.0, 0.0, 0.0, 0.8);
 
+    // A compose dialog (or the 5 s wait for its result) takes every click
+    // (`CtlList(false)` and the modal `MUIDialog`).
+    let busy = pal3.compose_busy();
+    let page_click = click && !busy;
+
     let party = pal3.party_size();
     let mut member = member_of(state);
     if member < 0 || member >= party { member = 0; }
@@ -151,7 +172,7 @@ pub fn paint_magic_menu(
     chrome.paint_frame(ui, atlas, pal3, SPR_FRAME, ox, oy, s);
 
     // The party column doubles as the character selector, same as 装备.
-    let picked = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, click, true);
+    let picked = chrome.paint_head_plates(ui, atlas, pal3, ox, oy, s, mx, my, page_click, true);
     if picked >= 0 && picked != member {
         member = picked;
         actor = pal3.party_actor_id(member);
@@ -170,7 +191,7 @@ pub fn paint_magic_menu(
         if i == tab { variant = "1"; }
         else { if hover { variant = "2"; } }
         chrome.sprite(ui, atlas, SPR_TAB + TAB_BASE[i] + variant + ".tga", tx0, ty0, s);
-        if hover && click { new_tab = i; }
+        if hover && page_click { new_tab = i; }
     }
     if new_tab != tab {
         tab = new_tab;
@@ -181,7 +202,8 @@ pub fn paint_magic_menu(
     // The character's learned skills, narrowed to this tab's bucket. The
     // list is short (a character never learns more than a few dozen), so
     // it is rescanned per row rather than materialised.
-    let count = count_in_tab(pal3, actor, tab);
+    let mut count = count_in_tab(pal3, actor, tab);
+    if tab == TAB_COMBO { count = pal3.compose_count(actor); }
     if sel >= count { sel = count - 1; }
     if sel < 0 { sel = 0; }
 
@@ -191,14 +213,38 @@ pub fn paint_magic_menu(
         let ry0 = oy + (GRID_Y0 + (k as float) * ROW_PITCH) * s;
         chrome.sprite(ui, atlas, grid_sprite(tab), grid_x0, ry0, s);
 
-        if k < count {
+        if k < count && tab == TAB_COMBO {
+            let recipe = pal3.compose_recipe(actor, k);
+            let hover = mx >= grid_x0 && mx <= grid_x0 + GRID_W * s
+                && my >= ry0 && my <= ry0 + ROW_H * s;
+            if k == sel {
+                chrome.sprite_additive(ui, atlas, SPR_SELECTED, grid_x0, ry0, s);
+            }
+            if hover && page_click {
+                // A second click on the highlighted row is the original's
+                // double-click: check the materials, then ask.
+                if k == sel { pal3.compose_start(actor, recipe); }
+                sel = k;
+            }
+            let ty = ry0 + ROW_TEXT_DY * s;
+            for m in Range(0, 3) {
+                let mat = pal3.compose_info(recipe, m + 1);
+                if mat > 0 {
+                    pal3.draw_item_name(ui, mat, grid_x0 + (COM_COL[m] + chrome.TXT_MARGIN) * s, ty,
+                        chrome.TXT * s, INK_R, INK_G, INK_B, 1.0);
+                }
+            }
+            chrome.widget_text(ui, grid_x0 + COM_COL[3] * s, ry0,
+                ROW_TEXT_DY - chrome.TXT_MARGIN, s, INK_R, INK_G, INK_B,
+                chrome.int_str(pal3.compose_rate(actor, recipe)) + "%");
+        } else if k < count {
             let id = nth_in_tab(pal3, actor, tab, k);
             let hover = mx >= grid_x0 && mx <= grid_x0 + GRID_W * s
                 && my >= ry0 && my <= ry0 + ROW_H * s;
             if k == sel {
                 chrome.sprite_additive(ui, atlas, SPR_SELECTED, grid_x0, ry0, s);
             }
-            if hover && click { sel = k; }
+            if hover && page_click { sel = k; }
 
             let ty = ry0 + ROW_TEXT_DY * s;
             pal3.draw_skill_name(ui, id, grid_x0 + chrome.TXT_MARGIN * s, ty,
@@ -235,11 +281,33 @@ pub fn paint_magic_menu(
     }
 
     // ---- Header ----------------------------------------------------------
-    chrome.widget_text(ui, ox + HEAD_X * s, oy + HEAD_Y * s, 0.0, s,
-        INK_R, INK_G, INK_B, header_for(tab));
+    if tab == TAB_COMBO {
+        for i in Range(0, 4) {
+            pal3.draw_lang_text(ui, LANG_COM_HEAD + i,
+                ox + (HEAD_X + COM_HEAD_X[i] + chrome.TXT_MARGIN) * s,
+                oy + (HEAD_Y + chrome.TXT_MARGIN) * s,
+                chrome.TXT * s, INK_R, INK_G, INK_B, 1.0);
+        }
+    } else {
+        chrome.widget_text(ui, ox + HEAD_X * s, oy + HEAD_Y * s, 0.0, s,
+            INK_R, INK_G, INK_B, header_for(tab));
+    }
 
     // ---- The selected skill ----------------------------------------------
-    if count > 0 {
+    if count > 0 && tab == TAB_COMBO {
+        let product = pal3.compose_info(pal3.compose_recipe(actor, sel), 0);
+        let _v = pal3.draw_model_view(ui, VIEW_MAGIC, "item:" + chrome.int_str(product),
+            160.0, 110.0, 268.0, 0.0, false, 0, 1.0, 0, ox, oy, s);
+        pal3.spin_model_view(VIEW_MAGIC, VIEW_SPIN);
+        pal3.draw_item_name(ui, product,
+            ox + (NAME_X + chrome.TXT_MARGIN) * s,
+            oy + (NAME_Y + chrome.TXT_MARGIN) * s,
+            chrome.TXT * s, NAME_R, NAME_G, NAME_B, 1.0);
+        pal3.draw_item_description(ui, product,
+            ox + (DESC_X + chrome.TXT_MARGIN) * s,
+            oy + (DESC_Y + chrome.TXT_MARGIN) * s,
+            chrome.TXT * s, DESC_WRAP * s, INK_R, INK_G, INK_B, 1.0);
+    } else if count > 0 {
         let id = nth_in_tab(pal3, actor, tab, sel);
         pal3.draw_skill_name(ui,
             id,
@@ -254,8 +322,11 @@ pub fn paint_magic_menu(
     }
 
     // ---- Bottom action toolbar -------------------------------------------
-    let hit = chrome.paint_toolbar(ui, atlas, pal3, ox, oy, cw, ch, s, mx, my, down, click,
+    let hit = chrome.paint_toolbar(ui, atlas, pal3, ox, oy, cw, ch, s, mx, my, down, page_click,
         chrome.PAGE_MAGIC);
+
+    // The compose dialogs go over everything.
+    let _busy = pal3.paint_compose_dialogs(ui, mx, my, down, click, ox, oy, s);
     if hit == chrome.TOOLBAR_EXIT { return CLOSE; }
     if hit == chrome.PAGE_STATE { return TO_STATE; }
     if hit == chrome.PAGE_PROP { return TO_PROP; }
@@ -339,6 +410,5 @@ fn grid_sprite(tab: int) -> string {
 // padded line, the way the other pages' headers work.
 fn header_for(tab: int) -> string {
     if tab == TAB_SKILL { return "名称                                    消耗"; }
-    if tab == TAB_COMBO { return "参与者"; }
     return "名称                     消耗        等级    使用次数";
 }

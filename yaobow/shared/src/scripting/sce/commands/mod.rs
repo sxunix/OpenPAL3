@@ -13,6 +13,7 @@ mod climb;
 mod cmp;
 mod combat;
 mod combat_effect;
+mod compose_picker;
 mod dealer;
 mod dealer_layout;
 mod dlg;
@@ -197,9 +198,10 @@ pub use stop_music::SceCommandStopMusic;
 pub use story_flags::longkui_model;
 pub use story_flags::{
     SceCommandAverageLevel, SceCommandEnableFeature, SceCommandGiveCloth, SceCommandHuaYingMode,
-    SceCommandLearnCompose, SceCommandLoadAction, SceCommandLongKuiMode, SceCommandRoleOverlap,
+    SceCommandLoadAction, SceCommandLongKuiMode, SceCommandRoleOverlap,
     SceCommandRoleScale, SceCommandSetRoleTexture, SceCommandVarDistract, apply_longkui_model,
 };
+pub use compose_picker::SceCommandLearnCompose;
 pub use switch_mode::SceCommandSwitchMode;
 pub use team::{
     SceCommandTeamClose, SceCommandTeamCloseOnSceneChange, SceCommandTeamOpen,

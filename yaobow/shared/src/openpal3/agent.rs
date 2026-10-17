@@ -831,6 +831,18 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "learn_compose" => {
+            // [成品物品号] —— 弹 111 学会合成术的选人框（例 6202 金创药）。
+            if let Some(id) = int_arg(0) {
+                director.start_debug_command(Box::new(
+                    crate::scripting::sce::commands::SceCommandLearnCompose::new(id as i32),
+                ));
+            }
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
         "field_state" => {
             // [k] —— 用一件迷宫仙宝：27 辟邪 28 退魔 29 神眼 30 精进，31 紫幽粉。
             if let Some(k) = int_arg(0).filter(|k| (27..=31).contains(k)) {

@@ -1,6 +1,7 @@
 pub mod attributes;
 pub mod camera;
 pub mod cave_wolf;
+pub mod compose;
 pub mod combat_data;
 pub mod fade;
 pub mod footstep;
