@@ -1241,3 +1241,24 @@ the order items were got, which the save now records (old saves: unrecorded
 items count as earlier, by id); 价格序 by price; 功能序 by item id;
 ascending. Each page keeps its setting for the run; wa001, and the 道具
 page refuses with wa004 while an item is being used.
+
+系统页 (2026-10-17): rebuilt from SystemUI.cpp — 36 notes five at a time
+(scroll keys, slider, wheel, keyboard), 储存/读取 push buttons on top, each
+note with its party heads, time, money, place and a thumbnail (the frame
+grabbed just before the menu opened; the menu skips drawing its first frame
+so the grab has no menu), confirm boxes as in the original, the 音乐/音效
+bars (the engine now has effect and music volume groups, saved with the
+game), and 离开游戏 back to the PAL3 start menu. The page also gets its
+toolbar back.
+
+仙术页 casting outside combat (2026-10-17): double-click a skill, pick a
+person, double-click to cast — CheckUsable / CheckNeedTo / UsingMagicRole /
+UpdateMagicLV from magicui.cpp (rules in states/magic_use.rs, the
+original's quirks kept). Tabs, columns and headers now follow
+GetRoleSkill / GetListVal / ControlPage.
+
+Particles (2026-10-17): UIParticle's RISE / RAINBOW / RISE_HELIX / SURROUND
+in shared/openpal3/ui_particle.rs — the toolbar hover ring on every page,
+heads on casting and item use, the compose fountain, and the 御剑 star /
+flare / purification particles; the purified glyph fades in 5 per channel
+per frame.
