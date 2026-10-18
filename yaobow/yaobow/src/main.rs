@@ -248,6 +248,10 @@ struct SdLog {
     file: std::sync::Arc<std::sync::Mutex<std::fs::File>>,
     /// No writer thread: `write` itself writes out every 4 KiB.
     inline: bool,
+    /// `sdmc:/switch/yaobow/log_sync` exists: write every record through,
+    /// no thread. Ryujinx stalls the game once the writer thread runs (real
+    /// hardware does not); the file is for testing there.
+    sync: bool,
 }
 
 #[cfg(switch)]
@@ -257,7 +261,11 @@ impl SdLog {
             pending: Default::default(),
             file: std::sync::Arc::new(std::sync::Mutex::new(file)),
             inline: false,
+            sync: std::path::Path::new("sdmc:/switch/yaobow/log_sync").exists(),
         };
+        if log.sync {
+            return log;
+        }
         let writer = log.clone();
         let spawned = std::thread::Builder::new()
             .name("sdlog".to_string())
@@ -291,7 +299,7 @@ impl std::io::Write for SdLog {
             pending.extend_from_slice(buf);
             pending.len()
         };
-        if self.inline && len >= 4096 {
+        if self.sync || (self.inline && len >= 4096) {
             self.write_out()?;
         }
         Ok(buf.len())

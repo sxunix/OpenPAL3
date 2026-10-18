@@ -991,6 +991,38 @@ fn handle_script_eval(ctx: &Pal3DispatchCtx, params: ScriptEvalParams) -> AgentR
                 result: None,
             })
         }
+        "object_event" => {
+            // [物件编号, 事件] —— 给场景物件发事件（2 = 指令 124 那种「被别的机关叫」）。
+            use crate::openpal3::directors::SceneManagerExtensions;
+            if let Some(s) = ctx.scene_manager.scn_scene() {
+                s.inner::<crate::openpal3::scene::ScnScene>()
+                    .post_object_event(
+                        int_arg(0).unwrap_or(0) as i32,
+                        int_arg(1).unwrap_or(2) as u8,
+                    );
+            }
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: None,
+            })
+        }
+        "objects" => {
+            // [] —— 场景物件列表（编号、模型名、类型、位置、显示与否）。
+            use crate::openpal3::directors::SceneManagerExtensions;
+            let list = ctx.scene_manager.scn_scene().map(|s| {
+                s.inner::<crate::openpal3::scene::ScnScene>()
+                    .debug_objects()
+                    .into_iter()
+                    .map(|(id, name, ty, pos, vis, active)| {
+                        serde_json::json!({"id": id, "name": name, "type": ty, "pos": pos, "visible": vis, "active": active})
+                    })
+                    .collect::<Vec<_>>()
+            });
+            AgentResponse::Script(ScriptEvalResponse {
+                function: params.function,
+                result: list.map(serde_json::Value::from),
+            })
+        }
         "bodies" => {
             // [] —— 场景里每个角色推开时用的参数（半径、可重叠、层、激活、能不能站），查穿人用。
             AgentResponse::Script(ScriptEvalResponse {

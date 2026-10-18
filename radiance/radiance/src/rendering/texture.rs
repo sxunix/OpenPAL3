@@ -77,6 +77,14 @@ pub struct TextureDef {
     /// per `TextureDef`.
     image: Mutex<Option<RgbaImage>>,
     alpha_kind: AlphaKind,
+    /// Encoded bytes still to be decoded into `image` on first access
+    /// ([`TextureStore::get_or_update_lazy`]).
+    pending: Mutex<Option<PendingDecode>>,
+}
+
+struct PendingDecode {
+    bytes: Option<Vec<u8>>,
+    decode: fn(&[u8]) -> Option<RgbaImage>,
 }
 
 impl TextureDef {
@@ -88,6 +96,7 @@ impl TextureDef {
     /// `RgbaImage`, or `None` if the slot has already been drained
     /// (see [`take_image`]) or was never populated.
     pub fn with_image<R>(&self, f: impl FnOnce(Option<&RgbaImage>) -> R) -> R {
+        self.resolve_pending();
         let guard = self.image.lock().unwrap();
         f(guard.as_ref())
     }
@@ -96,7 +105,25 @@ impl TextureDef {
     /// its memory. Returns `None` on the second call (or if no image
     /// was ever set).
     pub fn take_image(&self) -> Option<RgbaImage> {
+        self.resolve_pending();
         self.image.lock().unwrap().take()
+    }
+
+    /// Decode a lazily created texture. Its alpha kind is already known
+    /// (recorded the first time the same name was decoded), so only the
+    /// premultiply that `Classify` would have done is left to apply.
+    fn resolve_pending(&self) {
+        let Some(pending) = self.pending.lock().unwrap().take() else {
+            return;
+        };
+        let _hitch = crate::perf::hitch::span("tex.decode_lazy");
+        let mut image = pending.bytes.and_then(|b| (pending.decode)(&b));
+        if self.alpha_kind != AlphaKind::Opaque {
+            if let Some(img) = image.as_mut() {
+                premultiply_alpha(img);
+            }
+        }
+        *self.image.lock().unwrap() = image;
     }
 
     pub fn alpha_kind(&self) -> AlphaKind {
@@ -180,6 +207,10 @@ fn premultiply_alpha(image: &mut RgbaImage) {
 
 lazy_static::lazy_static! {
     static ref TEXTURE_STORE: RwLock<LruCache<String, Arc<TextureDef>>> = RwLock::new(LruCache::new(NonZero::new(100).unwrap()));
+    /// Alpha kind of every texture decoded so far, by name. Lets a texture
+    /// that has dropped out of `TEXTURE_STORE` come back without decoding
+    /// (see [`TextureStore::get_or_update_lazy`]).
+    static ref KNOWN_ALPHA: RwLock<std::collections::HashMap<String, AlphaKind>> = RwLock::new(std::collections::HashMap::new());
 }
 
 pub struct TextureStore;
@@ -225,6 +256,40 @@ impl TextureStore {
         Self::get_or_update_inner(name, update, AlphaHandling::Raw)
     }
 
+    /// Like [`TextureStore::get_or_update`] for a texture given as encoded
+    /// bytes plus a decoder. A name decoded before (alpha kind known) is not
+    /// decoded now: its bytes are kept and decoded the first time a backend
+    /// asks for the image. Re-entering a PAL3 street decoded all 1200-odd
+    /// textures again (the store only keeps 100) although the Switch
+    /// renderer only uploads the couple of hundred it ever draws -- most of
+    /// a second on the console.
+    pub fn get_or_update_lazy(
+        name: &str,
+        read: impl FnOnce() -> Option<Vec<u8>>,
+        decode: fn(&[u8]) -> Option<RgbaImage>,
+    ) -> Arc<TextureDef> {
+        let known = KNOWN_ALPHA.read().unwrap().get(name).copied();
+        let Some(alpha_kind) = known else {
+            return Self::get_or_update(name, || read().and_then(|b| decode(&b)));
+        };
+        let mut store = TEXTURE_STORE.write().unwrap();
+        if let Some(t) = store.get(name) {
+            return t.clone();
+        }
+        let bytes = {
+            let _hitch = crate::perf::hitch::span("tex.read");
+            read()
+        };
+        let t = Arc::new(TextureDef {
+            name: name.to_string(),
+            image: Mutex::new(None),
+            alpha_kind,
+            pending: Mutex::new(Some(PendingDecode { bytes, decode })),
+        });
+        store.put(name.to_string(), t.clone());
+        t
+    }
+
     fn get_or_update_inner(
         name: &str,
         update: impl FnOnce() -> Option<RgbaImage>,
@@ -256,6 +321,7 @@ impl TextureStore {
                             premultiply_alpha(img);
                         }
                     }
+                    KNOWN_ALPHA.write().unwrap().insert(name.to_string(), kind);
                     kind
                 }
             };
@@ -263,6 +329,7 @@ impl TextureStore {
                 name: name.to_string(),
                 image: Mutex::new(image),
                 alpha_kind,
+                pending: Mutex::new(None),
             });
             store.put(name.to_string(), t.clone());
             t

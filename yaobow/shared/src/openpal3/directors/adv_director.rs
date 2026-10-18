@@ -358,9 +358,13 @@ impl AdventureDirector {
                 let rc = RoleController::get_role_controller(e.clone())?;
                 let rc = rc.inner::<RoleController>();
                 let p = e.transform().borrow().position();
+                let m = *e.transform().borrow().matrix().floats();
                 Some(serde_json::json!({
                     "name": e.name(),
                     "pos": [p.x, p.y, p.z],
+                    // 模型本地 +Z（朝前）在世界里的方向。
+                    "fwd": [m[0][2], m[1][2], m[2][2]],
+                    "model": rc.model_name(),
                     "radius": rc.model_radius(),
                     "overlap": rc.overlap(),
                     "layer": rc.nav_layer(),

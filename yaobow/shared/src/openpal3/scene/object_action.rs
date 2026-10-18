@@ -871,6 +871,19 @@ impl ObjectActions {
                 self.run(i, w);
                 self.own_proc(i, w);
             }
+            // 剧情动画物件（`SceneObj::OnTouch` case 17，`sceneobj.cpp:1544`）：只能由别的机关或
+            // 指令 124 叫（事件 2），空闲才动：从头播一遍模型动画、停在最后一帧
+            // （`Common_ShowAnimation(true)` = 公共状态 7），状态记 1（被触发过），再跑自己那条过程。
+            // 唐家堡百毒楼外间那幅画（`jq03.cvd`）动一下露出暗门就是这个。以前没接，画一动不动。
+            0x11 => {
+                if ev != 2 || !self.idle(i) {
+                    return;
+                }
+                self.push(i, Act::Anim { hold: true }, w);
+                self.objs[i].state = 1;
+                self.run(i, w);
+                self.own_proc(i, w);
+            }
             // 乌龟：主角站上来（事件 0）。队里人不够参数 0 就提示「lessweight」；离乌龟（x、z）超过 36 不理；
             // 否则主角走到乌龟中间、乌龟播动画沉 7、叫连着的物件（吊桥）。
             0x1d => {

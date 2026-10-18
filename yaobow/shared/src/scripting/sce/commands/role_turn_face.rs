@@ -21,10 +21,12 @@ impl SceCommand for SceCommandRoleTurnFace {
         state: &mut SceState,
         _delta_sec: f32,
     ) -> bool {
+        // 原版 `TurnTo(m_rotate + rotate)`（`scriptcmd.cpp:1321`）：和场景角色的朝向
+        // （`Scene::load_roles`）同一个正方向。
         scene_manager.resolve_role_mut_do(state, self.role_id, |e, _r| {
             e.transform()
                 .borrow_mut()
-                .rotate_axis_angle_local(&Vec3::UP, -self.degree.to_radians());
+                .rotate_axis_angle_local(&Vec3::UP, self.degree.to_radians());
         });
         true
     }

@@ -701,7 +701,10 @@ pub fn create_animated_mesh_from_mv3_with_texture<P: AsRef<Path>>(
     texture: Option<&str>,
     unique: bool,
 ) -> anyhow::Result<ComRc<IAnimatedMeshComponent>> {
-    let mv3file = read_mv3(&mut Cursor::new(vfs.read_to_end(&path)?))?;
+    let mv3file = {
+        let _hitch = radiance::perf::hitch::span("mv3.read");
+        read_mv3(&mut Cursor::new(vfs.read_to_end(&path)?))?
+    };
     let mut frames = vec![];
 
     for model_index in 0..mv3file.models.len() {
@@ -736,6 +739,7 @@ pub fn create_animated_mesh_from_mv3_with_texture<P: AsRef<Path>>(
         } else {
             material
         };
+        let _hitch = radiance::perf::hitch::span("mv3.frames");
         for mesh_index in 0..model.mesh_count as usize {
             frames.push(create_geometry_frames(model, mesh_index, &material))
         }

@@ -1069,7 +1069,22 @@ impl Pal3Service {
         };
         let crop = image::imageops::crop_imm(&img, (w - cw) / 2, (h - ch) / 2, cw, ch).to_image();
         let thumb = image::imageops::resize(&crop, 186, 138, image::imageops::FilterType::Triangle);
-        if let Err(e) = thumb.save(Self::save_file(slot, "png")) {
+        // 先编码进内存再一次写完，和存档 JSON（`std::fs::write`）同一条路：
+        // `RgbaImage::save` 边编码边分小块写，Switch 的 SD 卡上报 EIO（os error 5），
+        // 存档那一刻内存里有图，重开菜单读盘就是黑框。
+        let mut png = Vec::new();
+        let written = image::codecs::png::PngEncoder::new(&mut png)
+            .encode(
+                thumb.as_raw(),
+                thumb.width(),
+                thumb.height(),
+                image::ColorType::Rgba8,
+            )
+            .map_err(|e| e.to_string())
+            .and_then(|_| {
+                std::fs::write(Self::save_file(slot, "png"), &png).map_err(|e| e.to_string())
+            });
+        if let Err(e) = written {
             log::warn!("存档缩略图写不进去: {e}");
         }
         Some(thumb)

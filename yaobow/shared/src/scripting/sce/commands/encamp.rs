@@ -282,8 +282,8 @@ impl EncampGame {
         // Y 旋转「模型 +Z 转到 (sin θ, cos θ)」算，256° / 170° / 116° / 80° /
         // 288° 指的方向和各自朝重心的方向差 2°–19°，都是朝着火堆坐的。
         //
-        // `ROLE_FACING_BASE = π` 那个基准是全移植端共用的一个校准常量，
-        // 不是这里单独定的。
+        // 模型的脸在本地 -Z，所以和场景角色一样是 π + θ（以前两边都写成 π − θ，
+        // 左右镜像，营火边的人斜着背对火堆）。
         for i in 0..5 {
             if !present[i] {
                 continue;
@@ -304,7 +304,7 @@ impl EncampGame {
                 .set_position(&Vec3::new(x, y, z))
                 .rotate_axis_angle_local(
                     &Vec3::UP,
-                    std::f32::consts::PI - ROLE_YAWS[i].to_radians(),
+                    std::f32::consts::PI + ROLE_YAWS[i].to_radians(),
                 );
             if let Some(rc) = RoleController::get_role_controller(entity.clone()) {
                 let rc = rc.inner::<RoleController>();
@@ -433,17 +433,20 @@ impl EncampGame {
             let list = ui.get_window_draw_list();
             draw_sprite(&list, remark.as_deref(), layout::REMARK, at);
             let _font = game_font(GameFontSize::LARGE).map(|f| ui.push_font(f));
+            // 文字控件四边缩 8 px（同鉴定的说明牌）。
+            let inset = super::appraise::TEXT_INSET;
             let r = layout::REMARK_TEXT;
-            let width = (r.2 - r.0) as f32 * scale;
+            let width = (r.2 - r.0 - 2 * inset) as f32 * scale;
             let line_h = ui.text_line_height_with_spacing();
-            let mut y = at(r.0, r.1)[1];
+            let x = at(r.0 + inset, r.1)[0];
+            let mut y = at(r.0, r.1 + inset)[1];
             for para in text.split('\n') {
                 let lines = wrap_lines(ui, para, width);
                 if lines.is_empty() {
                     y += line_h;
                 }
                 for line in lines {
-                    list.add_text([at(r.0, r.1)[0], y], TEXT_COLOR, &line);
+                    list.add_text([x, y], TEXT_COLOR, &line);
                     y += line_h;
                 }
             }

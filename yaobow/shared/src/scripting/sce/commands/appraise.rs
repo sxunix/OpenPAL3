@@ -48,12 +48,15 @@ use crate::scripting::sce::{SceCommand, SceState};
 const BACKDROP_DEPTH: f32 = 500.;
 /// 自转速度（弧度/秒）。原版是 58 度/秒，见 [`layout::SPIN_DEG_PER_SEC`]。
 const SPIN_SPEED: f32 = layout::SPIN_DEG_PER_SEC * std::f32::consts::PI / 180.;
-/// 拖动转模型：每像素多少弧度。**原版没有这个操作**——两个放大视图控件
-/// （0xaa0b09 / 0xaa0c27）建好以后只调了 `FUN_0043a070`（尺度）和
-/// `FUN_00439850`（位置），没调 `FUN_0043a090`，所以自转模式 `+0xec` 是 0；
-/// 直接写转角的 `FUN_0043a0e0` 全程只有三个调用点，都不在
-/// 0x525000–0x529500。移植加的，速度随手定。
-const DRAG_SPEED: f32 = 0.012;
+/// 放大视图里拖动转模型：每个虚拟像素转 1°。原版两个放大控件收
+/// `UIWM_3DCTRL_DROPED` 时调 `DropRot(dy, dx, 0)`（`appr_exhibit.cpp:433`、
+/// `appr_do.cpp:730`），`UI3DCtrl` 画的时候按 `Rotate(m_dropx, X轴)`、
+/// `Rotate(m_dropy, Y轴)` 摆（`ui3dctrl.cpp:167`），单位是度：左右拖转向、上下拖
+/// 俯仰。`DropRot` 是头文件里的内联函数，所以反汇编里找不到调用点（之前据此以为
+/// 原版不能转，错了）。
+const DRAG_SPEED: f32 = std::f32::consts::PI / 180.;
+/// [移植] 手柄左摇杆转放大视图里的模型，每秒转多少弧度。
+const STICK_SPEED: f32 = 120. * std::f32::consts::PI / 180.;
 
 pub(crate) const WHITE: [f32; 4] = [1., 1., 1., 1.];
 /// 对话框文字色 0x1ffbff（原版 `FUN_00525841` 一带的 0xfffb1f/0x1ffbff）。
@@ -197,7 +200,9 @@ struct AppraiseGame {
     /// Do 页当前放大的是左 (0) / 右 (1)。
     do_zoom_side: Option<usize>,
     /// Do 页里模型被拖出来的转角。
-    do_angle: f32,
+    zoom_yaw: f32,
+    /// 放大视图的俯仰（`m_dropx`）；转向是 `zoom_yaw`（`m_dropy`）。
+    zoom_pitch: f32,
     drag: Option<Drag>,
     magnifier_used: [bool; 3],
     /// Result0 / Result1：选了左边还是右边。
@@ -343,7 +348,8 @@ impl AppraiseGame {
             ],
             spin: 0.,
             do_zoom_side: None,
-            do_angle: 0.,
+            zoom_yaw: 0.,
+            zoom_pitch: 0.,
             drag: None,
             magnifier_used: [false; 3],
             chosen: None,
@@ -492,6 +498,7 @@ impl AppraiseGame {
         view: &layout::View3d,
         world: (f32, f32),
         angle: f32,
+        pitch: f32,
     ) {
         let Some(m) = self.models.get(pair).and_then(|p| p[which].as_ref()) else {
             return;
@@ -508,6 +515,7 @@ impl AppraiseGame {
             .borrow_mut()
             .clear_rotation()
             .set_position(&Vec3::new(wx, wy, 0.))
+            .rotate_axis_angle_local(&Vec3::new(1., 0., 0.), pitch)
             .rotate_axis_angle_local(&Vec3::UP, angle)
             .scale_local(&Vec3::new(k, k, k));
     }
@@ -523,7 +531,7 @@ impl AppraiseGame {
         let phase = self.phase.clone();
         match phase {
             Phase::Ask => self.update_ask(ui, state),
-            Phase::Exhibit { zoom } => self.update_exhibit(ui, state, zoom),
+            Phase::Exhibit { zoom } => self.update_exhibit(ui, state, zoom, delta_sec),
             Phase::Do => self.update_do(ui, state, delta_sec),
             Phase::Note { text, next } => self.update_note(ui, &text, *next),
             Phase::Finish => {
@@ -623,7 +631,13 @@ impl AppraiseGame {
 
     // ---------- 阶段 1：展示 ----------
 
-    fn update_exhibit(&mut self, ui: &Ui, state: &mut SceState, zoom: Option<usize>) {
+    fn update_exhibit(
+        &mut self,
+        ui: &Ui,
+        state: &mut SceState,
+        zoom: Option<usize>,
+        delta_sec: f32,
+    ) {
         self.hide_models();
         let mouse = virtual_mouse(ui);
         let clicked = ui.is_mouse_clicked(MouseButton::Left);
@@ -641,6 +655,7 @@ impl AppraiseGame {
                         &layout::VIEW_EXHIBIT,
                         layout::EXHIBIT_POS[i],
                         self.spin,
+                        0.,
                     );
                 }
                 let do_button = self.do_button.clone();
@@ -676,6 +691,8 @@ impl AppraiseGame {
                 if clicked {
                     if let Some(i) = hovered_slot {
                         self.spin = 0.;
+                        self.zoom_yaw = 0.;
+                        self.zoom_pitch = 0.;
                         self.phase = Phase::Exhibit { zoom: Some(i) };
                         return;
                     }
@@ -700,6 +717,8 @@ impl AppraiseGame {
                         n - 1
                     };
                     self.spin = 0.;
+                    self.zoom_yaw = 0.;
+                    self.zoom_pitch = 0.;
                     self.phase = Phase::Exhibit { zoom: Some(first) };
                     return;
                 }
@@ -716,14 +735,24 @@ impl AppraiseGame {
                 {
                     if ui.is_key_pressed(*key) {
                         self.spin = 0.;
+                        self.zoom_yaw = 0.;
+                        self.zoom_pitch = 0.;
                         self.phase = Phase::Exhibit { zoom: Some(i) };
                     }
                 }
             }
             Some(i) => {
                 self.show_backdrop(self.exhibit_zoom.as_ref());
-                // 放大视图（控件 0xaa0b09）没设过自转模式，原版是静止的。
-                self.place_model(i, 0, &layout::VIEW_EXHIBIT_ZOOM, (0., 0.), 0.);
+                // 放大视图（控件 0xaa0b09）没设过自转模式，不自己转；拖动转（见 `DRAG_SPEED`）。
+                self.drag_rotate(ui, mouse, delta_sec);
+                self.place_model(
+                    i,
+                    0,
+                    &layout::VIEW_EXHIBIT_ZOOM,
+                    (0., 0.),
+                    self.zoom_yaw,
+                    self.zoom_pitch,
+                );
                 // 原版 `Appr_Exhibit`（`appr_exhibit.cpp:389`）放大时：牌子的文字区
                 // `m_Remark` 写「名字\n说明」（真品那一条的 `name` / `desc`），名字框
                 // `m_ZoomName` 写名字。鉴别要点（`m_DftInfo`）展示页不显示——它是鉴定页
@@ -750,6 +779,8 @@ impl AppraiseGame {
                         None
                     };
                     if let Some(step) = step {
+                        self.zoom_yaw = 0.;
+                        self.zoom_pitch = 0.;
                         self.phase = Phase::Exhibit {
                             zoom: Some((i + step) % n),
                         };
@@ -785,24 +816,54 @@ impl AppraiseGame {
                 list.add_text(at(n.0, n.1), TEXT_COLOR, &name);
             }
             let _font = game_font(GameFontSize::SMALL).map(|f| ui.push_font(f));
+            // 原版文字控件（`FUN_004427a0`）在矩形里四边各缩 8 px 再排字；
+            // 贴着矩形左上角画，头一行就压在牌子的边框上。
             let t = layout::REMARK_TEXT;
-            let width = (t.2 - t.0) as f32 * scale;
-            let mut y = at(t.0, t.1)[1];
+            let width = (t.2 - t.0 - 2 * TEXT_INSET) as f32 * scale;
+            let x = at(t.0 + TEXT_INSET, t.1)[0];
+            let mut y = at(t.0, t.1 + TEXT_INSET)[1];
             let line_h = ui.text_line_height_with_spacing();
             for para in body.split('\n') {
                 for line in wrap_lines(ui, para, width) {
-                    list.add_text([at(t.0, t.1)[0], y], TEXT_COLOR, &line);
+                    list.add_text([x, y], TEXT_COLOR, &line);
                     y += line_h;
                 }
             }
         });
     }
 
+    /// 放大视图里转模型：在放大框里按住拖（鼠标 / 触屏），或者推左摇杆（移植加的）。
+    fn drag_rotate(&mut self, ui: &Ui, mouse: (f32, f32), delta_sec: f32) {
+        if ui.is_mouse_down(MouseButton::Left)
+            && layout::contains(layout::ZOOM_PANE, mouse.0, mouse.1)
+        {
+            let [dx, dy] = ui.io().mouse_delta;
+            let [sw, sh] = ui.io().display_size;
+            let scale = (sw / layout::SCREEN_W as f32)
+                .min(sh / layout::SCREEN_H as f32)
+                .max(1e-3);
+            self.zoom_yaw += dx / scale * DRAG_SPEED;
+            self.zoom_pitch += dy / scale * DRAG_SPEED;
+        }
+        let axis = |neg: imgui::Key, pos: imgui::Key| {
+            (ui.is_key_down(pos) as i32 - ui.is_key_down(neg) as i32) as f32
+        };
+        self.zoom_yaw += axis(
+            imgui::Key::GamepadLStickLeft,
+            imgui::Key::GamepadLStickRight,
+        ) * STICK_SPEED
+            * delta_sec;
+        self.zoom_pitch += axis(imgui::Key::GamepadLStickUp, imgui::Key::GamepadLStickDown)
+            * STICK_SPEED
+            * delta_sec;
+    }
+
     fn enter_do(&mut self, state: &mut SceState) {
         let _ = state;
         self.phase = Phase::Do;
         self.do_zoom_side = None;
-        self.do_angle = 0.;
+        self.zoom_yaw = 0.;
+        self.zoom_pitch = 0.;
         self.chosen = None;
         self.timer_acc = 0.;
     }
@@ -834,15 +895,21 @@ impl AppraiseGame {
         if let Some(z) = self.do_zoom_side {
             self.show_backdrop(self.do_zoom.as_ref());
             let which = if z == side { 0 } else { 1 };
-            if down && layout::contains(layout::ZOOM_PANE, mouse.0, mouse.1) {
-                let [dx, _] = ui.io().mouse_delta;
-                let [sw, sh] = ui.io().display_size;
-                let scale = (sw / layout::SCREEN_W as f32).min(sh / layout::SCREEN_H as f32);
-                self.do_angle += dx / scale.max(1e-3) * DRAG_SPEED;
-            }
-            self.place_model(cur, which, &layout::VIEW_DO_ZOOM, (0., 0.), self.do_angle);
+            let _ = down;
+            self.drag_rotate(ui, mouse, delta_sec);
+            self.place_model(
+                cur,
+                which,
+                &layout::VIEW_DO_ZOOM,
+                (0., 0.),
+                self.zoom_yaw,
+                self.zoom_pitch,
+            );
             if right || ui.is_key_pressed(imgui::Key::Escape) || ui.is_key_pressed(PAD_BACK) {
                 self.do_zoom_side = None;
+                // 原版右键关放大时 `ResetDrop()`。
+                self.zoom_yaw = 0.;
+                self.zoom_pitch = 0.;
             }
             self.draw_do_hud(ui, mouse, None);
             return;
@@ -853,8 +920,8 @@ impl AppraiseGame {
         // （控件 0xaa0c25/26 都是模式 1）。
         let real_world = layout::DO_POS[side as usize & 1];
         let fake_world = layout::DO_POS[1 - (side as usize & 1)];
-        self.place_model(cur, 0, &layout::VIEW_DO, real_world, self.spin);
-        self.place_model(cur, 1, &layout::VIEW_DO, fake_world, self.spin);
+        self.place_model(cur, 0, &layout::VIEW_DO, real_world, self.spin, 0.);
+        self.place_model(cur, 1, &layout::VIEW_DO, fake_world, self.spin, 0.);
 
         // 拖放大镜
         if let Some(drag) = self.drag {
@@ -882,6 +949,25 @@ impl AppraiseGame {
                 {
                     play_sfx(state, sfx::MAGNIFIER);
                     self.drag = Some(Drag { magnifier: i });
+                }
+            }
+        }
+        // [移植] 手柄：Y 拿一个没用过的放大镜看左边那件，X 看右边那件（原版只能拖）。
+        let pad_side = if ui.is_key_pressed(PAD_MAGNIFY_LEFT) {
+            Some(0)
+        } else if ui.is_key_pressed(PAD_MAGNIFY_RIGHT) {
+            Some(1)
+        } else {
+            None
+        };
+        if let (Some(t), None) = (pad_side, self.drag) {
+            let free = (0..3).find(|&i| !self.magnifier_used[i]);
+            if let Some(i) = free {
+                if self.round.magnifiers > 0 && self.round.use_magnifier() {
+                    play_sfx(state, sfx::MAGNIFIER);
+                    self.magnifier_used[i] = true;
+                    self.do_zoom_side = Some(t);
+                    return;
                 }
             }
         }
@@ -958,7 +1044,8 @@ impl AppraiseGame {
         match self.round.pick(i, rand::random::<u8>() as usize & 1) {
             Ok(()) => {
                 self.chosen = None;
-                self.do_angle = 0.;
+                self.zoom_yaw = 0.;
+                self.zoom_pitch = 0.;
             }
             Err(PickError::AlreadyDone) => play_sfx(state, sfx::ALREADY_DONE),
             Err(PickError::NothingLeft) => {}
@@ -971,7 +1058,8 @@ impl AppraiseGame {
         if self.round.is_correct(chose_left) {
             state.show_note(self.text(lang::SUCCESS).to_string());
             self.chosen = None;
-            self.do_angle = 0.;
+            self.zoom_yaw = 0.;
+            self.zoom_pitch = 0.;
             if self.round.mark_correct() {
                 play_sfx(state, sfx::ALL_CORRECT);
                 self.settle(state);
@@ -1168,12 +1256,16 @@ impl AppraiseGame {
 // `imgui/platform/switch.rs`——A 映射成 `GamepadFaceDown`（确定）、B 映射成
 // `GamepadFaceRight`（取消），不产生回车 / Esc / 数字键。插底座只用手柄时
 // 没有触屏当鼠标，不补这几个键就整个小游戏都操作不了。放大镜要拖动，手柄没接。
+/// 原版文字控件在矩形里四边各缩进的像素（`FUN_004427a0`）。
+pub(crate) const TEXT_INSET: i32 = 8;
 const PAD_OK: imgui::Key = imgui::Key::GamepadFaceDown;
 const PAD_BACK: imgui::Key = imgui::Key::GamepadFaceRight;
 const PAD_LEFT: imgui::Key = imgui::Key::GamepadDpadLeft;
 const PAD_RIGHT: imgui::Key = imgui::Key::GamepadDpadRight;
 const PAD_PREV: imgui::Key = imgui::Key::GamepadL1;
 const PAD_NEXT: imgui::Key = imgui::Key::GamepadR1;
+const PAD_MAGNIFY_LEFT: imgui::Key = imgui::Key::GamepadFaceLeft;
+const PAD_MAGNIFY_RIGHT: imgui::Key = imgui::Key::GamepadFaceUp;
 
 /// 鼠标在 800×600 虚拟屏幕里的位置。
 pub(crate) fn virtual_mouse(ui: &Ui) -> (f32, f32) {

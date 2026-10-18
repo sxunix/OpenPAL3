@@ -2,7 +2,7 @@ use image::ImageFormat;
 
 use crate::rendering::texture::TextureStore;
 
-use super::{sampler::SamplerDef, texture::TextureDef, ShaderProgram};
+use super::{ShaderProgram, sampler::SamplerDef, texture::TextureDef};
 use std::{io::Read, sync::Arc};
 
 /// Color-blend mode for a material. Today every variant maps to a distinct
@@ -777,6 +777,14 @@ impl LitMaterialDef {
 /// skin shader (≤2 nearest lights, hard N·L clamp, flat ambient) that mirrors
 /// the original `gfxscript/skin_lit*.cg`. Used by PAL3 roles/scenery.
 pub struct Pal3ActorMaterialDef;
+/// `image` 认得出的格式按格式解，认不出（TGA 没有文件头标记）再当 TGA 解。
+fn decode_image_or_tga(buf: &[u8]) -> Option<image::RgbaImage> {
+    image::load_from_memory(buf)
+        .or_else(|_| image::load_from_memory_with_format(buf, ImageFormat::Tga))
+        .map(|img| img.to_rgba8())
+        .ok()
+}
+
 impl Pal3ActorMaterialDef {
     pub fn create<R: Read>(
         texture_name: &str,
@@ -790,18 +798,17 @@ impl Pal3ActorMaterialDef {
         get_reader: impl FnOnce(&str) -> Option<R>,
         sampler: SamplerDef,
     ) -> MaterialDef {
-        let texture =
-            TextureStore::get_or_update(texture_name, || match get_reader(texture_name) {
-                Some(mut r) => {
+        let texture = TextureStore::get_or_update_lazy(
+            texture_name,
+            || {
+                get_reader(texture_name).map(|mut r| {
                     let mut buf = Vec::new();
                     r.read_to_end(&mut buf).unwrap();
-                    image::load_from_memory(&buf)
-                        .or_else(|_| image::load_from_memory_with_format(&buf, ImageFormat::Tga))
-                        .and_then(|img| Ok(img.to_rgba8()))
-                        .ok()
-                }
-                _ => None,
-            });
+                    buf
+                })
+            },
+            decode_image_or_tga,
+        );
 
         MaterialDef::builder(ShaderProgram::Pal3Actor)
             .debug_name("pal3_actor_material")
@@ -820,15 +827,17 @@ impl Pal3GeomMaterialDef {
         texture_name: &str,
         get_reader: impl FnOnce(&str) -> Option<R>,
     ) -> MaterialDef {
-        let texture =
-            TextureStore::get_or_update(texture_name, || match get_reader(texture_name) {
-                Some(mut r) => {
+        let texture = TextureStore::get_or_update_lazy(
+            texture_name,
+            || {
+                get_reader(texture_name).map(|mut r| {
                     let mut buf = Vec::new();
                     r.read_to_end(&mut buf).unwrap();
-                    decode_pal3_texture(&buf)
-                }
-                _ => None,
-            });
+                    buf
+                })
+            },
+            decode_pal3_texture,
+        );
 
         MaterialDef::builder(ShaderProgram::Pal3Geom)
             .debug_name("pal3_geom_material")
@@ -921,18 +930,20 @@ impl LightMapMaterialDef {
         let textures: Vec<Arc<TextureDef>> = textures
             .into_iter()
             .map(|name| {
-                TextureStore::get_or_update(name, || {
-                    let mut buf = Vec::new();
-                    let b = match get_reader(name) {
-                        None => radiance_assets::TEXTURE_WHITE_TEXTURE_FILE,
-                        Some(mut reader) => {
-                            reader.read_to_end(&mut buf).unwrap();
-                            &buf
-                        }
-                    };
-
-                    decode(b)
-                })
+                TextureStore::get_or_update_lazy(
+                    name,
+                    || {
+                        Some(match get_reader(name) {
+                            None => radiance_assets::TEXTURE_WHITE_TEXTURE_FILE.to_vec(),
+                            Some(mut reader) => {
+                                let mut buf = Vec::new();
+                                reader.read_to_end(&mut buf).unwrap();
+                                buf
+                            }
+                        })
+                    },
+                    decode,
+                )
             })
             .collect();
 

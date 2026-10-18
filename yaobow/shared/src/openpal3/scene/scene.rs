@@ -1767,7 +1767,10 @@ impl ScnScene {
                 });
             }
 
-            let visible = obj.node_type != 17 && obj.node_type != 25;
+            // 照 `.scn` 的初始在场（记录第 2 字节 InitActive，`SceneObj::Render` 不在场就不画）。
+            // 以前写死成「类型 17、25 一律不显示」：唐家堡百毒楼那幅会动的画（剧情动画物件，
+            // 在场）就一直看不见。之后脚本 `ObjectActive`、存档里的在场记录照旧覆盖。
+            let visible = (obj.index >> 8) != 0;
             if obj.node_type != 37 && obj.node_type != 43 && obj.name.len() != 0 {
                 if obj.name.as_bytes()[0] as char == '_' {
                     match self.asset_mgr.load_scn_pol(
@@ -2549,6 +2552,26 @@ impl ScnScene {
     }
 
     /// [调试] 登记在 `ObjLockInput` 里、或者状态不是 0、或者队列没做完的物件：（序号, 类型, 状态, 锁着, 队列长）。
+    /// [调试] `.scn` 里每个物件：脚本用的编号、模型名、类型、位置、现在显不显示。
+    pub fn debug_objects(&self) -> Vec<(i32, String, u16, [f32; 3], Option<bool>, bool)> {
+        self.scn_file
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(i, n)| {
+                let id = n.object_id();
+                (
+                    id,
+                    n.name.clone(),
+                    n.node_type,
+                    [n.position.x, n.position.y, n.position.z],
+                    self.get_root_object(id).map(|e| e.visible()),
+                    self.object_active_at(i),
+                )
+            })
+            .collect()
+    }
+
     pub fn object_lock_report(&self) -> Vec<(usize, u8, u8, bool, usize)> {
         self.object_actions.borrow().report()
     }
@@ -3496,12 +3519,14 @@ impl ScnScene {
                     &Vec3::new(role.position_x, 0., role.position_z),
                 );
                 let height = self.get_height(layer, nav_coord);
-                // Role model's authored forward is +Z (SOUTH); apply the role's
-                // facing (degrees, 0x44) on top of that base. Sign mirrors
-                // SceCommandRoleTurnFace (`-degree.to_radians()`). The base is a
-                // single tunable constant for visual calibration.
+                // 朝向照原版 `Role::Init`（`role.cpp:2245`）：`TurnTo(npc.face)` 把 `.scn`
+                // 的角度（度，0x44）直接当 `m_rotate`，画的时候 `Rotate(m_rotate, Y)`，
+                // 脸朝 `(sin θ, 0, cos θ)`（`UpdateRotate` 反过来就是这么算的）。
+                // 角色模型的脸在本地 -Z，所以是 π + θ。以前写成 π − θ，朝前朝后的看不出
+                // 来，朝左朝右的全反了：当铺柜台里坐着的伙计背对柜台、身子坐进了桌子，
+                // 柜台后站着的两个背对柜台。场景物件那边本来就是 `+θ`。
                 const ROLE_FACING_BASE: f32 = std::f32::consts::PI;
-                let facing = ROLE_FACING_BASE - role.facing.to_radians();
+                let facing = ROLE_FACING_BASE + role.facing.to_radians();
                 entity
                     .transform()
                     .borrow_mut()
