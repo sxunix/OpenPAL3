@@ -1715,6 +1715,8 @@ impl ScnScene {
     }
 
     fn load_objects(&self) {
+        // 加载画面的进度（`radiance::loading`）：地面大模型 0.1–0.4，物件 0.4–0.7，角色 0.7–0.9。
+        radiance::loading::stage(0.1, 0.4);
         let ground_pol_name = self.scn_file.scn_base_name.clone() + ".pol";
         let mut entities: Vec<ComRc<IEntity>> = vec![];
 
@@ -1746,7 +1748,10 @@ impl ScnScene {
             entities.push(cvd);
         }
 
+        let node_count = self.scn_file.nodes.len().max(1) as f32;
         for (node_index, obj) in self.scn_file.nodes.iter().enumerate() {
+            let k = node_index as f32 / node_count;
+            radiance::loading::stage(0.4 + 0.3 * k, 0.4 + 0.3 * (k + 1. / node_count));
             let mut entity: Option<ComRc<IEntity>> = None;
             if obj.nav_trigger_coord_min.0 != 0
                 || obj.nav_trigger_coord_min.1 != 0
@@ -3505,7 +3510,10 @@ impl ScnScene {
         }
 
         let mut entities = vec![];
-        for role in &self.scn_file.roles {
+        let role_count = self.scn_file.roles.len().max(1) as f32;
+        for (role_index, role) in self.scn_file.roles.iter().enumerate() {
+            let k = role_index as f32 / role_count;
+            radiance::loading::stage(0.7 + 0.2 * k, 0.7 + 0.2 * (k + 1. / role_count));
             if let Some(entity) = self.asset_mgr.load_role(
                 &role.name,
                 &role.action_name,

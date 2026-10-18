@@ -225,6 +225,7 @@ fn raw_bytes(name: &str, read: impl FnOnce() -> Option<Vec<u8>>) -> Option<Arc<V
     if let Some(b) = RAW_BYTES.lock().unwrap().0.get(name) {
         return Some(b.clone());
     }
+    crate::loading::tick();
     let bytes = {
         let _hitch = crate::perf::hitch::span("tex.read");
         Arc::new(read()?)

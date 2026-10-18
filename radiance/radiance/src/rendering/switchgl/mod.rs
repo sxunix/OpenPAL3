@@ -8,6 +8,7 @@
 mod factory;
 mod gles;
 mod imgui_renderer;
+mod loading;
 mod material;
 mod render_object;
 mod render_target;

@@ -739,6 +739,7 @@ pub fn create_animated_mesh_from_mv3_with_texture<P: AsRef<Path>>(
         } else {
             material
         };
+        radiance::loading::tick();
         let _hitch = radiance::perf::hitch::span("mv3.frames");
         for mesh_index in 0..model.mesh_count as usize {
             frames.push(create_geometry_frames(model, mesh_index, &material))

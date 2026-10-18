@@ -45,6 +45,14 @@ impl CoreRadianceEngine {
         ui_manager: Rc<UiManager>,
         scene_manager: ComRc<ISceneManager>,
     ) -> Self {
+        // Loading frames during a synchronous scene build. The engine is not
+        // borrowed while the frame's update runs, which is where loads happen.
+        let pump_engine = rendering_engine.clone();
+        crate::loading::set_pump(Box::new(move |progress, elapsed| {
+            if let Ok(mut engine) = pump_engine.try_borrow_mut() {
+                engine.present_loading(progress, elapsed);
+            }
+        }));
         Self {
             rendering_engine,
             audio_engine,

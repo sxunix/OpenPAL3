@@ -56,6 +56,7 @@ fn load_pol_model<P: AsRef<Path>>(vfs: &MiniFs, path: P, texture: Option<&str>) 
     let mut geometries = vec![];
     for mesh in &pol.meshes {
         for material in &mesh.material_info {
+            radiance::loading::tick();
             // Single-texture POL surfaces carry no baked lightmap, so — like
             // the original engine — they are shaded by the scene's dynamic
             // `.lgt` lights (see `load_material`). Those need per-vertex

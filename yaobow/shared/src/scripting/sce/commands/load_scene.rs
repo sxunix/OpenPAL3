@@ -373,8 +373,29 @@ impl SceCommandLoadScene {
 
         log::info!("sce: LoadScene {}/{}", self.name, self.sub_name);
         let started = std::time::Instant::now();
+        // 建场景期间渲染端自己画加载画面、进度条跟着走（`radiance::loading`）；建场景
+        // 的各段（`ScnScene::load_objects` / `load_roles`）报进度。
+        if radiance::loading::art().is_none() {
+            let picture = |n: u32| {
+                state
+                    .asset_mgr()
+                    .read_picture(format!("/basedata/basedata/ui/Loading/loading_{n}.tga"))
+            };
+            if let (Some(bar), Some(fill), Some(a), Some(b)) =
+                (picture(1), picture(2), picture(3), picture(5))
+            {
+                radiance::loading::set_art(radiance::loading::LoadingArt {
+                    bar,
+                    fill,
+                    ornament: [a, b],
+                });
+            }
+        }
+        radiance::loading::begin();
+        radiance::loading::stage(0., 0.1);
         scene_manager.pop_scene();
         scene_manager.push_scene(state.asset_mgr().load_scn(&self.name, &self.sub_name));
+        radiance::loading::stage(0.9, 1.);
         log::info!(
             "LoadScene {}/{}: scene built in {} ms",
             self.name,
@@ -423,6 +444,7 @@ impl SceCommandLoadScene {
         }
 
         state.try_call_proc_by_name(&format!("_{}_{}", self.name, self.sub_name));
+        radiance::loading::end();
         log::info!(
             "LoadScene {}/{}: done in {} ms",
             self.name,

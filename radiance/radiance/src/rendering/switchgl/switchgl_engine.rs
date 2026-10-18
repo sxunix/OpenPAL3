@@ -55,6 +55,8 @@ pub struct SwitchGLRenderingEngine {
     capture_pending: bool,
     /// The capture that frame took, with the frame it came from.
     captured: Option<(u64, crate::rendering::CapturedFrame)>,
+    /// GL resources of the mid-load loading screen, built on first use.
+    loading: Option<super::loading::LoadingPainter>,
 }
 
 impl SwitchGLRenderingEngine {
@@ -138,6 +140,7 @@ impl SwitchGLRenderingEngine {
             frames: 0,
             capture_pending: false,
             captured: None,
+            loading: None,
         })
     }
 }
@@ -209,6 +212,27 @@ impl RenderingEngine for SwitchGLRenderingEngine {
 
     fn component_factory(&self) -> Rc<dyn ComponentFactory> {
         self.factory.clone()
+    }
+
+    fn present_loading(&mut self, progress: f32, elapsed_sec: f32) {
+        if self.loading.is_none() {
+            let Some(art) = crate::loading::art() else {
+                return;
+            };
+            self.loading = super::loading::LoadingPainter::new(&art);
+        }
+        let Some(painter) = self.loading.as_ref() else {
+            return;
+        };
+        let _hitch = crate::perf::hitch::span("gl.loading");
+        painter.draw(self.extent, progress, elapsed_sec);
+        // Present without waiting for vblank: the load is blocked on this
+        // call, so a vsync wait would be added to every loading frame.
+        unsafe {
+            eglSwapInterval(self.display, 0);
+            eglSwapBuffers(self.display, self.surface);
+            eglSwapInterval(self.display, 1);
+        }
     }
 
     fn begin_frame(&mut self) {}

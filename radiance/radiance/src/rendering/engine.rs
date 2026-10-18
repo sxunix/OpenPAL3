@@ -41,6 +41,11 @@ pub trait RenderingEngine {
     /// can ignore the argument (default no-op).
     fn notify_resized(&mut self, _logical_size: (u32, u32)) {}
 
+    /// Draw and present one loading-screen frame on the spot (see
+    /// [`crate::loading`]): called in the middle of a synchronous scene
+    /// build, outside the normal frame. Default: nothing.
+    fn present_loading(&mut self, _progress: f32, _elapsed_sec: f32) {}
+
     /// Render `scene` into `target`'s offscreen color image. Distinct from
     /// `render`: no swapchain present, no imgui pass, viewport defaults to
     /// the target's full extent. The result is left in a layout the imgui

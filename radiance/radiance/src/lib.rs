@@ -22,6 +22,7 @@ pub mod components;
 pub mod debug;
 pub mod imgui;
 pub mod input;
+pub mod loading;
 pub mod math;
 pub mod perf;
 pub mod radiance;
