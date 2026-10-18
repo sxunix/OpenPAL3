@@ -29,6 +29,10 @@ impl SceCommand for SceCommandLoadScene {
         self.load(scene_manager, state);
         true
     }
+
+    fn shows_loading_screen(&self) -> bool {
+        true
+    }
 }
 
 impl SceCommandLoadScene {

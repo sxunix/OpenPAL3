@@ -83,7 +83,7 @@ pub struct TextureDef {
 }
 
 struct PendingDecode {
-    bytes: Option<Vec<u8>>,
+    bytes: Option<Arc<Vec<u8>>>,
     decode: fn(&[u8]) -> Option<RgbaImage>,
 }
 
@@ -117,7 +117,7 @@ impl TextureDef {
             return;
         };
         let _hitch = crate::perf::hitch::span("tex.decode_lazy");
-        let mut image = pending.bytes.and_then(|b| (pending.decode)(&b));
+        let mut image = pending.bytes.and_then(|b| (pending.decode)(&b[..]));
         if self.alpha_kind != AlphaKind::Opaque {
             if let Some(img) = image.as_mut() {
                 premultiply_alpha(img);
@@ -211,6 +211,37 @@ lazy_static::lazy_static! {
     /// that has dropped out of `TEXTURE_STORE` come back without decoding
     /// (see [`TextureStore::get_or_update_lazy`]).
     static ref KNOWN_ALPHA: RwLock<std::collections::HashMap<String, AlphaKind>> = RwLock::new(std::collections::HashMap::new());
+    /// Encoded bytes of lazily handled textures, by name, bounded by total
+    /// size ([`RAW_BYTES_CAP`]). A PAL3 street's 1200-odd textures are about
+    /// 6 MB encoded; reading them out of the cpk again (LZO included) was
+    /// most of the half second re-entering one still cost on the Switch.
+    static ref RAW_BYTES: Mutex<(LruCache<String, Arc<Vec<u8>>>, usize)> = Mutex::new((LruCache::unbounded(), 0));
+}
+
+const RAW_BYTES_CAP: usize = 24 << 20;
+
+/// The encoded bytes of `name`: from [`RAW_BYTES`], or `read` (and kept).
+fn raw_bytes(name: &str, read: impl FnOnce() -> Option<Vec<u8>>) -> Option<Arc<Vec<u8>>> {
+    if let Some(b) = RAW_BYTES.lock().unwrap().0.get(name) {
+        return Some(b.clone());
+    }
+    let bytes = {
+        let _hitch = crate::perf::hitch::span("tex.read");
+        Arc::new(read()?)
+    };
+    let mut cache = RAW_BYTES.lock().unwrap();
+    let (lru, total) = &mut *cache;
+    *total += bytes.len();
+    if let Some(old) = lru.put(name.to_string(), bytes.clone()) {
+        *total -= old.len();
+    }
+    while *total > RAW_BYTES_CAP {
+        match lru.pop_lru() {
+            Some((_, b)) => *total -= b.len(),
+            None => break,
+        }
+    }
+    Some(bytes)
 }
 
 pub struct TextureStore;
@@ -270,16 +301,17 @@ impl TextureStore {
     ) -> Arc<TextureDef> {
         let known = KNOWN_ALPHA.read().unwrap().get(name).copied();
         let Some(alpha_kind) = known else {
-            return Self::get_or_update(name, || read().and_then(|b| decode(&b)));
+            if let Some(t) = TEXTURE_STORE.write().unwrap().get(name) {
+                return t.clone();
+            }
+            let bytes = raw_bytes(name, read);
+            return Self::get_or_update(name, || bytes.and_then(|b| decode(&b[..])));
         };
         let mut store = TEXTURE_STORE.write().unwrap();
         if let Some(t) = store.get(name) {
             return t.clone();
         }
-        let bytes = {
-            let _hitch = crate::perf::hitch::span("tex.read");
-            read()
-        };
+        let bytes = raw_bytes(name, read);
         let t = Arc::new(TextureDef {
             name: name.to_string(),
             image: Mutex::new(None),

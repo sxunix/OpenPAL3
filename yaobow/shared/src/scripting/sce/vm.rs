@@ -36,6 +36,8 @@ fn note_slow_command(cmd: &dyn SceCommand, started: std::time::Instant) {
 pub struct SceVm {
     state: SceState,
     active_commands: Vec<Box<dyn SceCommand>>,
+    /// 换场景命令推到下一帧执行，这一帧先画加载界面（[`SceCommand::shows_loading_screen`]）。
+    deferred_load: Option<Box<dyn SceCommand>>,
     ui: Rc<UiManager>,
     scene_manager: ComRc<ISceneManager>,
 
@@ -75,6 +77,7 @@ impl SceVm {
         Self {
             state,
             active_commands: vec![],
+            deferred_load: None,
             ui,
             scene_manager,
             debug_proc: String::from(""),
@@ -118,8 +121,21 @@ impl SceVm {
         self.state.render_jump_icon(ui, delta_sec);
         self.state.render_number_labels(ui);
         if self.active_commands.len() == 0 {
+            let mut deferred = self.deferred_load.take();
             loop {
-                match self.state.get_next_cmd() {
+                // 换场景先停一帧画加载界面；后面的命令也不取，顺序不变。
+                let next = match deferred.take() {
+                    Some(cmd) => Some(cmd),
+                    None => match self.state.get_next_cmd() {
+                        Some(cmd) if cmd.shows_loading_screen() => {
+                            self.state.render_loading(ui);
+                            self.deferred_load = Some(cmd);
+                            return None;
+                        }
+                        other => other,
+                    },
+                };
+                match next {
                     Some(mut cmd) => {
                         log::info!("sce: {}", cmd.debug());
                         let started = std::time::Instant::now();
@@ -238,6 +254,7 @@ impl SceVm {
     /// that comes from the script itself does not need this — it *is*
     /// the command in flight.
     pub fn abort_active_commands(&mut self) {
+        self.deferred_load = None;
         if !self.active_commands.is_empty() {
             log::info!(
                 "abort_active_commands: 放弃 {} 条挂起命令",

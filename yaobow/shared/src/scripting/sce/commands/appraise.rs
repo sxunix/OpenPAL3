@@ -659,10 +659,17 @@ impl AppraiseGame {
                     );
                 }
                 let do_button = self.do_button.clone();
-                let hovered_slot = layout::EXHIBIT_SLOTS
-                    .iter()
-                    .position(|r| layout::contains(*r, mouse.0, mouse.1));
+                // 「开始鉴定」按钮压在第四件的格子下沿上（y 556–575 两块重叠）。原版按钮是
+                // 叠在 3D 控件上面的窗口，先收到点击；这里先判按钮，按钮上不算点中格子——
+                // 以前先判格子，点按钮永远是放大第四件。
                 let do_hovered = layout::contains(layout::EXHIBIT_DO_BUTTON, mouse.0, mouse.1);
+                let hovered_slot = (!do_hovered)
+                    .then(|| {
+                        layout::EXHIBIT_SLOTS
+                            .iter()
+                            .position(|r| layout::contains(*r, mouse.0, mouse.1))
+                    })
+                    .flatten();
                 overlay(ui, "AppraiseExhibit", |ui, at, _| {
                     let list = ui.get_window_draw_list();
                     if let Some(i) = hovered_slot {

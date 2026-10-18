@@ -45,6 +45,13 @@ pub trait SceCommand: dyn_clone::DynClone + SceCommandDebug {
         state: &mut SceState,
         delta_sec: f32,
     ) -> bool;
+
+    /// 换场景：虚拟机取到它先不执行，这一帧只画加载界面（`SceState::render_loading`），
+    /// 下一帧再执行（原版 `SceneMgr::LoadScene` 先 `SwitchFrame(FRM_LOADING)`、画一帧，
+    /// 再同步建场景）。
+    fn shows_loading_screen(&self) -> bool {
+        false
+    }
 }
 
 dyn_clone::clone_trait_object!(SceCommand);
@@ -114,6 +121,8 @@ pub struct SceState {
     msgs: Vec<(String, f32, i32)>,
     /// 提示框的九宫格外框 `ui\flex\note0..8.tga`，第一次显示时读。
     note_frame: Vec<Option<std::rc::Rc<radiance::rendering::Sprite>>>,
+    /// 加载界面的进度条底图和装饰（`ui/Loading/loading_1.tga`、`loading_3.tga`）。
+    loading_frame: Vec<Option<std::rc::Rc<radiance::rendering::Sprite>>>,
     /// 主角头上「跳」的图标：左上角在屏幕上的归一化坐标（x、y ∈ −1..1，y 朝上）；`None` 收起。
     jump_icon: Option<[f32; 2]>,
     /// 图标的帧（`ui\scene\tiao%d.tga`，第一次显示时按编号一直读到没有），和已经显示了多久。
@@ -248,6 +257,7 @@ impl SceState {
             note: None,
             msgs: vec![],
             note_frame: Vec::new(),
+            loading_frame: Vec::new(),
             jump_icon: None,
             jump_icon_frames: None,
             scene_map: Default::default(),
@@ -826,6 +836,39 @@ impl SceState {
     /// `((800 − 0x112) / 2, 10, +0x112, 0x57)` 那条横带里——在屏幕上方。外框是
     /// `ui\flex\note` 九宫格，角块边长取 min(32, 半宽, 半高)；字是字号档 2、居中，
     /// 颜色是控件默认的 0xff000505（近黑）。
+    /// 换场景的加载界面（`UILoadingFrm`，`gameui/UILoadingFrm.cpp`）。原版建场景是同步的，
+    /// 只在开建之前画这一帧：黑底（这时不画场景），进度条控件 (206,520) 起 364×28，底图
+    /// `loading_1`；进度还是 0，所以填充 `loading_2` 宽 0，进度头上那个 88×64 的装饰
+    /// `loading_3`（偏移 (0,−20)）落在左端。左内缩 2+4、上 2+10−1、下 2+6（`UIProgressBar::Render`）。
+    pub fn render_loading(&mut self, ui: &imgui::Ui) {
+        if self.loading_frame.is_empty() {
+            self.loading_frame = [1, 3]
+                .iter()
+                .map(|i| {
+                    self.asset_mgr
+                        .load_sprite(format!("/basedata/basedata/ui/Loading/loading_{i}.tga"))
+                })
+                .collect();
+        }
+        let frame = &self.loading_frame;
+        crate::scripting::sce::commands::overlay(ui, "Loading", |ui, at, _scale| {
+            let list = ui.get_window_draw_list();
+            let [sw, sh] = ui.io().display_size;
+            list.add_rect([0., 0.], [sw, sh], [0., 0., 0., 1.])
+                .filled(true)
+                .build();
+            // 贴图按原尺寸贴（512×32 的底图只有左边 364 列有内容，128×64 的装饰只有左边
+            // 71 列），不拉伸进控件矩形。
+            let (bar, deco) = ((206, 520, 206 + 512, 520 + 32), (168, 483, 168 + 128, 483 + 64));
+            for (k, r) in [bar, deco].iter().enumerate() {
+                if let Some(tex) = frame.get(k).and_then(|t| t.as_deref()) {
+                    list.add_image(tex.imgui_texture_id(), at(r.0, r.1), at(r.2, r.3))
+                        .build();
+                }
+            }
+        });
+    }
+
     pub fn render_note(&mut self, ui: &imgui::Ui, delta_sec: f32) {
         let Some((text, remaining)) = self.note.as_mut() else {
             return;
